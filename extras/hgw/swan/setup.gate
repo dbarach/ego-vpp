@@ -1,0 +1,42 @@
+set int state GigabitEthernet3/0/0 up
+comment { set int mac address GigabitEthernet3/0/0 48:f8:b3:e0:85:1a }
+set dhcp client intfc GigabitEthernet3/0/0 hostname vppgate
+
+loop cre
+set int l2 bridge loop0 1 bvi
+set int ip address loop0 192.168.1.1/24
+set int state loop0 up
+ 
+set int l2 bridge GigabitEthernet4/0/0 1
+set int state GigabitEthernet4/0/0 up 
+
+set int l2 bridge GigabitEthernet0/14/0 1
+set int state GigabitEthernet0/14/0 up 
+ 
+set int l2 bridge GigabitEthernet0/14/1 1
+set int state GigabitEthernet0/14/1 up 
+ 
+set int l2 bridge GigabitEthernet0/14/2 1
+set int state GigabitEthernet0/14/2 up 
+ 
+comment { dhcp server and host-stack access }
+tap connect lstack address 192.168.1.2/24
+ 
+set int l2 bridge tapcli-0 1
+set int state tapcli-0 up
+ 
+nat44 add interface address GigabitEthernet3/0/0
+set interface nat44 in loop0 out GigabitEthernet3/0/0
+
+uncomment { nat44 add static mapping local 192.168.1.2 22432 external GigabitEthernet3/0/0 22432 tcp }
+
+comment { nat44 add identity mapping external GigabitEthernet3/0/0 udp 53053  }
+
+comment { bin dns_name_server_add_del 8.8.8.8 }
+comment { bin dns_name_server_add_del 68.87.74.166 }
+comment { bin dns_enable_disable }
+
+service restart isc-dhcp-server
+add default linux route via 192.168.1.1
+
+service restart dora
