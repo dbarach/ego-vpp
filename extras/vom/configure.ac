@@ -10,10 +10,10 @@ AM_CONDITIONAL([USE_CHECK],[test "$HAVE_CHECK" -eq 1])
 AC_PROG_CC
 AC_PROG_CXX
 
-AM_CONDITIONAL(ENABLE_ACL_PLUGIN, test "yes" = "yes")
+AM_CONDITIONAL(ENABLE_ACL_PLUGIN, test "no" = "yes")
 AM_CONDITIONAL(ENABLE_NAT_PLUGIN, test "yes" = "yes")
-AM_CONDITIONAL(ENABLE_L2E_PLUGIN, test "yes" = "yes")
-AM_CONDITIONAL(ENABLE_GBP_PLUGIN, test "yes" = "yes")
+AM_CONDITIONAL(ENABLE_L2E_PLUGIN, test "no" = "yes")
+AM_CONDITIONAL(ENABLE_GBP_PLUGIN, test "no" = "yes")
 
 AC_OUTPUT([Makefile vom/Makefile])
 

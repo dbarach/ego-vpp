@@ -1474,7 +1474,6 @@ vlib_main_or_worker_loop (vlib_main_t * vm, int is_main)
   if (is_main)
     {
       uword i;
-      nm->current_process_index = ~0;
       for (i = 0; i < vec_len (nm->processes); i++)
 	cpu_time_now = dispatch_process (vm, nm->processes[i], /* frame */ 0,
 					 cpu_time_now);
@@ -1698,6 +1697,7 @@ vlib_main (vlib_main_t * volatile vm, unformat_input_t * input)
   vlib_node_main_t *nm = &vm->node_main;
 
   vm->queue_signal_callback = dummy_queue_signal_callback;
+  vm->node_main.current_process_index = ~0;
 
   clib_time_init (&vm->clib_time);
 

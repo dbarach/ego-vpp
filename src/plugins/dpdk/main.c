@@ -36,9 +36,22 @@ rte_delay_us_override (unsigned us)
 {
   vlib_main_t *vm;
 
-  /* Don't bother intercepting for short delays */
-  if (us < 10)
-    return 0;
+  /* 
+   * Do short delays right here. By experimentation, 50us
+   * keeps the e1000 driver from crashing in the dpdk process. DGMS.
+   */
+  if (us <= 50)
+    {
+      if (PREDICT_TRUE(us > 0))
+        {
+          vm = vlib_get_main();
+          f64 deadline;
+          deadline = vlib_time_now(vm) + ((f64)us)*1e-6;
+          while (vlib_time_now(vm) < deadline)
+            ;
+        }
+      return 1;
+    }
 
   /*
    * Only intercept if we are in a vlib process.
@@ -55,12 +68,6 @@ rte_delay_us_override (unsigned us)
       vm = vlib_get_main ();
       if (vlib_in_process_context (vm))
 	{
-	  /* Only suspend for the admin_down_process */
-	  vlib_process_t *proc = vlib_get_current_process (vm);
-	  if (!(proc->flags & VLIB_PROCESS_IS_RUNNING) ||
-	      (proc->node_runtime.function != admin_up_down_process))
-	    return 0;
-
 	  f64 delay = 1e-6 * us;
 	  vlib_process_suspend (vm, delay);
 	  return 1;
