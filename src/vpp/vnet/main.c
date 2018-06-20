@@ -18,6 +18,8 @@
 #include <vlib/unix/unix.h>
 #include <vnet/plugin/plugin.h>
 #include <vnet/ethernet/ethernet.h>
+#include <vnet/ip/ip4_packet.h>
+#include <vnet/ip/format.h>
 #include <vpp/app/version.h>
 #include <vpp/api/vpe_msg_enum.h>
 #include <limits.h>
@@ -399,6 +401,85 @@ VLIB_CLI_COMMAND (test_crash_command, static) = {
 /* *INDENT-ON* */
 
 #endif
+
+static clib_error_t *
+restart_isc_dhcp_server_command_fn (vlib_main_t * vm,
+                                    unformat_input_t * input, 
+                                    vlib_cli_command_t * cmd)
+{
+  int rv __attribute__((unused));
+  /* Wait three seconds... */
+  vlib_process_suspend (vm, 3.0);
+  
+  rv = system ("/usr/sbin/service isc-dhcp-server restart");
+  
+  vlib_cli_output (vm, "Restarted the isc-dhcp-server...");
+  return 0;
+}
+
+/* *INDENT-OFF* */
+VLIB_CLI_COMMAND (restart_isc_dhcp_server_command, static) = {
+  .path = "service restart isc-dhcp-server",
+  .short_help = "restarts the isc-dhcp-server",
+  .function = restart_isc_dhcp_server_command_fn,
+};
+/* *INDENT-ON* */
+
+static clib_error_t *
+add_default_linux_route_command_fn (vlib_main_t * vm,
+                                    unformat_input_t * input, 
+                                    vlib_cli_command_t * c)
+{
+  int rv __attribute__((unused));
+  ip4_address_t ip4_addr;
+  u8 *cmd;
+  
+  if (!unformat (input, "%U", unformat_ip4_address, &ip4_addr))
+    return clib_error_return (0, "default gateway address required...");
+
+  cmd = format (0, "/sbin/route add -net 0.0.0.0/0 gw %U",
+                format_ip4_address, &ip4_addr);
+  vec_add1 (cmd, 0);
+
+  rv = system (cmd);
+  
+  vlib_cli_output (vm, "%s", cmd);
+
+  vec_free(cmd);
+
+  return 0;
+}
+
+/* *INDENT-OFF* */
+VLIB_CLI_COMMAND (add_default_linux_route_command, static) = {
+  .path = "add default linux route via",
+  .short_help = "Adds default linux route: 0.0.0.0/0 via <addr>",
+  .function = add_default_linux_route_command_fn,
+};
+/* *INDENT-ON* */
+
+static clib_error_t *
+restart_dora_tunnels_command_fn (vlib_main_t * vm,
+                                 unformat_input_t * input, 
+                                 vlib_cli_command_t * cmd)
+{
+  int rv __attribute__((unused));
+  /* Wait three seconds... */
+  vlib_process_suspend (vm, 3.0);
+  
+  rv = system ("/usr/sbin/service dora restart");
+  
+  vlib_cli_output (vm, "Restarted the dora tunnel service...");
+  return 0;
+}
+
+/* *INDENT-OFF* */
+VLIB_CLI_COMMAND (restart_dora_tunnels_command, static) = {
+  .path = "service restart dora",
+  .short_help = "restarts the dora tunnel service",
+  .function = restart_dora_tunnels_command_fn,
+};
+/* *INDENT-ON* */
 
 /*
  * fd.io coding-style-patch-verification: ON
