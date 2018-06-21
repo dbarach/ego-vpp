@@ -1,0 +1,6 @@
+#!/bin/bash
+
+wget -O /tmp/swan_ip_addr -q http://tracemyip.com
+sed -n -e '/<title>.*/p' < /tmp/swan_ip_addr | sed -n -e 's/\. .*//p' | sed -n -e 's/<title>//p' > /tmp/swan_ip_addr2
+mv /tmp/swan_ip_addr2 /tmp/swan_ip_addr
+lftp -e "put /tmp/swan_ip_addr" -u upload@barachs.net,.v4addrupload ftp.barachs.net < /dev/null

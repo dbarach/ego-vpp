@@ -1,0 +1,22 @@
+#!/bin/bash
+
+# ssh logins, take two they're small
+/usr/local/bin/dora-tunnel 22433 22432 &
+/usr/local/bin/dora-tunnel 22434 22432 &
+
+# swannanoa dvr #1         dora local port
+/usr/local/bin/dora-tunnel 11000 11000 &
+/usr/local/bin/dora-tunnel 11001 11001 &
+/usr/local/bin/dora-tunnel 11002 11002 &
+
+# swannanoa dvr #2	   
+/usr/local/bin/dora-tunnel 12000 12000 &
+/usr/local/bin/dora-tunnel 12001 12001 &
+/usr/local/bin/dora-tunnel 12002 12002 &
+
+# vnc server
+/usr/local/bin/dora-tunnel 5950 5950 &
+
+# Wireless bridge
+/usr/local/bin/dora-tunnel 8081 8081 &
+
