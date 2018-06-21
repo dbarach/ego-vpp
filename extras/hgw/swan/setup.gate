@@ -40,3 +40,22 @@ service restart isc-dhcp-server
 add default linux route via 192.168.1.1
 
 service restart dora
+
+bin mactime_add_del_range name alarm mac 00:d0:2d:5e:86:85 allow-static
+bin mactime_add_del_range name cisco-vpn mac f8:0b:cb:38:76:44 allow-static
+bin mactime_add_del_range name dave-iphone mac c0:cc:f8:74:a5:e9 allow-static
+bin mactime_add_del_range name dave-mac mac c4:b3:01:d7:fa:5f  allow-static
+bin mactime_add_del_range name dbarach-haz mac 90:e2:ba:3d:f6:7a allow-static
+bin mactime_add_del_range name kate-ipad mac 4c:b1:99:4b:c0:a0 drop-range Mon - Fri 7:59 - 18:01
+bin mactime_add_del_range name kate-iphone mac 98:ca:33:73:85:1d drop-range Mon - Fri 7:59 - 18:01
+bin mactime_add_del_range name outdoor-dvr mac 00:02:6F:9B:D7:73 allow-static
+bin mactime_add_del_range name peg-iphone mac fc:e9:98:d9:76:bf drop-range Mon - Fri 7:59 - 18:01
+bin mactime_add_del_range name peg-mac mac 8C:85:90:13:7E:05 allow-static
+bin mactime_add_del_range name roku mac 08:05:81:e7:87:e1 drop-range Mon - Fri 7:59 - 18:01
+bin mactime_add_del_range name weather-station mac 00:1D:0A:00:6E:C7 allow-static
+bin mactime_add_del_range name wifi-ap mac 88:DC:96:54:77:F2 allow-static
+
+bin mactime_enable_disable GigabitEthernet0/14/0
+bin mactime_enable_disable GigabitEthernet0/14/1
+bin mactime_enable_disable GigabitEthernet0/14/2
+bin mactime_enable_disable GigabitEthernet4/0/0

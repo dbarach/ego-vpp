@@ -1,0 +1,19 @@
+#!/bin/bash 
+
+set -u
+
+while(true)
+do
+    tempfile=`mktemp`
+    tempfile2=`mktemp`
+    echo "<password>" > $tempfile2
+    echo "#!/bin/bash" > $tempfile
+    echo "cat $tempfile2" >> $tempfile
+    chmod +x $tempfile
+    (sleep 20; rm -f $tempfile $tempfile2)&
+    DISPLAY=/dev/null \
+    SSH_ASKPASS=$tempfile \
+    setsid ssh -i /home/dbarach/.ssh/id_rsa -R $1:localhost:$2  \
+    -p 22432 broiler2.barachs.net -N < /dev/null 2< /dev/null
+    sleep 10
+done
