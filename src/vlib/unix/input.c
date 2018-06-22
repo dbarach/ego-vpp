@@ -148,7 +148,11 @@ linux_epoll_input_inline (vlib_main_t * vm, vlib_node_runtime_t * node,
     int timeout_ms = 0, max_timeout_ms = 10;
     f64 vector_rate = vlib_last_vectors_per_main_loop (vm);
 
-    if (is_main && um->poll_sleep_usec)
+    /*
+     * If we've been asked for a fixed-sleep between main loop polls,
+     * do so right away.
+     */
+    if (PREDICT_FALSE (is_main && um->poll_sleep_usec))
       {
 	struct timespec ts, tsrem;
 	timeout = 0;

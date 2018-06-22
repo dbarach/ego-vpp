@@ -839,6 +839,9 @@ dpdk_bind_devices_to_uio (dpdk_config_main_t * conf)
       {
         continue;
       }
+    /* Cavium FastlinQ QL41000 Series */
+    else if (d->vendor_id == 0x1077 && d->device_id >= 0x8070 && d->device_id <= 0x8090)
+      ;
     else
       {
         dpdk_log_warn ("Unsupported PCI device 0x%04x:0x%04x found "
@@ -1002,7 +1005,6 @@ static clib_error_t *
 dpdk_config (vlib_main_t * vm, unformat_input_t * input)
 {
   clib_error_t *error = 0;
-  dpdk_main_t *dm = &dpdk_main;
   dpdk_config_main_t *conf = &dpdk_config_main;
   vlib_thread_main_t *tm = vlib_get_thread_main ();
   dpdk_device_config_t *devconf;
@@ -1032,7 +1034,7 @@ dpdk_config (vlib_main_t * vm, unformat_input_t * input)
       /* Prime the pump */
       if (unformat (input, "no-hugetlb"))
 	{
-	  vec_add1 (conf->eal_init_args, (u8 *) "no-huge");
+	  vec_add1 (conf->eal_init_args, (u8 *) "--no-huge");
 	  no_huge = 1;
 	}
 
@@ -1094,8 +1096,6 @@ dpdk_config (vlib_main_t * vm, unformat_input_t * input)
 	  tmp = format (0, "--no-pci%c", 0);
 	  vec_add1 (conf->eal_init_args, tmp);
 	}
-      else if (unformat (input, "poll-sleep %d", &dm->poll_sleep_usec))
-	;
 
 #define _(a)                                    \
       else if (unformat(input, #a))             \
@@ -1336,10 +1336,13 @@ dpdk_config (vlib_main_t * vm, unformat_input_t * input)
   vec_add1 (conf->eal_init_args, tmp);
 
   /* set socket-mem */
-  tmp = format (0, "--socket-mem%c", 0);
-  vec_add1 (conf->eal_init_args, tmp);
-  tmp = format (0, "%s%c", socket_mem, 0);
-  vec_add1 (conf->eal_init_args, tmp);
+  if (!no_huge)
+    {
+      tmp = format (0, "--socket-mem%c", 0);
+      vec_add1 (conf->eal_init_args, tmp);
+      tmp = format (0, "%s%c", socket_mem, 0);
+      vec_add1 (conf->eal_init_args, tmp);
+    }
 
   /* NULL terminate the "argv" vector, in case of stupidity */
   vec_add1 (conf->eal_init_args, 0);
