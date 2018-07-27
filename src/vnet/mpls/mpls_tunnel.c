@@ -52,7 +52,7 @@ static const char *mpls_tunnel_attribute_names[] = MPLS_TUNNEL_ATTRIBUTES;
 static mpls_tunnel_t*
 mpls_tunnel_get_from_sw_if_index (u32 sw_if_index)
 {
-    if ((vec_len(mpls_tunnel_db) < sw_if_index) ||
+    if ((vec_len(mpls_tunnel_db) <= sw_if_index) ||
         (~0 == mpls_tunnel_db[sw_if_index]))
         return (NULL);
 
@@ -399,6 +399,7 @@ mpls_tunnel_update_adj (vnet_main_t * vnm,
     {
     case IP_LOOKUP_NEXT_ARP:
     case IP_LOOKUP_NEXT_GLEAN:
+    case IP_LOOKUP_NEXT_BCAST:
         adj_nbr_midchain_update_rewrite(ai, mpls_tunnel_fixup,
                                         NULL,
                                         ADJ_FLAG_NONE,

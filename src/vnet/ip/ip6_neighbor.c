@@ -662,6 +662,14 @@ ip6_ethernet_update_adjacency (vnet_main_t * vnm, u32 sw_if_index, u32 ai)
 	  ip6_nbr_probe (adj);
 	}
       break;
+    case IP_LOOKUP_NEXT_BCAST:
+      adj_nbr_update_rewrite (ai,
+			      ADJ_NBR_REWRITE_FLAG_COMPLETE,
+			      ethernet_build_rewrite (vnm,
+						      sw_if_index,
+						      VNET_LINK_IP6,
+						      VNET_REWRITE_FOR_SW_INTERFACE_ADDRESS_BROADCAST));
+      break;
     case IP_LOOKUP_NEXT_MCAST:
       {
 	/*
@@ -4239,7 +4247,7 @@ ip6_get_ll_address (u32 sw_if_index, ip6_address_t * addr)
   ip6_radv_t *radv_info;
   u32 ri;
 
-  if (vec_len (nm->if_radv_pool_index_by_sw_if_index) < sw_if_index)
+  if (vec_len (nm->if_radv_pool_index_by_sw_if_index) <= sw_if_index)
     return 0;
 
   ri = nm->if_radv_pool_index_by_sw_if_index[sw_if_index];

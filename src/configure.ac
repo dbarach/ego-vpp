@@ -300,7 +300,7 @@ AC_SUBST(AR_FLAGS)
 
 # Please keep alphabetical order
 PLUGIN_DISABLED(abf)
-PLUGIN_DISABLED(acl)
+PLUGIN_ENABLED(acl)
 PLUGIN_DISABLED(avf)
 PLUGIN_DISABLED(cdp)
 PLUGIN_ENABLED(dpdk)
@@ -326,6 +326,7 @@ PLUGIN_DISABLED(srv6as)
 PLUGIN_DISABLED(stn)
 PLUGIN_DISABLED(tlsmbedtls)
 PLUGIN_ENABLED(tlsopenssl)
+PLUGIN_ENABLED(unittest)
 
 ###############################################################################
 # Dependency checks
