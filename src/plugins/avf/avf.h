@@ -85,6 +85,7 @@ typedef struct
   avf_rx_desc_t *descs;
   u32 *bufs;
   u16 n_enqueued;
+  u8 int_mode;
 } avf_rxq_t;
 
 typedef struct
@@ -114,6 +115,8 @@ typedef struct
   /* queues */
   avf_rxq_t *rxqs;
   avf_txq_t *txqs;
+  u16 n_tx_queues;
+  u16 n_rx_queues;
 
   /* Admin queues */
   avf_aq_desc_t *atq;
@@ -204,6 +207,7 @@ typedef struct
   u16 txq_size;
   /* return */
   int rv;
+  u32 sw_if_index;
   clib_error_t *error;
 } avf_create_if_args_t;
 

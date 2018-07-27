@@ -250,6 +250,8 @@ avf_rxq_init (vlib_main_t * vm, avf_device_t * ad, u16 qid, u16 rxq_size)
 	  vlib_get_buffer_data_physical_address (vm, rxq->bufs[i]);
       d++;
     }
+
+  ad->n_rx_queues = clib_min (ad->num_queue_pairs, qid + 1);
   return 0;
 }
 
@@ -279,6 +281,8 @@ avf_txq_init (vlib_main_t * vm, avf_device_t * ad, u16 qid, u16 txq_size)
 					   2 * CLIB_CACHE_LINE_BYTES);
   vec_validate_aligned (txq->bufs, txq->size, CLIB_CACHE_LINE_BYTES);
   txq->qtx_tail = ad->bar0 + AVF_QTX_TAIL (qid);
+
+  ad->n_tx_queues = clib_min (ad->num_queue_pairs, qid + 1);
   return 0;
 }
 
@@ -661,6 +665,46 @@ retry:
 }
 
 clib_error_t *
+avf_request_queues (vlib_main_t * vm, avf_device_t * ad, u16 num_queue_pairs)
+{
+  virtchnl_vf_res_request_t res_req = { 0 };
+  clib_error_t *error;
+  u32 rstat;
+  int n_retry = 20;
+
+  res_req.num_queue_pairs = num_queue_pairs;
+
+  error = avf_send_to_pf (vm, ad, VIRTCHNL_OP_REQUEST_QUEUES, &res_req,
+			  sizeof (virtchnl_vf_res_request_t), &res_req,
+			  sizeof (virtchnl_vf_res_request_t));
+
+  /*
+   * if PF respondes, the request failed
+   * else PF initializes restart and avf_send_to_pf returns an error
+   */
+  if (!error)
+    {
+      return clib_error_return (0, "requested more than %u queue pairs",
+				res_req.num_queue_pairs);
+    }
+
+retry:
+  vlib_process_suspend (vm, 10e-3);
+  rstat = avf_get_u32 (ad->bar0, AVFGEN_RSTAT);
+
+  if ((rstat == VIRTCHNL_VFR_COMPLETED) || (rstat == VIRTCHNL_VFR_VFACTIVE))
+    goto done;
+
+  if (--n_retry == 0)
+    return clib_error_return (0, "reset failed (timeout)");
+
+  goto retry;
+
+done:
+  return NULL;
+}
+
+clib_error_t *
 avf_device_init (vlib_main_t * vm, avf_device_t * ad,
 		 avf_create_if_args_t * args)
 {
@@ -672,8 +716,15 @@ avf_device_init (vlib_main_t * vm, avf_device_t * ad,
 
   avf_adminq_init (vm, ad);
 
-  if ((error = avf_device_reset (vm, ad)))
-    return error;
+  /* request more queues only if we need them */
+  if ((error = avf_request_queues (vm, ad, tm->n_vlib_mains)))
+    {
+      /* we failed to get more queues, but still we want to proceed */
+      clib_error_free (error);
+
+      if ((error = avf_device_reset (vm, ad)))
+	return error;
+    }
 
   avf_adminq_init (vm, ad);
 
@@ -737,14 +788,15 @@ avf_device_init (vlib_main_t * vm, avf_device_t * ad,
     return error;
 
   avf_irq_0_enable (ad);
+  avf_irq_n_enable (ad, 0);
 
   if ((error = avf_op_add_eth_addr (vm, ad, 1, ad->hwaddr)))
     return error;
 
-  if ((error = avf_op_enable_queues (vm, ad, 1, 0)))
+  if ((error = avf_op_enable_queues (vm, ad, ad->n_rx_queues, 0)))
     return error;
 
-  if ((error = avf_op_enable_queues (vm, ad, 0, 1)))
+  if ((error = avf_op_enable_queues (vm, ad, 0, ad->n_tx_queues)))
     return error;
 
   ad->flags |= AVF_DEVICE_F_INITIALIZED;
@@ -766,6 +818,11 @@ avf_process_one_device (vlib_main_t * vm, avf_device_t * ad, int is_irq)
     return;
 
   ASSERT (ad->error == 0);
+
+  /* do not process device in reset state */
+  r = avf_get_u32 (ad->bar0, AVFGEN_RSTAT);
+  if (r != VIRTCHNL_VFR_VFACTIVE)
+    return;
 
   r = avf_get_u32 (ad->bar0, AVF_ARQLEN);
   if ((r & 0xf0000000) != (1ULL << 31))
@@ -983,6 +1040,7 @@ avf_irq_n_handler (vlib_pci_dev_handle_t h, u16 line)
   avf_main_t *am = &avf_main;
   uword pd = vlib_pci_get_private_data (h);
   avf_device_t *ad = pool_elt_at_index (am->devices, pd);
+  u16 qid;
 
   if (ad->flags & AVF_DEVICE_F_ELOG)
     {
@@ -1004,7 +1062,9 @@ avf_irq_n_handler (vlib_pci_dev_handle_t h, u16 line)
       ed->line = line;
     }
 
-  vnet_device_input_set_interrupt_pending (vnm, ad->hw_if_index, 0);
+  qid = line - 1;
+  if (vec_len (ad->rxqs) > qid && ad->rxqs[qid].int_mode != 0)
+    vnet_device_input_set_interrupt_pending (vnm, ad->hw_if_index, qid);
   avf_irq_n_enable (ad, 0);
 }
 
@@ -1171,12 +1231,13 @@ avf_create_if (vlib_main_t * vm, avf_create_if_args_t * args)
     goto error;
 
   vnet_sw_interface_t *sw = vnet_get_hw_sw_interface (vnm, ad->hw_if_index);
-  ad->sw_if_index = sw->sw_if_index;
+  args->sw_if_index = ad->sw_if_index = sw->sw_if_index;
 
   vnet_hw_interface_t *hw = vnet_get_hw_interface (vnm, ad->hw_if_index);
   hw->flags |= VNET_HW_INTERFACE_FLAG_SUPPORTS_INT_MODE;
   vnet_hw_interface_set_input_node (vnm, ad->hw_if_index,
 				    avf_input_node.index);
+  vnet_hw_interface_assign_rx_thread (vnm, ad->hw_if_index, 0, ~0);
 
   if (pool_elts (am->devices) == 1)
     vlib_process_signal_event (vm, avf_process_node.index,
@@ -1208,13 +1269,29 @@ avf_interface_admin_up_down (vnet_main_t * vnm, u32 hw_if_index, u32 flags)
       vnet_hw_interface_set_flags (vnm, ad->hw_if_index,
 				   VNET_HW_INTERFACE_FLAG_LINK_UP);
       ad->flags |= AVF_DEVICE_F_ADMIN_UP;
-      vnet_hw_interface_assign_rx_thread (vnm, ad->hw_if_index, 0, ~0);
     }
   else
     {
       vnet_hw_interface_set_flags (vnm, ad->hw_if_index, 0);
       ad->flags &= ~AVF_DEVICE_F_ADMIN_UP;
     }
+  return 0;
+}
+
+static clib_error_t *
+avf_interface_rx_mode_change (vnet_main_t * vnm, u32 hw_if_index, u32 qid,
+			      vnet_hw_interface_rx_mode mode)
+{
+  avf_main_t *am = &avf_main;
+  vnet_hw_interface_t *hw = vnet_get_hw_interface (vnm, hw_if_index);
+  avf_device_t *ad = pool_elt_at_index (am->devices, hw->dev_instance);
+  avf_rxq_t *rxq = vec_elt_at_index (ad->rxqs, qid);
+
+  if (mode == VNET_HW_INTERFACE_RX_MODE_POLLING)
+    rxq->int_mode = 0;
+  else
+    rxq->int_mode = 1;
+
   return 0;
 }
 
@@ -1226,6 +1303,7 @@ VNET_DEVICE_CLASS (avf_device_class,) =
   .format_device = format_avf_device,
   .format_device_name = format_avf_device_name,
   .admin_up_down_function = avf_interface_admin_up_down,
+  .rx_mode_change_function = avf_interface_rx_mode_change,
 };
 /* *INDENT-ON* */
 
