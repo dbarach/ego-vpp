@@ -65,6 +65,10 @@ typedef enum fib_source_t_ {
      */
     FIB_SOURCE_BIER,
     /**
+     * From 6RD.
+     */
+    FIB_SOURCE_6RD,
+    /**
      * From the control plane API
      */
     FIB_SOURCE_API,
@@ -157,6 +161,7 @@ STATIC_ASSERT (sizeof(fib_source_t) == 1,
     [FIB_SOURCE_INTERFACE] = "interface",		\
     [FIB_SOURCE_PROXY] = "proxy",                       \
     [FIB_SOURCE_BIER] = "BIER",			        \
+    [FIB_SOURCE_6RD] = "6RD",			        \
     [FIB_SOURCE_API] = "API",			        \
     [FIB_SOURCE_CLI] = "CLI",			        \
     [FIB_SOURCE_ADJ] = "adjacency",			\
@@ -594,8 +599,7 @@ extern u32 fib_entry_get_resolving_interface_for_source(
 
 extern void fib_entry_encode(fib_node_index_t fib_entry_index,
 			     fib_route_path_encode_t **api_rpaths);
-extern void fib_entry_get_prefix(fib_node_index_t fib_entry_index,
-				 fib_prefix_t *pfx);
+extern const fib_prefix_t *fib_entry_get_prefix(fib_node_index_t fib_entry_index);
 extern u32 fib_entry_get_fib_index(fib_node_index_t fib_entry_index);
 extern void fib_entry_set_source_data(fib_node_index_t fib_entry_index,
                                       fib_source_t source,

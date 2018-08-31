@@ -27,13 +27,13 @@ DPDK_FAILSAFE_PMD     ?= n
 
 B := $(DPDK_BUILD_DIR)
 I := $(DPDK_INSTALL_DIR)
-DPDK_VERSION ?= 18.05
+DPDK_VERSION ?= 18.08
 PKG_SUFFIX ?= vpp2
 DPDK_BASE_URL ?= http://fast.dpdk.org/rel
 DPDK_TARBALL := dpdk-$(DPDK_VERSION).tar.xz
 DPDK_TAR_URL := $(DPDK_BASE_URL)/$(DPDK_TARBALL)
-DPDK_18.02.2_TARBALL_MD5_CKSUM := 75ad6d39b513649744e49c9fcbbb9ca5
 DPDK_18.05_TARBALL_MD5_CKSUM := 9fc86367cd9407ff6a8dfea56c4eddc4
+DPDK_18.08_TARBALL_MD5_CKSUM := da5e7fb25ab063c47e53929fb8c58be5
 MACHINE=$(shell uname -m)
 
 # replace dot with space, and if 3rd word exists we deal with stable dpdk rel
@@ -44,7 +44,7 @@ DPDK_SOURCE := $(B)/dpdk-stable-$(DPDK_VERSION)
 endif
 
 NASM_BASE_URL := http://www.nasm.us/pub/nasm/releasebuilds
-NASM_VER := 2.13.01
+NASM_VER := 2.13.03
 NASM_TARBALL := nasm-$(NASM_VER).tar.xz
 NASM_TAR_URL := $(NASM_BASE_URL)/$(NASM_VER)/$(NASM_TARBALL)
 NASM_SOURCE := $(B)/nasm-$(NASM_VER)
@@ -164,6 +164,21 @@ else
 DPDK_EXTRA_CFLAGS := -g -O0
 endif
 
+# -Wimplicit-fallthrough was introduced starting from GCC 7,
+# and it requires newer version of ccache.
+# Disable fallthrough warning for old ccache version.
+ifeq ($(DPDK_CC),gcc)
+GCC_VER_V = "7.0.0"
+CCACHE_VER_V = "3.4.1"
+GCC_VER = $(shell gcc --version | grep ^gcc | sed 's/^.* //g')
+CCACHE_VER = $(shell ccache --version | grep ^ccache | sed 's/^.* //g')
+ifeq ($(shell expr "$(GCC_VER)" ">=" "$(GCC_VER_V)"),1)
+ifeq ($(shell expr "$(CCACHE_VER)" "<" "$(CCACHE_VER_V)"),1)
+DPDK_EXTRA_CFLAGS += -Wimplicit-fallthrough=0
+endif
+endif
+endif
+
 ifeq ($(AESNI),y)
 IPSEC_MB_BUILD_PATH := $(B)/intel-ipsec-mb-$(IPSEC_MB_VER)
 DPDK_EXTRA_CFLAGS += -L$(IPSEC_MB_BUILD_PATH) -I$(IPSEC_MB_BUILD_PATH)
@@ -216,6 +231,7 @@ $(B)/custom-config: $(B)/.patch.ok Makefile
 	$(call set,RTE_LIBRTE_PMD_AESNI_GCM,$(AESNI))
 	$(call set,RTE_LIBRTE_MLX4_PMD,$(DPDK_MLX4_PMD))
 	$(call set,RTE_LIBRTE_MLX5_PMD,$(DPDK_MLX5_PMD))
+	$(call set,RTE_LIBRTE_PMD_SOFTNIC,n)
 	$(call set,RTE_LIBRTE_MLX4_DLOPEN_DEPS,$(DPDK_MLX4_PMD))
 	$(call set,RTE_LIBRTE_MLX5_DLOPEN_DEPS,$(DPDK_MLX5_PMD))
 	$(call set,RTE_LIBRTE_PMD_TAP,$(DPDK_TAP_PMD))

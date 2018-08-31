@@ -425,14 +425,17 @@ main (int argc, char **argv)
       return -1;
     }
 
-  rv = vppcom_session_listen (ssm->listen_fd, 10);
-  if (rv < 0)
+  if (!ssm->cfg.transport_udp)
     {
-      errno_val = errno = -rv;
-      perror ("ERROR in main()");
-      fprintf (stderr, "SERVER: ERROR: listen failed "
-	       "(errno = %d)!\n", errno_val);
-      return -1;
+      rv = vppcom_session_listen (ssm->listen_fd, 10);
+      if (rv < 0)
+	{
+	  errno_val = errno = -rv;
+	  perror ("ERROR in main()");
+	  fprintf (stderr, "SERVER: ERROR: listen failed "
+		   "(errno = %d)!\n", errno_val);
+	  return -1;
+	}
     }
 
   ssm->epfd = vppcom_epoll_create ();
@@ -463,7 +466,7 @@ main (int argc, char **argv)
     {
       int num_ev;
       num_ev = vppcom_epoll_wait (ssm->epfd, ssm->wait_events,
-				  SOCK_SERVER_MAX_EPOLL_EVENTS, 60.0);
+				  SOCK_SERVER_MAX_EPOLL_EVENTS, 60000.0);
       if (num_ev < 0)
 	{
 	  errno = -num_ev;
@@ -626,7 +629,6 @@ main (int argc, char **argv)
 		    printf ("SERVER (fd %d): TX (%d bytes) - '%s'\n",
 			    conn->fd, tx_bytes, conn->buf);
 		}
-
 	      else		// Extraneous read data from non-echo tests???
 		{
 		  xtra++;

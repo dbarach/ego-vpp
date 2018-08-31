@@ -21,6 +21,10 @@ STARTUP_DIR?=$(PWD)
 MACHINE=$(shell uname -m)
 SUDO?=sudo
 
+ifeq ($(findstring $(MAKECMDGOALS),verify pkg-deb pkg-rpm test test-debug),)
+export vpp_uses_cmake?=yes
+endif
+
 ,:=,
 define disable_plugins
 $(if $(1), \
@@ -66,6 +70,7 @@ DEB_DEPENDS += libconfuse-dev git-review exuberant-ctags cscope pkg-config
 DEB_DEPENDS += lcov chrpath autoconf indent clang-format libnuma-dev
 DEB_DEPENDS += python-all python-dev python-virtualenv python-pip libffi6 check
 DEB_DEPENDS += libboost-all-dev libffi-dev python-ply libmbedtls-dev
+DEB_DEPENDS += cmake ninja-build
 ifeq ($(OS_VERSION_ID),14.04)
 	DEB_DEPENDS += openjdk-8-jdk-headless
 	DEB_DEPENDS += libssl-dev
@@ -116,7 +121,7 @@ RPM_DEPENDS += chrpath libffi-devel rpm-build
 SUSE_NAME= $(shell grep '^NAME=' /etc/os-release | cut -f2- -d= | sed -e 's/\"//g' | cut -d' ' -f2)
 SUSE_ID= $(shell grep '^VERSION_ID=' /etc/os-release | cut -f2- -d= | sed -e 's/\"//g' | cut -d' ' -f2)
 RPM_SUSE_BUILDTOOLS_DEPS = autoconf automake ccache check-devel chrpath
-RPM_SUSE_BUILDTOOLS_DEPS += clang indent libtool make python-ply
+RPM_SUSE_BUILDTOOLS_DEPS += clang cmake indent libtool make ninja python-ply
 
 RPM_SUSE_DEVEL_DEPS = glibc-devel-static java-1_8_0-openjdk-devel libnuma-devel
 RPM_SUSE_DEVEL_DEPS += libopenssl-devel openssl-devel mbedtls-devel
@@ -286,10 +291,13 @@ else ifneq ("$(wildcard /etc/redhat-release)","")
 	@sudo -E yum groupinstall $(CONFIRM) $(RPM_DEPENDS_GROUPS)
 	@sudo -E yum install $(CONFIRM) $(RPM_DEPENDS)
 	@sudo -E debuginfo-install $(CONFIRM) glibc openssl-libs mbedtls-devel zlib
-else ifeq ($(filter opensuse,$(OS_ID)),$(OS_ID))
+else ifeq ($(filter opensuse-tumbleweed,$(OS_ID)),$(OS_ID))
 	@sudo -E zypper refresh
 	@sudo -E zypper install -y $(RPM_SUSE_DEPENDS)
 else ifeq ($(filter opensuse-leap,$(OS_ID)),$(OS_ID))
+	@sudo -E zypper refresh
+	@sudo -E zypper install -y $(RPM_SUSE_DEPENDS)
+else ifeq ($(filter opensuse,$(OS_ID)),$(OS_ID))
 	@sudo -E zypper refresh
 	@sudo -E zypper install -y $(RPM_SUSE_DEPENDS)
 else
@@ -382,7 +390,7 @@ test-all:
 	$(call test,vpp,vpp,test)
 
 test-ext:
-	$(if $(filter-out $(3),retest),make -C $(BR) PLATFORM=vpp TAG=vpp_debug vom-install,)
+	$(if $(filter-out $(3),retest),make -C $(BR) PLATFORM=vpp TAG=vpp_debug vom-install japi-install,)
 	$(eval EXTENDED_TESTS=yes)
 	$(call test,vpp,vpp_debug,test-ext)
 
@@ -533,6 +541,8 @@ verify: install-dep $(BR)/.deps.ok dpdk-install-dev
 	@make -C build-root PLATFORM=vpp TAG=vpp sample-plugin-install
 	$(call banner,"Building libmemif")
 	@make -C build-root PLATFORM=vpp TAG=vpp libmemif-install
+	$(call banner,"Building JAPI")
+	@make -C build-root PLATFORM=vpp TAG=vpp japi-install
 	$(call banner,"Building VOM")
 	@make -C build-root PLATFORM=vpp TAG=vpp vom-install
 	$(call banner,"Building $(PKG) packages")

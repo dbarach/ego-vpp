@@ -5,7 +5,9 @@
 Creating Containers
 ___________________
 
-First you should have root privileges:
+Make sure you have gone through :ref:`installingVPP` on the system you want to create containers on.
+
+After VPP is installed, get root privileges with:
 
 .. code-block:: console
 
@@ -28,7 +30,7 @@ Look at the contents of *default.conf*, which should initially look like this:
 
 .. code-block:: console
     
-    # cat /etc/lxc/default.conf 
+    # cat /etc/lxc/default.conf
     lxc.network.type = veth
     lxc.network.link = lxcbr0
     lxc.network.flags = up
@@ -48,7 +50,7 @@ Inspect the contents again to verify the file was indeed modified:
 
 .. code-block:: console
 
-    # cat /etc/lxc/default.conf 
+    # cat /etc/lxc/default.conf
     lxc.network.type = veth
     lxc.network.link = lxcbr0
     lxc.network.flags = up
@@ -116,8 +118,8 @@ And verify its running:
 
     .. code-block:: console
 
-          sudo lxc-ls --fancy
-          sudo lxc-start --name u1 --daemon
-          sudo lxc-info --name u1
-          sudo lxc-stop --name u1
-          sudo lxc-destroy --name u1
+          $ sudo lxc-ls --fancy
+          $ sudo lxc-start --name u1 --daemon
+          $ sudo lxc-info --name u1
+          $ sudo lxc-stop --name u1
+          $ sudo lxc-destroy --name u1

@@ -17,6 +17,7 @@
 
 #include <vnet/fib/fib_types.h>
 #include <vnet/fib/fib_internal.h>
+#include <vnet/fib/fib_table.h>
 #include <vnet/mpls/mpls.h>
 
 /*
@@ -282,6 +283,40 @@ fib_proto_to_link (fib_protocol_t proto)
     return (0);
 }
 
+ip46_type_t
+fib_proto_to_ip46 (fib_protocol_t fproto)
+{
+    switch (fproto)
+    {
+    case FIB_PROTOCOL_IP4:
+	return (IP46_TYPE_IP4);
+    case FIB_PROTOCOL_IP6:
+	return (IP46_TYPE_IP6);
+    case FIB_PROTOCOL_MPLS:
+	return (IP46_TYPE_ANY);
+    }
+    ASSERT(0);
+    return (IP46_TYPE_ANY);
+}
+
+fib_protocol_t
+fib_proto_from_ip46 (ip46_type_t iproto)
+{
+    switch (iproto)
+    {
+    case IP46_TYPE_IP4:
+        return FIB_PROTOCOL_IP4;
+    case IP46_TYPE_IP6:
+        return FIB_PROTOCOL_IP6;
+    case IP46_TYPE_ANY:
+        ASSERT(0);
+        return FIB_PROTOCOL_IP4;
+    }
+
+    ASSERT(0);
+    return FIB_PROTOCOL_IP4;
+}
+
 fib_forward_chain_type_t
 fib_forw_chain_type_from_dpo_proto (dpo_proto_t proto)
 {
@@ -384,7 +419,7 @@ unformat_fib_route_path (unformat_input_t * input, va_list * args)
 {
     fib_route_path_t *rpath = va_arg (*args, fib_route_path_t *);
     u32 *payload_proto = va_arg (*args, u32*);
-    u32 weight, preference, udp_encap_id;
+    u32 weight, preference, udp_encap_id, fi;
     mpls_label_t out_label;
     vnet_main_t *vnm;
 
@@ -426,6 +461,14 @@ unformat_fib_route_path (unformat_input_t * input, va_list * args)
         {
             rpath->frp_sw_if_index = ~0;
             rpath->frp_proto = DPO_PROTO_IP4;
+
+            /*
+             * the user enter table-ids, convert to index
+             */
+            fi = fib_table_find (FIB_PROTOCOL_IP4, rpath->frp_fib_index);
+            if (~0 == fi)
+                return 0;
+            rpath->frp_fib_index = fi;
         }
         else if (unformat (input, "%U next-hop-table %d",
                            unformat_ip6_address,
@@ -434,6 +477,10 @@ unformat_fib_route_path (unformat_input_t * input, va_list * args)
         {
             rpath->frp_sw_if_index = ~0;
             rpath->frp_proto = DPO_PROTO_IP6;
+            fi = fib_table_find (FIB_PROTOCOL_IP6, rpath->frp_fib_index);
+            if (~0 == fi)
+                return 0;
+            rpath->frp_fib_index = fi;
         }
         else if (unformat (input, "%U",
                            unformat_ip4_address,
@@ -480,6 +527,10 @@ unformat_fib_route_path (unformat_input_t * input, va_list * args)
         {
             rpath->frp_proto = DPO_PROTO_IP4;
             *payload_proto = DPO_PROTO_IP4;
+            fi = fib_table_find (FIB_PROTOCOL_IP4, rpath->frp_fib_index);
+            if (~0 == fi)
+                return 0;
+            rpath->frp_fib_index = fi;
         }
         else if (unformat (input,
                            "ip6-lookup-in-table %d",
@@ -487,6 +538,10 @@ unformat_fib_route_path (unformat_input_t * input, va_list * args)
         {
             rpath->frp_proto = DPO_PROTO_IP6;
             *payload_proto = DPO_PROTO_IP6;
+            fi = fib_table_find (FIB_PROTOCOL_IP6, rpath->frp_fib_index);
+            if (~0 == fi)
+                return 0;
+            rpath->frp_fib_index = fi;
         }
         else if (unformat (input,
                            "mpls-lookup-in-table %d",
@@ -494,6 +549,10 @@ unformat_fib_route_path (unformat_input_t * input, va_list * args)
         {
             rpath->frp_proto = DPO_PROTO_MPLS;
             *payload_proto = DPO_PROTO_MPLS;
+            fi = fib_table_find (FIB_PROTOCOL_MPLS, rpath->frp_fib_index);
+            if (~0 == fi)
+                return 0;
+            rpath->frp_fib_index = fi;
         }
         else if (unformat (input, "src-lookup"))
         {

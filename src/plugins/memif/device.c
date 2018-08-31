@@ -40,7 +40,7 @@ typedef enum
     MEMIF_TX_N_ERROR,
 } memif_tx_func_error_t;
 
-static __clib_unused char *memif_tx_func_error_strings[] = {
+static char *memif_tx_func_error_strings[] = {
 #define _(n,s) s,
   foreach_memif_tx_func_error
 #undef _
@@ -61,7 +61,7 @@ format_memif_device_name (u8 * s, va_list * args)
 }
 #endif
 
-static __clib_unused u8 *
+static u8 *
 format_memif_device (u8 * s, va_list * args)
 {
   u32 dev_instance = va_arg (*args, u32);
@@ -77,7 +77,7 @@ format_memif_device (u8 * s, va_list * args)
   return s;
 }
 
-static __clib_unused u8 *
+static u8 *
 format_memif_tx_trace (u8 * s, va_list * args)
 {
   s = format (s, "Unimplemented...");
@@ -400,10 +400,9 @@ no_free_slots:
   return frame->n_vectors;
 }
 
-uword
-CLIB_MULTIARCH_FN (memif_interface_tx) (vlib_main_t * vm,
-					vlib_node_runtime_t * node,
-					vlib_frame_t * frame)
+VNET_DEVICE_CLASS_TX_FN (memif_device_class) (vlib_main_t * vm,
+					      vlib_node_runtime_t * node,
+					      vlib_frame_t * frame)
 {
   memif_main_t *nm = &memif_main;
   vnet_interface_output_runtime_t *rund = (void *) node->runtime_data;
@@ -433,7 +432,7 @@ CLIB_MULTIARCH_FN (memif_interface_tx) (vlib_main_t * vm,
 				      mq, ptd);
 }
 
-static __clib_unused void
+static void
 memif_set_interface_next_node (vnet_main_t * vnm, u32 hw_if_index,
 			       u32 node_index)
 {
@@ -452,13 +451,13 @@ memif_set_interface_next_node (vnet_main_t * vnm, u32 hw_if_index,
     vlib_node_add_next (vlib_get_main (), memif_input_node.index, node_index);
 }
 
-static __clib_unused void
+static void
 memif_clear_hw_interface_counters (u32 instance)
 {
   /* Nothing for now */
 }
 
-static __clib_unused clib_error_t *
+static clib_error_t *
 memif_interface_rx_mode_change (vnet_main_t * vnm, u32 hw_if_index, u32 qid,
 				vnet_hw_interface_rx_mode mode)
 {
@@ -475,7 +474,7 @@ memif_interface_rx_mode_change (vnet_main_t * vnm, u32 hw_if_index, u32 qid,
   return 0;
 }
 
-static __clib_unused clib_error_t *
+static clib_error_t *
 memif_interface_admin_up_down (vnet_main_t * vnm, u32 hw_if_index, u32 flags)
 {
   memif_main_t *mm = &memif_main;
@@ -491,7 +490,7 @@ memif_interface_admin_up_down (vnet_main_t * vnm, u32 hw_if_index, u32 flags)
   return error;
 }
 
-static __clib_unused clib_error_t *
+static clib_error_t *
 memif_subif_add_del_function (vnet_main_t * vnm,
 			      u32 hw_if_index,
 			      struct vnet_sw_interface_t *st, int is_add)
@@ -500,11 +499,9 @@ memif_subif_add_del_function (vnet_main_t * vnm,
   return 0;
 }
 
-#ifndef CLIB_MARCH_VARIANT
 /* *INDENT-OFF* */
 VNET_DEVICE_CLASS (memif_device_class) = {
   .name = "memif",
-  .tx_function = memif_interface_tx,
   .format_device_name = format_memif_device_name,
   .format_device = format_memif_device,
   .format_tx_trace = format_memif_tx_trace,
@@ -516,20 +513,6 @@ VNET_DEVICE_CLASS (memif_device_class) = {
   .subif_add_del_function = memif_subif_add_del_function,
   .rx_mode_change_function = memif_interface_rx_mode_change,
 };
-
-#if __x86_64__
-vlib_node_function_t __clib_weak memif_interface_tx_avx512;
-vlib_node_function_t __clib_weak memif_interface_tx_avx2;
-static void __clib_constructor
-memif_interface_tx_multiarch_select (void)
-{
-  if (memif_interface_tx_avx512 && clib_cpu_supports_avx512f ())
-    memif_device_class.tx_function = memif_interface_tx_avx512;
-  else if (memif_interface_tx_avx2 && clib_cpu_supports_avx2 ())
-    memif_device_class.tx_function = memif_interface_tx_avx2;
-}
-#endif
-#endif
 
 /* *INDENT-ON* */
 

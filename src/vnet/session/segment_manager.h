@@ -24,20 +24,17 @@
 
 typedef struct _segment_manager_properties
 {
-  /** Session fifo sizes.  */
-  u32 rx_fifo_size;
-  u32 tx_fifo_size;
-  u32 evt_q_size;
-
-  /** Configured additional segment size */
-  u32 add_segment_size;
-
-  /** Flag that indicates if additional segments should be created */
-  u8 add_segment;
-
-  /** Segment type: if set to SSVM_N_TYPES, private segments are used */
-  ssvm_segment_type_t segment_type;
-
+  u32 rx_fifo_size;			/**< receive fifo size */
+  u32 tx_fifo_size;			/**< transmit fifo size */
+  u32 evt_q_size;			/**< event queue length */
+  u32 segment_size;			/**< first segment size */
+  u32 prealloc_fifos;			/**< preallocated fifo pairs */
+  u32 add_segment_size;			/**< additional segment size */
+  u8 add_segment:1;			/**< can add new segments flag */
+  u8 use_mq_eventfd:1;			/**< use eventfds for mqs flag */
+  u8 reserved:6;			/**< reserved flags */
+  ssvm_segment_type_t segment_type;	/**< seg type: if set to SSVM_N_TYPES,
+					     private segments are used */
 } segment_manager_properties_t;
 
 typedef struct _segment_manager
@@ -48,8 +45,8 @@ typedef struct _segment_manager
   /** rwlock that protects the segments pool */
   clib_rwlock_t segments_rwlock;
 
-  /** Owner app index */
-  u32 app_index;
+  /** Owner app worker index */
+  u32 app_wrk_index;
 
   /**
    * First segment should not be deleted unless segment manger is deleted.
@@ -154,7 +151,8 @@ void segment_manager_dealloc_fifos (u32 segment_index, svm_fifo_t * rx_fifo,
 				    svm_fifo_t * tx_fifo);
 u32 segment_manager_evt_q_expected_size (u32 q_size);
 svm_msg_q_t *segment_manager_alloc_queue (svm_fifo_segment_private_t * fs,
-					  u32 queue_size);
+					  segment_manager_properties_t *
+					  props);
 void segment_manager_dealloc_queue (segment_manager_t * sm, svm_queue_t * q);
 void segment_manager_app_detach (segment_manager_t * sm);
 

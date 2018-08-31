@@ -97,6 +97,8 @@ vl_api_nat_show_config_t_handler (vl_api_nat_show_config_t * mp)
 {
   vl_api_nat_show_config_reply_t *rmp;
   snat_main_t *sm = &snat_main;
+  dslite_main_t *dm = &dslite_main;
+  nat64_main_t *n64m = &nat64_main;
   int rv = 0;
 
   /* *INDENT-OFF* */
@@ -113,6 +115,13 @@ vl_api_nat_show_config_t_handler (vl_api_nat_show_config_t * mp)
     rmp->static_mapping_connection_tracking =
       sm->static_mapping_connection_tracking;
     rmp->deterministic = sm->deterministic;
+    rmp->endpoint_dependent = sm->endpoint_dependent;
+    rmp->out2in_dpo = sm->out2in_dpo;
+    rmp->dslite_ce = dm->is_ce;
+    rmp->nat64_bib_buckets = n64m->bib_buckets;
+    rmp->nat64_bib_memory_size = n64m->bib_memory_size;
+    rmp->nat64_st_buckets = n64m->st_buckets;
+    rmp->nat64_st_memory_size = n64m->st_memory_size;
   }));
   /* *INDENT-ON* */
 }
@@ -403,6 +412,74 @@ vl_api_nat_reass_dump_t_print (vl_api_nat_reass_dump_t * mp, void *handle)
   u8 *s;
 
   s = format (0, "SCRIPT: nat_reass_dump");
+
+  FINISH;
+}
+
+static void
+vl_api_nat_set_timeouts_t_handler (vl_api_nat_set_timeouts_t * mp)
+{
+  snat_main_t *sm = &snat_main;
+  vl_api_nat_set_timeouts_reply_t *rmp;
+  int rv = 0;
+
+  sm->udp_timeout = ntohl (mp->udp);
+  sm->tcp_established_timeout = ntohl (mp->tcp_established);
+  sm->tcp_transitory_timeout = ntohl (mp->tcp_transitory);
+  sm->icmp_timeout = ntohl (mp->icmp);
+
+  rv = nat64_set_icmp_timeout (ntohl (mp->icmp));
+  if (rv)
+    goto send_reply;
+  rv = nat64_set_udp_timeout (ntohl (mp->udp));
+  if (rv)
+    goto send_reply;
+  rv =
+    nat64_set_tcp_timeouts (ntohl (mp->tcp_transitory),
+			    ntohl (mp->tcp_established));
+
+send_reply:
+  REPLY_MACRO (VL_API_NAT_SET_TIMEOUTS_REPLY);
+}
+
+static void *
+vl_api_nat_set_timeouts_t_print (vl_api_nat_set_timeouts_t * mp, void *handle)
+{
+  u8 *s;
+
+  s = format (0, "SCRIPT: nat_set_timeouts ");
+  s = format (s, "udp %d tcp_established %d tcp_transitory %d icmp %d\n",
+	      ntohl (mp->udp),
+	      ntohl (mp->tcp_established),
+	      ntohl (mp->tcp_transitory), ntohl (mp->icmp));
+
+  FINISH;
+}
+
+static void
+vl_api_nat_get_timeouts_t_handler (vl_api_nat_get_timeouts_t * mp)
+{
+  snat_main_t *sm = &snat_main;
+  vl_api_nat_get_timeouts_reply_t *rmp;
+  int rv = 0;
+
+  /* *INDENT-OFF* */
+  REPLY_MACRO2 (VL_API_NAT_GET_TIMEOUTS_REPLY,
+  ({
+    rmp->udp = htonl (sm->udp_timeout);
+    rmp->tcp_established = htonl (sm->tcp_established_timeout);
+    rmp->tcp_transitory = htonl (sm->tcp_transitory_timeout);
+    rmp->icmp = htonl (sm->icmp_timeout);
+  }))
+  /* *INDENT-ON* */
+}
+
+static void *
+vl_api_nat_get_timeouts_t_print (vl_api_nat_get_timeouts_t * mp, void *handle)
+{
+  u8 *s;
+
+  s = format (0, "SCRIPT: nat_get_timeouts");
 
   FINISH;
 }
@@ -1195,8 +1272,12 @@ vl_api_nat44_user_dump_t_handler (vl_api_nat44_user_dump_t * mp)
 
   /* *INDENT-OFF* */
   vec_foreach (tsm, sm->per_thread_data)
-    vec_foreach (u, tsm->users)
-      send_nat44_user_details (u, reg, mp->context);
+    {
+      pool_foreach (u, tsm->users,
+      ({
+        send_nat44_user_details (u, reg, mp->context);
+      }));
+    }
   /* *INDENT-ON* */
 }
 
@@ -1341,6 +1422,7 @@ unformat_nat44_lb_addr_port (vl_api_nat44_lb_addr_port_t * addr_port_pairs,
       clib_memcpy (&lb_addr_port.addr, ap->addr, 4);
       lb_addr_port.port = clib_net_to_host_u16 (ap->port);
       lb_addr_port.probability = ap->probability;
+      lb_addr_port.vrf_id = clib_net_to_host_u32 (ap->vrf_id);
       vec_add1 (lb_addr_port_pairs, lb_addr_port);
     }
 
@@ -1360,7 +1442,7 @@ static void
   snat_protocol_t proto;
   u8 *tag = 0;
 
-  if (sm->deterministic)
+  if (!sm->endpoint_dependent)
     {
       rv = VNET_API_ERROR_UNSUPPORTED;
       goto send_reply;
@@ -1380,8 +1462,7 @@ static void
   rv =
     nat44_add_del_lb_static_mapping (e_addr,
 				     clib_net_to_host_u16 (mp->external_port),
-				     proto, clib_net_to_host_u32 (mp->vrf_id),
-				     locals, mp->is_add, twice_nat,
+				     proto, locals, mp->is_add, twice_nat,
 				     mp->out2in_only, tag);
 
   vec_free (locals);
@@ -1423,7 +1504,6 @@ send_nat44_lb_static_mapping_details (snat_static_mapping_t * m,
   clib_memcpy (rmp->external_addr, &(m->external_addr), 4);
   rmp->external_port = ntohs (m->external_port);
   rmp->protocol = snat_proto_to_ip_proto (m->proto);
-  rmp->vrf_id = ntohl (m->vrf_id);
   rmp->context = context;
   if (m->twice_nat == TWICE_NAT)
     rmp->twice_nat = 1;
@@ -1439,6 +1519,7 @@ send_nat44_lb_static_mapping_details (snat_static_mapping_t * m,
     clib_memcpy (locals->addr, &(ap->addr), 4);
     locals->port = htons (ap->port);
     locals->probability = ap->probability;
+    locals->vrf_id = ntohl (ap->vrf_id);
     locals++;
     rmp->local_num++;
   }
@@ -1454,7 +1535,7 @@ static void
   snat_main_t *sm = &snat_main;
   snat_static_mapping_t *m;
 
-  if (sm->deterministic)
+  if (!sm->endpoint_dependent)
     return;
 
   reg = vl_api_client_index_to_registration (mp->client_index);
@@ -1821,79 +1902,6 @@ vl_api_nat_det_map_dump_t_print (vl_api_nat_det_map_dump_t * mp, void *handle)
   u8 *s;
 
   s = format (0, "SCRIPT: nat_det_map_dump ");
-
-  FINISH;
-}
-
-static void
-vl_api_nat_det_set_timeouts_t_handler (vl_api_nat_det_set_timeouts_t * mp)
-{
-  snat_main_t *sm = &snat_main;
-  vl_api_nat_det_set_timeouts_reply_t *rmp;
-  int rv = 0;
-
-  if (!sm->deterministic)
-    {
-      rv = VNET_API_ERROR_UNSUPPORTED;
-      goto send_reply;
-    }
-
-  sm->udp_timeout = ntohl (mp->udp);
-  sm->tcp_established_timeout = ntohl (mp->tcp_established);
-  sm->tcp_transitory_timeout = ntohl (mp->tcp_transitory);
-  sm->icmp_timeout = ntohl (mp->icmp);
-
-send_reply:
-  REPLY_MACRO (VL_API_NAT_DET_SET_TIMEOUTS_REPLY);
-}
-
-static void *
-vl_api_nat_det_set_timeouts_t_print (vl_api_nat_det_set_timeouts_t * mp,
-				     void *handle)
-{
-  u8 *s;
-
-  s = format (0, "SCRIPT: nat_det_set_timeouts ");
-  s = format (s, "udp %d tcp_established %d tcp_transitory %d icmp %d\n",
-	      ntohl (mp->udp),
-	      ntohl (mp->tcp_established),
-	      ntohl (mp->tcp_transitory), ntohl (mp->icmp));
-
-  FINISH;
-}
-
-static void
-vl_api_nat_det_get_timeouts_t_handler (vl_api_nat_det_get_timeouts_t * mp)
-{
-  snat_main_t *sm = &snat_main;
-  vl_api_nat_det_get_timeouts_reply_t *rmp;
-  int rv = 0;
-
-  if (!sm->deterministic)
-    {
-      rv = VNET_API_ERROR_UNSUPPORTED;
-      REPLY_MACRO (VL_API_NAT_DET_GET_TIMEOUTS_REPLY);
-      return;
-    }
-
-  /* *INDENT-OFF* */
-  REPLY_MACRO2 (VL_API_NAT_DET_GET_TIMEOUTS_REPLY,
-  ({
-    rmp->udp = htonl (sm->udp_timeout);
-    rmp->tcp_established = htonl (sm->tcp_established_timeout);
-    rmp->tcp_transitory = htonl (sm->tcp_transitory_timeout);
-    rmp->icmp = htonl (sm->icmp_timeout);
-  }))
-  /* *INDENT-ON* */
-}
-
-static void *
-vl_api_nat_det_get_timeouts_t_print (vl_api_nat_det_get_timeouts_t * mp,
-				     void *handle)
-{
-  u8 *s;
-
-  s = format (0, "SCRIPT: nat_det_get_timeouts");
 
   FINISH;
 }
@@ -2379,71 +2387,6 @@ vl_api_nat64_bib_dump_t_print (vl_api_nat64_bib_dump_t * mp, void *handle)
   u8 *s;
 
   s = format (0, "SCRIPT: snat_bib_dump protocol %d", mp->proto);
-
-  FINISH;
-}
-
-static void
-vl_api_nat64_set_timeouts_t_handler (vl_api_nat64_set_timeouts_t * mp)
-{
-  snat_main_t *sm = &snat_main;
-  vl_api_nat64_set_timeouts_reply_t *rmp;
-  int rv = 0;
-
-  rv = nat64_set_icmp_timeout (ntohl (mp->icmp));
-  if (rv)
-    goto send_reply;
-  rv = nat64_set_udp_timeout (ntohl (mp->udp));
-  if (rv)
-    goto send_reply;
-  rv =
-    nat64_set_tcp_timeouts (ntohl (mp->tcp_trans), ntohl (mp->tcp_est),
-			    ntohl (mp->tcp_incoming_syn));
-
-send_reply:
-  REPLY_MACRO (VL_API_NAT64_SET_TIMEOUTS_REPLY);
-}
-
-static void *vl_api_nat64_set_timeouts_t_print
-  (vl_api_nat64_set_timeouts_t * mp, void *handle)
-{
-  u8 *s;
-
-  s = format (0, "SCRIPT: nat64_set_timeouts ");
-  s =
-    format (s,
-	    "udp %d icmp %d, tcp_trans %d, tcp_est %d, tcp_incoming_syn %d\n",
-	    ntohl (mp->udp), ntohl (mp->icmp), ntohl (mp->tcp_trans),
-	    ntohl (mp->tcp_est), ntohl (mp->tcp_incoming_syn));
-
-  FINISH;
-}
-
-static void
-vl_api_nat64_get_timeouts_t_handler (vl_api_nat64_get_timeouts_t * mp)
-{
-  snat_main_t *sm = &snat_main;
-  vl_api_nat64_get_timeouts_reply_t *rmp;
-  int rv = 0;
-
-  /* *INDENT-OFF* */
-  REPLY_MACRO2 (VL_API_NAT64_GET_TIMEOUTS_REPLY,
-  ({
-    rmp->udp = htonl (nat64_get_udp_timeout());
-    rmp->icmp = htonl (nat64_get_icmp_timeout());
-    rmp->tcp_trans = htonl (nat64_get_tcp_trans_timeout());
-    rmp->tcp_est = htonl (nat64_get_tcp_est_timeout());
-    rmp->tcp_incoming_syn = htonl (nat64_get_tcp_incoming_syn_timeout());
-  }))
-  /* *INDENT-ON* */
-}
-
-static void *vl_api_nat64_get_timeouts_t_print
-  (vl_api_nat64_get_timeouts_t * mp, void *handle)
-{
-  u8 *s;
-
-  s = format (0, "SCRIPT: nat64_get_timeouts");
 
   FINISH;
 }
@@ -3046,6 +2989,8 @@ _(NAT_IPFIX_ENABLE_DISABLE, nat_ipfix_enable_disable)                   \
 _(NAT_SET_REASS, nat_set_reass)                                         \
 _(NAT_GET_REASS, nat_get_reass)                                         \
 _(NAT_REASS_DUMP, nat_reass_dump)                                       \
+_(NAT_SET_TIMEOUTS, nat_set_timeouts)                           \
+_(NAT_GET_TIMEOUTS, nat_get_timeouts)                           \
 _(NAT44_ADD_DEL_ADDRESS_RANGE, nat44_add_del_address_range)             \
 _(NAT44_INTERFACE_ADD_DEL_FEATURE, nat44_interface_add_del_feature)     \
 _(NAT44_ADD_DEL_STATIC_MAPPING, nat44_add_del_static_mapping)           \
@@ -3071,8 +3016,6 @@ _(NAT_DET_ADD_DEL_MAP, nat_det_add_del_map)                             \
 _(NAT_DET_FORWARD, nat_det_forward)                                     \
 _(NAT_DET_REVERSE, nat_det_reverse)                                     \
 _(NAT_DET_MAP_DUMP, nat_det_map_dump)                                   \
-_(NAT_DET_SET_TIMEOUTS, nat_det_set_timeouts)                           \
-_(NAT_DET_GET_TIMEOUTS, nat_det_get_timeouts)                           \
 _(NAT_DET_CLOSE_SESSION_OUT, nat_det_close_session_out)                 \
 _(NAT_DET_CLOSE_SESSION_IN, nat_det_close_session_in)                   \
 _(NAT_DET_SESSION_DUMP, nat_det_session_dump)                           \
@@ -3082,8 +3025,6 @@ _(NAT64_ADD_DEL_INTERFACE, nat64_add_del_interface)                     \
 _(NAT64_INTERFACE_DUMP, nat64_interface_dump)                           \
 _(NAT64_ADD_DEL_STATIC_BIB, nat64_add_del_static_bib)                   \
 _(NAT64_BIB_DUMP, nat64_bib_dump)                                       \
-_(NAT64_SET_TIMEOUTS, nat64_set_timeouts)                               \
-_(NAT64_GET_TIMEOUTS, nat64_get_timeouts)                               \
 _(NAT64_ST_DUMP, nat64_st_dump)                                         \
 _(NAT64_ADD_DEL_PREFIX, nat64_add_del_prefix)                           \
 _(NAT64_PREFIX_DUMP, nat64_prefix_dump)                                 \

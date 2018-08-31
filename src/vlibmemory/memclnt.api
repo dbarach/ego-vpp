@@ -14,7 +14,7 @@
  * limitations under the License.
  */
 
-option version = "1.0.0";
+option version = "2.0.0";
 
 /*
  * Define services not following the normal convetions here
@@ -91,7 +91,8 @@ autoreply define rpc_call {
     u8 multicast;
     u8 need_barrier_sync;
     u8 send_reply;
-    u8 data[0];
+    u32 data_len;
+    u8 data[data_len];
 };
 
 /*
@@ -104,7 +105,6 @@ define get_first_msg_id {
 };
 
 define get_first_msg_id_reply {
-    u32 client_index;
     u32 context;
     i32 retval;
     u16 first_msg_id;
@@ -124,7 +124,6 @@ define api_versions {
   u32 context;
 };
 define api_versions_reply {
-  u32 client_index;
   u32 context;
   i32 retval;
   u32 count;

@@ -20,6 +20,7 @@
 #include <nat/nat.h>
 #include <nat/nat_ipfix_logging.h>
 #include <nat/nat_det.h>
+#include <nat/nat64.h>
 #include <nat/nat_inlines.h>
 #include <vnet/fib/fib_table.h>
 
@@ -767,10 +768,19 @@ add_lb_static_mapping_command_fn (vlib_main_t * vm,
 	  local.probability = (u8) probability;
 	  vec_add1 (locals, local);
 	}
+      else if (unformat (line_input, "local %U:%u vrf %u probability %u",
+			 unformat_ip4_address, &l_addr, &l_port, &vrf_id,
+			 &probability))
+	{
+	  memset (&local, 0, sizeof (local));
+	  local.addr = l_addr;
+	  local.port = (u16) l_port;
+	  local.probability = (u8) probability;
+	  local.vrf_id = vrf_id;
+	  vec_add1 (locals, local);
+	}
       else if (unformat (line_input, "external %U:%u", unformat_ip4_address,
 			 &e_addr, &e_port))
-	;
-      else if (unformat (line_input, "vrf %u", &vrf_id))
 	;
       else if (unformat (line_input, "protocol %U", unformat_snat_protocol,
 			 &proto))
@@ -803,9 +813,8 @@ add_lb_static_mapping_command_fn (vlib_main_t * vm,
       goto done;
     }
 
-  rv = nat44_add_del_lb_static_mapping (e_addr, (u16) e_port, proto, vrf_id,
-					locals, is_add, twice_nat,
-					out2in_only, 0);
+  rv = nat44_add_del_lb_static_mapping (e_addr, (u16) e_port, proto, locals,
+					is_add, twice_nat, out2in_only, 0);
 
   switch (rv)
     {
@@ -970,8 +979,9 @@ nat44_show_sessions_command_fn (vlib_main_t * vm, unformat_input_t * input,
     {
       tsm = vec_elt_at_index (sm->per_thread_data, i);
 
-      vlib_cli_output (vm, "-------- thread %d %s --------\n",
-                       i, vlib_worker_threads[i].name);
+      vlib_cli_output (vm, "-------- thread %d %s: %d sessions --------\n",
+                       i, vlib_worker_threads[i].name,
+                       pool_elts (tsm->sessions));
       pool_foreach (u, tsm->users,
       ({
         vlib_cli_output (vm, "  %U", format_snat_user, tsm, u, verbose);
@@ -1299,9 +1309,6 @@ set_timeout_command_fn (vlib_main_t * vm,
   unformat_input_t _line_input, *line_input = &_line_input;
   clib_error_t *error = 0;
 
-  if (!sm->deterministic)
-    return clib_error_return (0, SUPPORTED_ONLY_IN_DET_MODE_STR);
-
   /* Get a line of input. */
   if (!unformat_user (input, unformat_line_input, line_input))
     return 0;
@@ -1309,21 +1316,54 @@ set_timeout_command_fn (vlib_main_t * vm,
   while (unformat_check_input (line_input) != UNFORMAT_END_OF_INPUT)
     {
       if (unformat (line_input, "udp %u", &sm->udp_timeout))
-	;
+	{
+	  if (nat64_set_udp_timeout (sm->udp_timeout))
+	    {
+	      error = clib_error_return (0, "Invalid UDP timeout value");
+	      goto done;
+	    }
+	}
       else if (unformat (line_input, "tcp-established %u",
 			 &sm->tcp_established_timeout))
-	;
+	{
+	  if (nat64_set_tcp_timeouts
+	      (sm->tcp_transitory_timeout, sm->tcp_established_timeout))
+	    {
+	      error =
+		clib_error_return (0,
+				   "Invalid TCP established timeouts value");
+	      goto done;
+	    }
+	}
       else if (unformat (line_input, "tcp-transitory %u",
 			 &sm->tcp_transitory_timeout))
-	;
+	{
+	  if (nat64_set_tcp_timeouts
+	      (sm->tcp_transitory_timeout, sm->tcp_established_timeout))
+	    {
+	      error =
+		clib_error_return (0,
+				   "Invalid TCP transitory timeouts value");
+	      goto done;
+	    }
+	}
       else if (unformat (line_input, "icmp %u", &sm->icmp_timeout))
-	;
+	{
+	  if (nat64_set_icmp_timeout (sm->icmp_timeout))
+	    {
+	      error = clib_error_return (0, "Invalid ICMP timeout value");
+	      goto done;
+	    }
+	}
       else if (unformat (line_input, "reset"))
 	{
 	  sm->udp_timeout = SNAT_UDP_TIMEOUT;
 	  sm->tcp_established_timeout = SNAT_TCP_ESTABLISHED_TIMEOUT;
 	  sm->tcp_transitory_timeout = SNAT_TCP_TRANSITORY_TIMEOUT;
 	  sm->icmp_timeout = SNAT_ICMP_TIMEOUT;
+	  nat64_set_udp_timeout (0);
+	  nat64_set_icmp_timeout (0);
+	  nat64_set_tcp_timeouts (0, 0);
 	}
       else
 	{
@@ -1340,14 +1380,11 @@ done:
 }
 
 static clib_error_t *
-nat44_det_show_timeouts_command_fn (vlib_main_t * vm,
-				    unformat_input_t * input,
-				    vlib_cli_command_t * cmd)
+nat_show_timeouts_command_fn (vlib_main_t * vm,
+			      unformat_input_t * input,
+			      vlib_cli_command_t * cmd)
 {
   snat_main_t *sm = &snat_main;
-
-  if (!sm->deterministic)
-    return clib_error_return (0, SUPPORTED_ONLY_IN_DET_MODE_STR);
 
   vlib_cli_output (vm, "udp timeout: %dsec", sm->udp_timeout);
   vlib_cli_output (vm, "tcp-established timeout: %dsec",
@@ -1536,6 +1573,40 @@ VLIB_CLI_COMMAND (nat_show_workers_command, static) = {
 
 /*?
  * @cliexpar
+ * @cliexstart{set nat timeout}
+ * Set values of timeouts for NAT sessions (in seconds), use:
+ *  vpp# set nat timeout udp 120 tcp-established 7500 tcp-transitory 250 icmp 90
+ * To reset default values use:
+ *  vpp# set nat44 deterministic timeout reset
+ * @cliexend
+?*/
+VLIB_CLI_COMMAND (set_timeout_command, static) = {
+  .path = "set nat timeout",
+  .function = set_timeout_command_fn,
+  .short_help =
+    "set nat timeout [udp <sec> | tcp-established <sec> "
+    "tcp-transitory <sec> | icmp <sec> | reset]",
+};
+
+/*?
+ * @cliexpar
+ * @cliexstart{show nat timeouts}
+ * Show values of timeouts for NAT sessions.
+ * vpp# show nat timeouts
+ * udp timeout: 300sec
+ * tcp-established timeout: 7440sec
+ * tcp-transitory timeout: 240sec
+ * icmp timeout: 60sec
+ * @cliexend
+?*/
+VLIB_CLI_COMMAND (nat_show_timeouts_command, static) = {
+  .path = "show nat timeouts",
+  .short_help = "show nat timeouts",
+  .function = nat_show_timeouts_command_fn,
+};
+
+/*?
+ * @cliexpar
  * @cliexstart{snat ipfix logging}
  * To enable NAT IPFIX logging use:
  *  vpp# nat ipfix logging
@@ -1716,8 +1787,8 @@ VLIB_CLI_COMMAND (add_lb_static_mapping_command, static) = {
   .function = add_lb_static_mapping_command_fn,
   .short_help =
     "nat44 add load-balancing static mapping protocol tcp|udp "
-    "external <addr>:<port> local <addr>:<port> probability <n> "
-    "[twice-nat|self-twice-nat] [vrf <table-id>] [out2in-only] [del]",
+    "external <addr>:<port> local <addr>:<port> [vrf <table-id>] "
+    "probability <n> [twice-nat|self-twice-nat] [out2in-only] [del]",
 };
 
 /*?
@@ -1881,41 +1952,6 @@ VLIB_CLI_COMMAND (snat_det_reverse_command, static) = {
     .path = "nat44 deterministic reverse",
     .short_help = "nat44 deterministic reverse <addr>:<port>",
     .function = snat_det_reverse_command_fn,
-};
-
-/*?
- * @cliexpar
- * @cliexstart{set nat44 deterministic timeout}
- * Set values of timeouts for deterministic NAT (in seconds), use:
- *  vpp# set nat44 deterministic timeout udp 120 tcp-established 7500
- *  tcp-transitory 250 icmp 90
- * To reset default values use:
- *  vpp# set nat44 deterministic timeout reset
- * @cliexend
-?*/
-VLIB_CLI_COMMAND (set_timeout_command, static) = {
-  .path = "set nat44 deterministic timeout",
-  .function = set_timeout_command_fn,
-  .short_help =
-    "set nat44 deterministic timeout [udp <sec> | tcp-established <sec> "
-    "tcp-transitory <sec> | icmp <sec> | reset]",
-};
-
-/*?
- * @cliexpar
- * @cliexstart{show nat44 deterministic timeouts}
- * Show values of timeouts for deterministic NAT.
- * vpp# show nat44 deterministic timeouts
- * udp timeout: 300sec
- * tcp-established timeout: 7440sec
- * tcp-transitory timeout: 240sec
- * icmp timeout: 60sec
- * @cliexend
-?*/
-VLIB_CLI_COMMAND (nat44_det_show_timeouts_command, static) = {
-  .path = "show nat44 deterministic timeouts",
-  .short_help = "show nat44 deterministic timeouts",
-  .function = nat44_det_show_timeouts_command_fn,
 };
 
 /*?

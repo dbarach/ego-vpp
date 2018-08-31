@@ -45,6 +45,7 @@
 #include <vnet/buffer.h>
 #include <vnet/feature/feature.h>
 #include <vnet/ip/icmp46_packet.h>
+#include <vnet/util/throttle.h>
 
 typedef struct ip4_mfib_t
 {
@@ -154,7 +155,13 @@ typedef struct ip4_main_t
 
   /** The memory heap for the mtries */
   void *mtrie_mheap;
+
+  /** ARP throttling */
+  throttle_t arp_throttle;
+
 } ip4_main_t;
+
+#define ARP_THROTTLE_BITS	(512)
 
 /** Global ip4 main structure. */
 extern ip4_main_t ip4_main;

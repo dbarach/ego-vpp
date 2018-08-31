@@ -19,7 +19,7 @@ AUTOMAKE_OPTIONS = foreign subdir-objects
 ACLOCAL_AMFLAGS = -I m4
 AM_LIBTOOLFLAGS = --quiet
 
-AM_CFLAGS = @CPU_FLAGS@ @DLMALLOC@ -Wall
+AM_CFLAGS = @CPU_FLAGS@ -Wall
 AM_CXXFLAGS = -Wall -std=gnu++11
 
 SUBDIRS = .
@@ -76,10 +76,6 @@ SUBDIRS += vpp-api/vapi
 if ENABLE_PAPI
 include vpp-api.am
 SUBDIRS += vpp-api/python
-endif
-
-if ENABLE_JAPI
-SUBDIRS += vpp-api/java
 endif
 
 ###############################################################################

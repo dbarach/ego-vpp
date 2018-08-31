@@ -14,7 +14,7 @@
 
 AUTOMAKE_OPTIONS = foreign subdir-objects
 
-AM_CFLAGS = @CPU_FLAGS@ @DLMALLOC@ -Wall -I${top_srcdir} -I${top_builddir}
+AM_CFLAGS = @CPU_FLAGS@ -Wall -I${top_srcdir} -I${top_builddir}
 AM_LDFLAGS = -module -shared -avoid-version
 AM_LIBTOOLFLAGS = --quiet
 SUFFIXES = .api.h .api .api.json
@@ -87,12 +87,24 @@ if ENABLE_MACTIME_PLUGIN
 include mactime.am
 endif
 
+if ENABLE_MAP_PLUGIN
+include map.am
+endif
+
 if ENABLE_MARVELL_PLUGIN
 include marvell.am
 endif
 
 if ENABLE_MEMIF_PLUGIN
 include memif.am
+endif
+
+if ENABLE_NAT_PLUGIN
+include nat.am
+endif
+
+if ENABLE_NSH_PLUGIN
+include nsh.am
 endif
 
 if ENABLE_PPPOE_PLUGIN
@@ -109,14 +121,6 @@ endif
 
 if ENABLE_SRV6AS_PLUGIN
 include srv6_as.am
-endif
-
-if ENABLE_NAT_PLUGIN
-include nat.am
-endif
-
-if ENABLE_MAP_PLUGIN
-include map.am
 endif
 
 if ENABLE_STN_PLUGIN

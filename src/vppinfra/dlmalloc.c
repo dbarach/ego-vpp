@@ -1612,7 +1612,11 @@ static size_t traverse_and_check(mstate m);
 
 #if (FOOTERS && !INSECURE)
 /* Check if (alleged) mstate m has expected magic field */
-#define ok_magic(M)      ((M)->magic == mparams.magic)
+static inline int
+ok_magic (const mstate m)
+{
+    return (m->magic == mparams.magic);
+}
 #else  /* (FOOTERS && !INSECURE) */
 #define ok_magic(M)      (1)
 #endif /* (FOOTERS && !INSECURE) */
@@ -1745,6 +1749,7 @@ static int init_mparams(void) {
 #endif
 
     {
+#ifndef DLM_MAGIC_CONSTANT
 #if USE_DEV_RANDOM
       int fd;
       unsigned char buf[sizeof(size_t)];
@@ -1765,6 +1770,9 @@ static int init_mparams(void) {
 #endif
       magic |= (size_t)8U;    /* ensure nonzero */
       magic &= ~(size_t)7U;   /* improve chances of fault for bad values */
+#else
+      magic = DLM_MAGIC_CONSTANT;
+#endif
       /* Until memory modes commonly available, use volatile-write */
       (*(volatile size_t *)(&(mparams.magic))) = magic;
     }
@@ -2070,8 +2078,8 @@ static void do_check_malloc_state(mstate m) {
 /* ----------------------------- statistics ------------------------------ */
 
 #if !NO_MALLINFO
-static struct mallinfo internal_mallinfo(mstate m) {
-  struct mallinfo nm = { 0, 0, 0, 0, 0, 0, 0, 0, 0, 0 };
+static struct dlmallinfo internal_mallinfo(mstate m) {
+  struct dlmallinfo nm = { 0, 0, 0, 0, 0, 0, 0, 0, 0, 0 };
   ensure_initialization();
   if (!PREACTION(m)) {
     check_malloc_state(m);
@@ -3955,7 +3963,7 @@ size_t dlmalloc_set_footprint_limit(size_t bytes) {
 }
 
 #if !NO_MALLINFO
-struct mallinfo dlmallinfo(void) {
+struct dlmallinfo dlmallinfo(void) {
   return internal_mallinfo(gm);
 }
 #endif /* NO_MALLINFO */
@@ -4112,6 +4120,10 @@ int mspace_is_heap_object (mspace msp, void *p)
         return 1;
       this_seg = this_seg->next;
     }
+
+  if (pp > ms->least_addr && pp <= ms->least_addr + ms->footprint)
+    return 1;
+
   return 0;
 }
 
@@ -4266,6 +4278,14 @@ void mspace_put (mspace msp, void *p_arg)
 
       mheap_put_trace ((u64)p_arg, psize);
     }
+
+#if CLIB_DEBUG > 0
+  /* Poison the object */
+  {
+    size_t psize = mspace_usable_size (object_header);
+    memset (object_header, 0x13, psize);
+  }
+#endif
 
   /* And free it... */
   mspace_free (msp, object_header);
@@ -4761,7 +4781,7 @@ size_t mspace_set_footprint_limit(mspace msp, size_t bytes) {
 }
 
 #if !NO_MALLINFO
-struct mallinfo mspace_mallinfo(mspace msp) {
+struct dlmallinfo mspace_mallinfo(mspace msp) {
   mstate ms = (mstate)msp;
   if (!ok_magic(ms)) {
     USAGE_ERROR_ACTION(ms,ms);

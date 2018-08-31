@@ -203,6 +203,7 @@ typedef struct
 {
   vlib_pci_addr_t addr;
   int enable_elog;
+  u16 rxq_num;
   u16 rxq_size;
   u16 txq_size;
   /* return */
@@ -216,8 +217,6 @@ void avf_delete_if (vlib_main_t * vm, avf_device_t * ad);
 
 extern vlib_node_registration_t avf_input_node;
 extern vnet_device_class_t avf_device_class;
-uword avf_interface_tx (vlib_main_t * vm, vlib_node_runtime_t * node,
-			vlib_frame_t * frame);
 
 /* format.c */
 format_function_t format_avf_device;
@@ -289,6 +288,17 @@ typedef struct
   u32 hw_if_index;
   avf_rx_vector_entry_t rxve;
 } avf_input_trace_t;
+
+#define foreach_avf_tx_func_error	       \
+_(NO_FREE_SLOTS, "no free tx slots")
+
+typedef enum
+{
+#define _(f,s) AVF_TX_ERROR_##f,
+  foreach_avf_tx_func_error
+#undef _
+    AVF_TX_N_ERROR,
+} avf_tx_func_error_t;
 
 #endif /* AVF_H */
 

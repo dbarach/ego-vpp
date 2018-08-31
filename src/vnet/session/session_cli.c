@@ -26,14 +26,16 @@ format_stream_session_fifos (u8 * s, va_list * args)
   if (!ss->server_rx_fifo || !ss->server_tx_fifo)
     return s;
 
-  s = format (s, " Rx fifo: %U", format_svm_fifo, ss->server_rx_fifo, 1);
+  s = format (s, " Rx fifo: %U", format_svm_fifo, ss->server_rx_fifo,
+	      verbose);
   if (verbose > 2 && ss->server_rx_fifo->has_event)
     {
       found = session_node_lookup_fifo_event (ss->server_rx_fifo, e);
       s = format (s, " session node event: %s\n",
 		  found ? "found" : "not found");
     }
-  s = format (s, " Tx fifo: %U", format_svm_fifo, ss->server_tx_fifo, 1);
+  s = format (s, " Tx fifo: %U", format_svm_fifo, ss->server_tx_fifo,
+	      verbose);
   if (verbose > 2 && ss->server_tx_fifo->has_event)
     {
       found = session_node_lookup_fifo_event (ss->server_tx_fifo, e);
@@ -248,7 +250,7 @@ show_session_command_fn (vlib_main_t * vm, unformat_input_t * input,
 	if (s->session_state != SESSION_STATE_LISTENING
 	    || s->session_type != sst)
 	  continue;
-	app_name = application_name_from_index (s->app_index);
+	app_name = application_name_from_index (s->app_wrk_index);
 	vlib_cli_output (vm, "%U%-25v%-10u", format_stream_session, s, 1,
 			 app_name, s->session_index);
 	vec_free (app_name);
@@ -312,7 +314,8 @@ VLIB_CLI_COMMAND (vlib_cli_show_session_command) =
 static int
 clear_session (stream_session_t * s)
 {
-  application_t *server = application_get (s->app_index);
+  app_worker_t *server_wrk = app_worker_get (s->app_wrk_index);
+  application_t *server = application_get (server_wrk->app_index);
   server->cb_fns.session_disconnect_callback (s);
   return 0;
 }

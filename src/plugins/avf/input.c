@@ -304,7 +304,7 @@ avf_process_rx_burst (vlib_main_t * vm, vlib_node_runtime_t * node,
       clib_memcpy (vnet_buffer (b[0])->sw_if_index,
 		   vnet_buffer (bt)->sw_if_index, 2 * sizeof (u32));
 
-      VLIB_BUFFER_TRACE_TRAJECTORY_INIT (b0);
+      VLIB_BUFFER_TRACE_TRAJECTORY_INIT (b[0]);
 
       /* next */
       rxve += 1;
@@ -530,7 +530,6 @@ VLIB_NODE_FN (avf_input_node) (vlib_main_t * vm, vlib_node_runtime_t * node,
   return n_rx;
 }
 
-#ifndef CLIB_MARCH_VARIANT
 /* *INDENT-OFF* */
 VLIB_REGISTER_NODE (avf_input_node) = {
   .name = "avf-input",
@@ -541,7 +540,6 @@ VLIB_REGISTER_NODE (avf_input_node) = {
   .n_errors = AVF_INPUT_N_ERROR,
   .error_strings = avf_input_error_strings,
 };
-#endif
 
 /* *INDENT-ON* */
 

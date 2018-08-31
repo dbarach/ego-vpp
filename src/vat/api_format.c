@@ -5349,6 +5349,7 @@ static void vl_api_flow_classify_details_t_handler_json
 _(sw_interface_set_flags_reply)                         \
 _(sw_interface_add_del_address_reply)                   \
 _(sw_interface_set_rx_mode_reply)                       \
+_(sw_interface_set_rx_placement_reply)                  \
 _(sw_interface_set_table_reply)                         \
 _(sw_interface_set_mpls_enable_reply)                   \
 _(sw_interface_set_vpath_reply)                         \
@@ -5544,6 +5545,7 @@ _(CLI_INBAND_REPLY, cli_inband_reply)                                   \
 _(SW_INTERFACE_ADD_DEL_ADDRESS_REPLY,                                   \
   sw_interface_add_del_address_reply)                                   \
 _(SW_INTERFACE_SET_RX_MODE_REPLY, sw_interface_set_rx_mode_reply)       \
+_(SW_INTERFACE_SET_RX_PLACEMENT_REPLY, sw_interface_set_rx_placement_reply)	\
 _(SW_INTERFACE_SET_TABLE_REPLY, sw_interface_set_table_reply) 		\
 _(SW_INTERFACE_SET_MPLS_ENABLE_REPLY, sw_interface_set_mpls_enable_reply) \
 _(SW_INTERFACE_SET_VPATH_REPLY, sw_interface_set_vpath_reply) 		\
@@ -5684,6 +5686,7 @@ _(IKEV2_INITIATE_DEL_CHILD_SA_REPLY, ikev2_initiate_del_child_sa_reply) \
 _(IKEV2_INITIATE_REKEY_CHILD_SA_REPLY, ikev2_initiate_rekey_child_sa_reply) \
 _(DELETE_LOOPBACK_REPLY, delete_loopback_reply)                         \
 _(BD_IP_MAC_ADD_DEL_REPLY, bd_ip_mac_add_del_reply)                     \
+_(BD_IP_MAC_DETAILS, bd_ip_mac_details)                                 \
 _(DHCP_COMPL_EVENT, dhcp_compl_event)                                   \
 _(WANT_INTERFACE_EVENTS_REPLY, want_interface_events_reply)             \
 _(WANT_STATS_REPLY, want_stats_reply)					\
@@ -6555,6 +6558,57 @@ api_sw_interface_set_rx_mode (vat_main_t * vam)
   /* send it... */
   S (mp);
 
+  /* Wait for a reply, return the good/bad news... */
+  W (ret);
+  return ret;
+}
+
+static int
+api_sw_interface_set_rx_placement (vat_main_t * vam)
+{
+  unformat_input_t *i = vam->input;
+  vl_api_sw_interface_set_rx_placement_t *mp;
+  u32 sw_if_index;
+  u8 sw_if_index_set = 0;
+  int ret;
+  u8 is_main = 0;
+  u32 queue_id, thread_index;
+
+  /* Parse args required to build the message */
+  while (unformat_check_input (i) != UNFORMAT_END_OF_INPUT)
+    {
+      if (unformat (i, "queue %d", &queue_id))
+	;
+      else if (unformat (i, "main"))
+	is_main = 1;
+      else if (unformat (i, "worker %d", &thread_index))
+	;
+      else
+	if (unformat (i, "%U", api_unformat_sw_if_index, vam, &sw_if_index))
+	sw_if_index_set = 1;
+      else if (unformat (i, "sw_if_index %d", &sw_if_index))
+	sw_if_index_set = 1;
+      else
+	break;
+    }
+
+  if (sw_if_index_set == 0)
+    {
+      errmsg ("missing interface name or sw_if_index");
+      return -99;
+    }
+
+  if (is_main)
+    thread_index = 0;
+  /* Construct the API message */
+  M (SW_INTERFACE_SET_RX_PLACEMENT, mp);
+  mp->sw_if_index = ntohl (sw_if_index);
+  mp->worker_id = ntohl (thread_index);
+  mp->queue_id = ntohl (queue_id);
+  mp->is_main = is_main;
+
+  /* send it... */
+  S (mp);
   /* Wait for a reply, return the good/bad news... */
   W (ret);
   return ret;
@@ -7663,6 +7717,100 @@ api_bd_ip_mac_add_del (vat_main_t * vam)
     clib_memcpy (mp->ip_address, &v4addr, sizeof (v4addr));
   clib_memcpy (mp->mac_address, macaddr, 6);
   S (mp);
+  W (ret);
+  return ret;
+}
+
+static void vl_api_bd_ip_mac_details_t_handler
+  (vl_api_bd_ip_mac_details_t * mp)
+{
+  vat_main_t *vam = &vat_main;
+  u8 *ip = 0;
+
+  if (!mp->is_ipv6)
+    ip =
+      format (0, "%U", format_ip4_address, (ip4_address_t *) mp->ip_address);
+  else
+    ip =
+      format (0, "%U", format_ip6_address, (ip6_address_t *) mp->ip_address);
+
+  print (vam->ofp,
+	 "\n%-5d %-7s %-20U %-30s",
+	 ntohl (mp->bd_id), mp->is_ipv6 ? "ip6" : "ip4",
+	 format_ethernet_address, mp->mac_address, ip);
+
+  vec_free (ip);
+}
+
+static void vl_api_bd_ip_mac_details_t_handler_json
+  (vl_api_bd_ip_mac_details_t * mp)
+{
+  vat_main_t *vam = &vat_main;
+  vat_json_node_t *node = NULL;
+
+  if (VAT_JSON_ARRAY != vam->json_tree.type)
+    {
+      ASSERT (VAT_JSON_NONE == vam->json_tree.type);
+      vat_json_init_array (&vam->json_tree);
+    }
+  node = vat_json_array_add (&vam->json_tree);
+
+  vat_json_init_object (node);
+  vat_json_object_add_uint (node, "bd_id", ntohl (mp->bd_id));
+  vat_json_object_add_uint (node, "is_ipv6", ntohl (mp->is_ipv6));
+  vat_json_object_add_string_copy (node, "mac_address",
+				   format (0, "%U", format_ethernet_address,
+					   &mp->mac_address));
+  u8 *ip = 0;
+
+  if (!mp->is_ipv6)
+    ip =
+      format (0, "%U", format_ip4_address, (ip4_address_t *) mp->ip_address);
+  else
+    ip =
+      format (0, "%U", format_ip6_address, (ip6_address_t *) mp->ip_address);
+  vat_json_object_add_string_copy (node, "ip_address", ip);
+  vec_free (ip);
+}
+
+static int
+api_bd_ip_mac_dump (vat_main_t * vam)
+{
+  unformat_input_t *i = vam->input;
+  vl_api_bd_ip_mac_dump_t *mp;
+  vl_api_control_ping_t *mp_ping;
+  int ret;
+  u32 bd_id;
+  u8 bd_id_set = 0;
+
+  while (unformat_check_input (i) != UNFORMAT_END_OF_INPUT)
+    {
+      if (unformat (i, "bd_id %d", &bd_id))
+	{
+	  bd_id_set++;
+	}
+      else
+	break;
+    }
+
+  print (vam->ofp,
+	 "\n%-5s %-7s %-20s %-30s",
+	 "bd_id", "is_ipv6", "mac_address", "ip_address");
+
+  /* Dump Bridge Domain Ip to Mac entries */
+  M (BD_IP_MAC_DUMP, mp);
+
+  if (bd_id_set)
+    mp->bd_id = htonl (bd_id);
+  else
+    mp->bd_id = ~0;
+
+  S (mp);
+
+  /* Use a control ping for synchronization */
+  MPING (CONTROL_PING, mp_ping);
+  S (mp_ping);
+
   W (ret);
   return ret;
 }
@@ -10688,8 +10836,8 @@ api_sr_localsid_add_del (vat_main_t * vam)
   clib_memcpy (mp->localsid.addr, &localsid, sizeof (mp->localsid));
   if (nexthop_set)
     {
-      clib_memcpy (mp->nh_addr6, &nh_addr4, sizeof (mp->nh_addr6));
-      clib_memcpy (mp->nh_addr4, &nh_addr6, sizeof (mp->nh_addr4));
+      clib_memcpy (mp->nh_addr6, &nh_addr6, sizeof (mp->nh_addr6));
+      clib_memcpy (mp->nh_addr4, &nh_addr4, sizeof (mp->nh_addr4));
     }
   mp->behavior = behavior;
   mp->sw_if_index = ntohl (sw_if_index);
@@ -11460,6 +11608,7 @@ api_classify_add_del_table (vat_main_t * vam)
   mp->miss_next_index = ntohl (miss_next_index);
   mp->current_data_flag = ntohl (current_data_flag);
   mp->current_data_offset = ntohl (current_data_offset);
+  mp->mask_len = ntohl (vec_len (mask));
   clib_memcpy (mp->mask, mask, vec_len (mask));
 
   vec_free (mask);
@@ -12011,6 +12160,7 @@ api_classify_add_del_session (vat_main_t * vam)
   mp->advance = ntohl (advance);
   mp->action = action;
   mp->metadata = ntohl (metadata);
+  mp->match_len = ntohl (vec_len (match));
   clib_memcpy (mp->match, match, vec_len (match));
   vec_free (match);
 
@@ -23146,6 +23296,8 @@ _(sw_interface_add_del_address,                                         \
   "<intfc> | sw_if_index <id> <ip4-address> | <ip6-address> [del] [del-all] ") \
 _(sw_interface_set_rx_mode,                                             \
   "<intfc> | sw_if_index <id> [queue <id>] <polling | interrupt | adaptive>") \
+_(sw_interface_set_rx_placement,                                        \
+  "<intfc> | sw_if_index <id> [queue <id>] [worker <id> | main]")       \
 _(sw_interface_set_table,                                               \
   "<intfc> | sw_if_index <id> vrf <table-id> [ipv6]")                   \
 _(sw_interface_set_mpls_enable,                                         \
@@ -23395,6 +23547,7 @@ _(ikev2_initiate_del_child_sa, "<ispi>")                                \
 _(ikev2_initiate_rekey_child_sa, "<ispi>")                              \
 _(delete_loopback,"sw_if_index <nn>")                                   \
 _(bd_ip_mac_add_del, "bd_id <bridge-domain-id> <ip4/6-addr> <mac-addr> [del]") \
+_(bd_ip_mac_dump, "[bd_id] <id>")                                       \
 _(want_interface_events,  "enable|disable")                             \
 _(want_stats,"enable|disable")                                          \
 _(get_first_msg_id, "client <name>")					\

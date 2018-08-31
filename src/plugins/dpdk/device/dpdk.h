@@ -60,6 +60,7 @@
 
 extern vnet_device_class_t dpdk_device_class;
 extern vlib_node_registration_t dpdk_input_node;
+extern vlib_node_registration_t admin_up_down_process_node;
 
 #define foreach_dpdk_pmd          \
   _ ("net_thunderx", THUNDERX)    \
@@ -514,16 +515,13 @@ format_function_t format_dpdk_rx_trace;
 format_function_t format_dpdk_rte_mbuf;
 format_function_t format_dpdk_rx_rte_mbuf;
 format_function_t format_dpdk_flow;
+format_function_t format_dpdk_rss_hf_name;
 unformat_function_t unformat_dpdk_log_level;
 vnet_flow_dev_ops_function_t dpdk_flow_ops_fn;
 
 clib_error_t *unformat_rss_fn (unformat_input_t * input, uword * rss_fn);
 clib_error_t *unformat_hqos (unformat_input_t * input,
 			     dpdk_device_config_hqos_t * hqos);
-
-uword
-admin_up_down_process (vlib_main_t * vm,
-		       vlib_node_runtime_t * rt, vlib_frame_t * f);
 
 clib_error_t *dpdk_pool_create (vlib_main_t * vm, u8 * pool_name,
 				u32 elt_size, u32 num_elts,

@@ -34,10 +34,9 @@ avf_tx_desc_get_dtyp (avf_tx_desc_t * d)
   return d->qword[1] & 0x0f;
 }
 
-uword
-CLIB_MULTIARCH_FN (avf_interface_tx) (vlib_main_t * vm,
-				      vlib_node_runtime_t * node,
-				      vlib_frame_t * frame)
+VNET_DEVICE_CLASS_TX_FN (avf_device_class) (vlib_main_t * vm,
+					    vlib_node_runtime_t * node,
+					    vlib_frame_t * frame)
 {
   avf_main_t *am = &avf_main;
   vnet_interface_output_runtime_t *rd = (void *) node->runtime_data;
@@ -48,19 +47,25 @@ CLIB_MULTIARCH_FN (avf_interface_tx) (vlib_main_t * vm,
   avf_tx_desc_t *d0, *d1, *d2, *d3;
   u32 *buffers = vlib_frame_args (frame);
   u32 bi0, bi1, bi2, bi3;
-  u16 n_left = frame->n_vectors;
+  u16 n_left, n_left_to_send, n_in_batch;
   vlib_buffer_t *b0, *b1, *b2, *b3;
+  u16 next;
+  u16 n_retry = 5;
   u16 mask = txq->size - 1;
   u64 bits = (AVF_TXQ_DESC_CMD_EOP | AVF_TXQ_DESC_CMD_RS |
 	      AVF_TXQ_DESC_CMD_RSV);
 
   clib_spinlock_lock_if_init (&txq->lock);
 
+  n_left_to_send = frame->n_vectors;
+  next = txq->next;
+
+retry:
   /* release cosumed bufs */
   if (txq->n_enqueued)
     {
       u16 first, slot, n_free = 0;
-      first = slot = (txq->next - txq->n_enqueued) & mask;
+      first = slot = (next - txq->n_enqueued) & mask;
       d0 = txq->descs + slot;
       while (n_free < txq->n_enqueued && avf_tx_desc_get_dtyp (d0) == 0x0F)
 	{
@@ -77,7 +82,10 @@ CLIB_MULTIARCH_FN (avf_interface_tx) (vlib_main_t * vm,
 	}
     }
 
-  while (n_left >= 7)
+  n_in_batch = clib_min (n_left_to_send, txq->size - txq->n_enqueued - 8);
+  n_left = n_in_batch;
+
+  while (n_left >= 8)
     {
       u16 slot0, slot1, slot2, slot3;
 
@@ -86,10 +94,10 @@ CLIB_MULTIARCH_FN (avf_interface_tx) (vlib_main_t * vm,
       vlib_prefetch_buffer_with_index (vm, buffers[6], LOAD);
       vlib_prefetch_buffer_with_index (vm, buffers[7], LOAD);
 
-      slot0 = txq->next;
-      slot1 = (txq->next + 1) & mask;
-      slot2 = (txq->next + 2) & mask;
-      slot3 = (txq->next + 3) & mask;
+      slot0 = next;
+      slot1 = (next + 1) & mask;
+      slot2 = (next + 2) & mask;
+      slot3 = (next + 3) & mask;
 
       d0 = txq->descs + slot0;
       d1 = txq->descs + slot1;
@@ -125,7 +133,7 @@ CLIB_MULTIARCH_FN (avf_interface_tx) (vlib_main_t * vm,
       d2->qword[1] = ((u64) b2->current_length) << 34 | bits;
       d3->qword[1] = ((u64) b3->current_length) << 34 | bits;
 
-      txq->next = (txq->next + 4) & mask;
+      next = (next + 4) & mask;
       txq->n_enqueued += 4;
       buffers += 4;
       n_left -= 4;
@@ -133,9 +141,9 @@ CLIB_MULTIARCH_FN (avf_interface_tx) (vlib_main_t * vm,
 
   while (n_left)
     {
-      d0 = txq->descs + txq->next;
+      d0 = txq->descs + next;
       bi0 = buffers[0];
-      txq->bufs[txq->next] = bi0;
+      txq->bufs[next] = bi0;
       b0 = vlib_get_buffer (vm, bi0);
 
 #if 0
@@ -146,33 +154,31 @@ CLIB_MULTIARCH_FN (avf_interface_tx) (vlib_main_t * vm,
 #endif
       d0->qword[1] = (((u64) b0->current_length) << 34) | bits;
 
-      txq->next = (txq->next + 1) & mask;
+      next = (next + 1) & mask;
       txq->n_enqueued++;
       buffers++;
       n_left--;
     }
+
   CLIB_MEMORY_BARRIER ();
-  *(txq->qtx_tail) = txq->next;
+  *(txq->qtx_tail) = txq->next = next;
+
+  n_left_to_send -= n_in_batch;
+
+  if (n_left_to_send)
+    {
+      if (n_retry--)
+	goto retry;
+
+      vlib_buffer_free (vm, buffers, n_left_to_send);
+      vlib_error_count (vm, node->node_index,
+			AVF_TX_ERROR_NO_FREE_SLOTS, n_left_to_send);
+    }
 
   clib_spinlock_unlock_if_init (&txq->lock);
 
   return frame->n_vectors - n_left;
 }
-
-#ifndef CLIB_MARCH_VARIANT
-#if __x86_64__
-vlib_node_function_t __clib_weak avf_interface_tx_avx512;
-vlib_node_function_t __clib_weak avf_interface_tx_avx2;
-static void __clib_constructor
-avf_interface_tx_multiarch_select (void)
-{
-  if (avf_interface_tx_avx512 && clib_cpu_supports_avx512f ())
-    avf_device_class.tx_function = avf_interface_tx_avx512;
-  else if (avf_interface_tx_avx2 && clib_cpu_supports_avx2 ())
-    avf_device_class.tx_function = avf_interface_tx_avx2;
-}
-#endif
-#endif
 
 /*
  * fd.io coding-style-patch-verification: ON

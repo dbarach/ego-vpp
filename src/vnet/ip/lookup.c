@@ -452,22 +452,6 @@ vnet_ip_route_cmd (vlib_main_t * vm,
 	    {
 	      for (j = 0; j < vec_len (rpaths); j++)
 		{
-		  u32 fi;
-		  /*
-		   * the CLI parsing stored table Ids, swap to FIB indicies
-		   */
-		  fi = fib_table_find (prefixs[i].fp_proto,
-				       rpaths[i].frp_fib_index);
-
-		  if (~0 == fi)
-		    {
-		      error =
-			clib_error_return (0, "Via table %d does not exist",
-					   rpaths[i].frp_fib_index);
-		      goto done;
-		    }
-		  rpaths[i].frp_fib_index = fi;
-
 		  fib_prefix_t rpfx = {
 		    .fp_len = prefixs[i].fp_len,
 		    .fp_proto = prefixs[i].fp_proto,
@@ -761,7 +745,7 @@ ip6_table_bind_cmd (vlib_main_t * vm,
 
 /*?
  * Place the indicated interface into the supplied IPv4 FIB table (also known
- * as a VRF). If the FIB table does not exist, this command creates it. To
+ * as a VRF). The FIB table must be created using "ip table add" already. To
  * display the current IPv4 FIB table, use the command '<em>show ip fib</em>'.
  * FIB table will only be displayed if a route has been added to the table, or
  * an IP Address is assigned to an interface in the table (which adds a route
@@ -789,7 +773,7 @@ VLIB_CLI_COMMAND (set_interface_ip_table_command, static) =
 
 /*?
  * Place the indicated interface into the supplied IPv6 FIB table (also known
- * as a VRF). If the FIB table does not exist, this command creates it. To
+ * as a VRF). The FIB table must be created using "ip6 table add" already. To
  * display the current IPv6 FIB table, use the command '<em>show ip6 fib</em>'.
  * FIB table will only be displayed if a route has been added to the table, or
  * an IP Address is assigned to an interface in the table (which adds a route

@@ -80,6 +80,7 @@ typedef struct _vlib_node_fn_registration
   vlib_node_function_t *function;
   int priority;
   struct _vlib_node_fn_registration *next_registration;
+  char *name;
 } vlib_node_fn_registration_t;
 
 typedef struct _vlib_node_registration
@@ -150,6 +151,7 @@ typedef struct _vlib_node_registration
 
 } vlib_node_registration_t;
 
+#ifndef CLIB_MARCH_VARIANT
 #define VLIB_REGISTER_NODE(x,...)                                       \
     __VA_ARGS__ vlib_node_registration_t x;                             \
 static void __vlib_add_node_registration_##x (void)                     \
@@ -169,6 +171,18 @@ static void __vlib_rm_node_registration_##x (void)                      \
                                   &x, next_registration);               \
 }                                                                       \
 __VA_ARGS__ vlib_node_registration_t x
+#else
+#define VLIB_REGISTER_NODE(x,...)                                       \
+static __clib_unused vlib_node_registration_t __clib_unused_##x
+#endif
+
+#ifndef CLIB_MARCH_VARIANT
+#define CLIB_MARCH_VARIANT_STR "default"
+#else
+#define _CLIB_MARCH_VARIANT_STR(s) __CLIB_MARCH_VARIANT_STR(s)
+#define __CLIB_MARCH_VARIANT_STR(s) #s
+#define CLIB_MARCH_VARIANT_STR _CLIB_MARCH_VARIANT_STR(CLIB_MARCH_VARIANT)
+#endif
 
 #define VLIB_NODE_FN(node)						\
 uword CLIB_MARCH_SFX (node##_fn)();					\
@@ -183,6 +197,7 @@ CLIB_MARCH_SFX (node##_multiarch_register) (void)			\
   vlib_node_fn_registration_t *r;					\
   r = & CLIB_MARCH_SFX (node##_fn_registration);			\
   r->priority = CLIB_MARCH_FN_PRIORITY();				\
+  r->name = CLIB_MARCH_VARIANT_STR;					\
   r->next_registration = node.node_fn_registrations;			\
   node.node_fn_registrations = r;					\
 }									\
@@ -356,6 +371,9 @@ typedef struct vlib_node_t
 			 struct vlib_frame_t * f);
   /* for pretty-printing, not typically valid */
   u8 *state_string;
+
+  /* Node function candidate registration with priority */
+  vlib_node_fn_registration_t *node_fn_registrations;
 } vlib_node_t;
 
 #define VLIB_INVALID_NODE_INDEX ((u32) ~0)

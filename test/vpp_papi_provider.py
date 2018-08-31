@@ -275,6 +275,10 @@ class VppPapiProvider(object):
                          'unnumbered_sw_if_index': sw_if_index,
                          'is_add': is_add})
 
+    def ip_unnumbered_dump(self, sw_if_index=0xffffffff):
+        return self.api(self.papi.ip_unnumbered_dump,
+                        {'sw_if_index': sw_if_index})
+
     def sw_interface_enable_disable_mpls(self, sw_if_index,
                                          is_enable=1):
         """
@@ -1145,15 +1149,13 @@ class VppPapiProvider(object):
              'session_id': session_id}
         )
 
-    def udp_encap_add_del(self,
-                          id,
-                          src_ip,
-                          dst_ip,
-                          src_port,
-                          dst_port,
-                          table_id=0,
-                          is_add=1,
-                          is_ip6=0):
+    def udp_encap_add(self,
+                      id,
+                      src_ip,
+                      dst_ip,
+                      src_port,
+                      dst_port,
+                      table_id=0):
         """ Add a GRE tunnel
         :param id: user provided ID
         :param src_ip:
@@ -1161,21 +1163,23 @@ class VppPapiProvider(object):
         :param src_port:
         :param dst_port:
         :param outer_fib_id:  (Default value = 0)
-        :param is_add:  (Default value = 1)
-        :param is_ipv6:  (Default value = 0)
         """
 
         return self.api(
-            self.papi.udp_encap_add_del,
-            {'id': id,
-             'is_add': is_add,
-             'is_ip6': is_ip6,
-             'src_ip': src_ip,
-             'dst_ip': dst_ip,
-             'src_port': src_port,
-             'dst_port': dst_port,
-             'table_id': table_id}
-        )
+            self.papi.udp_encap_add,
+            {
+                'udp_encap': {
+                    'id': id,
+                    'src_ip': src_ip,
+                    'dst_ip': dst_ip,
+                    'src_port': src_port,
+                    'dst_port': dst_port,
+                    'table_id': table_id
+                }
+            })
+
+    def udp_encap_del(self, id):
+        return self.api(self.papi.udp_encap_del, {'id': id})
 
     def udp_encap_dump(self):
         return self.api(self.papi.udp_encap_dump, {})
@@ -1341,6 +1345,7 @@ class VppPapiProvider(object):
              'mt_next_hop_n_out_labels': next_hop_n_out_labels,
              'mt_next_hop_sw_if_index': next_hop_sw_if_index,
              'mt_next_hop_table_id': next_hop_table_id,
+             'mt_next_hop_via_label': next_hop_via_label,
              'mt_next_hop_out_label_stack': next_hop_out_label_stack})
 
     def nat44_interface_add_del_feature(
@@ -1585,7 +1590,6 @@ class VppPapiProvider(object):
             external_addr,
             external_port,
             protocol,
-            vrf_id=0,
             twice_nat=0,
             self_twice_nat=0,
             out2in_only=0,
@@ -1605,7 +1609,6 @@ class VppPapiProvider(object):
              'external_addr': external_addr,
              'external_port': external_port,
              'protocol': protocol,
-             'vrf_id': vrf_id,
              'twice_nat': twice_nat,
              'self_twice_nat': self_twice_nat,
              'out2in_only': out2in_only,
@@ -1764,13 +1767,13 @@ class VppPapiProvider(object):
         """
         return self.api(self.papi.nat_det_map_dump, {})
 
-    def nat_det_set_timeouts(
+    def nat_set_timeouts(
             self,
             udp=300,
             tcp_established=7440,
             tcp_transitory=240,
             icmp=60):
-        """Set values of timeouts for deterministic NAT (in seconds)
+        """Set values of timeouts for NAT sessions (in seconds)
 
         :param udp - UDP timeout (Default value = 300)
         :param tcp_established - TCP established timeout (Default value = 7440)
@@ -1778,18 +1781,18 @@ class VppPapiProvider(object):
         :param icmp - ICMP timeout (Default value = 60)
         """
         return self.api(
-            self.papi.nat_det_set_timeouts,
+            self.papi.nat_set_timeouts,
             {'udp': udp,
              'tcp_established': tcp_established,
              'tcp_transitory': tcp_transitory,
              'icmp': icmp})
 
-    def nat_det_get_timeouts(self):
-        """Get values of timeouts for deterministic NAT
+    def nat_get_timeouts(self):
+        """Get values of timeouts for NAT sessions
 
-        :return: Timeouts for deterministic NAT (in seconds)
+        :return: Timeouts for NAT sessions (in seconds)
         """
-        return self.api(self.papi.nat_det_get_timeouts, {})
+        return self.api(self.papi.nat_get_timeouts, {})
 
     def nat_det_close_session_out(
             self,
@@ -2232,6 +2235,8 @@ class VppPapiProvider(object):
         :param current_data_offset:  (Default value = 0)
         """
 
+        mask_len = ((len(mask) - 1) / 16 + 1) * 16
+        mask = mask + '\0' * (mask_len - len(mask))
         return self.api(
             self.papi.classify_add_del_table,
             {'is_add': is_add,
@@ -2244,6 +2249,7 @@ class VppPapiProvider(object):
              'miss_next_index': miss_next_index,
              'current_data_flag': current_data_flag,
              'current_data_offset': current_data_offset,
+             'mask_len': mask_len,
              'mask': mask})
 
     def classify_add_del_session(
@@ -2267,6 +2273,8 @@ class VppPapiProvider(object):
         :param metadata:  (Default value = 0)
         """
 
+        match_len = ((len(match) - 1) / 16 + 1) * 16
+        match = match + '\0' * (match_len - len(match))
         return self.api(
             self.papi.classify_add_del_session,
             {'is_add': is_add,
@@ -2276,6 +2284,7 @@ class VppPapiProvider(object):
              'advance': advance,
              'action': action,
              'metadata': metadata,
+             'match_len': match_len,
              'match': match})
 
     def input_acl_set_interface(
@@ -2706,6 +2715,18 @@ class VppPapiProvider(object):
                          'client_ip': client_ip,
                          'decap_vrf_id': decap_vrf_id,
                          'client_mac': client_mac})
+
+    def sr_mpls_policy_add(self, bsid, weight, type, segments):
+        return self.api(self.papi.sr_mpls_policy_add,
+                        {'bsid': bsid,
+                         'weight': weight,
+                         'type': type,
+                         'n_segments': len(segments),
+                         'segments': segments})
+
+    def sr_mpls_policy_del(self, bsid):
+        return self.api(self.papi.sr_mpls_policy_del,
+                        {'bsid': bsid})
 
     def sr_localsid_add_del(self,
                             localsid,
@@ -3423,12 +3444,13 @@ class VppPapiProvider(object):
         """ GBP contract Dump """
         return self.api(self.papi.gbp_contract_dump, {})
 
-    def ipip_6rd_add_tunnel(self, fib_index, ip6_prefix, ip6_prefix_len,
-                            ip4_prefix, ip4_prefix_len, ip4_src,
+    def ipip_6rd_add_tunnel(self, ip6_table_id, ip6_prefix, ip6_prefix_len,
+                            ip4_table_id, ip4_prefix, ip4_prefix_len, ip4_src,
                             security_check):
         """ 6RD tunnel Add """
         return self.api(self.papi.ipip_6rd_add_tunnel,
-                        {'fib_index': fib_index,
+                        {'ip4_table_id': ip4_table_id,
+                         'ip6_table_id': ip6_table_id,
                          'ip6_prefix': ip6_prefix,
                          'ip6_prefix_len': ip6_prefix_len,
                          'ip4_prefix': ip4_prefix,
@@ -3442,14 +3464,14 @@ class VppPapiProvider(object):
                         {'sw_if_index': sw_if_index})
 
     def ipip_add_tunnel(self, src_address, dst_address, is_ipv6=1,
-                        instance=0xFFFFFFFF, fib_index=0, tc_tos=0):
+                        instance=0xFFFFFFFF, table_id=0, tc_tos=0):
         """ IPIP tunnel Add/Del """
         return self.api(self.papi.ipip_add_tunnel,
                         {'is_ipv6': is_ipv6,
                          'instance': instance,
                          'src_address': src_address,
                          'dst_address': dst_address,
-                         'fib_index': fib_index,
+                         'table_id': table_id,
                          'tc_tos': tc_tos})
 
     def ipip_del_tunnel(self, sw_if_index):

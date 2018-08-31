@@ -3,7 +3,7 @@ VNET (VPP Network Stack)
 ========================
 
 The files associated with the VPP network stack layer are located in the
-./src/vnet folder. The Network Stack Layer is basically an
+*./src/vnet* folder. The Network Stack Layer is basically an
 instantiation of the code in the other layers. This layer has a vnet
 library that provides vectorized layer-2 and 3 networking graph nodes, a
 packet generator, and a packet tracer.
@@ -16,10 +16,6 @@ Typical RX connections include "ethernet-input" \[full software
 classification, feeds ipv4-input, ipv6-input, arp-input etc.\] and
 "ipv4-input-no-checksum" \[if hardware can classify, perform ipv4 header
 checksum\].
-
-![image](/_images/VNET_Features.png)
-
-List of features and layer areas that VNET works with:
 
 Effective graph dispatch function coding
 ----------------------------------------

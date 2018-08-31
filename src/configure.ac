@@ -7,7 +7,6 @@ AC_CONFIG_FILES([ \
   Makefile \
   plugins/Makefile \
   vpp-api/python/Makefile \
-  vpp-api/java/Makefile \
   vpp-api/vapi/Makefile \
   vlib/config.h \
   vppinfra/config.h \
@@ -197,9 +196,9 @@ ENABLE_ARG(dlmalloc,    [Enable dlmalloc])
 DISABLE_ARG(vlib,	[Disable vlib and dependant libs and binaries])
 DISABLE_ARG(svm,	[Disable svm and dependant libs and binaries])
 DISABLE_ARG(papi,	[Disable Python API bindings])
-DISABLE_ARG(japi,	[Disable Java API bindings])
 
 # --with-X
+WITH_ARG(dpdk_mlx5_pmd, [Enable Mellanox DPDK PMD driver])
 
 # --without-X
 WITHOUT_ARG(libssl,	[Disable libssl])
@@ -282,7 +281,7 @@ AS_IF([test "$cc_flag_check" = yes],
 AC_SUBST(PRE_DATA_SIZE,		[$with_pre_data])
 AC_SUBST(LOG2_CACHE_LINE_BYTES, [$with_log2_cache_line_bytes])
 AC_SUBST(APICLI,		[-DVPP_API_TEST_BUILTIN=${n_with_apicli}])
-AC_SUBST(DLMALLOC,              [-DUSE_DLMALLOC=${n_enable_dlmalloc}])
+AC_SUBST(DLMALLOC,              [${n_enable_dlmalloc}])
 
 AC_DEFINE_UNQUOTED(DPDK_SHARED_LIB,	[${n_enable_dpdk_shared}])
 AC_DEFINE_UNQUOTED(WITH_LIBSSL,		[${n_with_libssl}])
@@ -316,18 +315,19 @@ PLUGIN_DISABLED(l2e)
 PLUGIN_DISABLED(lacp)
 PLUGIN_DISABLED(lb)
 PLUGIN_ENABLED(mactime)
+PLUGIN_DISABLED(map)
 PLUGIN_DISABLED(marvell)
 PLUGIN_DISABLED(memif)
-PLUGIN_DISABLED(pppoe)
 PLUGIN_ENABLED(nat)
-PLUGIN_DISABLED(map)
+PLUGIN_DISABLED(nsh)
+PLUGIN_DISABLED(pppoe)
 PLUGIN_DISABLED(srv6ad)
 PLUGIN_DISABLED(srv6am)
 PLUGIN_DISABLED(srv6as)
 PLUGIN_DISABLED(stn)
 PLUGIN_DISABLED(tlsmbedtls)
 PLUGIN_ENABLED(tlsopenssl)
-PLUGIN_ENABLED(unittest)
+PLUGIN_DISABLED(unittest)
 
 ###############################################################################
 # Dependency checks
@@ -417,19 +417,6 @@ AM_COND_IF([WITH_LIBSSL],
 ])
 
 ###############################################################################
-# JAVA
-###############################################################################
-
-AM_COND_IF([ENABLE_JAPI],
-[
-  AX_VPP_FIND_JDK8
-  AC_SUBST(JAVA_HOME)
-  AC_SUBST(JAVAC)
-  AC_SUBST(JAVAH)
-  AC_SUBST(JAR)
-])
-
-###############################################################################
 # PYTHON
 ###############################################################################
 
@@ -454,11 +441,6 @@ PRINT_VAL([CPPFLAGS], ${CPPFLAGS})
 PRINT_VAL([LDFLAGS], ${LDFLAGS})
 PRINT_VAL([LOG2_CACHE_LINE_BYTES], ${with_log2_cache_line_bytes})
 PRINT_VAL([DLMALLOC], ${enable_dlmalloc})
-AM_COND_IF([ENABLE_JAPI],
-[
-  PRINT_VAL([JAVA_VERSION], ${JAVA_VERSION})
-  PRINT_VAL([JAVA_HOME], ${JAVA_HOME})
-])
 
 AC_MSG_RESULT([])
 AC_MSG_RESULT([with:])

@@ -117,10 +117,10 @@ API_FILES += vnet/cop/cop.api
 # Layer 2 protocol: Ethernet
 ########################################
 libvnet_la_SOURCES +=				\
- vnet/ethernet/arp.c				\
  vnet/ethernet/format.c				\
  vnet/ethernet/init.c				\
  vnet/ethernet/interface.c			\
+ vnet/ethernet/mac_address.c			\
  vnet/ethernet/node.c				\
  vnet/ethernet/pg.c				\
  vnet/ethernet/sfp.c				\
@@ -132,7 +132,6 @@ libvnet_multiversioning_sources +=		\
  vnet/l2/l2_output.c
 
 nobase_include_HEADERS +=			\
- vnet/ethernet/arp_packet.h			\
  vnet/ethernet/error.def			\
  vnet/ethernet/ethernet.h			\
  vnet/ethernet/packet.h				\
@@ -141,7 +140,9 @@ nobase_include_HEADERS +=			\
  vnet/ethernet/p2p_ethernet.api.h		\
  vnet/ethernet/p2p_ethernet.h
 
-API_FILES += vnet/ethernet/p2p_ethernet.api
+API_FILES += \
+ vnet/ethernet/p2p_ethernet.api			\
+ vnet/ethernet/ethernet_types.api
 
 ########################################
 # Layer 2 protocol: Ethernet bridging
@@ -261,6 +262,9 @@ nobase_include_HEADERS +=			\
   vnet/vxlan/vxlan_packet.h			\
   vnet/vxlan/vxlan_error.def			\
   vnet/vxlan/vxlan.api.h
+
+libvnet_multiversioning_sources +=		\
+  vnet/vxlan/decap.c
 
 API_FILES += vnet/vxlan/vxlan.api
 
@@ -419,7 +423,18 @@ API_FILES += 					\
  vnet/ip/punt.api
 
 libvnet_multiversioning_sources +=		\
+ vnet/ip/ip4_forward.c				\
  vnet/ip/ip4_input.c
+
+########################################
+# Layer 2/3 ARP
+########################################
+libvnet_la_SOURCES +=               \
+ vnet/ethernet/arp.c
+
+nobase_include_HEADERS +=           \
+ vnet/ethernet/arp_packet.h         \
+ vnet/ethernet/arp.h
 
 ########################################
 # Bidirectional Forwarding Detection
@@ -508,6 +523,7 @@ nobase_include_HEADERS +=			\
  vnet/tcp/tcp_timer.h				\
  vnet/tcp/tcp_debug.h				\
  vnet/tcp/tcp.h					\
+ vnet/tcp/tcp_error.def				\
  vnet/tcp/tcp.api.h
 
 API_FILES += vnet/tcp/tcp.api
@@ -1230,7 +1246,11 @@ nobase_include_HEADERS +=			\
 libvnet_la_SOURCES +=                    \
   vnet/util/radix.c			     \
   vnet/util/refcount.c			 \
+  vnet/util/throttle.c			 \
   vnet/util/trajectory.c
+
+nobase_include_HEADERS +=                       \
+  vnet/util/throttle.h
 
 ########################################
 # QoS

@@ -64,7 +64,6 @@ typedef struct
 avf_test_main_t avf_test_main;
 
 #define foreach_standard_reply_retval_handler		\
-_(avf_create_reply)					\
 _(avf_delete_reply)
 
 #define _(n)                                            \
@@ -94,6 +93,7 @@ api_avf_create (vat_main_t * vam)
   unformat_input_t *i = vam->input;
   vl_api_avf_create_t *mp;
   avf_create_if_args_t args;
+  uint32_t tmp;
   int ret;
   u32 x[4];
 
@@ -110,10 +110,12 @@ api_avf_create (vat_main_t * vam)
 	}
       else if (unformat (i, "elog"))
 	args.enable_elog = 1;
-      else if (unformat (i, "rx-queue-size %u", &args.rxq_size))
-	;
-      else if (unformat (i, "tx-queue-size %u", &args.txq_size))
-	;
+      else if (unformat (i, "rx-queue-size %u", &tmp))
+	args.rxq_size = tmp;
+      else if (unformat (i, "tx-queue-size %u", &tmp))
+	args.txq_size = tmp;
+      else if (unformat (i, "num-rx-queues %u", &tmp))
+	args.rxq_num = tmp;
       else
 	{
 	  clib_warning ("unknown input '%U'", format_unformat_error, i);
@@ -125,6 +127,7 @@ api_avf_create (vat_main_t * vam)
 
   mp->pci_addr = clib_host_to_net_u32 (args.addr.as_u32);
   mp->enable_elog = clib_host_to_net_u16 (args.enable_elog);
+  mp->rxq_num = clib_host_to_net_u16 (args.rxq_num);
   mp->rxq_size = clib_host_to_net_u16 (args.rxq_size);
   mp->txq_size = clib_host_to_net_u16 (args.txq_size);
 
@@ -132,6 +135,24 @@ api_avf_create (vat_main_t * vam)
   W (ret);
 
   return ret;
+}
+
+/* avf-create reply handler */
+static void
+vl_api_avf_create_reply_t_handler (vl_api_avf_create_reply_t * mp)
+{
+  vat_main_t *vam = avf_test_main.vat_main;
+  i32 retval = ntohl (mp->retval);
+
+  if (retval == 0)
+    {
+      fformat (vam->ofp, "created avf with sw_if_index %d\n",
+	       ntohl (mp->sw_if_index));
+    }
+
+  vam->retval = retval;
+  vam->result_ready = 1;
+  vam->regenerate_interface_table = 1;
 }
 
 /* avf delete API */
@@ -177,7 +198,7 @@ api_avf_delete (vat_main_t * vam)
  */
 #define foreach_vpe_api_msg					\
 _(avf_create, "<pci-address> [rx-queue-size <size>] "		\
-              "[tx-queue-size <size>]")				\
+              "[tx-queue-size <size>] [num-rx-queues <size>]")	\
 _(avf_delete, "<sw_if_index>")
 
 static void

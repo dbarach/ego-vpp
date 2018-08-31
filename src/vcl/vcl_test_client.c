@@ -112,10 +112,8 @@ echo_test_client ()
   sock_client_main_t *scm = &sock_client_main;
   sock_test_socket_t *ctrl = &scm->ctrl_socket;
   sock_test_socket_t *tsock;
-  int rx_bytes, tx_bytes, nbytes;
-  uint32_t i, n;
-  int rv;
-  int nfds = 0;
+  int rv, nfds = 0, rx_bytes, tx_bytes, nbytes;
+  uint32_t i, n, sidx;
   fd_set wr_fdset, rd_fdset;
   fd_set _wfdset, *wfdset = &_wfdset;
   fd_set _rfdset, *rfdset = &_rfdset;
@@ -137,7 +135,9 @@ echo_test_client ()
 
       FD_SET (tsock->fd, &wr_fdset);
       FD_SET (tsock->fd, &rd_fdset);
-      nfds = ((tsock->fd + 1) > nfds) ? (tsock->fd + 1) : nfds;
+      sidx = vppcom_session_index (tsock->fd);
+      nfds = sidx > nfds ? sidx : nfds;
+//      nfds = ((tsock->fd + 1) > nfds) ? (tsock->fd + 1) : nfds;
     }
 
   nfds++;
@@ -166,13 +166,13 @@ echo_test_client ()
 		(tsock->stats.stop.tv_nsec == 0)))
 	    continue;
 
-	  if (FD_ISSET (tsock->fd, wfdset) &&
-	      (tsock->stats.tx_bytes < ctrl->cfg.total_bytes))
+	  if (FD_ISSET (vppcom_session_index (tsock->fd), wfdset)
+	      && (tsock->stats.tx_bytes < ctrl->cfg.total_bytes))
 
 	    {
-	      tx_bytes =
-		vcl_test_write (tsock->fd, (uint8_t *) tsock->txbuf, nbytes,
-				&tsock->stats, ctrl->cfg.verbose);
+	      tx_bytes = vcl_test_write (tsock->fd, (uint8_t *) tsock->txbuf,
+					 nbytes, &tsock->stats,
+					 ctrl->cfg.verbose);
 	      if (tx_bytes < 0)
 		{
 		  fprintf (stderr, "\nCLIENT: ERROR: vcl_test_write(%d) "
@@ -180,16 +180,13 @@ echo_test_client ()
 		  return;
 		}
 
-	      printf ("CLIENT (fd %d): TX (%d bytes) - '%s'\n",
-		      tsock->fd, tx_bytes, tsock->txbuf);
 	    }
 
-	  if ((FD_ISSET (tsock->fd, rfdset)) &&
+	  if ((FD_ISSET (vppcom_session_index (tsock->fd), rfdset)) &&
 	      (tsock->stats.rx_bytes < ctrl->cfg.total_bytes))
 	    {
-	      rx_bytes =
-		vcl_test_read (tsock->fd, (uint8_t *) tsock->rxbuf,
-			       nbytes, &tsock->stats);
+	      rx_bytes = vcl_test_read (tsock->fd, (uint8_t *) tsock->rxbuf,
+					nbytes, &tsock->stats);
 	      if (rx_bytes > 0)
 		{
 		  printf ("CLIENT (fd %d): RX (%d bytes) - '%s'\n",
@@ -338,13 +335,12 @@ stream_test_client (sock_test_t test)
 				    tsock->rxbuf_size, &tsock->stats);
 	    }
 
-	  if (FD_ISSET (tsock->fd, wfdset) &&
-	      (tsock->stats.tx_bytes < ctrl->cfg.total_bytes))
+	  if (FD_ISSET (tsock->fd, wfdset)
+	      && (tsock->stats.tx_bytes < ctrl->cfg.total_bytes))
 	    {
-	      tx_bytes =
-		vcl_test_write (tsock->fd, (uint8_t *) tsock->txbuf,
-				ctrl->cfg.txbuf_size, &tsock->stats,
-				ctrl->cfg.verbose);
+	      tx_bytes = vcl_test_write (tsock->fd, (uint8_t *) tsock->txbuf,
+					 ctrl->cfg.txbuf_size, &tsock->stats,
+					 ctrl->cfg.verbose);
 	      if (tx_bytes < 0)
 		{
 		  fprintf (stderr, "\nCLIENT: ERROR: vcl_test_write(%d) "

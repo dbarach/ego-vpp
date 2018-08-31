@@ -108,6 +108,7 @@ typedef struct _vnet_interface_function_list_elt
   clib_error_t *(*fp) (struct vnet_main_t * vnm, u32 if_index, u32 flags);
 } _vnet_interface_function_list_elt_t;
 
+#ifndef CLIB_MARCH_VARIANT
 #define _VNET_INTERFACE_FUNCTION_DECL_PRIO(f,tag,p)                    \
                                                                         \
 static void __vnet_interface_function_init_##tag##_##f (void)           \
@@ -146,6 +147,12 @@ static void __vnet_interface_function_deinit_##tag##_##f (void)         \
       next = next->next_interface_function;                             \
     }                                                                   \
 }
+#else
+/* create unused pointer to silence compiler warnings and get whole
+   function optimized out */
+#define _VNET_INTERFACE_FUNCTION_DECL_PRIO(f,tag,p)                    \
+static __clib_unused void * __clib_unused_##f = f;
+#endif
 
 #define _VNET_INTERFACE_FUNCTION_DECL(f,tag)                            \
   _VNET_INTERFACE_FUNCTION_DECL_PRIO(f,tag,VNET_ITF_FUNC_PRIORITY_LOW)
@@ -194,6 +201,9 @@ typedef struct _vnet_device_class
 
   /* Transmit function. */
   vlib_node_function_t *tx_function;
+
+  /* Transmit function candidate registration with priority */
+  vlib_node_fn_registration_t *tx_fn_registrations;
 
   /* Error strings indexed by error code for this node. */
   char **tx_function_error_strings;
@@ -245,6 +255,7 @@ typedef struct _vnet_device_class
   vnet_interface_set_mac_address_function_t *mac_addr_change_function;
 } vnet_device_class_t;
 
+#ifndef CLIB_MARCH_VARIANT
 #define VNET_DEVICE_CLASS(x,...)                                        \
   __VA_ARGS__ vnet_device_class_t x;                                    \
 static void __vnet_add_device_class_registration_##x (void)             \
@@ -264,6 +275,30 @@ static void __vnet_rm_device_class_registration_##x (void)              \
                                   &x, next_class_registration);         \
 }                                                                       \
 __VA_ARGS__ vnet_device_class_t x
+#else
+/* create unused pointer to silence compiler warnings and get whole
+   function optimized out */
+#define VNET_DEVICE_CLASS(x,...)                                        \
+static __clib_unused vnet_device_class_t __clib_unused_##x
+#endif
+
+#define VNET_DEVICE_CLASS_TX_FN(devclass)				\
+uword CLIB_MARCH_SFX (devclass##_tx_fn)();				\
+static vlib_node_fn_registration_t					\
+  CLIB_MARCH_SFX(devclass##_tx_fn_registration) =			\
+  { .function = &CLIB_MARCH_SFX (devclass##_tx_fn), };			\
+									\
+static void __clib_constructor						\
+CLIB_MARCH_SFX (devclass##_tx_fn_multiarch_register) (void)		\
+{									\
+  extern vnet_device_class_t devclass;					\
+  vlib_node_fn_registration_t *r;					\
+  r = &CLIB_MARCH_SFX (devclass##_tx_fn_registration);			\
+  r->priority = CLIB_MARCH_FN_PRIORITY();				\
+  r->next_registration = devclass.tx_fn_registrations;			\
+  devclass.tx_fn_registrations = r;					\
+}									\
+uword CLIB_CPU_OPTIMIZED CLIB_MARCH_SFX (devclass##_tx_fn)
 
 #define VLIB_DEVICE_TX_FUNCTION_CLONE_TEMPLATE(arch, fn, tgt)		\
   uword									\

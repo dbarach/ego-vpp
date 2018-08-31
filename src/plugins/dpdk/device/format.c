@@ -45,22 +45,28 @@
   _ (rx_errors, q_errors)
 
 #define foreach_dpdk_rss_hf                    \
+  _(ETH_RSS_IPV4,               "ipv4")        \
   _(ETH_RSS_FRAG_IPV4,          "ipv4-frag")   \
   _(ETH_RSS_NONFRAG_IPV4_TCP,   "ipv4-tcp")    \
   _(ETH_RSS_NONFRAG_IPV4_UDP,   "ipv4-udp")    \
   _(ETH_RSS_NONFRAG_IPV4_SCTP,  "ipv4-sctp")   \
   _(ETH_RSS_NONFRAG_IPV4_OTHER, "ipv4-other")  \
-  _(ETH_RSS_IPV4,               "ipv4")        \
-  _(ETH_RSS_IPV6_TCP_EX,        "ipv6-tcp-ex") \
-  _(ETH_RSS_IPV6_UDP_EX,        "ipv6-udp-ex") \
+  _(ETH_RSS_IPV6,               "ipv6")        \
   _(ETH_RSS_FRAG_IPV6,          "ipv6-frag")   \
   _(ETH_RSS_NONFRAG_IPV6_TCP,   "ipv6-tcp")    \
   _(ETH_RSS_NONFRAG_IPV6_UDP,   "ipv6-udp")    \
   _(ETH_RSS_NONFRAG_IPV6_SCTP,  "ipv6-sctp")   \
   _(ETH_RSS_NONFRAG_IPV6_OTHER, "ipv6-other")  \
+  _(ETH_RSS_IPV6_TCP_EX,        "ipv6-tcp-ex") \
+  _(ETH_RSS_IPV6_UDP_EX,        "ipv6-udp-ex") \
   _(ETH_RSS_L2_PAYLOAD,         "l2-payload")  \
   _(ETH_RSS_IPV6_EX,            "ipv6-ex")     \
-  _(ETH_RSS_IPV6,               "ipv6")
+  _(ETH_RSS_IPV6_TCP_EX,        "ipv6-tcp-ex") \
+  _(ETH_RSS_IPV6_UDP_EX,        "ipv6-udp-ex") \
+  _(ETH_RSS_PORT,               "port")        \
+  _(ETH_RSS_VXLAN,              "vxlan")       \
+  _(ETH_RSS_GENEVE,             "geneve")      \
+  _(ETH_RSS_NVGRE,              "nvgre")
 
 
 #define foreach_dpdk_rx_offload_caps            \
@@ -250,11 +256,7 @@ format_dpdk_device_name (u8 * s, va_list * args)
     }
 
   rte_eth_dev_info_get (i, &dev_info);
-#if RTE_VERSION < RTE_VERSION_NUM(18, 5, 0, 0)
-  pci_dev = dev_info.pci_dev;
-#else
   pci_dev = RTE_DEV_TO_PCI (dev_info.device);
-#endif
 
   if (pci_dev && dm->devices[i].port_type != VNET_DPDK_PORT_TYPE_FAILSAFE)
     ret = format (s, devname_format, device_name, pci_dev->addr.bus,
@@ -430,7 +432,7 @@ if (bitmap & v) {                                            \
   s = format(s, "%s ", str);                                 \
 }
 
-static u8 *
+u8 *
 format_dpdk_rss_hf_name (u8 * s, va_list * args)
 {
   u64 bitmap = va_arg (*args, u64);
@@ -529,11 +531,7 @@ format_dpdk_device (u8 * s, va_list * args)
       retval = rte_eth_dev_rss_hash_conf_get (xd->port_id, &rss_conf);
       if (retval < 0)
 	clib_warning ("rte_eth_dev_rss_hash_conf_get returned %d", retval);
-#if RTE_VERSION < RTE_VERSION_NUM(18, 5, 0, 0)
-      pci = di.pci_dev;
-#else
       pci = RTE_DEV_TO_PCI (di.device);
-#endif
 
       if (pci)
 	s =

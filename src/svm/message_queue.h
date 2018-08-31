@@ -214,6 +214,40 @@ void *svm_msg_q_msg_data (svm_msg_q_t * mq, svm_msg_q_msg_t * msg);
 svm_msg_q_ring_t *svm_msg_q_ring (svm_msg_q_t * mq, u32 ring_index);
 
 /**
+ * Set event fd for queue consumer
+ *
+ * If set, queue will exclusively use eventfds for signaling. Moreover,
+ * afterwards, the queue should only be used in non-blocking mode. Waiting
+ * for events should be done externally using something like epoll.
+ *
+ * @param mq		message queue
+ * @param fd		consumer eventfd
+ */
+void svm_msg_q_set_consumer_eventfd (svm_msg_q_t * mq, int fd);
+
+/**
+ * Set event fd for queue producer
+ *
+ * If set, queue will exclusively use eventfds for signaling. Moreover,
+ * afterwards, the queue should only be used in non-blocking mode. Waiting
+ * for events should be done externally using something like epoll.
+ *
+ * @param mq		message queue
+ * @param fd		producer eventfd
+ */
+void svm_msg_q_set_producer_eventfd (svm_msg_q_t * mq, int fd);
+
+/**
+ * Allocate event fd for queue consumer
+ */
+int svm_msg_q_alloc_consumer_eventfd (svm_msg_q_t * mq);
+
+/**
+ * Allocate event fd for queue consumer
+ */
+int svm_msg_q_alloc_producer_eventfd (svm_msg_q_t * mq);
+
+/**
  * Check if message queue is full
  */
 static inline u8
@@ -274,12 +308,6 @@ svm_msg_q_lock (svm_msg_q_t * mq)
   return pthread_mutex_lock (&mq->q->mutex);
 }
 
-static inline void
-svm_msg_q_wait (svm_msg_q_t * mq)
-{
-  pthread_cond_wait (&mq->q->condvar, &mq->q->mutex);
-}
-
 /**
  * Unlock message queue
  */
@@ -290,6 +318,44 @@ svm_msg_q_unlock (svm_msg_q_t * mq)
   if (mq->q->cursize < (mq->q->maxsize / 8))
     (void) pthread_cond_broadcast (&mq->q->condvar);
   pthread_mutex_unlock (&mq->q->mutex);
+}
+
+/**
+ * Wait for message queue event
+ *
+ * Must be called with mutex held. The queue only works non-blocking
+ * with eventfds, so handle blocking calls as an exception here.
+ */
+static inline void
+svm_msg_q_wait (svm_msg_q_t * mq)
+{
+  svm_queue_wait (mq->q);
+}
+
+/**
+ * Timed wait for message queue event
+ *
+ * Must be called with mutex held.
+ *
+ * @param mq 		message queue
+ * @param timeout	time in seconds
+ */
+static inline int
+svm_msg_q_timedwait (svm_msg_q_t * mq, double timeout)
+{
+  return svm_queue_timedwait (mq->q, timeout);
+}
+
+static inline int
+svm_msg_q_get_consumer_eventfd (svm_msg_q_t * mq)
+{
+  return mq->q->consumer_evtfd;
+}
+
+static inline int
+svm_msg_q_get_producer_eventfd (svm_msg_q_t * mq)
+{
+  return mq->q->producer_evtfd;
 }
 
 #endif /* SRC_SVM_MESSAGE_QUEUE_H_ */
