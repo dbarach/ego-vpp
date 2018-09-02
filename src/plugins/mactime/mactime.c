@@ -274,6 +274,8 @@ static void vl_api_mactime_add_del_range_t_handler
 		dp->flags = MACTIME_DEVICE_FLAG_STATIC_DROP;
 	      if (mp->allow)
 		dp->flags = MACTIME_DEVICE_FLAG_STATIC_ALLOW;
+              if (mp->no_udp_10001)
+                dp->flags |= MACTIME_DEVICE_FLAG_DROP_UDP_10001;
 	    }
 
 	  /* Add the hash table entry */

@@ -45,6 +45,7 @@ typedef struct
 #define MACTIME_DEVICE_FLAG_STATIC_ALLOW	(1<<1)
 #define MACTIME_DEVICE_FLAG_DYNAMIC_DROP	(1<<2)
 #define MACTIME_DEVICE_FLAG_DYNAMIC_ALLOW	(1<<3)
+#define MACTIME_DEVICE_FLAG_DROP_UDP_10001      (1<<4) 
 
 typedef struct
 {

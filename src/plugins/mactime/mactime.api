@@ -74,6 +74,7 @@ autoreply define mactime_add_del_range
   u8 is_add;                    /**< add=1, del=0  */
   u8 drop;                      /**< drop flag */
   u8 allow;                     /**< allow flag */
+  u8 no_udp_10001;              /**< drop udp to port 10001 */
   u8 mac_address[6];            /**< src mac address */
   u8 device_name[64];           /**< device name */
   u32 count;                    /**< number of time ranges to follow */
