@@ -409,6 +409,7 @@ VNET_HW_INTERFACE_LINK_UP_DOWN_FUNCTION (lacp_hw_interface_up_down);
 VLIB_PLUGIN_REGISTER () = {
     .version = VPP_BUILD_VER,
     .description = "Link Aggregation Control Protocol",
+    .default_disabled = 1,
 };
 /* *INDENT-ON* */
 

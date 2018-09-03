@@ -23,6 +23,7 @@
 VLIB_PLUGIN_REGISTER () = {
   .version = VPP_BUILD_VER,
   .description = "Marvell Device Plugin",
+  .default_disabled = 1,
 };
 /* *INDENT-ON* */
 

@@ -645,6 +645,7 @@ VLIB_INIT_FUNCTION (tls_mbedtls_init);
 VLIB_PLUGIN_REGISTER () = {
     .version = VPP_BUILD_VER,
     .description = "mbedtls based TLS Engine",
+    .default_disabled = 1,
 };
 /* *INDENT-ON* */
 

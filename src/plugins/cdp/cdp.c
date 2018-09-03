@@ -210,6 +210,7 @@ VLIB_INIT_FUNCTION (cdp_init);
 VLIB_PLUGIN_REGISTER () =
 {
   .version = VPP_BUILD_VER,
+  .default_disabled = 1,
 };
 /* *INDENT-ON* */
 

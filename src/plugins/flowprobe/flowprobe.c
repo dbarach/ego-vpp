@@ -766,6 +766,8 @@ _(FLOWPROBE_PARAMS, flowprobe_params)
 VLIB_PLUGIN_REGISTER () = {
     .version = VPP_BUILD_VER,
     .description = "Flow per Packet",
+  .default_disabled = 1,
+
 };
 /* *INDENT-ON* */
 

@@ -486,6 +486,7 @@ VLIB_INIT_FUNCTION (igmp_init);
 VLIB_PLUGIN_REGISTER () = {
   .version = VPP_BUILD_VER,
   .description = "IGMP messaging",
+  .default_disabled = 1,
 };
 /* *INDENT-ON* */
 

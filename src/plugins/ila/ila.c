@@ -825,6 +825,7 @@ ila_interface (u32 sw_if_index, u8 disable)
 VLIB_PLUGIN_REGISTER () = {
     .version = VPP_BUILD_VER,
     .description = "Identifier-locator addressing for IPv6",
+    .default_disabled = 1,
 };
 /* *INDENT-ON* */
 

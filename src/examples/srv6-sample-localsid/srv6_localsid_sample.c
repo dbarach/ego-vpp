@@ -175,4 +175,5 @@ VLIB_INIT_FUNCTION (srv6_localsid_sample_init);
 
 VLIB_PLUGIN_REGISTER () = {
   .version = "1.0",
+  .default_disabled = 1,
 };

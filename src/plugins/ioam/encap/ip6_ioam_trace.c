@@ -410,6 +410,7 @@ VLIB_CLI_COMMAND (ip6_show_ioam_trace_cmd, static) = {
 VLIB_PLUGIN_REGISTER () = {
     .version = VPP_BUILD_VER,
     .description = "Inbound OAM",
+    .default_disabled = 1,
 };
 /* *INDENT-ON* */
 

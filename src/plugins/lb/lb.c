@@ -1206,6 +1206,7 @@ int lb_vip_del(u32 vip_index)
 VLIB_PLUGIN_REGISTER () = {
     .version = VPP_BUILD_VER,
     .description = "Load Balancer",
+    .default_disabled = 1,
 };
 /* *INDENT-ON* */
 

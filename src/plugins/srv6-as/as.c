@@ -574,6 +574,7 @@ VLIB_INIT_FUNCTION (srv6_as_init);
 VLIB_PLUGIN_REGISTER () = {
   .version = VPP_BUILD_VER,
   .description = "Static SRv6 proxy",
+  .default_disabled = 1,
 };
 /* *INDENT-ON* */
 

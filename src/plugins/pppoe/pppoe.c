@@ -739,6 +739,7 @@ VLIB_INIT_FUNCTION (pppoe_init);
 VLIB_PLUGIN_REGISTER () = {
     .version = VPP_BUILD_VER,
     .description = "PPPoE",
+    .default_disabled = 1,
 };
 /* *INDENT-ON* */
 

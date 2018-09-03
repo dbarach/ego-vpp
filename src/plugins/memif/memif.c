@@ -1044,6 +1044,7 @@ VLIB_INIT_FUNCTION (memif_init);
 VLIB_PLUGIN_REGISTER () = {
     .version = VPP_BUILD_VER,
     .description = "Packet Memory Interface (experimetal)",
+    .default_disabled = 1,
 };
 /* *INDENT-ON* */
 
