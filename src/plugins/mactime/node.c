@@ -191,10 +191,14 @@ mactime_node_inline (vlib_main_t * vm,
                       udp_header_t *udp = (udp_header_t *)(ip + 1);
                       if (ip->protocol != IP_PROTOCOL_UDP)
                         goto pass;
-                      if (clib_net_to_host_u16(udp->dst_port) != 10001)
+                      if (clib_net_to_host_u16(udp->dst_port) == 10001 ||
+                          clib_net_to_host_u16(udp->dst_port) == 9603)
+                        {
+                          next0 = MACTIME_NEXT_DROP;
+                          b0->error = node->errors[MACTIME_ERROR_DROP_10001];
+                        }
+                      else
                         goto pass;
-                      next0 = MACTIME_NEXT_DROP;
-                      b0->error = node->errors[MACTIME_ERROR_DROP_10001];
                     }
                   else
                     {
