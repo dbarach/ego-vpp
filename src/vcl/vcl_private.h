@@ -257,6 +257,9 @@ typedef struct vcl_worker_
 
   /** Vector acting as buffer for mq messages */
   svm_msg_q_msg_t *mq_msg_vector;
+
+  /** Used also as a thread stop key buffer */
+  pthread_t thread_id;
 } vcl_worker_t;
 
 typedef struct vppcom_main_t_
@@ -282,6 +285,9 @@ typedef struct vppcom_main_t_
 
   /** Workers */
   vcl_worker_t *workers;
+
+  /** Lock to protect worker registrations */
+  clib_spinlock_t workers_lock;
 
 #ifdef VCL_ELOG
   /* VPP Event-logger */
@@ -485,7 +491,7 @@ void vppcom_send_session_enable_disable (u8 is_enable);
 void vppcom_app_send_attach (void);
 void vppcom_app_send_detach (void);
 void vppcom_send_connect_sock (vcl_session_t * session);
-void vppcom_send_disconnect_session (u64 vpp_handle, u32 session_index);
+void vppcom_send_disconnect_session (u64 vpp_handle);
 void vppcom_send_bind_sock (vcl_session_t * session);
 void vppcom_send_unbind_sock (u64 vpp_handle);
 void vppcom_api_hookup (void);

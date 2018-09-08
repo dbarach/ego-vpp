@@ -28,6 +28,7 @@
 #include <nat/dslite.h>
 #include <nat/nat_reass.h>
 #include <nat/nat_inlines.h>
+#include <nat/nat_affinity.h>
 #include <vnet/fib/fib_table.h>
 #include <vnet/fib/ip4_fib.h>
 
@@ -211,6 +212,9 @@ nat_free_session_data (snat_main_t * sm, snat_session_t * s, u32 thread_index)
   /* session lookup tables */
   if (is_ed_session (s))
     {
+      if (is_affinity_sessions (s))
+        nat_affinity_unlock (s->ext_host_addr, s->out2in.addr,
+                             s->in2out.protocol, s->out2in.port);
       ed_key.l_addr = s->out2in.addr;
       ed_key.r_addr = s->ext_host_addr;
       ed_key.fib_index = s->out2in.fib_index;
@@ -230,7 +234,6 @@ nat_free_session_data (snat_main_t * sm, snat_session_t * s, u32 thread_index)
       ed_kv.key[1] = ed_key.as_u64[1];
       if (clib_bihash_add_del_16_8 (&tsm->out2in_ed, &ed_kv, 0))
         nat_log_warn ("out2in_ed key del failed");
-
       ed_key.l_addr = s->in2out.addr;
       ed_key.fib_index = s->in2out.fib_index;
       if (!snat_is_unk_proto_session (s))
@@ -1259,7 +1262,7 @@ int nat44_add_del_lb_static_mapping (ip4_address_t e_addr, u16 e_port,
                                      snat_protocol_t proto,
                                      nat44_lb_addr_port_t *locals, u8 is_add,
                                      twice_nat_type_t twice_nat, u8 out2in_only,
-                                     u8 *tag)
+                                     u8 *tag, u32 affinity)
 {
   snat_main_t * sm = &snat_main;
   snat_static_mapping_t *m;
@@ -1343,6 +1346,13 @@ int nat44_add_del_lb_static_mapping (ip4_address_t e_addr, u16 e_port,
       m->proto = proto;
       m->twice_nat = twice_nat;
       m->out2in_only = out2in_only;
+      m->affinity = affinity;
+
+      if (affinity)
+        m->affinity_per_service_list_head_index =
+          nat_affinity_get_per_service_list_head_index();
+      else
+        m->affinity_per_service_list_head_index = ~0;
 
       m_key.addr = m->external_addr;
       m_key.port = m->external_port;
@@ -1499,6 +1509,8 @@ int nat44_add_del_lb_static_mapping (ip4_address_t e_addr, u16 e_port,
                 }
             }
         }
+      if (m->affinity)
+        nat_affinity_flush_service (m->affinity_per_service_list_head_index);
       vec_free(m->locals);
       vec_free(m->tag);
       vec_free(m->workers);
@@ -2050,6 +2062,7 @@ static clib_error_t * snat_init (vlib_main_t * vm)
   sm->tcp_transitory_timeout = SNAT_TCP_TRANSITORY_TIMEOUT;
   sm->icmp_timeout = SNAT_ICMP_TIMEOUT;
   sm->alloc_addr_and_port = nat_alloc_addr_and_port_default;
+  sm->addr_and_port_alloc_alg = NAT_ADDR_AND_PORT_ALLOC_ALG_DEFAULT;
   sm->forwarding_enabled = 0;
   sm->log_class = vlib_log_register_class ("nat", 0);
   error_drop_node = vlib_get_node_by_name (vm, (u8 *) "error-drop");
@@ -2173,13 +2186,15 @@ int snat_static_mapping_match (snat_main_t * sm,
                                u8 by_external,
                                u8 *is_addr_only,
                                twice_nat_type_t *twice_nat,
-                               u8 *lb)
+                               lb_nat_type_t *lb,
+                               ip4_address_t * ext_host_addr)
 {
   clib_bihash_kv_8_8_t kv, value;
   snat_static_mapping_t *m;
   snat_session_key_t m_key;
   clib_bihash_8_8_t *mapping_hash = &sm->static_mapping_by_local;
   u32 rand, lo = 0, hi, mid;
+  u8 backend_index;
 
   m_key.fib_index = match.fib_index;
   if (by_external)
@@ -2210,6 +2225,19 @@ int snat_static_mapping_match (snat_main_t * sm,
     {
       if (vec_len (m->locals))
         {
+          if (PREDICT_FALSE(lb != 0))
+            *lb = m->affinity ? AFFINITY_LB_NAT : LB_NAT;
+          if (m->affinity)
+            {
+              if (nat_affinity_find_and_lock (ext_host_addr[0], match.addr,
+                  match.protocol, match.port, &backend_index))
+                goto get_local;
+
+              mapping->addr = m->locals[backend_index].addr;
+              mapping->port = clib_host_to_net_u16 (m->locals[backend_index].port);
+              mapping->fib_index = m->locals[backend_index].fib_index;
+              goto end;
+            }
 get_local:
           hi = vec_len (m->locals) - 1;
           rand = 1 + (random_u32 (&sm->random_seed) % m->locals[hi].prefix);
@@ -2231,9 +2259,18 @@ get_local:
           mapping->addr = m->locals[lo].addr;
           mapping->port = clib_host_to_net_u16 (m->locals[lo].port);
           mapping->fib_index = m->locals[lo].fib_index;
+          if (m->affinity)
+            {
+              if (nat_affinity_create_and_lock (ext_host_addr[0], match.addr,
+                  match.protocol, match.port, lo, m->affinity,
+                  m->affinity_per_service_list_head_index))
+                nat_log_info ("create affinity record failed");
+            }
         }
       else
         {
+          if (PREDICT_FALSE(lb != 0))
+            *lb = NO_LB_NAT;
           mapping->fib_index = m->fib_index;
           mapping->addr = m->local_addr;
           /* Address only mapping doesn't change port */
@@ -2251,14 +2288,12 @@ get_local:
       mapping->fib_index = sm->outside_fib_index;
     }
 
+end:
   if (PREDICT_FALSE(is_addr_only != 0))
     *is_addr_only = m->addr_only;
 
   if (PREDICT_FALSE(twice_nat != 0))
     *twice_nat = m->twice_nat;
-
-  if (PREDICT_FALSE(lb != 0))
-    *lb = vec_len (m->locals) > 0;
 
   return 0;
 }
@@ -2432,6 +2467,57 @@ exhausted:
   return 1;
 }
 
+static int
+nat_alloc_addr_and_port_range (snat_address_t * addresses,
+                               u32 fib_index,
+                               u32 thread_index,
+                               snat_session_key_t * k,
+                               u32 * address_indexp,
+                               u16 port_per_thread,
+                               u32 snat_thread_index)
+{
+  snat_main_t *sm = &snat_main;
+  snat_address_t *a = addresses;
+  u16 portnum, ports;
+
+  ports = sm->end_port - sm->start_port + 1;
+
+  if (!vec_len (addresses))
+    goto exhausted;
+
+  switch (k->protocol)
+    {
+#define _(N, i, n, s) \
+    case SNAT_PROTOCOL_##N: \
+      if (a->busy_##n##_ports < ports) \
+        { \
+          while (1) \
+            { \
+              portnum = snat_random_port(sm->start_port, sm->end_port); \
+              if (clib_bitmap_get_no_check (a->busy_##n##_port_bitmap, portnum)) \
+                continue; \
+              clib_bitmap_set_no_check (a->busy_##n##_port_bitmap, portnum, 1); \
+              a->busy_##n##_ports++; \
+              k->addr = a->addr; \
+              k->port = clib_host_to_net_u16 (portnum); \
+              *address_indexp = i; \
+              return 0; \
+            } \
+        } \
+      break;
+      foreach_snat_protocol
+#undef _
+    default:
+      nat_log_info ("unknown protocol");
+      return 1;
+    }
+
+exhausted:
+  /* Totally out of translations to use... */
+  snat_ipfix_logging_addresses_exhausted(0);
+  return 1;
+}
+
 void
 nat44_add_del_address_dpo (ip4_address_t addr, u8 is_add)
 {
@@ -2479,6 +2565,25 @@ format_snat_protocol (u8 * s, va_list * args)
     {
 #define _(N, j, n, str) case SNAT_PROTOCOL_##N: t = (u8 *) str; break;
       foreach_snat_protocol
+#undef _
+    default:
+      s = format (s, "unknown");
+      return s;
+    }
+  s = format (s, "%s", t);
+  return s;
+}
+
+u8 *
+format_nat_addr_and_port_alloc_alg (u8 * s, va_list * args)
+{
+  u32 i = va_arg (*args, u32);
+  u8 *t = 0;
+
+  switch (i)
+    {
+#define _(v, N, s) case NAT_ADDR_AND_PORT_ALLOC_ALG_##N: t = (u8 *) s; break;
+      foreach_nat_addr_and_port_alloc_alg
 #undef _
     default:
       s = format (s, "unknown");
@@ -2904,6 +3009,7 @@ snat_config (vlib_main_t * vm, unformat_input_t * input)
           sm->out2in_node_index = nat44_ed_out2in_node.index;
           sm->icmp_match_in2out_cb = icmp_match_in2out_ed;
           sm->icmp_match_out2in_cb = icmp_match_out2in_ed;
+          nat_affinity_init (vm);
         }
       else
         {
@@ -3515,6 +3621,7 @@ nat_set_alloc_addr_and_port_mape (u16 psid, u16 psid_offset, u16 psid_length)
 {
   snat_main_t *sm = &snat_main;
 
+  sm->addr_and_port_alloc_alg = NAT_ADDR_AND_PORT_ALLOC_ALG_MAPE;
   sm->alloc_addr_and_port = nat_alloc_addr_and_port_mape;
   sm->psid = psid;
   sm->psid_offset = psid_offset;
@@ -3522,10 +3629,22 @@ nat_set_alloc_addr_and_port_mape (u16 psid, u16 psid_offset, u16 psid_length)
 }
 
 void
+nat_set_alloc_addr_and_port_range (u16 start_port, u16 end_port)
+{
+  snat_main_t *sm = &snat_main;
+
+  sm->addr_and_port_alloc_alg = NAT_ADDR_AND_PORT_ALLOC_ALG_RANGE;
+  sm->alloc_addr_and_port = nat_alloc_addr_and_port_range;
+  sm->start_port = start_port;
+  sm->end_port = end_port;
+}
+
+void
 nat_set_alloc_addr_and_port_default (void)
 {
   snat_main_t *sm = &snat_main;
 
+  sm->addr_and_port_alloc_alg = NAT_ADDR_AND_PORT_ALLOC_ALG_DEFAULT;
   sm->alloc_addr_and_port = nat_alloc_addr_and_port_default;
 }
 

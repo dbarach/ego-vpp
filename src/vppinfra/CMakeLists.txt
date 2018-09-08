@@ -44,7 +44,6 @@ set(VPPINFRA_SRCS
   cpu.c
   cuckoo_template.c
   elf.c
-  elf_clib.c
   elog.c
   error.c
   fheap.c
@@ -59,7 +58,6 @@ set(VPPINFRA_SRCS
   mhash.c
   pool.c
   ptclosure.c
-  qsort.c
   random.c
   random_buffer.c
   random_isaac.c
@@ -84,8 +82,6 @@ set(VPPINFRA_SRCS
   vec.c
   vector.c
   zvec.c
-  linux/mem.c
-  linux/sysfs.c
 )
 
 set(VPPINFRA_HEADERS
@@ -180,6 +176,14 @@ set(VPPINFRA_HEADERS
   linux/syscall.h
   linux/sysfs.h
 )
+
+if("${CMAKE_SYSTEM_NAME}" STREQUAL "Linux")
+  list(APPEND VPPINFRA_SRCS
+    elf_clib.c
+    linux/mem.c
+    linux/sysfs.c
+   )
+endif()
 
 
 if(VPP_USE_DLMALLOC)

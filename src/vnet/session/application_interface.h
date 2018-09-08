@@ -64,7 +64,7 @@ typedef struct _vnet_unbind_args_t
     u64 handle;			/**< Session handle */
   };
   u32 app_index;		/**< Owning application index */
-  u32 app_wrk_index;		/**< App's local pool worker index */
+  u32 wrk_map_index;		/**< App's local pool worker index */
 } vnet_unbind_args_t;
 
 typedef struct _vnet_connect_args
@@ -123,6 +123,7 @@ typedef enum
   _(ACCEPT_REDIRECT, "Use FIFO with redirects")			\
   _(ADD_SEGMENT, "Add segment and signal app if needed")	\
   _(IS_BUILTIN, "Application is builtin")			\
+  _(IS_TRANSPORT_APP, "Application is a transport proto")	\
   _(IS_PROXY, "Application is proxying")			\
   _(USE_GLOBAL_SCOPE, "App can use global session scope")	\
   _(USE_LOCAL_SCOPE, "App can use local session scope")		\

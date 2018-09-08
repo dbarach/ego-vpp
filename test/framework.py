@@ -390,8 +390,8 @@ class VppTestCase(unittest.TestCase):
             else:
                 hook = PollHook(cls)
             cls.vapi.register_hook(hook)
-            cls.statistics = VPPStats(socketname=cls.tempdir+'/stats.sock')
             cls.sleep(0.1, "after vpp startup, before initial poll")
+            cls.statistics = VPPStats(socketname=cls.tempdir+'/stats.sock')
             try:
                 hook.poll_vpp()
             except VppDiedError:
@@ -961,7 +961,7 @@ class VppTestResult(unittest.TestResult):
         self.verbosity = verbosity
         self.result_string = None
         self.printer = TestCasePrinter()
-        self.passed = 0
+        self.passed = []
 
     def addSuccess(self, test):
         """
@@ -975,7 +975,7 @@ class VppTestResult(unittest.TestResult):
                               % (test.__class__.__name__,
                                  test._testMethodName,
                                  test._testMethodDoc))
-        self.passed += 1
+        self.passed.append(test.id())
         unittest.TestResult.addSuccess(self, test)
         self.result_string = colorize("OK", GREEN)
 
