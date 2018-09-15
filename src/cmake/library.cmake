@@ -21,7 +21,9 @@ macro(add_vpp_library lib)
 
   add_library(${lib} SHARED ${ARG_SOURCES})
   target_compile_options(${lib} PRIVATE -Wall)
-  set_target_properties(${lib} PROPERTIES SOVERSION ${VPP_LIB_VERSION})
+  if(VPP_LIB_VERSION)
+    set_target_properties(${lib} PROPERTIES SOVERSION ${VPP_LIB_VERSION})
+  endif()
 
   # library deps
   if(ARG_LINK_LIBRARIES)
@@ -33,7 +35,7 @@ macro(add_vpp_library lib)
   endif()
   install(
     TARGETS ${lib}
-    DESTINATION ${VPP_LIB_DIR_NAME}
+    DESTINATION lib
     COMPONENT ${ARG_COMPONENT}
   )
 
@@ -64,7 +66,7 @@ macro(add_vpp_library lib)
       install(
 	FILES ${file}
 	DESTINATION include/${lib}/${dir}
-	COMPONENT vpp-dev
+	COMPONENT ${ARG_COMPONENT}-dev
       )
     endforeach()
   endif()

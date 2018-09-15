@@ -14,9 +14,8 @@
 ##############################################################################
 # Find lib and include files
 ##############################################################################
-find_path(DPDK_INCLUDE_DIR PATH_SUFFIXES dpdk NAMES rte_config.h HINTS
-	  ${DPDK_INCLUDE_DIR_HINT})
-find_library(DPDK_LIB NAMES libdpdk.a HINTS ${DPDK_LIB_DIR_HINT})
+find_path(DPDK_INCLUDE_DIR PATH_SUFFIXES dpdk NAMES rte_config.h)
+find_library(DPDK_LIB NAMES libdpdk.a)
 
 ##############################################################################
 # Find DPDK Version
@@ -34,6 +33,12 @@ int main()
 #endif
 #ifdef RTE_LIBRTE_PMD_AESNI_GCM
   printf(\"RTE_LIBRTE_PMD_AESNI_GCM=%u\\n\", RTE_LIBRTE_PMD_AESNI_GCM);
+#endif
+#ifdef RTE_LIBRTE_MLX4_PMD
+  printf(\"RTE_LIBRTE_MLX4_PMD=%u\\n\", RTE_LIBRTE_MLX4_PMD);
+#endif
+#ifdef RTE_LIBRTE_MLX5_PMD
+  printf(\"RTE_LIBRTE_MLX5_PMD=%u\\n\", RTE_LIBRTE_MLX5_PMD);
 #endif
   return 0;
 }
@@ -88,6 +93,10 @@ if(DPDK_INCLUDE_DIR AND DPDK_LIB)
   if(DPDK_RTE_LIBRTE_PMD_AESNI_MB OR DPDK_RTE_LIBRTE_PMD_AESNI_GCM)
     set(DPDK_LINK_FLAGS "${DPDK_LINK_FLAGS} -Wl,--exclude-libs,libIPSec_MB.a,-l:libIPSec_MB.a")
     message(STATUS "DPDK depends on IPSec MB library")
+  endif()
+  if(DPDK_RTE_LIBRTE_MLX4_PMD OR DPDK_RTE_LIBRTE_MLX5_PMD)
+    set(DPDK_LINK_FLAGS "${DPDK_LINK_FLAGS} -Wl,-lmnl")
+    message(STATUS "DPDK depends on libmnl (Mellanox PMD requirement)")
   endif()
   set(DPDK_LINK_FLAGS "${DPDK_LINK_FLAGS} -Wl,-lnuma")
   add_vpp_plugin(dpdk

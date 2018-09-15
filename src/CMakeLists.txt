@@ -49,7 +49,7 @@ endif()
 ##############################################################################
 # install config
 ##############################################################################
-set(CMAKE_INSTALL_RPATH "${CMAKE_INSTALL_PREFIX}/${VPP_LIB_DIR_NAME}")
+set(CMAKE_INSTALL_RPATH "${CMAKE_INSTALL_PREFIX}/lib")
 set(CMAKE_INSTALL_MESSAGE NEVER)
 
 include_directories (
@@ -75,7 +75,8 @@ if("${CMAKE_SYSTEM_NAME}" STREQUAL "Linux")
   find_package(OpenSSL REQUIRED)
   set(SUBDIRS
     vppinfra svm vlib vlibmemory vlibapi vnet vpp vat vcl plugins
-    vpp-api tools/vppapigen tools/g2 tools/elftool tools/perftool)
+    vpp-api tools/vppapigen tools/g2 tools/elftool tools/perftool cmake
+  )
 elseif("${CMAKE_SYSTEM_NAME}" STREQUAL "Darwin")
   set(SUBDIRS vppinfra)
 else()
@@ -86,7 +87,16 @@ foreach(DIR ${SUBDIRS})
   add_subdirectory(${DIR})
 endforeach()
 
+##############################################################################
+# packaging
+##############################################################################
 include(cmake/pack.cmake)
+add_vpp_packaging(
+  NAME "vpp"
+  VENDOR "fd.io"
+  DESCRIPTION "Vector Packet Processor"
+)
+
 ##############################################################################
 # detect if we are inside git repo and add configure dependency
 ##############################################################################

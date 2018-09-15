@@ -121,17 +121,31 @@ foreach_neon_vec128i foreach_neon_vec128u
 static_always_inline u16x8
 u16x8_byte_swap (u16x8 v)
 {
-  const u8 swap_pattern[] = {
-    1, 0, 3, 2, 5, 4, 7, 6, 9, 8, 11, 10, 13, 12, 15, 14,
-  };
-  u8x16 swap = vld1q_u8 (swap_pattern);
-  return (u16x8) vqtbl1q_u8 ((u8x16) v, swap);
+  return (u16x8) vrev16q_u8 ((u8x16) v);
 }
 
 static_always_inline u8x16
 u8x16_shuffle (u8x16 v, u8x16 m)
 {
   return (u8x16) vqtbl1q_u8 (v, m);
+}
+
+static_always_inline u32x4
+u32x4_hadd (u32x4 v1, u32x4 v2)
+{
+  return (u32x4) vpaddq_u32 (v1, v2);
+}
+
+static_always_inline u64x2
+u32x4_extend_to_u64x2 (u32x4 v)
+{
+  return vmovl_u32 (vget_low_u32 (v));
+}
+
+static_always_inline u64x2
+u32x4_extend_to_u64x2_high (u32x4 v)
+{
+  return vmovl_high_u32 (vrev64q_u32 (v));
 }
 
 #define CLIB_HAVE_VEC128_UNALIGNED_LOAD_STORE

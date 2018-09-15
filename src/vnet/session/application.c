@@ -1267,9 +1267,10 @@ app_send_io_evt_rx (app_worker_t * app_wrk, stream_session_t * s, u8 lock)
   evt->fifo = s->server_rx_fifo;
   evt->event_type = FIFO_EVENT_APP_RX;
 
+  (void) svm_fifo_set_event (s->server_rx_fifo);
+
   if (app_enqueue_evt (mq, &msg, lock))
     return -1;
-  (void) svm_fifo_set_event (s->server_rx_fifo);
   return 0;
 }
 
@@ -1319,9 +1320,8 @@ static app_send_evt_handler_fn * const app_send_evt_handler_fns[3] = {
 /**
  * Send event to application
  *
- * Logic from queue perspective is non-blocking. That is, if there's
- * not enough space to enqueue a message, we return. However, if the lock
- * flag is set, we do wait for queue mutex.
+ * Logic from queue perspective is non-blocking. If there's
+ * not enough space to enqueue a message, we return.
  */
 int
 app_worker_send_event (app_worker_t * app, stream_session_t * s, u8 evt_type)
@@ -1330,6 +1330,12 @@ app_worker_send_event (app_worker_t * app, stream_session_t * s, u8 evt_type)
   return app_send_evt_handler_fns[evt_type] (app, s, 0 /* lock */ );
 }
 
+/**
+ * Send event to application
+ *
+ * Logic from queue perspective is blocking. However, if queue is full,
+ * we return.
+ */
 int
 app_worker_lock_and_send_event (app_worker_t * app, stream_session_t * s,
 				u8 evt_type)

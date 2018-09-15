@@ -120,7 +120,7 @@ list(APPEND VNET_SOURCES
   ethernet/p2p_ethernet_api.c
 )
 
-list(APPEND VNET_MULTIARCH_SOURCES l2/l2_output.c)
+list(APPEND VNET_MULTIARCH_SOURCES ethernet/node.c)
 
 list(APPEND VNET_HEADERS
   ethernet/error.def
@@ -156,6 +156,12 @@ list(APPEND VNET_SOURCES
   l2/l2_rw.c
   l2/l2_vtr.c
   l2/l2_xcrw.c
+)
+
+list(APPEND VNET_MULTIARCH_SOURCES
+  l2/l2_fwd.c
+  l2/l2_learn.c
+  l2/l2_output.c
 )
 
 list(APPEND VNET_HEADERS
@@ -655,6 +661,24 @@ list(APPEND VNET_HEADERS
 )
 
 list(APPEND VNET_API_FILES mpls/mpls.api)
+
+##############################################################################
+# Tunnel protocol: vxlan-gbp
+##############################################################################
+list(APPEND VNET_SOURCES
+  vxlan-gbp/decap.c
+  vxlan-gbp/encap.c
+  vxlan-gbp/vxlan_gbp_api.c
+  vxlan-gbp/vxlan_gbp.c
+)
+
+list(APPEND VNET_HEADERS
+  vxlan-gbp/vxlan_gbp.h
+  vxlan-gbp/vxlan_gbp_packet.h
+  vxlan-gbp/vxlan_gbp_error.def
+)
+
+list(APPEND VNET_API_FILES vxlan-gbp/vxlan_gbp.api)
 
 ##############################################################################
 # Tunnel protocol: vxlan-gpe
@@ -1321,6 +1345,10 @@ list(APPEND VNET_HEADERS
 
 list(APPEND VNET_API_FILES bier/bier.api)
 
+##############################################################################
+# VNET Library
+##############################################################################
+
 add_vpp_library(vnet
   SOURCES ${VNET_SOURCES}
   MULTIARCH_SOURCES ${VNET_MULTIARCH_SOURCES}
@@ -1329,3 +1357,25 @@ add_vpp_library(vnet
   LINK_LIBRARIES vppinfra svm vlib ${OPENSSL_LIBRARIES}
   DEPENDS api_headers
 )
+
+##############################################################################
+# Session echo apps
+##############################################################################
+
+option(VPP_BUILD_SESSION_ECHO_APPS "Build session echo apps." ON)
+if(VPP_BUILD_SESSION_ECHO_APPS)
+  add_vpp_executable(tcp_echo
+    SOURCES ../tests/vnet/session/tcp_echo.c
+    LINK_LIBRARIES vlibmemoryclient svm vppinfra pthread m rt
+    DEPENDS api_headers
+    NO_INSTALL
+    )
+  add_vpp_executable(udp_echo
+    SOURCES ../tests/vnet/session/udp_echo.c
+    LINK_LIBRARIES vlibmemoryclient svm vppinfra pthread m rt
+    DEPENDS api_headers
+    NO_INSTALL
+    )
+endif(VPP_BUILD_SESSION_ECHO_APPS)
+
+##############################################################################

@@ -1827,6 +1827,20 @@ class VppPapiProvider(object):
         """Get address and port assignment algorithm"""
         return self.api(self.papi.nat_get_addr_and_port_alloc_alg, {})
 
+    def nat_set_mss_clamping(self, enable=0, mss_value=1500):
+        """Set TCP MSS rewriting configuration
+
+        :param enable: disable(0)/enable(1) MSS rewriting feature
+        :param mss_value: MSS value to be used for MSS rewriting
+        """
+        return self.api(
+            self.papi.nat_set_mss_clamping,
+            {'enable': enable, 'mss_value': mss_value})
+
+    def nat_get_mss_clamping(self):
+        """Get TCP MSS rewriting configuration"""
+        return self.api(self.papi.nat_get_mss_clamping, {})
+
     def nat_det_close_session_out(
             self,
             out_addr,
@@ -2723,6 +2737,45 @@ class VppPapiProvider(object):
                          'protocol': protocol,
                          'vni': vni})
 
+    def vxlan_gbp_tunnel_add_del(
+            self,
+            src,
+            dst,
+            mcast_sw_if_index=0xFFFFFFFF,
+            is_add=1,
+            is_ipv6=0,
+            encap_table_id=0,
+            decap_next_index=0xFFFFFFFF,
+            vni=0,
+            instance=0xFFFFFFFF):
+        """
+
+        :param dst_addr:
+        :param src_addr:
+        :param is_add:  (Default value = 1)
+        :param is_ipv6:  (Default value = 0)
+        :param encap_table_id:  (Default value = 0)
+        :param decap_next_index:  (Default value = 0xFFFFFFFF)
+        :param mcast_sw_if_index:  (Default value = 0xFFFFFFFF)
+        :param vni:  (Default value = 0)
+        :param instance:  (Default value = 0xFFFFFFFF)
+
+        """
+        return self.api(self.papi.vxlan_gbp_tunnel_add_del,
+                        {'is_add': is_add,
+                         'tunnel': {
+                             'src': src,
+                             'dst': dst,
+                             'mcast_sw_if_index': mcast_sw_if_index,
+                             'encap_table_id': encap_table_id,
+                             'decap_next_index': decap_next_index,
+                             'vni': vni,
+                             'instance': instance}})
+
+    def vxlan_gbp_tunnel_dump(self, sw_if_index=0xffffffff):
+        return self.api(self.papi.vxlan_gbp_tunnel_dump,
+                        {'sw_if_index': sw_if_index})
+
     def pppoe_add_del_session(
             self,
             client_ip,
@@ -3094,7 +3147,8 @@ class VppPapiProvider(object):
                            bti,
                            bp,
                            paths,
-                           is_add=1):
+                           is_add=1,
+                           is_replace=0):
         """ BIER Route add/del """
         return self.api(
             self.papi.bier_route_add_del,
@@ -3104,7 +3158,8 @@ class VppPapiProvider(object):
              'br_bp': bp,
              'br_n_paths': len(paths),
              'br_paths': paths,
-             'br_is_add': is_add})
+             'br_is_add': is_add,
+             'br_is_replace': is_replace})
 
     def bier_route_dump(self, bti):
         return self.api(
@@ -3397,15 +3452,20 @@ class VppPapiProvider(object):
                          'enable_ip6': 1 if enable_ip6 else 0,
                          })
 
-    def gbp_endpoint_add_del(self, is_add, sw_if_index, addr, is_ip6, epg):
-        """ GBP endpoint Add/Del """
-        return self.api(self.papi.gbp_endpoint_add_del,
-                        {'is_add': is_add,
-                         'endpoint': {
-                             'is_ip6': is_ip6,
-                             'sw_if_index': sw_if_index,
-                             'address': addr,
-                             'epg_id': epg}})
+    def gbp_endpoint_add(self, sw_if_index, ips, mac, epg):
+        """ GBP endpoint Add """
+        return self.api(self.papi.gbp_endpoint_add,
+                        {'endpoint': {
+                            'sw_if_index': sw_if_index,
+                            'ips': ips,
+                            'n_ips': len(ips),
+                            'mac': mac,
+                            'epg_id': epg}})
+
+    def gbp_endpoint_del(self, handle):
+        """ GBP endpoint Del """
+        return self.api(self.papi.gbp_endpoint_del,
+                        {'handle': handle})
 
     def gbp_endpoint_dump(self):
         """ GBP endpoint Dump """
@@ -3444,9 +3504,9 @@ class VppPapiProvider(object):
 
     def gbp_subnet_add_del(self, is_add, table_id,
                            is_internal,
-                           addr, addr_len,
+                           prefix,
                            sw_if_index=0xffffffff,
-                           epg_id=0xffffffff,
+                           epg_id=0xffff,
                            is_ip6=False):
         """ GBP Subnet Add/Del """
         return self.api(self.papi.gbp_subnet_add_del,
@@ -3456,8 +3516,7 @@ class VppPapiProvider(object):
                              'is_ip6': is_ip6,
                              'sw_if_index': sw_if_index,
                              'epg_id': epg_id,
-                             'address': addr,
-                             'address_length': addr_len,
+                             'prefix': prefix,
                              'table_id': table_id}})
 
     def gbp_subnet_dump(self):

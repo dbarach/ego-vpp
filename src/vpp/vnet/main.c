@@ -60,16 +60,10 @@ vpp_find_plugin_path ()
   *p = 0;
 
   s = format (0, "%s/lib/vpp_plugins", path);
-#if uword_bits == 64
-  s = format (s, ":%s/lib64/vpp_plugins", path);
-#endif
   vec_add1 (s, 0);
   vlib_plugin_path = (char *) s;
 
   s = format (0, "%s/lib/vpp_api_test_plugins", path);
-#if uword_bits == 64
-  s = format (s, ":%s/lib64/vpp_api_test_plugins", path);
-#endif
   vec_add1 (s, 0);
   vat_plugin_path = (char *) s;
 }
@@ -413,39 +407,6 @@ VLIB_CLI_COMMAND (restart_isc_dhcp_server_command, static) = {
   .path = "service restart isc-dhcp-server",
   .short_help = "restarts the isc-dhcp-server",
   .function = restart_isc_dhcp_server_command_fn,
-};
-/* *INDENT-ON* */
-
-static clib_error_t *
-add_default_linux_route_command_fn (vlib_main_t * vm,
-                                    unformat_input_t * input, 
-                                    vlib_cli_command_t * c)
-{
-  int rv __attribute__((unused));
-  ip4_address_t ip4_addr;
-  u8 *cmd;
-  
-  if (!unformat (input, "%U", unformat_ip4_address, &ip4_addr))
-    return clib_error_return (0, "default gateway address required...");
-
-  cmd = format (0, "/sbin/route add -net 0.0.0.0/0 gw %U",
-                format_ip4_address, &ip4_addr);
-  vec_add1 (cmd, 0);
-
-  rv = system (cmd);
-  
-  vlib_cli_output (vm, "%s", cmd);
-
-  vec_free(cmd);
-
-  return 0;
-}
-
-/* *INDENT-OFF* */
-VLIB_CLI_COMMAND (add_default_linux_route_command, static) = {
-  .path = "add default linux route via",
-  .short_help = "Adds default linux route: 0.0.0.0/0 via <addr>",
-  .function = add_default_linux_route_command_fn,
 };
 /* *INDENT-ON* */
 

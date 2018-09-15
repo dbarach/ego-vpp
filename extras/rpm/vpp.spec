@@ -263,8 +263,8 @@ for i in $(ls %{_mu_build_dir}/../extras/japi/java/jvpp/gen/jvppgen/*.py); do
    install -p -m666 ${i} %{buildroot}%{python2_sitelib}/jvppgen
 done;
 
-install -p -m 644 %{_mu_build_dir}/../src/tools/vppapigen/C.py %{buildroot}/usr/share/vpp
-install -p -m 644 %{_mu_build_dir}/../src/tools/vppapigen/JSON.py %{buildroot}/usr/share/vpp
+install -p -m 644 %{_mu_build_dir}/../src/tools/vppapigen/vppapigen_c.py %{buildroot}/usr/share/vpp
+install -p -m 644 %{_mu_build_dir}/../src/tools/vppapigen/vppapigen_json.py %{buildroot}/usr/share/vpp
 
 # sample plugin
 mkdir -p -m755 %{buildroot}/usr/share/doc/vpp/examples/sample-plugin/sample
@@ -282,18 +282,18 @@ mkdir -p -m755 %{buildroot}%{_localstatedir}/log/vpp
 
 #
 # vpp-plugins
-# 
+#
 mkdir -p -m755 %{buildroot}/usr/lib/vpp_plugins
 mkdir -p -m755 %{buildroot}/usr/lib/vpp_api_test_plugins
-for file in $(cd %{_mu_build_dir}/%{_vpp_install_dir}/vpp/lib64/vpp_plugins && find -type f -print)
+for file in $(cd %{_mu_build_dir}/%{_vpp_install_dir}/vpp/lib/vpp_plugins && find -type f -print)
 do
-        install -p -m 644 %{_mu_build_dir}/%{_vpp_install_dir}/vpp/lib64/vpp_plugins/$file \
+        install -p -m 644 %{_mu_build_dir}/%{_vpp_install_dir}/vpp/lib/vpp_plugins/$file \
            %{buildroot}/usr/lib/vpp_plugins/$file
 done
 
-for file in $(cd %{_mu_build_dir}/%{_vpp_install_dir}/vpp/lib64/vpp_api_test_plugins && find -type f -print)
+for file in $(cd %{_mu_build_dir}/%{_vpp_install_dir}/vpp/lib/vpp_api_test_plugins && find -type f -print)
 do
-        install -p -m 644 %{_mu_build_dir}/%{_vpp_install_dir}/vpp/lib64/vpp_api_test_plugins/$file \
+        install -p -m 644 %{_mu_build_dir}/%{_vpp_install_dir}/vpp/lib/vpp_api_test_plugins/$file \
            %{buildroot}/usr/lib/vpp_api_test_plugins/$file
 done
 
