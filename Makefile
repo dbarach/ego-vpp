@@ -173,6 +173,13 @@ endif
 .PHONY: test test-debug retest retest-debug test-doc test-wipe-doc test-help test-wipe
 .PHONY: test-cov test-wipe-cov
 
+define banner
+	@echo "========================================================================"
+	@echo " $(1)"
+	@echo "========================================================================"
+	@echo " "
+endef
+
 help:
 	@echo "Make Targets:"
 	@echo " install-dep         - install software dependencies"
@@ -201,7 +208,7 @@ help:
 	@echo " run-vat             - run vpp-api-test tool"
 	@echo " pkg-deb             - build DEB packages"
 	@echo " pkg-rpm             - build RPM packages"
-	@echo " dpdk-install-dev    - install DPDK development packages"
+	@echo " install-ext-deps    - install external development dependencies"
 	@echo " ctags               - (re)generate ctags database"
 	@echo " gtags               - (re)generate gtags database"
 	@echo " cscope              - (re)generate cscope database"
@@ -210,6 +217,9 @@ help:
 	@echo " doxygen             - (re)generate documentation"
 	@echo " bootstrap-doxygen   - setup Doxygen dependencies"
 	@echo " wipe-doxygen        - wipe all generated documentation"
+	@echo " docs                 - Build the Sphinx documentation"
+	@echo " docs-venv         - Build the virtual environment for the Sphinx docs"
+	@echo " docs-clean        - Remove the generated files from the Sphinx docs"
 	@echo " test-doc            - generate documentation for test framework"
 	@echo " test-wipe-doc       - wipe documentation for test framework"
 	@echo " test-cov            - generate code coverage report for test framework"
@@ -486,7 +496,11 @@ pkg-srpm: dist
 	make -C extras/rpm srpm
 
 dpdk-install-dev:
-	make -C dpdk install-$(PKG)
+	$(call banner,"This command is deprecated. Please use 'make install-ext-libs'")
+	make -C build/external install-$(PKG)
+
+install-ext-deps:
+	make -C build/external install-$(PKG)
 
 ctags: ctags.files
 	@ctags --totals --tag-relative -L $<
@@ -526,14 +540,23 @@ doxygen:
 wipe-doxygen:
 	$(call make-doxy)
 
-define banner
-	@echo "========================================================================"
-	@echo " $(1)"
-	@echo "========================================================================"
-	@echo " "
-endef
+# Sphinx Documents
+export DOCS_DIR = $(WS_ROOT)/docs
+export VENV_DIR = $(WS_ROOT)/sphinx_venv
+export SPHINX_SCRIPTS_DIR = $(WS_ROOT)/docs/scripts
 
-verify: install-dep $(BR)/.deps.ok dpdk-install-dev
+.PHONY: docs-venv docs docs-clean
+
+docs-venv:
+	@($(SPHINX_SCRIPTS_DIR)/sphinx-make.sh venv)
+
+docs: $(DOCS_DIR)
+	@($(SPHINX_SCRIPTS_DIR)/sphinx-make.sh html)
+
+docs-clean:
+	@($(SPHINX_SCRIPTS_DIR)/sphinx-make.sh clean)
+
+verify: install-dep $(BR)/.deps.ok install-ext-deps
 	$(call banner,"Building for PLATFORM=vpp using gcc")
 	@make -C build-root PLATFORM=vpp TAG=vpp wipe-all install-packages
 	$(call banner,"Building sample-plugin")

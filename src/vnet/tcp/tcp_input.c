@@ -2282,8 +2282,8 @@ tcp46_syn_sent_inline (vlib_main_t * vm, vlib_node_runtime_t * node,
 	  if (tcp_opts_wscale (&new_tc0->rcv_opts))
 	    new_tc0->snd_wscale = new_tc0->rcv_opts.wscale;
 
-	  /* RFC1323: SYN and SYN-ACK wnd not scaled */
-	  new_tc0->snd_wnd = clib_net_to_host_u16 (tcp0->window);
+	  new_tc0->snd_wnd = clib_net_to_host_u16 (tcp0->window)
+	    << new_tc0->snd_wscale;
 	  new_tc0->snd_wl1 = seq0;
 	  new_tc0->snd_wl2 = ack0;
 
@@ -2735,10 +2735,10 @@ tcp46_rcv_process_inline (vlib_main_t * vm, vlib_node_runtime_t * node,
 	    case TCP_STATE_SYN_RCVD:
 	      /* Send FIN-ACK notify app and enter CLOSE-WAIT */
 	      tcp_connection_timers_reset (tc0);
-	      tcp_retransmit_timer_set (tc0);
 	      tcp_make_fin (tc0, b0);
 	      tc0->snd_nxt += 1;
 	      tc0->snd_una_max = tc0->snd_nxt;
+	      tcp_retransmit_timer_set (tc0);
 	      next0 = tcp_next_output (tc0->c_is_ip4);
 	      stream_session_disconnect_notify (&tc0->connection);
 	      tc0->state = TCP_STATE_CLOSE_WAIT;
@@ -3441,7 +3441,11 @@ do {                                                       	\
   /* ACK for for a SYN-ACK -> tcp-rcv-process. */
   _(SYN_RCVD, TCP_FLAG_ACK, TCP_INPUT_NEXT_RCV_PROCESS, TCP_ERROR_NONE);
   _(SYN_RCVD, TCP_FLAG_RST, TCP_INPUT_NEXT_RCV_PROCESS, TCP_ERROR_NONE);
+  _(SYN_RCVD, TCP_FLAG_RST | TCP_FLAG_ACK, TCP_INPUT_NEXT_RCV_PROCESS,
+    TCP_ERROR_NONE);
   _(SYN_RCVD, TCP_FLAG_SYN, TCP_INPUT_NEXT_RCV_PROCESS, TCP_ERROR_NONE);
+  _(SYN_RCVD, TCP_FLAG_FIN | TCP_FLAG_ACK, TCP_INPUT_NEXT_RCV_PROCESS,
+    TCP_ERROR_NONE);
   /* SYN-ACK for a SYN */
   _(SYN_SENT, TCP_FLAG_SYN | TCP_FLAG_ACK, TCP_INPUT_NEXT_SYN_SENT,
     TCP_ERROR_NONE);

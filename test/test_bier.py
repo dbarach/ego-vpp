@@ -482,6 +482,37 @@ class TestBier(VppTestCase):
         #
         self.send_and_expect(self.pg0, [p], self.pg1)
 
+        #
+        # A multicast route to forward post BIER disposition that needs
+        # a check against sending back into the BIER core
+        #
+        bi = VppBierImp(self, bti, 333, chr(0x3) * 32)
+        bi.add_vpp_config()
+
+        route_eg_232_1_1_2 = VppIpMRoute(
+            self,
+            "0.0.0.0",
+            "232.1.1.2", 32,
+            MRouteEntryFlags.MFIB_ENTRY_FLAG_NONE,
+            paths=[VppMRoutePath(0xffffffff,
+                                 MRouteItfFlags.MFIB_ITF_FLAG_FORWARD,
+                                 proto=DpoProto.DPO_PROTO_BIER,
+                                 bier_imp=bi.bi_index),
+                   VppMRoutePath(self.pg1.sw_if_index,
+                                 MRouteItfFlags.MFIB_ITF_FLAG_FORWARD)])
+        route_eg_232_1_1_2.add_vpp_config()
+        route_eg_232_1_1_2.update_rpf_id(8192)
+
+        p = (Ether(dst=self.pg0.local_mac, src=self.pg0.remote_mac) /
+             MPLS(label=77, ttl=255) /
+             BIER(length=BIERLength.BIER_LEN_256,
+                  BitString=chr(255)*32,
+                  BFRID=77) /
+             IP(src="1.1.1.1", dst="232.1.1.2") /
+             UDP(sport=1234, dport=1234) /
+             Raw())
+        self.send_and_expect(self.pg0, [p], self.pg1)
+
     def bier_e2e(self, hdr_len_id, n_bytes, max_bp):
         """ BIER end-to-end"""
 
@@ -666,7 +697,7 @@ class TestBier(VppTestCase):
                                             labels=[VppMplsLabel(2001)])])
         ip_route.add_vpp_config()
 
-        udp_encap = VppUdpEncap(self, 4,
+        udp_encap = VppUdpEncap(self,
                                 self.pg0.local_ip4,
                                 nh1,
                                 330, 8138)
@@ -677,7 +708,7 @@ class TestBier(VppTestCase):
             [VppRoutePath("0.0.0.0",
                           0xFFFFFFFF,
                           is_udp_encap=1,
-                          next_hop_id=4)])
+                          next_hop_id=udp_encap.id)])
         bier_route.add_vpp_config()
 
         #
@@ -727,7 +758,7 @@ class TestBier(VppTestCase):
         self.assertEqual(rx[0][IP].dst, nh1)
         self.assertEqual(rx[0][UDP].sport, 330)
         self.assertEqual(rx[0][UDP].dport, 8138)
-        self.assertEqual(rx[0][BIFT].bsl, 2)
+        self.assertEqual(rx[0][BIFT].bsl, BIERLength.BIER_LEN_256)
         self.assertEqual(rx[0][BIFT].sd, 1)
         self.assertEqual(rx[0][BIFT].set, 0)
         self.assertEqual(rx[0][BIFT].ttl, 64)

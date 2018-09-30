@@ -56,7 +56,7 @@ set(VPP_SOURCES
   app/version.c
   oam/oam.c
   oam/oam_api.c
-  stats/stats.c
+  stats/stats_to_be_deprecated.c
   stats/stat_segment.c
   api/api.c
   api/json_format.c
@@ -113,9 +113,8 @@ add_vpp_executable(summary_stats_client
 
 add_vpp_executable(vpp_get_stats
   SOURCES app/vpp_get_stats.c
-  LINK_LIBRARIES vppapiclient vppinfra svm vlibmemoryclient
+  LINK_LIBRARIES vppapiclient vppinfra
   DEPENDS api_headers
-  NO_INSTALL
 )
 
 add_vpp_executable(vpp_prometheus_export

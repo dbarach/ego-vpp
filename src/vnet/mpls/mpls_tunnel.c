@@ -165,9 +165,12 @@ mpls_tunnel_mk_lb (mpls_tunnel_t *mt,
 
     lb_proto = fib_forw_chain_type_to_dpo_proto(fct);
 
-    fib_path_list_walk(mt->mt_path_list,
-                       mpls_tunnel_collect_forwarding,
-                       &ctx);
+    if (FIB_NODE_INDEX_INVALID != mt->mt_path_list)
+    {
+        fib_path_list_walk(mt->mt_path_list,
+                           mpls_tunnel_collect_forwarding,
+                           &ctx);
+    }
 
     if (!dpo_id_is_valid(dpo_lb))
     {
@@ -760,6 +763,18 @@ vnet_mpls_tunnel_path_remove (u32 sw_if_index,
     return (fib_path_list_get_n_paths(mt->mt_path_list));
 }
 
+int
+vnet_mpls_tunnel_get_index (u32 sw_if_index)
+{
+    mpls_tunnel_t *mt;
+
+    mt = mpls_tunnel_get_from_sw_if_index(sw_if_index);
+
+    if (NULL == mt)
+        return (~0);
+
+    return (mt - mpls_tunnel_pool);
+}
 
 static clib_error_t *
 vnet_create_mpls_tunnel_command_fn (vlib_main_t * vm,
@@ -922,7 +937,7 @@ show_mpls_tunnel_command_fn (vlib_main_t * vm,
     else
     {
         if (pool_is_free_index(mpls_tunnel_pool, mti))
-            return clib_error_return (0, "Not atunnel index %d", mti);
+            return clib_error_return (0, "Not a tunnel index %d", mti);
 
         mt = pool_elt_at_index(mpls_tunnel_pool, mti);
 

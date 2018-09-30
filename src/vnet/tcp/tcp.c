@@ -765,8 +765,9 @@ format_tcp_vars (u8 * s, va_list * args)
 	      tc->snd_una_max - tc->iss);
   s = format (s, " rcv_nxt %u rcv_las %u\n",
 	      tc->rcv_nxt - tc->irs, tc->rcv_las - tc->irs);
-  s = format (s, " snd_wnd %u rcv_wnd %u snd_wl1 %u snd_wl2 %u\n",
-	      tc->snd_wnd, tc->rcv_wnd, tc->snd_wl1 - tc->irs,
+  s = format (s, " snd_wnd %u rcv_wnd %u rcv_wscale %u ",
+	      tc->snd_wnd, tc->rcv_wnd, tc->rcv_wscale);
+  s = format (s, "snd_wl1 %u snd_wl2 %u\n", tc->snd_wl1 - tc->irs,
 	      tc->snd_wl2 - tc->iss);
   s = format (s, " flight size %u out space %u cc space %u rcv_wnd_av %u\n",
 	      tcp_flight_size (tc), tcp_available_output_snd_space (tc),
@@ -1016,8 +1017,8 @@ tcp_round_snd_space (tcp_connection_t * tc, u32 snd_space)
  * @param tc tcp connection
  * @return number of bytes session is allowed to write
  */
-static u32
-tcp_snd_space (tcp_connection_t * tc)
+static inline u32
+tcp_snd_space_inline (tcp_connection_t * tc)
 {
   int snd_space, snt_limited;
 
@@ -1065,11 +1066,17 @@ tcp_snd_space (tcp_connection_t * tc)
   return 0;
 }
 
+u32
+tcp_snd_space (tcp_connection_t * tc)
+{
+  return tcp_snd_space_inline (tc);
+}
+
 static u32
 tcp_session_send_space (transport_connection_t * trans_conn)
 {
   tcp_connection_t *tc = (tcp_connection_t *) trans_conn;
-  return clib_min (tcp_snd_space (tc),
+  return clib_min (tcp_snd_space_inline (tc),
 		   tc->snd_wnd - (tc->snd_nxt - tc->snd_una));
 }
 
@@ -1388,15 +1395,17 @@ tcp_config_fn (vlib_main_t * vm, unformat_input_t * input)
 
   while (unformat_check_input (input) != UNFORMAT_END_OF_INPUT)
     {
-      if (unformat
-	  (input, "preallocated-connections %d",
-	   &tm->preallocated_connections))
+      if (unformat (input, "preallocated-connections %d",
+		    &tm->preallocated_connections))
 	;
       else if (unformat (input, "preallocated-half-open-connections %d",
 			 &tm->preallocated_half_open_connections))
 	;
       else if (unformat (input, "buffer-fail-fraction %f",
 			 &tm->buffer_fail_fraction))
+	;
+      else if (unformat (input, "max-rx-fifo %U", unformat_memory_size,
+			 &tm->max_rx_fifo))
 	;
       else
 	return clib_error_return (0, "unknown input `%U'",

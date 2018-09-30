@@ -43,6 +43,21 @@ class QOS_SOURCE:
     IP = 3
 
 
+class L2_PORT_TYPE:
+    NORMAL = 0
+    BVI = 1
+    UU_FWD = 2
+
+
+class BRIDGE_FLAGS:
+    NONE = 0
+    LEARN = 1
+    FWD = 2
+    FLOOD = 4
+    UU_FLOOD = 8
+    ARP_TERM = 16
+
+
 class UnexpectedApiReturnValueError(Exception):
     """ exception raised when the API return value is unexpected """
     pass
@@ -627,7 +642,8 @@ class VppPapiProvider(object):
         return self.api(self.papi.l2fib_flush_all, {})
 
     def sw_interface_set_l2_bridge(self, sw_if_index, bd_id,
-                                   shg=0, bvi=0, enable=1):
+                                   shg=0, port_type=L2_PORT_TYPE.NORMAL,
+                                   enable=1):
         """Add/remove interface to/from bridge domain.
 
         :param int sw_if_index: Software interface index of the interface.
@@ -641,7 +657,7 @@ class VppPapiProvider(object):
                         {'rx_sw_if_index': sw_if_index,
                          'bd_id': bd_id,
                          'shg': shg,
-                         'bvi': bvi,
+                         'port_type': port_type,
                          'enable': enable})
 
     def bridge_flags(self, bd_id, is_set, feature_bitmap):
@@ -650,7 +666,7 @@ class VppPapiProvider(object):
 
         :param int bd_id: Bridge domain ID.
         :param int is_set: Set to 1 to enable, set to 0 to disable the feature.
-        :param int feature_bitmap: Bitmap value of the feature to be set:
+        :param int flags: Bitmap value of the feature to be set:
             - learn (1 << 0),
             - forward (1 << 1),
             - flood (1 << 2),
@@ -660,7 +676,7 @@ class VppPapiProvider(object):
         return self.api(self.papi.bridge_flags,
                         {'bd_id': bd_id,
                          'is_set': is_set,
-                         'feature_bitmap': feature_bitmap})
+                         'flags': feature_bitmap})
 
     def bridge_domain_dump(self, bd_id=0):
         """
@@ -1150,14 +1166,12 @@ class VppPapiProvider(object):
         )
 
     def udp_encap_add(self,
-                      id,
                       src_ip,
                       dst_ip,
                       src_port,
                       dst_port,
                       table_id=0):
         """ Add a GRE tunnel
-        :param id: user provided ID
         :param src_ip:
         :param dst_ip:
         :param src_port:
@@ -1169,7 +1183,6 @@ class VppPapiProvider(object):
             self.papi.udp_encap_add,
             {
                 'udp_encap': {
-                    'id': id,
                     'src_ip': src_ip,
                     'dst_ip': dst_ip,
                     'src_port': src_port,
@@ -1347,6 +1360,10 @@ class VppPapiProvider(object):
              'mt_next_hop_table_id': next_hop_table_id,
              'mt_next_hop_via_label': next_hop_via_label,
              'mt_next_hop_out_label_stack': next_hop_out_label_stack})
+
+    def mpls_tunnel_dump(self, sw_if_index=0xffffffff):
+        return self.api(self.papi.mpls_tunnel_dump,
+                        {'sw_if_index': sw_if_index})
 
     def nat44_interface_add_del_feature(
             self,
@@ -3729,6 +3746,8 @@ class VppPapiProvider(object):
             is_server,
             sock_filename,
             renumber,
+            disable_mrg_rxbuf,
+            disable_indirect_desc,
             custom_dev_instance,
             use_custom_mac,
             mac_address,
@@ -3737,16 +3756,20 @@ class VppPapiProvider(object):
         :param is_server: is server
         :param sock_filename: socket name
         :param renumber: renumber
+        :param disable_mrg_rxbuf: disable mergable rx buffers
+        :param disable_indirect_desc: disable indirect descriptors
         :param custom_dev_instance: custom dev instance
         :param use_custom_mac: use custom mac
         :param mac_address: mac address
-        :param tag: tag (default ''
+        :param tag: tag (default '')
         """
         return self.api(
             self.papi.create_vhost_user_if,
             {'is_server': is_server,
              'sock_filename': sock_filename,
              'renumber': renumber,
+             'disable_mrg_rxbuf': disable_mrg_rxbuf,
+             'disable_indirect_desc': disable_indirect_desc,
              'custom_dev_instance': custom_dev_instance,
              'use_custom_mac': use_custom_mac,
              'mac_address': mac_address,
@@ -3801,3 +3824,44 @@ class VppPapiProvider(object):
 
     def pipe_dump(self):
         return self.api(self.papi.pipe_dump, {})
+
+    def memif_create(
+            self,
+            role,
+            mode,
+            rx_queues=None,
+            tx_queues=None,
+            _id=None,
+            socket_id=None,
+            secret=None,
+            ring_size=None,
+            buffer_size=None,
+            hw_addr=None):
+        return self.api(self.papi.memif_create,
+                        {'role': role,
+                         'mode': mode,
+                         'rx_queues': rx_queues,
+                         'tx_queues': tx_queues,
+                         'id': _id,
+                         'socket_id': socket_id,
+                         'secret': secret,
+                         'ring_size': ring_size,
+                         'buffer_size': buffer_size,
+                         'hw_addr': hw_addr})
+
+    def memif_delete(self, sw_if_index):
+        return self.api(self.papi.memif_delete, {'sw_if_index': sw_if_index})
+
+    def memif_dump(self):
+        return self.api(self.papi.memif_dump, {})
+
+    def memif_socket_filename_add_del(
+            self, is_add, socket_id, socket_filename):
+        return self.api(
+            self.papi.memif_socket_filename_add_del,
+            {'is_add': is_add,
+             'socket_id': socket_id,
+             'socket_filename': socket_filename})
+
+    def memif_socket_filename_dump(self):
+        return self.api(self.papi.memif_socket_filename_dump, {})

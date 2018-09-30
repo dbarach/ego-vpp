@@ -26,6 +26,7 @@
 #include <vnet/l2/l2_fib.h>
 #include <vnet/l2/l2_vtr.h>
 #include <vnet/l2/l2_learn.h>
+#include <vnet/l2/l2_bd.h>
 
 #include <vnet/vnet_msg_enum.h>
 
@@ -142,9 +143,9 @@ send_l2fib_table_entry (vpe_api_main_t * am,
 
   clib_memcpy (mp->mac, l2fe_key->fields.mac, 6);
   mp->sw_if_index = ntohl (l2fe_res->fields.sw_if_index);
-  mp->static_mac = l2fib_entry_result_is_set_STATIC (l2fe_res);
-  mp->filter_mac = l2fib_entry_result_is_set_FILTER (l2fe_res);
-  mp->bvi_mac = l2fib_entry_result_is_set_BVI (l2fe_res);
+  mp->static_mac = (l2fib_entry_result_is_set_STATIC (l2fe_res) ? 1 : 0);
+  mp->filter_mac = (l2fib_entry_result_is_set_FILTER (l2fe_res) ? 1 : 0);
+  mp->bvi_mac = (l2fib_entry_result_is_set_BVI (l2fe_res) ? 1 : 0);
   mp->context = context;
 
   vl_api_send_msg (reg, (u8 *) mp);
@@ -464,6 +465,7 @@ send_bridge_domain_details (l2input_main_t * l2im,
   mp->learn = bd_feature_learn (bd_config);
   mp->arp_term = bd_feature_arp_term (bd_config);
   mp->bvi_sw_if_index = ntohl (bd_config->bvi_sw_if_index);
+  mp->uu_fwd_sw_if_index = ntohl (bd_config->uu_fwd_sw_if_index);
   mp->mac_age = bd_config->mac_age;
   if (bd_config->bd_tag)
     {
@@ -527,6 +529,27 @@ vl_api_bridge_domain_dump_t_handler (vl_api_bridge_domain_dump_t * mp)
     }
 }
 
+static bd_flags_t
+bd_flags_decode (vl_api_bd_flags_t v)
+{
+  bd_flags_t f = L2_NONE;
+
+  v = ntohl (v);
+
+  if (v & BRIDGE_API_FLAG_LEARN)
+    f |= L2_LEARN;
+  if (v & BRIDGE_API_FLAG_FWD)
+    f |= L2_FWD;
+  if (v & BRIDGE_API_FLAG_FLOOD)
+    f |= L2_FLOOD;
+  if (v & BRIDGE_API_FLAG_UU_FLOOD)
+    f |= L2_UU_FLOOD;
+  if (v & BRIDGE_API_FLAG_ARP_TERM)
+    f |= L2_ARP_TERM;
+
+  return (f);
+}
+
 static void
 vl_api_bridge_flags_t_handler (vl_api_bridge_flags_t * mp)
 {
@@ -535,7 +558,7 @@ vl_api_bridge_flags_t_handler (vl_api_bridge_flags_t * mp)
   vl_api_bridge_flags_reply_t *rmp;
   int rv = 0;
 
-  u32 flags = ntohl (mp->feature_bitmap);
+  bd_flags_t flags = bd_flags_decode (mp->flags);
   u32 bd_id = ntohl (mp->bd_id);
   if (bd_id == 0)
     {
@@ -656,17 +679,50 @@ static void
     {
       VALIDATE_TX_SW_IF_INDEX (mp);
       rv = set_int_l2_mode (vm, vnm, MODE_L2_XC,
-			    rx_sw_if_index, 0, 0, 0, tx_sw_if_index);
+			    rx_sw_if_index, 0,
+			    L2_BD_PORT_TYPE_NORMAL, 0, tx_sw_if_index);
     }
   else
     {
-      rv = set_int_l2_mode (vm, vnm, MODE_L3, rx_sw_if_index, 0, 0, 0, 0);
+      rv = set_int_l2_mode (vm, vnm, MODE_L3, rx_sw_if_index, 0,
+			    L2_BD_PORT_TYPE_NORMAL, 0, 0);
+    }
+
+  switch (rv)
+    {
+    case MODE_ERROR_ETH:
+      rv = VNET_API_ERROR_NON_ETHERNET;
+      break;
+    case MODE_ERROR_BVI_DEF:
+      rv = VNET_API_ERROR_BD_ALREADY_HAS_BVI;
+      break;
     }
 
   BAD_RX_SW_IF_INDEX_LABEL;
   BAD_TX_SW_IF_INDEX_LABEL;
 
   REPLY_MACRO (VL_API_SW_INTERFACE_SET_L2_XCONNECT_REPLY);
+}
+
+static int
+l2_bd_port_type_decode (vl_api_l2_port_type_t v, l2_bd_port_type_t * l)
+{
+  v = clib_net_to_host_u32 (v);
+
+  switch (v)
+    {
+    case L2_API_PORT_TYPE_NORMAL:
+      *l = L2_BD_PORT_TYPE_NORMAL;
+      return 0;
+    case L2_API_PORT_TYPE_BVI:
+      *l = L2_BD_PORT_TYPE_BVI;
+      return 0;
+    case L2_API_PORT_TYPE_UU_FWD:
+      *l = L2_BD_PORT_TYPE_UU_FWD;
+      return 0;
+    }
+
+  return (VNET_API_ERROR_INVALID_VALUE);
 }
 
 static void
@@ -678,29 +734,41 @@ static void
   int rv = 0;
   vlib_main_t *vm = vlib_get_main ();
   vnet_main_t *vnm = vnet_get_main ();
+  l2_bd_port_type_t pt;
 
   VALIDATE_RX_SW_IF_INDEX (mp);
   u32 rx_sw_if_index = ntohl (mp->rx_sw_if_index);
+  rv = l2_bd_port_type_decode (mp->port_type, &pt);
 
-
+  if (0 != rv)
+    goto out;
   if (mp->enable)
     {
       VALIDATE_BD_ID (mp);
       u32 bd_id = ntohl (mp->bd_id);
       u32 bd_index = bd_find_or_add_bd_index (bdm, bd_id);
-      u32 bvi = mp->bvi;
-      u8 shg = mp->shg;
+
       rv = set_int_l2_mode (vm, vnm, MODE_L2_BRIDGE,
-			    rx_sw_if_index, bd_index, bvi, shg, 0);
+			    rx_sw_if_index, bd_index, pt, mp->shg, 0);
     }
   else
     {
-      rv = set_int_l2_mode (vm, vnm, MODE_L3, rx_sw_if_index, 0, 0, 0, 0);
+      rv = set_int_l2_mode (vm, vnm, MODE_L3, rx_sw_if_index, 0, pt, 0, 0);
+    }
+
+  switch (rv)
+    {
+    case MODE_ERROR_ETH:
+      rv = VNET_API_ERROR_NON_ETHERNET;
+      break;
+    case MODE_ERROR_BVI_DEF:
+      rv = VNET_API_ERROR_BD_ALREADY_HAS_BVI;
+      break;
     }
 
   BAD_RX_SW_IF_INDEX_LABEL;
   BAD_BD_ID_LABEL;
-
+out:
   REPLY_MACRO (VL_API_SW_INTERFACE_SET_L2_BRIDGE_REPLY);
 }
 
@@ -887,7 +955,7 @@ vl_api_sw_interface_set_vpath_t_handler (vl_api_sw_interface_set_vpath_t * mp)
 /*
  * l2_api_hookup
  * Add vpe's API message handlers to the table.
- * vlib has alread mapped shared memory and
+ * vlib has already mapped shared memory and
  * added the client registration handlers.
  * See .../vlib-api/vlibmemory/memclnt_vlib.c:memclnt_process()
  */

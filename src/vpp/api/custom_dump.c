@@ -40,7 +40,6 @@
 #include <vlibmemory/api.h>
 #include <vnet/lisp-cp/lisp_types.h>
 #include <vnet/qos/qos_types.h>
-#include <vpp/stats/stats.h>
 #include <vpp/oam/oam.h>
 
 #include <vnet/ethernet/ethernet.h>
@@ -130,6 +129,20 @@ static void *vl_api_sw_interface_set_rx_placement_t_print
     s = format (s, "main ");
   else
     s = format (s, "worker %d ", ntohl (mp->worker_id));
+
+  FINISH;
+}
+
+static void *vl_api_sw_interface_rx_placement_dump_t_print
+  (vl_api_sw_interface_rx_placement_dump_t * mp, void *handle)
+{
+  u8 *s;
+  u32 sw_if_index = ntohl (mp->sw_if_index);
+
+  s = format (0, "SCRIPT: sw_interface_rx_placement_dump ");
+
+  if (sw_if_index != ~0)
+    s = format (s, "sw_if_index %d ", sw_if_index);
 
   FINISH;
 }
@@ -302,8 +315,12 @@ static void *vl_api_sw_interface_set_l2_bridge_t_print
 
   if (mp->enable)
     {
-      s = format (s, "bd_id %d shg %d %senable ", ntohl (mp->bd_id),
-		  mp->shg, ((mp->bvi) ? "bvi " : " "));
+      s = format (s, "bd_id %d shg %d ", ntohl (mp->bd_id), mp->shg);
+      if (L2_API_PORT_TYPE_BVI == ntohl (mp->port_type))
+	s = format (s, "bvi ");
+      if (L2_API_PORT_TYPE_UU_FWD == ntohl (mp->port_type))
+	s = format (s, "uu-fwd ");
+      s = format (s, "enable");
     }
   else
     s = format (s, "disable ");
@@ -458,21 +475,21 @@ static void *vl_api_bridge_flags_t_print
   (vl_api_bridge_flags_t * mp, void *handle)
 {
   u8 *s;
-  u32 flags = ntohl (mp->feature_bitmap);
+  u32 flags = ntohl (mp->flags);
 
   s = format (0, "SCRIPT: bridge_flags ");
 
   s = format (s, "bd_id %d ", ntohl (mp->bd_id));
 
-  if (flags & L2_LEARN)
+  if (flags & BRIDGE_API_FLAG_LEARN)
     s = format (s, "learn ");
-  if (flags & L2_FWD)
+  if (flags & BRIDGE_API_FLAG_FWD)
     s = format (s, "forward ");
-  if (flags & L2_FLOOD)
+  if (flags & BRIDGE_API_FLAG_FLOOD)
     s = format (s, "flood ");
-  if (flags & L2_UU_FLOOD)
+  if (flags & BRIDGE_API_FLAG_UU_FLOOD)
     s = format (s, "uu-flood ");
-  if (flags & L2_ARP_TERM)
+  if (flags & BRIDGE_API_FLAG_ARP_TERM)
     s = format (s, "arp-term ");
 
   if (mp->is_set == 0)
@@ -726,9 +743,6 @@ static void *vl_api_ip_add_del_route_t_print
   if (mp->is_add == 0)
     s = format (s, "del ");
 
-  if (mp->next_hop_sw_if_index != ~0)
-    s = format (s, "sw_if_index %d ", ntohl (mp->next_hop_sw_if_index));
-
   if (mp->is_ipv6)
     s = format (s, "%U/%d ", format_ip6_address, mp->dst_address,
 		mp->dst_address_length);
@@ -753,6 +767,9 @@ static void *vl_api_ip_add_del_route_t_print
 	s = format (s, "via %U ", format_ip6_address, mp->next_hop_address);
       else
 	s = format (s, "via %U ", format_ip4_address, mp->next_hop_address);
+      if (mp->next_hop_sw_if_index != ~0)
+	s = format (s, "sw_if_index %d ", ntohl (mp->next_hop_sw_if_index));
+
     }
 
   if (mp->next_hop_weight != 1)
@@ -766,7 +783,8 @@ static void *vl_api_ip_add_del_route_t_print
 
   if (mp->next_hop_n_out_labels)
     {
-      for (u8 i = 0; i < mp->next_hop_n_out_labels; i++)
+      u8 i;
+      for (i = 0; i < mp->next_hop_n_out_labels; i++)
 	{
 	  s = format (s, "out-label %d ",
 		      ntohl (mp->next_hop_out_label_stack[i].label));
@@ -842,7 +860,8 @@ static void *vl_api_mpls_route_add_del_t_print
 
   if (mp->mr_next_hop_n_out_labels)
     {
-      for (u8 i = 0; i < mp->mr_next_hop_n_out_labels; i++)
+      u8 i;
+      for (i = 0; i < mp->mr_next_hop_n_out_labels; i++)
 	{
 	  s = format (s, "out-label %d ",
 		      ntohl (mp->mr_next_hop_out_label_stack[i].label));
@@ -959,7 +978,8 @@ static void *vl_api_sr_mpls_policy_add_t_print
 
   if (mp->n_segments)
     {
-      for (int i = 0; i < mp->n_segments; i++)
+      int i;
+      for (i = 0; i < mp->n_segments; i++)
 	s = format (s, "next %d ", ntohl (mp->segments[i]));
     }
 
@@ -1982,6 +2002,10 @@ static void *vl_api_create_vhost_user_if_t_print
     s = format (s, "server ");
   if (mp->renumber)
     s = format (s, "renumber %d ", ntohl (mp->custom_dev_instance));
+  if (mp->disable_mrg_rxbuf)
+    s = format (s, "disable_mrg_rxbuf ");
+  if (mp->disable_indirect_desc)
+    s = format (s, "disable_indirect_desc ");
   if (mp->tag[0])
     s = format (s, "tag %s", mp->tag);
 
@@ -2585,7 +2609,7 @@ static void *vl_api_mpls_tunnel_dump_t_print
 
   s = format (0, "SCRIPT: mpls_tunnel_dump ");
 
-  s = format (s, "tunnel_index %d ", ntohl (mp->tunnel_index));
+  s = format (s, "sw_if_index %d ", ntohl (mp->sw_if_index));
 
   FINISH;
 }

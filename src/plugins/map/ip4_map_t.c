@@ -237,7 +237,6 @@ ip4_map_t_icmp (vlib_main_t * vm,
 
 	  if (vnet_buffer (p0)->map_t.mtu < p0->current_length)
 	    {
-	      vnet_buffer (p0)->ip_frag.header_offset = 0;
 	      vnet_buffer (p0)->ip_frag.mtu = vnet_buffer (p0)->map_t.mtu;
 	      vnet_buffer (p0)->ip_frag.next_index = IP6_FRAG_NEXT_IP6_LOOKUP;
 	      next0 = IP4_MAPT_ICMP_NEXT_IP6_FRAG;
@@ -322,7 +321,6 @@ ip4_map_t_fragmented (vlib_main_t * vm,
 	    {
 	      if (vnet_buffer (p0)->map_t.mtu < p0->current_length)
 		{
-		  vnet_buffer (p0)->ip_frag.header_offset = 0;
 		  vnet_buffer (p0)->ip_frag.mtu = vnet_buffer (p0)->map_t.mtu;
 		  vnet_buffer (p0)->ip_frag.next_index =
 		    IP6_FRAG_NEXT_IP6_LOOKUP;
@@ -391,7 +389,6 @@ ip4_map_t_tcp_udp (vlib_main_t * vm,
 	      if (vnet_buffer (p0)->map_t.mtu < p0->current_length)
 		{
 		  //Send to fragmentation node if necessary
-		  vnet_buffer (p0)->ip_frag.header_offset = 0;
 		  vnet_buffer (p0)->ip_frag.mtu = vnet_buffer (p0)->map_t.mtu;
 		  vnet_buffer (p0)->ip_frag.next_index =
 		    IP6_FRAG_NEXT_IP6_LOOKUP;
@@ -409,7 +406,6 @@ ip4_map_t_tcp_udp (vlib_main_t * vm,
 	      if (vnet_buffer (p1)->map_t.mtu < p1->current_length)
 		{
 		  //Send to fragmentation node if necessary
-		  vnet_buffer (p1)->ip_frag.header_offset = 0;
 		  vnet_buffer (p1)->ip_frag.mtu = vnet_buffer (p1)->map_t.mtu;
 		  vnet_buffer (p1)->ip_frag.next_index =
 		    IP6_FRAG_NEXT_IP6_LOOKUP;
@@ -453,7 +449,6 @@ ip4_map_t_tcp_udp (vlib_main_t * vm,
 	      if (vnet_buffer (p0)->map_t.mtu < p0->current_length)
 		{
 		  //Send to fragmentation node if necessary
-		  vnet_buffer (p0)->ip_frag.header_offset = 0;
 		  vnet_buffer (p0)->ip_frag.mtu = vnet_buffer (p0)->map_t.mtu;
 		  vnet_buffer (p0)->ip_frag.next_index =
 		    IP6_FRAG_NEXT_IP6_LOOKUP;
@@ -740,6 +735,14 @@ ip4_map_t (vlib_main_t * vm, vlib_node_runtime_t * node, vlib_frame_t * frame)
 	  map_port0 = -1;
 	  ip4_map_t_classify (p0, d0, ip40, ip4_len0, &map_port0, &error0,
 			      &next0);
+
+	  /* Verify that port is not among the well-known ports */
+	  if ((d0->psid_length > 0 && d0->psid_offset > 0)
+	      && (clib_net_to_host_u16 (map_port0) <
+		  (0x1 << (16 - d0->psid_offset))))
+	    {
+	      error0 = MAP_ERROR_SEC_CHECK;
+	    }
 
 	  //Add MAP-T pseudo header in front of the packet
 	  vlib_buffer_advance (p0, -sizeof (*pheader0));

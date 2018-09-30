@@ -154,6 +154,7 @@ list(APPEND VNET_SOURCES
   l2/l2_in_out_acl.c
   l2/l2_patch.c
   l2/l2_rw.c
+  l2/l2_uu_fwd.c
   l2/l2_vtr.c
   l2/l2_xcrw.c
 )
@@ -306,7 +307,7 @@ list(APPEND VNET_HEADERS
   bonding/node.h
 )
 
-list(APPEND VNET_MULTIARCH_SOURCES bonding/node.c)
+list(APPEND VNET_MULTIARCH_SOURCES bonding/node.c bonding/device.c)
 list(APPEND VNET_API_FILES bonding/bond.api)
 
 ##############################################################################

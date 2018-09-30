@@ -493,8 +493,8 @@ int vnet_gtpu_add_del_tunnel
       else
 	{
 	  /* Multicast tunnel -
-	   * as the same mcast group can be used for mutiple mcast tunnels
-	   * with different VNIs, create the output fib adjecency only if
+	   * as the same mcast group can be used for multiple mcast tunnels
+	   * with different VNIs, create the output adjacency only if
 	   * it does not already exist
 	   */
 	  fib_protocol_t fp = fib_ip_proto (is_ip6);
@@ -578,8 +578,8 @@ int vnet_gtpu_add_del_tunnel
       si->flags |= VNET_SW_INTERFACE_FLAG_HIDDEN;
 
       /* make sure tunnel is removed from l2 bd or xconnect */
-      set_int_l2_mode (gtm->vlib_main, vnm, MODE_L3, t->sw_if_index, 0, 0, 0,
-		       0);
+      set_int_l2_mode (gtm->vlib_main, vnm, MODE_L3, t->sw_if_index, 0,
+		       L2_BD_PORT_TYPE_NORMAL, 0, 0);
       vec_add1 (gtm->free_gtpu_tunnel_hw_if_indices, t->hw_if_index);
 
       gtm->tunnel_index_by_sw_if_index[t->sw_if_index] = ~0;
@@ -994,7 +994,7 @@ set_ip4_gtpu_bypass (vlib_main_t * vm,
  *                                 ip4-lookup [2]
  * @cliexend
  *
- * Example of how to display the feature enabed on an interface:
+ * Example of how to display the feature enabled on an interface:
  * @cliexstart{show ip interface features GigabitEthernet2/0/0}
  * IP feature paths configured on GigabitEthernet2/0/0...
  * ...
@@ -1051,7 +1051,7 @@ set_ip6_gtpu_bypass (vlib_main_t * vm,
  *                                 ip6-lookup [2]
  * @cliexend
  *
- * Example of how to display the feature enabed on an interface:
+ * Example of how to display the feature enabled on an interface:
  * @cliexstart{show ip interface features GigabitEthernet2/0/0}
  * IP feature paths configured on GigabitEthernet2/0/0...
  * ...

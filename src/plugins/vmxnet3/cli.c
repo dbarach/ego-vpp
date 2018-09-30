@@ -31,13 +31,14 @@ vmxnet3_create_command_fn (vlib_main_t * vm, unformat_input_t * input,
 			   vlib_cli_command_t * cmd)
 {
   unformat_input_t _line_input, *line_input = &_line_input;
-  vmxnet3_create_if_args_t args = { 0 };
+  vmxnet3_create_if_args_t args;
   u32 tmp;
 
   /* Get a line of input. */
   if (!unformat_user (input, unformat_line_input, line_input))
     return 0;
 
+  memset (&args, 0, sizeof (args));
   while (unformat_check_input (line_input) != UNFORMAT_END_OF_INPUT)
     {
       if (unformat (line_input, "%U", unformat_vlib_pci_addr, &args.addr))
@@ -205,8 +206,9 @@ show_vmxnet3 (vlib_main_t * vm, u32 * hw_if_indices, u8 show_descr)
     {
       hi = vnet_get_hw_interface (vnm, hw_if_indices[i]);
       vd = vec_elt_at_index (vmxm->devices, hi->dev_instance);
-      vlib_cli_output (vm, "Interface: %s (ifindex %d)",
-		       hi->name, hw_if_indices[i]);
+      vlib_cli_output (vm, "Interface: %U (ifindex %d)",
+		       format_vnet_hw_if_index_name, vnm, hw_if_indices[i],
+		       hw_if_indices[i]);
       vlib_cli_output (vm, "  Version: %u", vd->version);
       vlib_cli_output (vm, "  PCI Address: %U", format_vlib_pci_addr,
 		       &vd->pci_addr);

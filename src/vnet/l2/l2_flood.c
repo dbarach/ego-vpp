@@ -214,7 +214,7 @@ l2flood_node_fn (vlib_main_t * vm,
 	  vec_reset_length (msm->clones[thread_index]);
 
 	  /*
-	   * the header offset needs to be large enoguh to incorporate
+	   * the header offset needs to be large enough to incorporate
 	   * all the L3 headers that could be touched when doing BVI
 	   * processing. So take the current l2 length plus 2 * IPv6
 	   * headers (for tunnel encap)
@@ -372,10 +372,12 @@ VLIB_REGISTER_NODE (l2flood_node,static) = {
         [L2FLOOD_NEXT_DROP] = "error-drop",
   },
 };
-/* *INDENT-ON* */
 
 VLIB_NODE_FUNCTION_MULTIARCH (l2flood_node, l2flood_node_fn)
-     clib_error_t *l2flood_init (vlib_main_t * vm)
+/* *INDENT-ON* */
+
+clib_error_t *
+l2flood_init (vlib_main_t * vm)
 {
   l2flood_main_t *mp = &l2flood_main;
 

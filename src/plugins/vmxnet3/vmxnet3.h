@@ -18,6 +18,7 @@
 
 #define foreach_vmxnet3_tx_func_error	       \
   _(ERROR_PACKETS, "error packets") \
+  _(LINK_DOWN, "link down") \
   _(NO_FREE_SLOTS, "no free tx slots")
 
 typedef enum
@@ -66,6 +67,8 @@ enum
 
 #define VMXNET3_RXF_BTYPE (1 << 14)	/* rx body buffer type */
 #define VMXNET3_RXF_GEN   (1 << 31)	/* rx generation */
+#define VMXNET3_RXCF_IP6  (1 << 20)	/* rx ip6 packet */
+#define VMXNET3_RXCF_IP4  (1 << 21)	/* rx ip4 packet */
 #define VMXNET3_RXCF_GEN  (1 << 31)	/* rx completion generation */
 #define VMXNET3_RXC_INDEX (0xFFF)	/* rx completion index mask */
 
@@ -470,6 +473,7 @@ typedef struct
 
   vmxnet3_dma *dma;
 
+  u32 link_speed;
 } vmxnet3_device_t;
 
 typedef struct

@@ -22,6 +22,7 @@
 #include <dlfcn.h>
 
 #include <vnet/ethernet/ethernet.h>
+#include <vnet/ethernet/sfp.h>
 #include <dpdk/device/dpdk.h>
 
 #include <dpdk/device/dpdk_priv.h>
@@ -69,24 +70,40 @@
   _(ETH_RSS_NVGRE,              "nvgre")
 
 
-#define foreach_dpdk_rx_offload_caps            \
-  _(DEV_RX_OFFLOAD_VLAN_STRIP, "vlan-strip")    \
-  _(DEV_RX_OFFLOAD_IPV4_CKSUM, "ipv4-cksum")    \
-  _(DEV_RX_OFFLOAD_UDP_CKSUM , "udp-cksum")     \
-  _(DEV_RX_OFFLOAD_TCP_CKSUM , "tcp-cksum")     \
-  _(DEV_RX_OFFLOAD_TCP_LRO   , "rcp-lro")       \
-  _(DEV_RX_OFFLOAD_QINQ_STRIP, "qinq-strip")
+#define foreach_dpdk_rx_offload_caps                                    \
+  _(DEV_RX_OFFLOAD_VLAN_STRIP, "vlan-strip")                            \
+  _(DEV_RX_OFFLOAD_IPV4_CKSUM, "ipv4-cksum")                            \
+  _(DEV_RX_OFFLOAD_UDP_CKSUM , "udp-cksum")                             \
+  _(DEV_RX_OFFLOAD_TCP_CKSUM , "tcp-cksum")                             \
+  _(DEV_RX_OFFLOAD_TCP_LRO   , "rcp-lro")                               \
+  _(DEV_RX_OFFLOAD_QINQ_STRIP, "qinq-strip")                            \
+  _(DEV_RX_OFFLOAD_OUTER_IPV4_CKSUM, "outer-ipv4-cksum")                \
+  _(DEV_RX_OFFLOAD_MACSEC_STRIP, "macsec-strip")                        \
+  _(DEV_RX_OFFLOAD_HEADER_SPLIT, "header-split")                        \
+  _(DEV_RX_OFFLOAD_VLAN_FILTER, "vlan-filter")                          \
+  _(DEV_RX_OFFLOAD_VLAN_EXTEND, "vlan-extend")                          \
+  _(DEV_RX_OFFLOAD_JUMBO_FRAME, "jumbo-frame")                          \
+  _(DEV_RX_OFFLOAD_CRC_STRIP, "crc-strip")                              \
+  _(DEV_RX_OFFLOAD_SCATTER, "scatter")                                  \
+  _(DEV_RX_OFFLOAD_TIMESTAMP, "timestamp")                              \
+  _(DEV_RX_OFFLOAD_SECURITY, "security")
 
-#define foreach_dpdk_tx_offload_caps           \
-  _(DEV_TX_OFFLOAD_VLAN_INSERT, "vlan-insert") \
-  _(DEV_TX_OFFLOAD_IPV4_CKSUM,  "ipv4-cksum")  \
-  _(DEV_TX_OFFLOAD_UDP_CKSUM  , "udp-cksum")   \
-  _(DEV_TX_OFFLOAD_TCP_CKSUM  , "tcp-cksum")   \
-  _(DEV_TX_OFFLOAD_SCTP_CKSUM , "sctp-cksum")  \
-  _(DEV_TX_OFFLOAD_TCP_TSO    , "tcp-tso")     \
-  _(DEV_TX_OFFLOAD_UDP_TSO    , "udp-tso")     \
-  _(DEV_TX_OFFLOAD_OUTER_IPV4_CKSUM, "outer-ipv4-cksum") \
-  _(DEV_TX_OFFLOAD_QINQ_INSERT, "qinq-insert")
+#define foreach_dpdk_tx_offload_caps                                    \
+  _(DEV_TX_OFFLOAD_VLAN_INSERT, "vlan-insert")                          \
+  _(DEV_TX_OFFLOAD_IPV4_CKSUM,  "ipv4-cksum")                           \
+  _(DEV_TX_OFFLOAD_UDP_CKSUM  , "udp-cksum")                            \
+  _(DEV_TX_OFFLOAD_TCP_CKSUM  , "tcp-cksum")                            \
+  _(DEV_TX_OFFLOAD_SCTP_CKSUM , "sctp-cksum")                           \
+  _(DEV_TX_OFFLOAD_TCP_TSO    , "tcp-tso")                              \
+  _(DEV_TX_OFFLOAD_UDP_TSO    , "udp-tso")                              \
+  _(DEV_TX_OFFLOAD_OUTER_IPV4_CKSUM, "outer-ipv4-cksum")                \
+  _(DEV_TX_OFFLOAD_QINQ_INSERT, "qinq-insert")                          \
+  _(DEV_TX_OFFLOAD_VXLAN_TNL_TSO, "vxlan-tnl-tso")                      \
+  _(DEV_TX_OFFLOAD_GRE_TNL_TSO, "gre-tnl-tso")                          \
+  _(DEV_TX_OFFLOAD_IPIP_TNL_TSO, "ipip-tnl-tso")                        \
+  _(DEV_TX_OFFLOAD_GENEVE_TNL_TSO, "geneve-tnl-tso")                    \
+  _(DEV_TX_OFFLOAD_MACSEC_INSERT, "macsec-insert")                      \
+  _(DEV_TX_OFFLOAD_MT_LOCKFREE, "mt-lockfree")                          \
 
 #define foreach_dpdk_pkt_rx_offload_flag                                \
   _ (PKT_RX_VLAN, "RX packet is a 802.1q VLAN packet")                  \
@@ -138,7 +155,7 @@
   _ (INNER_L3, IPV6_EXT_UNKNOWN, "Inner IPv6 packet with or without extension headers") \
   _ (INNER_L4, TCP, "Inner TCP packet")                                 \
   _ (INNER_L4, UDP, "Inner UDP packet")                                 \
-  _ (INNER_L4, FRAG, "Inner fagmented IP packet")                       \
+  _ (INNER_L4, FRAG, "Inner fragmented IP packet")                       \
   _ (INNER_L4, SCTP, "Inner SCTP (Stream Control Transmission Protocol) packet") \
   _ (INNER_L4, ICMP, "Inner ICMP packet")                               \
   _ (INNER_L4, NONFRAG, "Inner non-fragmented IP packet")
@@ -422,13 +439,10 @@ format_dpdk_link_status (u8 * s, va_list * args)
   return s;
 }
 
-#define _line_len 72
 #define _(v, str)                                            \
 if (bitmap & v) {                                            \
-  if (format_get_indent (s) > next_split ) {                 \
-    next_split += _line_len;                                 \
+  if (format_get_indent (s) > 72)                            \
     s = format(s,"\n%U", format_white_space, indent);        \
-  }                                                          \
   s = format(s, "%s ", str);                                 \
 }
 
@@ -436,7 +450,6 @@ u8 *
 format_dpdk_rss_hf_name (u8 * s, va_list * args)
 {
   u64 bitmap = va_arg (*args, u64);
-  int next_split = _line_len;
   u32 indent = format_get_indent (s);
 
   if (!bitmap)
@@ -445,11 +458,10 @@ format_dpdk_rss_hf_name (u8 * s, va_list * args)
   foreach_dpdk_rss_hf return s;
 }
 
-static u8 *
+u8 *
 format_dpdk_rx_offload_caps (u8 * s, va_list * args)
 {
-  u32 bitmap = va_arg (*args, u32);
-  int next_split = _line_len;
+  u64 bitmap = va_arg (*args, u32);
   u32 indent = format_get_indent (s);
 
   if (!bitmap)
@@ -458,11 +470,10 @@ format_dpdk_rx_offload_caps (u8 * s, va_list * args)
   foreach_dpdk_rx_offload_caps return s;
 }
 
-static u8 *
+u8 *
 format_dpdk_tx_offload_caps (u8 * s, va_list * args)
 {
-  u32 bitmap = va_arg (*args, u32);
-  int next_split = _line_len;
+  u64 bitmap = va_arg (*args, u32);
   u32 indent = format_get_indent (s);
   if (!bitmap)
     return format (s, "none");
@@ -470,7 +481,6 @@ format_dpdk_tx_offload_caps (u8 * s, va_list * args)
   foreach_dpdk_tx_offload_caps return s;
 }
 
-#undef _line_len
 #undef _
 
 u8 *
@@ -484,6 +494,31 @@ format_dpdk_device_errors (u8 * s, va_list * args)
   {
     s = format (s, "%U%v\n", format_white_space, indent, e->what);
   }
+  return s;
+}
+
+static u8 *
+format_dpdk_device_module_info (u8 * s, va_list * args)
+{
+  dpdk_device_t *xd = va_arg (*args, dpdk_device_t *);
+  struct rte_eth_dev_module_info mi = { 0 };
+  struct rte_dev_eeprom_info ei = { 0 };
+
+  if (rte_eth_dev_get_module_info (xd->port_id, &mi) != 0)
+    return format (s, "unknown");
+
+  ei.length = mi.eeprom_len;
+  ei.data = clib_mem_alloc (mi.eeprom_len);
+
+  if (rte_eth_dev_get_module_eeprom (xd->port_id, &ei) == 0)
+    {
+      s = format (s, "%U", format_sfp_eeprom, ei.data +
+		  (mi.type == RTE_ETH_MODULE_SFF_8436 ? 0x80 : 0));
+    }
+  else
+    s = format (s, "eeprom read error");
+
+  clib_mem_free (ei.data);
   return s;
 }
 
@@ -511,16 +546,25 @@ format_dpdk_device (u8 * s, va_list * args)
 
   dpdk_update_counters (xd, now);
   dpdk_update_link_state (xd, now);
+  rte_eth_dev_info_get (xd->port_id, &di);
 
   s = format (s, "%U\n%Ucarrier %U",
 	      format_dpdk_device_type, xd->port_id,
 	      format_white_space, indent + 2, format_dpdk_link_status, xd);
   s = format (s, "%Uflags: %U\n",
 	      format_white_space, indent + 2, format_dpdk_device_flags, xd);
+  s = format (s, "%Urx: queues %d (max %d), desc %d "
+	      "(min %d max %d align %d)\n",
+	      format_white_space, indent + 2, xd->rx_q_used, di.max_rx_queues,
+	      xd->nb_rx_desc, di.rx_desc_lim.nb_min, di.rx_desc_lim.nb_max,
+	      di.rx_desc_lim.nb_align);
+  s = format (s, "%Utx: queues %d (max %d), desc %d "
+	      "(min %d max %d align %d)\n",
+	      format_white_space, indent + 2, xd->tx_q_used, di.max_tx_queues,
+	      xd->nb_tx_desc, di.tx_desc_lim.nb_min, di.tx_desc_lim.nb_max,
+	      di.tx_desc_lim.nb_align);
 
-  rte_eth_dev_info_get (xd->port_id, &di);
-
-  if (verbose > 1 && xd->flags & DPDK_DEVICE_FLAG_PMD)
+  if (xd->flags & DPDK_DEVICE_FLAG_PMD)
     {
       struct rte_pci_device *pci;
       struct rte_eth_rss_conf rss_conf;
@@ -534,45 +578,54 @@ format_dpdk_device (u8 * s, va_list * args)
       pci = RTE_DEV_TO_PCI (di.device);
 
       if (pci)
-	s =
-	  format (s,
-		  "%Upci id:            device %04x:%04x subsystem %04x:%04x\n"
-		  "%Upci address:       %04x:%02x:%02x.%02x\n",
-		  format_white_space, indent + 2, pci->id.vendor_id,
-		  pci->id.device_id, pci->id.subsystem_vendor_id,
-		  pci->id.subsystem_device_id, format_white_space, indent + 2,
-		  pci->addr.domain, pci->addr.bus, pci->addr.devid,
-		  pci->addr.function);
-      s =
-	format (s, "%Umax rx packet len: %d\n", format_white_space,
-		indent + 2, di.max_rx_pktlen);
-      s =
-	format (s, "%Umax num of queues: rx %d tx %d\n", format_white_space,
-		indent + 2, di.max_rx_queues, di.max_tx_queues);
-      s =
-	format (s, "%Upromiscuous:       unicast %s all-multicast %s\n",
-		format_white_space, indent + 2,
-		rte_eth_promiscuous_get (xd->port_id) ?
-		"on" : "off",
-		rte_eth_allmulticast_get (xd->port_id) ? "on" : "off");
+	{
+	  u8 *s2;
+	  if (xd->cpu_socket > -1)
+	    s2 = format (0, "%d", xd->cpu_socket);
+	  else
+	    s2 = format (0, "unknown");
+	  s = format (s, "%Upci: device %04x:%04x subsystem %04x:%04x "
+		      "address %04x:%02x:%02x.%02x numa %v\n",
+		      format_white_space, indent + 2, pci->id.vendor_id,
+		      pci->id.device_id, pci->id.subsystem_vendor_id,
+		      pci->id.subsystem_device_id, pci->addr.domain,
+		      pci->addr.bus, pci->addr.devid, pci->addr.function, s2);
+	  vec_free (s2);
+	}
+
+      s = format (s, "%Umodule: %U\n", format_white_space, indent + 2,
+		  format_dpdk_device_module_info, xd);
+
+      s = format (s, "%Umax rx packet len: %d\n", format_white_space,
+		  indent + 2, di.max_rx_pktlen);
+      s = format (s, "%Upromiscuous: unicast %s all-multicast %s\n",
+		  format_white_space, indent + 2,
+		  rte_eth_promiscuous_get (xd->port_id) ? "on" : "off",
+		  rte_eth_allmulticast_get (xd->port_id) ? "on" : "off");
       vlan_off = rte_eth_dev_get_vlan_offload (xd->port_id);
-      s = format (s, "%Uvlan offload:      strip %s filter %s qinq %s\n",
+      s = format (s, "%Uvlan offload: strip %s filter %s qinq %s\n",
 		  format_white_space, indent + 2,
 		  vlan_off & ETH_VLAN_STRIP_OFFLOAD ? "on" : "off",
 		  vlan_off & ETH_VLAN_FILTER_OFFLOAD ? "on" : "off",
 		  vlan_off & ETH_VLAN_EXTEND_OFFLOAD ? "on" : "off");
-      s = format (s, "%Urx offload caps:   %U\n",
+      s = format (s, "%Urx offload avail:  %U\n",
 		  format_white_space, indent + 2,
 		  format_dpdk_rx_offload_caps, di.rx_offload_capa);
-      s = format (s, "%Utx offload caps:   %U\n",
+      s = format (s, "%Urx offload active: %U\n",
+		  format_white_space, indent + 2,
+		  format_dpdk_rx_offload_caps, xd->port_conf.rxmode.offloads);
+      s = format (s, "%Utx offload avail:  %U\n",
 		  format_white_space, indent + 2,
 		  format_dpdk_tx_offload_caps, di.tx_offload_capa);
-      s = format (s, "%Urss active:        %U\n"
-		  "%Urss supported:     %U\n",
+      s = format (s, "%Utx offload active: %U\n",
 		  format_white_space, indent + 2,
-		  format_dpdk_rss_hf_name, rss_conf.rss_hf,
+		  format_dpdk_tx_offload_caps, xd->port_conf.txmode.offloads);
+      s = format (s, "%Urss avail:         %U\n"
+		  "%Urss active:        %U\n",
 		  format_white_space, indent + 2,
-		  format_dpdk_rss_hf_name, di.flow_type_rss_offloads);
+		  format_dpdk_rss_hf_name, di.flow_type_rss_offloads,
+		  format_white_space, indent + 2,
+		  format_dpdk_rss_hf_name, rss_conf.rss_hf);
       s = format (s, "%Utx burst function: %s\n",
 		  format_white_space, indent + 2,
 		  ptr2sname (rte_eth_devices[xd->port_id].tx_pkt_burst));
@@ -580,14 +633,6 @@ format_dpdk_device (u8 * s, va_list * args)
 		  format_white_space, indent + 2,
 		  ptr2sname (rte_eth_devices[xd->port_id].rx_pkt_burst));
     }
-
-  s = format (s, "%Urx queues %d, rx desc %d, tx queues %d, tx desc %d\n",
-	      format_white_space, indent + 2,
-	      xd->rx_q_used, xd->nb_rx_desc, xd->tx_q_used, xd->nb_tx_desc);
-
-  if (xd->cpu_socket > -1)
-    s = format (s, "%Ucpu socket %d\n",
-		format_white_space, indent + 2, xd->cpu_socket);
 
   /* $$$ MIB counters  */
   {

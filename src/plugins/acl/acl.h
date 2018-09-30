@@ -241,7 +241,7 @@ typedef struct {
   int fa_sessions_hash_is_initialized;
   clib_bihash_40_8_t fa_ip6_sessions_hash;
   clib_bihash_16_8_t fa_ip4_sessions_hash;
-  /* The process node which orcherstrates the cleanup */
+  /* The process node which orchestrates the cleanup */
   u32 fa_cleaner_node_index;
   /* FA session timeouts, in seconds */
   u32 session_timeout_sec[ACL_N_TIMEOUTS];
@@ -384,5 +384,13 @@ AH has a special treatment of its length, it is in 32-bit words, not 64-bit word
 extern acl_main_t acl_main;
 
 void *acl_plugin_set_heap();
+
+typedef enum {
+  ACL_FA_REQ_SESS_RESCHEDULE = 0,
+  ACL_FA_N_REQ,
+} acl_fa_sess_req_t;
+
+void aclp_post_session_change_request(acl_main_t *am, u32 target_thread, u32 target_session, acl_fa_sess_req_t request_type);
+void aclp_swap_wip_and_pending_session_change_requests(acl_main_t *am, u32 target_thread);
 
 #endif

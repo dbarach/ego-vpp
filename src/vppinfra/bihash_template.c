@@ -26,7 +26,7 @@ static inline void *BV (alloc_aligned) (BVT (clib_bihash) * h, uword nbytes)
   rv = alloc_arena_next (h);
   alloc_arena_next (h) += nbytes;
 
-  if (rv >= (alloc_arena (h) + alloc_arena_size (h)))
+  if (rv >= alloc_arena_size (h))
     os_out_of_memory ();
 
   return (void *) (uword) (rv + alloc_arena (h));
@@ -627,6 +627,9 @@ expand_ok:
   tmp_b.lock = 0;
   CLIB_MEMORY_BARRIER ();
   b->as_u64 = tmp_b.as_u64;
+  /* free the old bucket */
+  v = BV (clib_bihash_get_value) (h, h->saved_bucket.offset);
+  BV (value_free) (h, v, h->saved_bucket.log2_pages);
   BV (clib_bihash_alloc_unlock) (h);
   return (0);
 }

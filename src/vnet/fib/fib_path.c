@@ -879,6 +879,9 @@ fib_path_unresolve (fib_path_t *path)
 	    fib_table_entry_special_remove(path->recursive.fp_tbl_id,
 					   fib_entry_get_prefix(path->fp_via_fib),
 					   FIB_SOURCE_RR);
+            fib_table_unlock(path->recursive.fp_tbl_id,
+                             dpo_proto_to_fib(path->fp_nh_proto),
+                             FIB_SOURCE_RR);
 	    path->fp_via_fib = FIB_NODE_INDEX_INVALID;
 	}
 	break;
@@ -903,7 +906,7 @@ fib_path_unresolve (fib_path_t *path)
         adj_unlock(path->fp_dpo.dpoi_index);
         break;
     case FIB_PATH_TYPE_UDP_ENCAP:
-	udp_encap_unlock_w_index(path->fp_dpo.dpoi_index);
+	udp_encap_unlock(path->fp_dpo.dpoi_index);
         break;
     case FIB_PATH_TYPE_EXCLUSIVE:
 	dpo_reset(&path->exclusive.fp_ex_dpo);
@@ -1897,6 +1900,9 @@ fib_path_resolve (fib_node_index_t path_index)
 	    fib_prefix_from_ip46_addr(&path->recursive.fp_nh.fp_ip, &pfx);
 	}
 
+        fib_table_lock(path->recursive.fp_tbl_id,
+                       dpo_proto_to_fib(path->fp_nh_proto),
+                       FIB_SOURCE_RR);
 	fei = fib_table_entry_special_add(path->recursive.fp_tbl_id,
 					  &pfx,
 					  FIB_SOURCE_RR,

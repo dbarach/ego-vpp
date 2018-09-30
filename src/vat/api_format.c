@@ -1355,7 +1355,7 @@ static void
 vl_api_l2_macs_event_t_handler (vl_api_l2_macs_event_t * mp)
 {
   u32 n_macs = ntohl (mp->n_macs);
-  errmsg ("L2MAC event recived with pid %d cl-idx %d for %d macs: \n",
+  errmsg ("L2MAC event received with pid %d cl-idx %d for %d macs: \n",
 	  ntohl (mp->pid), mp->client_index, n_macs);
   int i;
   for (i = 0; i < n_macs; i++)
@@ -1389,12 +1389,13 @@ static void vl_api_bridge_domain_details_t_handler
   u32 n_sw_ifs = ntohl (mp->n_sw_ifs);
   int i;
 
-  print (vam->ofp, "\n%-3s %-3s %-3s %-3s %-3s %-3s",
-	 " ID", "LRN", "FWD", "FLD", "BVI", "#IF");
+  print (vam->ofp, "\n%-3s %-3s %-3s %-3s %-3s %-6s %-3s",
+	 " ID", "LRN", "FWD", "FLD", "BVI", "UU-FWD", "#IF");
 
-  print (vam->ofp, "%3d %3d %3d %3d %3d %3d",
+  print (vam->ofp, "%3d %3d %3d %3d %3d %6d %3d",
 	 ntohl (mp->bd_id), mp->learn, mp->forward,
-	 mp->flood, ntohl (mp->bvi_sw_if_index), n_sw_ifs);
+	 mp->flood, ntohl (mp->bvi_sw_if_index),
+	 ntohl (mp->uu_fwd_sw_if_index), n_sw_ifs);
 
   if (n_sw_ifs)
     {
@@ -5549,6 +5550,7 @@ _(SW_INTERFACE_ADD_DEL_ADDRESS_REPLY,                                   \
   sw_interface_add_del_address_reply)                                   \
 _(SW_INTERFACE_SET_RX_MODE_REPLY, sw_interface_set_rx_mode_reply)       \
 _(SW_INTERFACE_SET_RX_PLACEMENT_REPLY, sw_interface_set_rx_placement_reply)	\
+_(SW_INTERFACE_RX_PLACEMENT_DETAILS, sw_interface_rx_placement_details)	\
 _(SW_INTERFACE_SET_TABLE_REPLY, sw_interface_set_table_reply) 		\
 _(SW_INTERFACE_SET_MPLS_ENABLE_REPLY, sw_interface_set_mpls_enable_reply) \
 _(SW_INTERFACE_SET_VPATH_REPLY, sw_interface_set_vpath_reply) 		\
@@ -6620,6 +6622,82 @@ api_sw_interface_set_rx_placement (vat_main_t * vam)
   return ret;
 }
 
+static void vl_api_sw_interface_rx_placement_details_t_handler
+  (vl_api_sw_interface_rx_placement_details_t * mp)
+{
+  vat_main_t *vam = &vat_main;
+  u32 worker_id = ntohl (mp->worker_id);
+
+  print (vam->ofp,
+	 "\n%-11d %-11s %-6d %-5d %-9s",
+	 ntohl (mp->sw_if_index), (worker_id == 0) ? "main" : "worker",
+	 worker_id, ntohl (mp->queue_id),
+	 (mp->mode ==
+	  1) ? "polling" : ((mp->mode == 2) ? "interrupt" : "adaptive"));
+}
+
+static void vl_api_sw_interface_rx_placement_details_t_handler_json
+  (vl_api_sw_interface_rx_placement_details_t * mp)
+{
+  vat_main_t *vam = &vat_main;
+  vat_json_node_t *node = NULL;
+
+  if (VAT_JSON_ARRAY != vam->json_tree.type)
+    {
+      ASSERT (VAT_JSON_NONE == vam->json_tree.type);
+      vat_json_init_array (&vam->json_tree);
+    }
+  node = vat_json_array_add (&vam->json_tree);
+
+  vat_json_init_object (node);
+  vat_json_object_add_uint (node, "sw_if_index", ntohl (mp->sw_if_index));
+  vat_json_object_add_uint (node, "worker_id", ntohl (mp->worker_id));
+  vat_json_object_add_uint (node, "queue_id", ntohl (mp->queue_id));
+  vat_json_object_add_uint (node, "mode", mp->mode);
+}
+
+static int
+api_sw_interface_rx_placement_dump (vat_main_t * vam)
+{
+  unformat_input_t *i = vam->input;
+  vl_api_sw_interface_rx_placement_dump_t *mp;
+  vl_api_control_ping_t *mp_ping;
+  int ret;
+  u32 sw_if_index;
+  u8 sw_if_index_set = 0;
+
+  while (unformat_check_input (i) != UNFORMAT_END_OF_INPUT)
+    {
+      if (unformat (i, "%U", api_unformat_sw_if_index, vam, &sw_if_index))
+	sw_if_index_set++;
+      else if (unformat (i, "sw_if_index %d", &sw_if_index))
+	sw_if_index_set++;
+      else
+	break;
+    }
+
+  print (vam->ofp,
+	 "\n%-11s %-11s %-6s %-5s %-4s",
+	 "sw_if_index", "main/worker", "thread", "queue", "mode");
+
+  /* Dump Interface rx placement */
+  M (SW_INTERFACE_RX_PLACEMENT_DUMP, mp);
+
+  if (sw_if_index_set)
+    mp->sw_if_index = htonl (sw_if_index);
+  else
+    mp->sw_if_index = ~0;
+
+  S (mp);
+
+  /* Use a control ping for synchronization */
+  MPING (CONTROL_PING, mp_ping);
+  S (mp_ping);
+
+  W (ret);
+  return ret;
+}
+
 static int
 api_sw_interface_clear_stats (vat_main_t * vam)
 {
@@ -7115,14 +7193,16 @@ api_sw_interface_set_l2_bridge (vat_main_t * vam)
 {
   unformat_input_t *i = vam->input;
   vl_api_sw_interface_set_l2_bridge_t *mp;
+  vl_api_l2_port_type_t port_type;
   u32 rx_sw_if_index;
   u8 rx_sw_if_index_set = 0;
   u32 bd_id;
   u8 bd_id_set = 0;
-  u8 bvi = 0;
   u32 shg = 0;
   u8 enable = 1;
   int ret;
+
+  port_type = L2_API_PORT_TYPE_NORMAL;
 
   /* Parse args required to build the message */
   while (unformat_check_input (i) != UNFORMAT_END_OF_INPUT)
@@ -7138,7 +7218,9 @@ api_sw_interface_set_l2_bridge (vat_main_t * vam)
       else if (unformat (i, "shg %d", &shg))
 	;
       else if (unformat (i, "bvi"))
-	bvi = 1;
+	port_type = L2_API_PORT_TYPE_BVI;
+      else if (unformat (i, "uu-fwd"))
+	port_type = L2_API_PORT_TYPE_UU_FWD;
       else if (unformat (i, "enable"))
 	enable = 1;
       else if (unformat (i, "disable"))
@@ -7164,7 +7246,7 @@ api_sw_interface_set_l2_bridge (vat_main_t * vam)
   mp->rx_sw_if_index = ntohl (rx_sw_if_index);
   mp->bd_id = ntohl (bd_id);
   mp->shg = (u8) shg;
-  mp->bvi = bvi;
+  mp->port_type = ntohl (port_type);
   mp->enable = enable;
 
   S (mp);
@@ -7610,7 +7692,7 @@ api_bridge_flags (vat_main_t * vam)
   u32 bd_id;
   u8 bd_id_set = 0;
   u8 is_set = 1;
-  u32 flags = 0;
+  bd_flags_t flags = 0;
   int ret;
 
   /* Parse args required to build the message */
@@ -7619,15 +7701,15 @@ api_bridge_flags (vat_main_t * vam)
       if (unformat (i, "bd_id %d", &bd_id))
 	bd_id_set = 1;
       else if (unformat (i, "learn"))
-	flags |= L2_LEARN;
+	flags |= BRIDGE_API_FLAG_LEARN;
       else if (unformat (i, "forward"))
-	flags |= L2_FWD;
+	flags |= BRIDGE_API_FLAG_FWD;
       else if (unformat (i, "flood"))
-	flags |= L2_FLOOD;
+	flags |= BRIDGE_API_FLAG_FLOOD;
       else if (unformat (i, "uu-flood"))
-	flags |= L2_UU_FLOOD;
+	flags |= BRIDGE_API_FLAG_UU_FLOOD;
       else if (unformat (i, "arp-term"))
-	flags |= L2_ARP_TERM;
+	flags |= BRIDGE_API_FLAG_ARP_TERM;
       else if (unformat (i, "off"))
 	is_set = 0;
       else if (unformat (i, "disable"))
@@ -7645,7 +7727,7 @@ api_bridge_flags (vat_main_t * vam)
   M (BRIDGE_FLAGS, mp);
 
   mp->bd_id = ntohl (bd_id);
-  mp->feature_bitmap = ntohl (flags);
+  mp->flags = ntohl (flags);
   mp->is_set = is_set;
 
   S (mp);
@@ -8486,6 +8568,8 @@ api_ip_add_del_route (vat_main_t * vam)
   mpls_label_t next_hop_out_label = MPLS_LABEL_INVALID;
   mpls_label_t next_hop_via_label = MPLS_LABEL_INVALID;
 
+  memset (&v4_next_hop_address, 0, sizeof (ip4_address_t));
+  memset (&v6_next_hop_address, 0, sizeof (ip6_address_t));
   /* Parse args required to build the message */
   while (unformat_check_input (i) != UNFORMAT_END_OF_INPUT)
     {
@@ -8515,6 +8599,16 @@ api_ip_add_del_route (vat_main_t * vam)
 	}
       else if (is_ipv6 == 1 && unformat (i, "via %U", unformat_ip6_address,
 					 &v6_next_hop_address))
+	{
+	  next_hop_set = 1;
+	}
+      else
+	if (unformat
+	    (i, "via %U", api_unformat_sw_if_index, vam, &sw_if_index))
+	{
+	  next_hop_set = 1;
+	}
+      else if (unformat (i, "via sw_if_index %d", &sw_if_index))
 	{
 	  next_hop_set = 1;
 	}
@@ -9205,7 +9299,7 @@ api_mpls_ip_bind_unbind (vat_main_t * vam)
 
   if (!address_set)
     {
-      errmsg ("IP addres not set");
+      errmsg ("IP address not set");
       return -99;
     }
 
@@ -14053,6 +14147,8 @@ api_create_vhost_user_if (vat_main_t * vam)
   u32 custom_dev_instance = ~0;
   u8 hwaddr[6];
   u8 use_custom_mac = 0;
+  u8 disable_mrg_rxbuf = 0;
+  u8 disable_indirect_desc = 0;
   u8 *tag = 0;
   int ret;
 
@@ -14071,6 +14167,10 @@ api_create_vhost_user_if (vat_main_t * vam)
 	use_custom_mac = 1;
       else if (unformat (i, "server"))
 	is_server = 1;
+      else if (unformat (i, "disable_mrg_rxbuf"))
+	disable_mrg_rxbuf = 1;
+      else if (unformat (i, "disable_indirect_desc"))
+	disable_indirect_desc = 1;
       else if (unformat (i, "tag %s", &tag))
 	;
       else
@@ -14093,6 +14193,8 @@ api_create_vhost_user_if (vat_main_t * vam)
   M (CREATE_VHOST_USER_IF, mp);
 
   mp->is_server = is_server;
+  mp->disable_mrg_rxbuf = disable_mrg_rxbuf;
+  mp->disable_indirect_desc = disable_indirect_desc;
   clib_memcpy (mp->sock_filename, file_name, vec_len (file_name));
   vec_free (file_name);
   if (custom_dev_instance != ~0)
@@ -14100,6 +14202,7 @@ api_create_vhost_user_if (vat_main_t * vam)
       mp->renumber = 1;
       mp->custom_dev_instance = ntohl (custom_dev_instance);
     }
+
   mp->use_custom_mac = use_custom_mac;
   clib_memcpy (mp->mac_address, hwaddr, 6);
   if (tag)
@@ -20322,23 +20425,20 @@ api_mpls_tunnel_dump (vat_main_t * vam)
 {
   vl_api_mpls_tunnel_dump_t *mp;
   vl_api_control_ping_t *mp_ping;
-  i32 index = -1;
+  u32 sw_if_index = ~0;
   int ret;
 
   /* Parse args required to build the message */
   while (unformat_check_input (vam->input) != UNFORMAT_END_OF_INPUT)
     {
-      if (!unformat (vam->input, "tunnel_index %d", &index))
-	{
-	  index = -1;
-	  break;
-	}
+      if (unformat (vam->input, "sw_if_index %d", &sw_if_index))
+	;
     }
 
-  print (vam->ofp, "  tunnel_index %d", index);
+  print (vam->ofp, "  sw_if_index %d", sw_if_index);
 
   M (MPLS_TUNNEL_DUMP, mp);
-  mp->tunnel_index = htonl (index);
+  mp->sw_if_index = htonl (sw_if_index);
   S (mp);
 
   /* Use a control ping for synchronization */
@@ -20431,9 +20531,9 @@ vl_api_ip_fib_details_t_handler (vl_api_ip_fib_details_t * mp)
   int i;
 
   print (vam->ofp,
-	 "table-id %d, prefix %U/%d",
+	 "table-id %d, prefix %U/%d stats-index %d",
 	 ntohl (mp->table_id), format_ip4_address, mp->address,
-	 mp->address_length);
+	 mp->address_length, ntohl (mp->stats_index));
   fp = mp->path;
   for (i = 0; i < count; i++)
     {
@@ -20643,9 +20743,9 @@ vl_api_ip6_fib_details_t_handler (vl_api_ip6_fib_details_t * mp)
   int i;
 
   print (vam->ofp,
-	 "table-id %d, prefix %U/%d",
+	 "table-id %d, prefix %U/%d stats-index %d",
 	 ntohl (mp->table_id), format_ip6_address, mp->address,
-	 mp->address_length);
+	 mp->address_length, ntohl (mp->stats_index));
   fp = mp->path;
   for (i = 0; i < count; i++)
     {
@@ -23444,6 +23544,8 @@ _(sw_interface_set_rx_mode,                                             \
   "<intfc> | sw_if_index <id> [queue <id>] <polling | interrupt | adaptive>") \
 _(sw_interface_set_rx_placement,                                        \
   "<intfc> | sw_if_index <id> [queue <id>] [worker <id> | main]")       \
+_(sw_interface_rx_placement_dump,                                       \
+  "[<intfc> | sw_if_index <id>]")                                         \
 _(sw_interface_set_table,                                               \
   "<intfc> | sw_if_index <id> vrf <table-id> [ipv6]")                   \
 _(sw_interface_set_mpls_enable,                                         \
@@ -23500,8 +23602,8 @@ _(sw_interface_slave_dump,                                              \
 _(ip_table_add_del,                                                     \
   "table <n> [ipv6] [add | del]\n")                                     \
 _(ip_add_del_route,                                                     \
-  "<addr>/<mask> via <addr | via-label <n>> [table-id <n>]\n"           \
-  "[<intfc> | sw_if_index <id>] [resolve-attempts <n>]\n"               \
+  "<addr>/<mask> via <<addr>|<intfc>|sw_if_index <id>|via-label <n>>\n" \
+  "[table-id <n>] [<intfc> | sw_if_index <id>] [resolve-attempts <n>]\n"\
   "[weight <n>] [drop] [local] [classify <n>] [del]\n"                  \
   "[multipath] [count <n>]")                                            \
 _(ip_mroute_add_del,                                                    \
@@ -23632,6 +23734,7 @@ _(l2_interface_vlan_tag_rewrite,                                        \
   "[translate-2-[1|2]] [push_dot1q 0] tag1 <nn> tag2 <nn>")             \
 _(create_vhost_user_if,                                                 \
         "socket <filename> [server] [renumber <dev_instance>] "         \
+        "[disable_mrg_rxbuf] [disable_indirect_desc] "                  \
         "[mac <mac_address>]")                                          \
 _(modify_vhost_user_if,                                                 \
         "<intfc> | sw_if_index <nn> socket <filename>\n"                \
@@ -23747,7 +23850,7 @@ _(one_ndp_entries_get, "bd <bridge-domain>")                            \
 _(one_add_del_l2_arp_entry, "[del] mac <mac> bd <bd> ip4 <ip4>")        \
 _(one_l2_arp_bd_get, "")                                                \
 _(one_l2_arp_entries_get, "bd <bridge-domain>")                         \
-_(one_stats_enable_disable, "enable|disalbe")                           \
+_(one_stats_enable_disable, "enable|disable")                           \
 _(show_one_stats_enable_disable, "")                                    \
 _(one_eid_table_vni_dump, "")                                           \
 _(one_eid_table_map_dump, "l2|l3")                                      \

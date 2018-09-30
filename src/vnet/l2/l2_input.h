@@ -104,6 +104,7 @@ l2input_bd_config (u32 bd_index)
  _(FLOOD,         "l2-flood")                   \
  _(ARP_TERM,      "arp-term-l2bd")              \
  _(UU_FLOOD,      "l2-flood")                   \
+ _(UU_FWD,        "l2-uu-fwd")                  \
  _(GBP_FWD,       "gbp-fwd")                    \
  _(FWD,           "l2-fwd")                     \
  _(RW,            "l2-rw")                      \
@@ -213,7 +214,8 @@ u32 set_int_l2_mode (vlib_main_t * vm,
 		     vnet_main_t * vnet_main,
 		     u32 mode,
 		     u32 sw_if_index,
-		     u32 bd_index, u32 bvi, u32 shg, u32 xc_sw_if_index);
+		     u32 bd_index, l2_bd_port_type_t port_type,
+		     u32 shg, u32 xc_sw_if_index);
 
 static inline void
 vnet_update_l2_len (vlib_buffer_t * b)
@@ -222,7 +224,7 @@ vnet_update_l2_len (vlib_buffer_t * b)
   u16 ethertype;
   u8 vlan_count = 0;
 
-  /* point at currrent l2 hdr */
+  /* point at current l2 hdr */
   eth = vlib_buffer_get_current (b);
 
   /*
@@ -253,7 +255,7 @@ vnet_update_l2_len (vlib_buffer_t * b)
  * Compute flow hash of an ethernet packet, use 5-tuple hash if L3 packet
  * is ip4 or ip6. Otherwise hash on smac/dmac/etype.
  * The vlib buffer current pointer is expected to be at ethernet header
- * and vnet l2.l2_len is exppected to be setup already.
+ * and vnet l2.l2_len is expected to be setup already.
  */
 static inline u32
 vnet_l2_compute_flow_hash (vlib_buffer_t * b)
