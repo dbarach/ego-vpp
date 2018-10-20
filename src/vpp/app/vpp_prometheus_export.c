@@ -188,6 +188,7 @@ start_listen (u16 port)
   if (listenfd == -1)
     {
       perror ("Failed opening socket");
+      return -1;
     }
 
   int rv =
@@ -195,6 +196,8 @@ start_listen (u16 port)
   if (rv < 0)
     {
       perror ("Failed setsockopt");
+      close (listenfd);
+      return -1;
     }
 
   memset (&serveraddr, 0, sizeof (serveraddr));
@@ -205,11 +208,13 @@ start_listen (u16 port)
   if (bind (listenfd, (struct sockaddr *) &serveraddr, addrlen) < 0)
     {
       fprintf (stderr, "bind() error %s\n", strerror (errno));
+      close (listenfd);
       return -1;
     }
   if (listen (listenfd, 1000000) != 0)
     {
       fprintf (stderr, "listen() error for %s\n", strerror (errno));
+      close (listenfd);
       return -1;
     }
   return listenfd;
@@ -257,6 +262,13 @@ main (int argc, char **argv)
 	}
     }
 
+  if (vec_len (patterns) == 0)
+    {
+      fformat (stderr,
+	       "%s: usage [socket-name <name>] <patterns> ...\n", argv[0]);
+      exit (1);
+    }
+
   rv = stat_segment_connect ((char *) stat_segment_name);
   if (rv)
     {
@@ -280,7 +292,7 @@ main (int argc, char **argv)
 	}
       else
 	{
-	  struct sockaddr_in6 clientaddr;
+	  struct sockaddr_in6 clientaddr = { 0 };
 	  char address[INET6_ADDRSTRLEN];
 	  socklen_t addrlen;
 	  getpeername (conn_sock, (struct sockaddr *) &clientaddr, &addrlen);
@@ -305,6 +317,7 @@ main (int argc, char **argv)
     }
 
   stat_segment_disconnect ();
+  close (fd);
 
   exit (0);
 }

@@ -1,6 +1,6 @@
 /*
  *------------------------------------------------------------------
- * socksvr_vlib.c
+ * socket_api.c
  *
  * Copyright (c) 2009 Cisco and/or its affiliates.
  * Licensed under the Apache License, Version 2.0 (the "License");
@@ -47,6 +47,27 @@
 
 socket_main_t socket_main;
 
+#define SOCK_API_REG_HANDLE_BIT (1<<31)
+
+static u32
+sock_api_registration_handle (vl_api_registration_t * regp)
+{
+  ASSERT (regp->vl_api_registration_pool_index < SOCK_API_REG_HANDLE_BIT);
+  return regp->vl_api_registration_pool_index | SOCK_API_REG_HANDLE_BIT;
+}
+
+static u32
+socket_api_registration_handle_to_index (u32 reg_index)
+{
+  return (reg_index & ~SOCK_API_REG_HANDLE_BIT);
+}
+
+u8
+vl_socket_api_registration_handle_is_valid (u32 reg_handle)
+{
+  return ((reg_handle & SOCK_API_REG_HANDLE_BIT) != 0);
+}
+
 void
 vl_sock_api_dump_clients (vlib_main_t * vm, api_main_t * am)
 {
@@ -72,6 +93,21 @@ vl_sock_api_dump_clients (vlib_main_t * vm, api_main_t * am)
         }
     }));
 /* *INDENT-ON* */
+}
+
+vl_api_registration_t *
+vl_socket_api_client_handle_to_registration (u32 handle)
+{
+  socket_main_t *sm = &socket_main;
+  u32 index = socket_api_registration_handle_to_index (handle);
+  if (pool_is_free_index (sm->registration_pool, index))
+    {
+#if DEBUG > 2
+      clib_warning ("Invalid index %d\n", index);
+#endif
+      return 0;
+    }
+  return pool_elt_at_index (sm->registration_pool, index);
 }
 
 void
@@ -289,26 +325,37 @@ vl_socket_write_ready (clib_file_t * uf)
   rp = pool_elt_at_index (socket_main.registration_pool, uf->private_data);
 
   /* Flush output vector. */
-  n = write (uf->file_descriptor, rp->output_vector,
-	     vec_len (rp->output_vector));
-  if (n < 0)
+  size_t total_bytes = vec_len (rp->output_vector);
+  size_t bytes_to_send, remaining_bytes = total_bytes;
+  void *p = rp->output_vector;
+  while (remaining_bytes > 0)
     {
-#if DEBUG > 2
-      clib_warning ("write error, close the file...\n");
-#endif
-      clib_file_del (fm, uf);
-      vl_socket_free_registration_index (rp - socket_main.registration_pool);
-      return 0;
-    }
-  else if (n > 0)
-    {
-      vec_delete (rp->output_vector, n, 0);
-      if (vec_len (rp->output_vector) <= 0
-	  && (uf->flags & UNIX_FILE_DATA_AVAILABLE_TO_WRITE))
+      bytes_to_send = remaining_bytes > 4096 ? 4096 : remaining_bytes;
+      n = write (uf->file_descriptor, p, bytes_to_send);
+      if (n < 0)
 	{
-	  uf->flags &= ~UNIX_FILE_DATA_AVAILABLE_TO_WRITE;
-	  fm->file_update (uf, UNIX_FILE_UPDATE_MODIFY);
+	  if (errno == EAGAIN)
+	    {
+	      break;
+	    }
+#if DEBUG > 2
+	  clib_warning ("write error, close the file...\n");
+#endif
+	  clib_file_del (fm, uf);
+	  vl_socket_free_registration_index (rp -
+					     socket_main.registration_pool);
+	  return 0;
 	}
+      remaining_bytes -= bytes_to_send;
+      p += bytes_to_send;
+    }
+
+  vec_delete (rp->output_vector, total_bytes - remaining_bytes, 0);
+  if (vec_len (rp->output_vector) <= 0
+      && (uf->flags & UNIX_FILE_DATA_AVAILABLE_TO_WRITE))
+    {
+      uf->flags &= ~UNIX_FILE_DATA_AVAILABLE_TO_WRITE;
+      fm->file_update (uf, UNIX_FILE_UPDATE_MODIFY);
     }
 
   return 0;
@@ -379,7 +426,11 @@ vl_api_sockclnt_create_t_handler (vl_api_sockclnt_create_t * mp)
 {
   vl_api_registration_t *regp;
   vl_api_sockclnt_create_reply_t *rp;
+  api_main_t *am = &api_main;
+  hash_pair_t *hp;
   int rv = 0;
+  u32 nmsg = hash_elts (am->msg_index_by_name_and_crc);
+  u32 i = 0;
 
   regp = socket_main.current_rp;
 
@@ -387,13 +438,22 @@ vl_api_sockclnt_create_t_handler (vl_api_sockclnt_create_t * mp)
 
   regp->name = format (0, "%s%c", mp->name, 0);
 
-  rp = vl_msg_api_alloc (sizeof (*rp));
+  u32 size = sizeof (*rp) + (nmsg * sizeof (vl_api_message_table_entry_t));
+  rp = vl_msg_api_alloc (size);
   rp->_vl_msg_id = htons (VL_API_SOCKCLNT_CREATE_REPLY);
-  rp->handle = (uword) regp;
-  rp->index = (uword) regp->vl_api_registration_pool_index;
+  rp->index = htonl (sock_api_registration_handle (regp));
   rp->context = mp->context;
   rp->response = htonl (rv);
+  rp->count = htons (nmsg);
 
+  /* *INDENT-OFF* */
+  hash_foreach_pair (hp, am->msg_index_by_name_and_crc,
+  ({
+    rp->message_table[i].index = htons(hp->value[0]);
+    strncpy((char *)rp->message_table[i].name, (char *)hp->key, 64-1);
+    i++;
+  }));
+  /* *INDENT-ON* */
   vl_api_send_msg (regp, (u8 *) rp);
 }
 
@@ -406,23 +466,28 @@ vl_api_sockclnt_delete_t_handler (vl_api_sockclnt_delete_t * mp)
   vl_api_registration_t *regp;
   vl_api_sockclnt_delete_reply_t *rp;
 
-  if (!pool_is_free_index (socket_main.registration_pool, mp->index))
+  regp = vl_api_client_index_to_registration (mp->client_index);
+  if (!regp)
+    return;
+
+  u32 reg_index = ntohl (mp->index);
+  rp = vl_msg_api_alloc (sizeof (*rp));
+  rp->_vl_msg_id = htons (VL_API_SOCKCLNT_DELETE_REPLY);
+  rp->context = mp->context;
+
+  if (!pool_is_free_index (socket_main.registration_pool, reg_index))
     {
-      regp = pool_elt_at_index (socket_main.registration_pool, mp->index);
-
-      rp = vl_msg_api_alloc (sizeof (*rp));
-      rp->_vl_msg_id = htons (VL_API_SOCKCLNT_DELETE_REPLY);
-      rp->handle = mp->handle;
       rp->response = htonl (1);
-
       vl_api_send_msg (regp, (u8 *) rp);
 
       vl_api_registration_del_file (regp);
-      vl_socket_free_registration_index (mp->index);
+      vl_socket_free_registration_index (reg_index);
     }
   else
     {
-      clib_warning ("unknown client ID %d", mp->index);
+      clib_warning ("unknown client ID %d", reg_index);
+      rp->response = htonl (-1);
+      vl_api_send_msg (regp, (u8 *) rp);
     }
 }
 

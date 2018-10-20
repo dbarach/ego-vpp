@@ -69,6 +69,7 @@ session_send_evt_to_thread (void *data, void *args, u32 thread_index,
     case FIFO_EVENT_BUILTIN_RX:
       evt->fifo = data;
       break;
+    case FIFO_EVENT_BUILTIN_TX:
     case FIFO_EVENT_DISCONNECT:
       evt->session_handle = session_handle ((stream_session_t *) data);
       break;
@@ -89,10 +90,10 @@ session_send_io_evt_to_thread (svm_fifo_t * f, session_evt_type_t evt_type)
 }
 
 int
-session_send_io_evt_to_thread_custom (svm_fifo_t * f, u32 thread_index,
+session_send_io_evt_to_thread_custom (void *data, u32 thread_index,
 				      session_evt_type_t evt_type)
 {
-  return session_send_evt_to_thread (f, 0, thread_index, evt_type);
+  return session_send_evt_to_thread (data, 0, thread_index, evt_type);
 }
 
 int
@@ -152,7 +153,7 @@ session_free (stream_session_t * s)
     memset (s, 0xFA, sizeof (*s));
 }
 
-static void
+void
 session_free_w_fifos (stream_session_t * s)
 {
   segment_manager_dealloc_fifos (s->svm_segment_index, s->server_rx_fifo,
@@ -196,7 +197,7 @@ session_alloc_for_connection (transport_connection_t * tc)
   s = session_alloc (thread_index);
   s->session_type = session_type_from_proto_and_ip (tc->proto, tc->is_ip4);
   s->session_state = SESSION_STATE_CONNECTING;
-  s->enqueue_epoch = ~0;
+  s->enqueue_epoch = (u64) ~ 0;
 
   /* Attach transport to session and vice versa */
   s->connection_index = tc->c_index;
@@ -392,7 +393,7 @@ session_enqueue_stream_connection (transport_connection_t * tc,
        * by calling stream_server_flush_enqueue_events () */
       session_manager_main_t *smm = vnet_get_session_manager_main ();
       u32 thread_index = s->thread_index;
-      u32 enqueue_epoch = smm->current_enqueue_epoch[tc->proto][thread_index];
+      u64 enqueue_epoch = smm->current_enqueue_epoch[tc->proto][thread_index];
 
       if (s->enqueue_epoch != enqueue_epoch)
 	{
@@ -433,7 +434,7 @@ session_enqueue_dgram_connection (stream_session_t * s,
        * by calling stream_server_flush_enqueue_events () */
       session_manager_main_t *smm = vnet_get_session_manager_main ();
       u32 thread_index = s->thread_index;
-      u32 enqueue_epoch = smm->current_enqueue_epoch[proto][thread_index];
+      u64 enqueue_epoch = smm->current_enqueue_epoch[proto][thread_index];
 
       if (s->enqueue_epoch != enqueue_epoch)
 	{
@@ -759,6 +760,8 @@ stream_session_disconnect_notify (transport_connection_t * tc)
   stream_session_t *s;
 
   s = session_get (tc->s_index, tc->thread_index);
+  if (s->session_state >= SESSION_STATE_TRANSPORT_CLOSING)
+    return;
   s->session_state = SESSION_STATE_TRANSPORT_CLOSING;
   app_wrk = app_worker_get_if_valid (s->app_wrk_index);
   if (!app_wrk)
@@ -811,17 +814,22 @@ stream_session_delete_notify (transport_connection_t * tc)
        * from the app, do the whole disconnect since we might still
        * have lingering events */
       stream_session_disconnect (s);
+      s->session_state = SESSION_STATE_CLOSED;
       break;
     case SESSION_STATE_CLOSING:
       /* Cleanup lookup table. Transport needs to still be valid */
       session_lookup_del_session (s);
+      s->session_state = SESSION_STATE_CLOSED;
       break;
     case SESSION_STATE_CLOSED:
+    case SESSION_STATE_ACCEPTING:
       stream_session_delete (s);
       break;
+    default:
+      /* Assume connection was not yet added the lookup table */
+      session_free_w_fifos (s);
+      break;
     }
-
-  s->session_state = SESSION_STATE_CLOSED;
 }
 
 /**

@@ -19,21 +19,20 @@
 #include <vnet/adj/adj.h>
 #include <vnet/mpls/mpls_types.h>
 
-#undef REP_DEBUG
+/**
+ * the logger
+ */
+vlib_log_class_t replicate_logger;
 
-#ifdef REP_DEBUG
 #define REP_DBG(_rep, _fmt, _args...)                                   \
 {                                                                       \
-    u8* _tmp =NULL;                                                     \
-    clib_warning("rep:[%s]:" _fmt,                                      \
-                 replicate_format(replicate_get_index((_rep)),          \
-                                  0, _tmp),                             \
-                 ##_args);                                              \
-    vec_free(_tmp);                                                     \
+    vlib_log_debug(replicate_logger,                                    \
+                   "rep:[%U]:" _fmt,                                    \
+                   format_replicate,                                    \
+                   replicate_get_index(_rep),                           \
+                   REPLICATE_FORMAT_NONE,                               \
+                   ##_args);                                            \
 }
-#else
-#define REP_DBG(_p, _fmt, _args...)
-#endif
 
 #define foreach_replicate_dpo_error                       \
 _(BUFFER_ALLOCATION_FAILURE, "Buffer Allocation Failure")
@@ -59,7 +58,12 @@ replicate_t *replicate_pool;
 /**
  * The one instance of replicate main
  */
-replicate_main_t replicate_main;
+replicate_main_t replicate_main = {
+    .repm_counters = {
+        .name = "mroutes",
+        .stat_segment_name = "/net/mroute",
+    },
+};
 
 static inline index_t
 replicate_get_index (const replicate_t *rep)
@@ -575,6 +579,7 @@ void
 replicate_module_init (void)
 {
     dpo_register(DPO_REPLICATE, &rep_vft, replicate_nodes);
+    replicate_logger = vlib_log_register_class("dpo", "replicate");
 }
 
 static clib_error_t *
@@ -690,11 +695,15 @@ replicate_inline (vlib_main_t * vm,
                 next0 = dpo0->dpoi_next_node;
                 vnet_buffer (c0)->ip.adj_index[VLIB_TX] = dpo0->dpoi_index;
 
-                if (PREDICT_FALSE(c0->flags & VLIB_BUFFER_IS_TRACED))
+                if (PREDICT_FALSE(b0->flags & VLIB_BUFFER_IS_TRACED))
                 {
                     replicate_trace_t *t;
 
-                    vlib_trace_buffer (vm, node, next0, c0, 0);
+                    if (c0 != b0)
+                    {
+                        vlib_buffer_copy_trace_flag (vm, b0, ci0);
+                        VLIB_BUFFER_TRACE_TRAJECTORY_INIT (c0);
+                    }
                     t = vlib_add_trace (vm, node, c0, sizeof (*t));
                     t->rep_index = repi0;
                     t->dpo = *dpo0;

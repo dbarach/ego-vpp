@@ -71,7 +71,7 @@ class VppPapiProvider(object):
 
     _zero, _negative = range(2)
 
-    def __init__(self, name, shm_prefix, test_class):
+    def __init__(self, name, shm_prefix, test_class, read_timeout):
         self.hook = Hook("vpp-papi-provider")
         self.name = name
         self.shm_prefix = shm_prefix
@@ -85,7 +85,8 @@ class VppPapiProvider(object):
             for filename in fnmatch.filter(filenames, '*.api.json'):
                 jsonfiles.append(os.path.join(root, filename))
 
-        self.vpp = VPP(jsonfiles, logger=test_class.logger, read_timeout=5)
+        self.vpp = VPP(jsonfiles, logger=test_class.logger,
+                       read_timeout=read_timeout)
         self._events = deque()
 
     def __enter__(self):
@@ -512,6 +513,11 @@ class VppPapiProvider(object):
                         {'sw_if_index': sw_if_index,
                          'enable': enable,
                          'install_default_routes': install_default_routes})
+
+    def want_interface_events(self, enable_disable=1):
+        return self.api(self.papi.want_interface_events,
+                        {'enable_disable': enable_disable,
+                         'pid': os.getpid(), })
 
     def want_macs_learn_events(self, enable_disable=1, scan_delay=0,
                                max_macs_in_event=0, learn_limit=0):
@@ -2272,6 +2278,9 @@ class VppPapiProvider(object):
     def bfd_udp_del_echo_source(self):
         return self.api(self.papi.bfd_udp_del_echo_source, {})
 
+    def bfd_udp_get_echo_source(self):
+        return self.api(self.papi.bfd_udp_get_echo_source, {})
+
     def classify_add_del_table(
             self,
             is_add,
@@ -3309,6 +3318,7 @@ class VppPapiProvider(object):
                                 tunnel_src_address='',
                                 tunnel_dst_address='',
                                 is_tunnel=1,
+                                is_tunnel_ipv6=0,
                                 is_add=1,
                                 udp_encap=0):
         """ IPSEC SA add/del
@@ -3342,6 +3352,7 @@ class VppPapiProvider(object):
              'crypto_key': crypto_key,
              'is_add': is_add,
              'is_tunnel': is_tunnel,
+             'is_tunnel_ipv6': is_tunnel_ipv6,
              'udp_encap': udp_encap})
 
     def ipsec_spd_add_del_entry(self,
@@ -3360,6 +3371,7 @@ class VppPapiProvider(object):
                                 priority=100,
                                 is_outbound=1,
                                 is_add=1,
+                                is_ipv6=0,
                                 is_ip_any=0):
         """ IPSEC policy SPD add/del   -
                     Wrapper to configure ipsec SPD policy entries in VPP
@@ -3398,6 +3410,7 @@ class VppPapiProvider(object):
              'policy': policy,
              'priority': priority,
              'is_outbound': is_outbound,
+             'is_ipv6': is_ipv6,
              'is_ip_any': is_ip_any})
 
     def ipsec_tunnel_if_add_del(self, local_ip, remote_ip, local_spi,
@@ -3623,6 +3636,18 @@ class VppPapiProvider(object):
                         {'enable': enable,
                          'mode': host,
                          'sw_if_index': sw_if_index})
+
+    def igmp_proxy_device_add_del(self, vrf_id, sw_if_index, add):
+        """ Add/del IGMP proxy device """
+        return self.api(self.papi.igmp_proxy_device_add_del,
+                        {'vrf_id': vrf_id, 'sw_if_index': sw_if_index,
+                         'add': add})
+
+    def igmp_proxy_device_add_del_interface(self, vrf_id, sw_if_index, add):
+        """ Add/del interface to/from IGMP proxy device """
+        return self.api(self.papi.igmp_proxy_device_add_del_interface,
+                        {'vrf_id': vrf_id, 'sw_if_index': sw_if_index,
+                         'add': add})
 
     def igmp_listen(self, filter, sw_if_index, saddrs, gaddr):
         """ Listen for new (S,G) on specified interface
@@ -3865,3 +3890,32 @@ class VppPapiProvider(object):
 
     def memif_socket_filename_dump(self):
         return self.api(self.papi.memif_socket_filename_dump, {})
+
+    def svs_table_add_del(self, af, table_id, is_add=1):
+        return self.api(self.papi.svs_table_add_del,
+                        {
+                            'table_id': table_id,
+                            'is_add': is_add,
+                            'af': af,
+                        })
+
+    def svs_route_add_del(self, table_id, prefix, src_table_id, is_add=1):
+        return self.api(self.papi.svs_route_add_del,
+                        {
+                            'table_id': table_id,
+                            'source_table_id': src_table_id,
+                            'prefix': prefix,
+                            'is_add': is_add,
+                        })
+
+    def svs_enable_disable(self, af, table_id, sw_if_index, is_enable=1):
+        return self.api(self.papi.svs_enable_disable,
+                        {
+                            'af': af,
+                            'table_id': table_id,
+                            'sw_if_index': sw_if_index,
+                            'is_enable': is_enable,
+                        })
+
+    def svs_dump(self):
+        return self.api(self.papi.svs_dump, {})

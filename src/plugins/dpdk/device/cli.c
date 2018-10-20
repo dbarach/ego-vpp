@@ -68,10 +68,10 @@ get_hqos (u32 hw_if_index, u32 subport_id, dpdk_device_t ** xd,
 
   rte_eth_dev_info_get ((*xd)->port_id, &dev_info);
 
-  pci_dev = RTE_DEV_TO_PCI (dev_info.device);
+  pci_dev = dpdk_get_pci_device (&dev_info);
 
   if (pci_dev)
-    {				/* bonded interface has no pci info */
+    {
       vlib_pci_addr_t pci_addr;
 
       pci_addr.domain = pci_dev->addr.domain;
@@ -727,7 +727,7 @@ show_dpdk_if_hqos_placement (vlib_main_t * vm, unformat_input_t * input,
 	  cpu < (dm->hqos_cpu_first_index + dm->hqos_cpu_count))
 	vlib_cli_output (vm, "Thread %u (%s at lcore %u):", cpu,
 			 vlib_worker_threads[cpu].name,
-			 vlib_worker_threads[cpu].lcore_id);
+			 vlib_worker_threads[cpu].cpu_id);
 
       vec_foreach (dq, dm->devices_by_hqos_cpu[cpu])
       {
@@ -1286,7 +1286,7 @@ set_dpdk_if_hqos_pktfield (vlib_main_t * vm, unformat_input_t * input,
 
   rte_eth_dev_info_get (xd->port_id, &dev_info);
 
-  pci_dev = RTE_DEV_TO_PCI (dev_info.device);
+  pci_dev = dpdk_get_pci_device (&dev_info);
 
   if (pci_dev)
     {				/* bonded interface has no pci info */
@@ -1481,7 +1481,7 @@ show_dpdk_if_hqos (vlib_main_t * vm, unformat_input_t * input,
 
   rte_eth_dev_info_get (xd->port_id, &dev_info);
 
-  pci_dev = RTE_DEV_TO_PCI (dev_info.device);
+  pci_dev = dpdk_get_pci_device (&dev_info);
 
   if (pci_dev)
     {				/* bonded interface has no pci info */

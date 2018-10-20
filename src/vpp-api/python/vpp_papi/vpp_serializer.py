@@ -34,6 +34,7 @@ class BaseTypes():
                       'i32': '>i',
                       'u64': '>Q',
                       'f64': '>d',
+                      'bool': '>?',
                       'header': '>HI'}
 
         if elements > 0 and type == 'u8':
@@ -58,6 +59,14 @@ types['u32'] = BaseTypes('u32')
 types['i32'] = BaseTypes('i32')
 types['u64'] = BaseTypes('u64')
 types['f64'] = BaseTypes('f64')
+types['bool'] = BaseTypes('bool')
+
+
+def vpp_get_type(name):
+    try:
+        return types[name]
+    except KeyError:
+        return None
 
 
 class FixedList_u8():
@@ -80,7 +89,7 @@ class FixedList_u8():
         if len(data[offset:]) < self.num:
             raise ValueError('Invalid array length for "{}" got {}'
                              ' expected {}'
-                             .format(self.name, len(data), self.num))
+                             .format(self.name, len(data[offset:]), self.num))
         return self.packer.unpack(data, offset)
 
 
@@ -199,6 +208,9 @@ class VPPEnumType():
 
     def __getattr__(self, name):
         return self.enum[name]
+
+    def __nonzero__(self):
+        return True
 
     def pack(self, data, kwargs=None):
         return types['u32'].pack(data, kwargs)

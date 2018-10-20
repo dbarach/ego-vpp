@@ -24,6 +24,22 @@ class VppInterface(object):
         return self._local_mac
 
     @property
+    def local_addr(self):
+        return self._local_addr
+
+    @property
+    def remote_addr(self):
+        return self._remote_addr
+
+    @property
+    def local_addr_n(self):
+        return self._local_addr_n
+
+    @property
+    def remote_addr_n(self):
+        return self._remote_addr_n
+
+    @property
     def local_ip4(self):
         """Local IPv4 address on VPP interface (string)."""
         return self._local_ip4
@@ -65,7 +81,7 @@ class VppInterface(object):
 
     @property
     def local_ip6_ll(self):
-        """Local IPv6 linnk-local address on VPP interface (string)."""
+        """Local IPv6 link-local address on VPP interface (string)."""
         return self._local_ip6_ll
 
     @property
@@ -199,6 +215,15 @@ class VppInterface(object):
         self.local_ip6_prefix_len = 64
         self.has_ip6_config = False
         self.ip6_table_id = 0
+
+        self._local_addr = {socket.AF_INET: self.local_ip4,
+                            socket.AF_INET6: self.local_ip6}
+        self._local_addr_n = {socket.AF_INET: self.local_ip4n,
+                              socket.AF_INET6: self.local_ip6n}
+        self._remote_addr = {socket.AF_INET: self.remote_ip4,
+                             socket.AF_INET6: self.remote_ip6}
+        self._remote_addr_n = {socket.AF_INET: self.remote_ip4n,
+                               socket.AF_INET6: self.remote_ip6n}
 
         r = self.test.vapi.sw_interface_dump()
         for intf in r:
@@ -401,10 +426,31 @@ class VppInterface(object):
         dump = self.test.vapi.sw_interface_dump()
         return self.is_interface_config_in_dump(dump)
 
-    def is_interface_config_in_dump(self, dump):
+    def get_interface_config_from_dump(self, dump):
         for i in dump:
             if i.interface_name.rstrip(' \t\r\n\0') == self.name and \
                i.sw_if_index == self.sw_if_index:
-                return True
+                return i
         else:
-            return False
+            return None
+
+    def is_interface_config_in_dump(self, dump):
+        return self.get_interface_config_from_dump(dump) is not None
+
+    def assert_interface_state(self, admin_up_down, link_up_down,
+                               expect_event=False):
+        if expect_event:
+            event = self.test.vapi.wait_for_event(timeout=1,
+                                                  name='sw_interface_event')
+            self.test.assert_equal(event.sw_if_index, self.sw_if_index,
+                                   "sw_if_index")
+            self.test.assert_equal(event.admin_up_down, admin_up_down,
+                                   "admin state")
+            self.test.assert_equal(event.link_up_down, link_up_down,
+                                   "link state")
+        dump = self.test.vapi.sw_interface_dump()
+        if_state = self.get_interface_config_from_dump(dump)
+        self.test.assert_equal(if_state.admin_up_down, admin_up_down,
+                               "admin state")
+        self.test.assert_equal(if_state.link_up_down, link_up_down,
+                               "link state")

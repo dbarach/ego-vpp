@@ -36,8 +36,9 @@ typedef struct
 format_function_t format_ooo_segment;
 format_function_t format_ooo_list;
 
-#define SVM_FIFO_TRACE (0)
-#define OOO_SEGMENT_INVALID_INDEX ((u32)~0)
+#define SVM_FIFO_TRACE 			(0)
+#define OOO_SEGMENT_INVALID_INDEX 	((u32)~0)
+#define SVM_FIFO_INVALID_SESSION_INDEX 	((u32)~0)
 
 typedef struct
 {
@@ -60,6 +61,7 @@ typedef struct _svm_fifo
   u8 master_thread_index;
   u8 client_thread_index;
   u32 segment_manager;
+  u32 ct_session_index;		/**< Local session index for vpp */
     CLIB_CACHE_LINE_ALIGN_MARK (end_shared);
   u32 head;
   volatile u32 want_tx_evt;	/**< producer wants nudge */
@@ -167,7 +169,7 @@ svm_fifo_set_event (svm_fifo_t * f)
 always_inline void
 svm_fifo_unset_event (svm_fifo_t * f)
 {
-  __sync_lock_release (&f->has_event);
+  clib_atomic_release (&f->has_event);
 }
 
 static inline void

@@ -32,7 +32,7 @@
 #endif
 
 #define BOND_MODULO_SHORTCUT(a) \
-  (((a) == 2) || ((a) == 4) || ((a) == 8) || ((a) == 16))
+  (is_pow2 (a))
 
 #define foreach_bond_mode	    \
   _ (1, ROUND_ROBIN, "round-robin") \
@@ -51,13 +51,13 @@ typedef enum
 /* configurable load-balances */
 #define foreach_bond_lb	  \
   _ (2, L23, "l23", l23)  \
-  _ (1, l34 , "l34", l34) \
+  _ (1, L34 , "l34", l34) \
   _ (0, L2, "l2", l2)
 
 /* load-balance functions implemented in bond-output */
 #define foreach_bond_lb_algo			 \
   _ (0, L2, "l2", l2)                            \
-  _ (1, l34 , "l34", l34)                        \
+  _ (1, L34 , "l34", l34)                        \
   _ (2, L23, "l23", l23)                         \
   _ (3, RR, "round-robin", round_robin)          \
   _ (4, BC, "broadcast", broadcast)              \

@@ -82,7 +82,7 @@ format_l2_input_features (u8 * s, va_list * args)
   int i;
   for (i = L2INPUT_N_FEAT; i >= 0; i--)
     if (feature_bitmap & (1 << i))
-      s = format (s, "%10s (%s)\n", display_names[i], l2input_feat_names[i]);
+      s = format (s, "%17s (%s)\n", display_names[i], l2input_feat_names[i]);
   return s;
 }
 
@@ -177,7 +177,8 @@ classify_and_dispatch (l2input_main_t * msm, vlib_buffer_t * b0, u32 * next0)
 
       /* Disable bridge forwarding (flooding will execute instead if not xconnect) */
       feat_mask &= ~(L2INPUT_FEAT_FWD |
-		     L2INPUT_FEAT_UU_FLOOD | L2INPUT_FEAT_GBP_FWD);
+		     L2INPUT_FEAT_UU_FLOOD |
+		     L2INPUT_FEAT_UU_FWD | L2INPUT_FEAT_GBP_FWD);
 
       /* Disable ARP-term for non-ARP and non-ICMP6 packet */
       if (ethertype != ETHERNET_TYPE_ARP &&

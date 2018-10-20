@@ -100,14 +100,17 @@ vhost_user_name_renumber (vnet_hw_interface_t * hi, u32 new_dev_instance)
 {
   // FIXME: check if the new dev instance is already used
   vhost_user_main_t *vum = &vhost_user_main;
+  vhost_user_intf_t *vui = pool_elt_at_index (vum->vhost_user_interfaces,
+					      hi->dev_instance);
+
   vec_validate_init_empty (vum->show_dev_instance_by_real_dev_instance,
 			   hi->dev_instance, ~0);
 
   vum->show_dev_instance_by_real_dev_instance[hi->dev_instance] =
     new_dev_instance;
 
-  DBG_SOCK ("renumbered vhost-user interface dev_instance %d to %d",
-	    hi->dev_instance, new_dev_instance);
+  vu_log_debug (vui, "renumbered vhost-user interface dev_instance %d to %d",
+		hi->dev_instance, new_dev_instance);
 
   return 0;
 }
@@ -119,7 +122,7 @@ vhost_user_name_renumber (vnet_hw_interface_t * hi, u32 new_dev_instance)
 static_always_inline int
 vhost_user_vring_try_lock (vhost_user_intf_t * vui, u32 qid)
 {
-  return __sync_lock_test_and_set (vui->vring_locks[qid], 1);
+  return clib_atomic_test_and_set (vui->vring_locks[qid]);
 }
 
 /**
@@ -138,7 +141,7 @@ vhost_user_vring_lock (vhost_user_intf_t * vui, u32 qid)
 static_always_inline void
 vhost_user_vring_unlock (vhost_user_intf_t * vui, u32 qid)
 {
-  *vui->vring_locks[qid] = 0;
+  clib_atomic_release (vui->vring_locks[qid]);
 }
 
 static_always_inline void
@@ -248,7 +251,7 @@ VNET_DEVICE_CLASS_TX_FN (vhost_user_device_class) (vlib_main_t * vm,
       goto done3;
     }
 
-  if (PREDICT_FALSE (!vui->is_up))
+  if (PREDICT_FALSE (!vui->is_ready))
     {
       error = VHOST_USER_TX_FUNC_ERROR_NOT_READY;
       goto done3;
@@ -605,8 +608,8 @@ vhost_user_interface_rx_mode_change (vnet_main_t * vnm, u32 hw_if_index,
     txvq->used->flags = 0;
   else
     {
-      clib_warning ("BUG: unhandled mode %d changed for if %d queue %d", mode,
-		    hw_if_index, qid);
+      vu_log_err (vui, "unhandled mode %d changed for if %d queue %d", mode,
+		  hw_if_index, qid);
       return clib_error_return (0, "unsupported");
     }
 
@@ -621,11 +624,17 @@ vhost_user_interface_admin_up_down (vnet_main_t * vnm, u32 hw_if_index,
   vhost_user_main_t *vum = &vhost_user_main;
   vhost_user_intf_t *vui =
     pool_elt_at_index (vum->vhost_user_interfaces, hif->dev_instance);
-  u32 hw_flags = 0;
-  vui->admin_up = (flags & VNET_SW_INTERFACE_FLAG_ADMIN_UP) != 0;
-  hw_flags = vui->admin_up ? VNET_HW_INTERFACE_FLAG_LINK_UP : 0;
+  u8 link_old, link_new;
 
-  vnet_hw_interface_set_flags (vnm, vui->hw_if_index, hw_flags);
+  link_old = vui_is_link_up (vui);
+
+  vui->admin_up = (flags & VNET_SW_INTERFACE_FLAG_ADMIN_UP) != 0;
+
+  link_new = vui_is_link_up (vui);
+
+  if (link_old != link_new)
+    vnet_hw_interface_set_flags (vnm, vui->hw_if_index, link_new ?
+				 VNET_HW_INTERFACE_FLAG_LINK_UP : 0);
 
   return /* no error */ 0;
 }

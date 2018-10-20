@@ -208,7 +208,7 @@ echo_client_node_fn (vlib_main_t * vm, vlib_node_runtime_t * node,
   connections_this_batch =
     ecm->connections_this_batch_by_thread[my_thread_index];
 
-  if ((ecm->run_test == 0) ||
+  if ((ecm->run_test != ECHO_CLIENTS_RUNNING) ||
       ((vec_len (connection_indices) == 0)
        && vec_len (connections_this_batch) == 0))
     return 0;
@@ -263,8 +263,8 @@ echo_client_node_fn (vlib_main_t * vm, vlib_node_runtime_t * node,
 	{
 	  stream_session_t *s;
 
-	  __sync_fetch_and_add (&ecm->tx_total, sp->bytes_sent);
-	  __sync_fetch_and_add (&ecm->rx_total, sp->bytes_received);
+	  clib_atomic_fetch_add (&ecm->tx_total, sp->bytes_sent);
+	  clib_atomic_fetch_add (&ecm->rx_total, sp->bytes_received);
 	  s = session_get_from_handle_if_valid (sp->vpp_session_handle);
 
 	  if (s)
@@ -276,7 +276,7 @@ echo_client_node_fn (vlib_main_t * vm, vlib_node_runtime_t * node,
 
 	      vec_delete (connections_this_batch, 1, i);
 	      i--;
-	      __sync_fetch_and_add (&ecm->ready_connections, -1);
+	      clib_atomic_fetch_add (&ecm->ready_connections, -1);
 	    }
 	  else
 	    {
@@ -361,9 +361,13 @@ echo_clients_session_connected_callback (u32 app_index, u32 api_context,
   u32 session_index;
   u8 thread_index;
 
+  if (PREDICT_FALSE (ecm->run_test != ECHO_CLIENTS_STARTING))
+    return -1;
+
   if (is_fail)
     {
       clib_warning ("connection %d failed!", api_context);
+      ecm->run_test = ECHO_CLIENTS_EXITING;
       signal_evt_to_cli (-1);
       return 0;
     }
@@ -404,10 +408,10 @@ echo_clients_session_connected_callback (u32 app_index, u32 api_context,
     }
 
   vec_add1 (ecm->connection_index_by_thread[thread_index], session_index);
-  __sync_fetch_and_add (&ecm->ready_connections, 1);
+  clib_atomic_fetch_add (&ecm->ready_connections, 1);
   if (ecm->ready_connections == ecm->expected_connections)
     {
-      ecm->run_test = 1;
+      ecm->run_test = ECHO_CLIENTS_RUNNING;
       /* Signal the CLI process that the action is starting... */
       signal_evt_to_cli (1);
     }
@@ -441,11 +445,27 @@ echo_clients_session_disconnect_callback (stream_session_t * s)
   return;
 }
 
+void
+echo_clients_session_disconnect (stream_session_t * s)
+{
+  echo_client_main_t *ecm = &echo_client_main;
+  vnet_disconnect_args_t _a, *a = &_a;
+  a->handle = session_handle (s);
+  a->app_index = ecm->app_index;
+  vnet_disconnect_session (a);
+}
+
 static int
 echo_clients_rx_callback (stream_session_t * s)
 {
   echo_client_main_t *ecm = &echo_client_main;
   eclient_session_t *sp;
+
+  if (PREDICT_FALSE (ecm->run_test != ECHO_CLIENTS_RUNNING))
+    {
+      echo_clients_session_disconnect (s);
+      return -1;
+    }
 
   sp = pool_elt_at_index (ecm->sessions,
 			  s->server_rx_fifo->client_session_index);
@@ -624,6 +644,7 @@ echo_clients_command_fn (vlib_main_t * vm,
   ecm->vlib_main = vm;
   ecm->tls_engine = TLS_ENGINE_OPENSSL;
   ecm->no_copy = 0;
+  ecm->run_test = ECHO_CLIENTS_STARTING;
 
   if (thread_main->n_vlib_mains > 1)
     clib_spinlock_init (&ecm->sessions_lock);
@@ -745,7 +766,7 @@ echo_clients_command_fn (vlib_main_t * vm,
   /* Fire off connect requests */
   time_before_connects = vlib_time_now (vm);
   if ((error = echo_clients_connect (vm, n_clients)))
-    return error;
+    goto cleanup;
 
   /* Park until the sessions come up, or ten seconds elapse... */
   vlib_process_wait_for_event_or_clock (vm, syn_timeout);
@@ -825,7 +846,8 @@ echo_clients_command_fn (vlib_main_t * vm,
     error = clib_error_return (0, "failed: test bytes");
 
 cleanup:
-  ecm->run_test = 0;
+  ecm->run_test = ECHO_CLIENTS_EXITING;
+  vlib_process_wait_for_event_or_clock (vm, 10e-3);
   for (i = 0; i < vec_len (ecm->connection_index_by_thread); i++)
     {
       vec_reset_length (ecm->connection_index_by_thread[i]);

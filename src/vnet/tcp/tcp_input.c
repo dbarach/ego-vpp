@@ -135,7 +135,8 @@ tcp_options_parse (tcp_header_t * th, tcp_options_t * to)
   data = (const u8 *) (th + 1);
 
   /* Zero out all flags but those set in SYN */
-  to->flags &= (TCP_OPTS_FLAG_SACK_PERMITTED | TCP_OPTS_FLAG_WSCALE);
+  to->flags &= (TCP_OPTS_FLAG_SACK_PERMITTED | TCP_OPTS_FLAG_WSCALE
+		| TCP_OPTS_FLAG_SACK);
 
   for (; opts_len > 0; opts_len -= opt_len, data += opt_len)
     {
@@ -666,38 +667,41 @@ scoreboard_insert_hole (sack_scoreboard_t * sb, u32 prev_index,
 static void
 scoreboard_update_bytes (tcp_connection_t * tc, sack_scoreboard_t * sb)
 {
-  sack_scoreboard_hole_t *hole, *prev;
+  sack_scoreboard_hole_t *left, *right;
   u32 bytes = 0, blks = 0;
 
   sb->lost_bytes = 0;
   sb->sacked_bytes = 0;
-  hole = scoreboard_last_hole (sb);
-  if (!hole)
+  left = scoreboard_last_hole (sb);
+  if (!left)
     return;
 
-  if (seq_gt (sb->high_sacked, hole->end))
+  if (seq_gt (sb->high_sacked, left->end))
     {
-      bytes = sb->high_sacked - hole->end;
+      bytes = sb->high_sacked - left->end;
       blks = 1;
+      if (bytes > (TCP_DUPACK_THRESHOLD - 1) * tc->snd_mss
+	  && left->prev == TCP_INVALID_SACK_HOLE_INDEX)
+	sb->lost_bytes += scoreboard_hole_bytes (left);
     }
 
-  while ((prev = scoreboard_prev_hole (sb, hole))
+  right = left;
+  while ((left = scoreboard_prev_hole (sb, right))
 	 && (bytes < (TCP_DUPACK_THRESHOLD - 1) * tc->snd_mss
 	     && blks < TCP_DUPACK_THRESHOLD))
     {
-      bytes += hole->start - prev->end;
+      bytes += right->start - left->end;
       blks++;
-      hole = prev;
+      right = left;
     }
 
-  while (hole)
+  while (left)
     {
-      sb->lost_bytes += scoreboard_hole_bytes (hole);
-      hole->is_lost = 1;
-      prev = hole;
-      hole = scoreboard_prev_hole (sb, hole);
-      if (hole)
-	bytes += prev->start - hole->end;
+      bytes += right->start - left->end;
+      sb->lost_bytes += scoreboard_hole_bytes (left);
+      left->is_lost = 1;
+      right = left;
+      left = scoreboard_prev_hole (sb, left);
     }
   sb->sacked_bytes = bytes;
 }
@@ -814,7 +818,8 @@ tcp_scoreboard_is_sane_post_recovery (tcp_connection_t * tc)
 {
   sack_scoreboard_hole_t *hole;
   hole = scoreboard_first_hole (&tc->sack_sb);
-  return (!hole || seq_geq (hole->start, tc->snd_una));
+  return (!hole || (seq_geq (hole->start, tc->snd_una)
+		    && seq_lt (hole->end, tc->snd_una_max)));
 }
 
 void
@@ -971,6 +976,14 @@ tcp_rcv_sacks (tcp_connection_t * tc, u32 ack)
 	    }
 	  hole = scoreboard_next_hole (sb, hole);
 	}
+    }
+
+  if (pool_elts (sb->holes) == 1)
+    {
+      hole = scoreboard_first_hole (sb);
+      if (hole->start == ack + sb->snd_una_adv
+	  && hole->end == tc->snd_una_max)
+	scoreboard_remove_hole (sb, hole);
     }
 
   scoreboard_update_bytes (tc, sb);
@@ -1401,7 +1414,9 @@ process_ack:
       if (!tcp_in_cong_recovery (tc))
 	return 0;
       *error = TCP_ERROR_ACK_DUP;
-      return vnet_buffer (b)->tcp.data_len ? 0 : -1;
+      if (vnet_buffer (b)->tcp.data_len || tcp_is_fin (th))
+	return 0;
+      return -1;
     }
 
   /*
@@ -2672,9 +2687,12 @@ tcp46_rcv_process_inline (vlib_main_t * vm, vlib_node_runtime_t * node,
 
 	      tc0->state = TCP_STATE_CLOSED;
 	      TCP_EVT_DBG (TCP_EVT_STATE_CHANGE, tc0);
-	      /* Delete the connection/session since the pipes should be
-	       * clear by now */
-	      tcp_connection_del (tc0);
+
+	      /* Don't free the connection from the data path since
+	       * we can't ensure that we have no packets already enqueued
+	       * to output. Rely instead on the waitclose timer */
+	      tcp_connection_timers_reset (tc0);
+	      tcp_timer_update (tc0, TCP_TIMER_WAITCLOSE, 1);
 
 	      goto drop;
 
@@ -3486,6 +3504,7 @@ do {                                                       	\
   _(LAST_ACK, TCP_FLAG_FIN | TCP_FLAG_ACK, TCP_INPUT_NEXT_RCV_PROCESS,
     TCP_ERROR_NONE);
   _(LAST_ACK, TCP_FLAG_RST, TCP_INPUT_NEXT_RCV_PROCESS, TCP_ERROR_NONE);
+  _(LAST_ACK, TCP_FLAG_SYN, TCP_INPUT_NEXT_RCV_PROCESS, TCP_ERROR_NONE);
   _(TIME_WAIT, TCP_FLAG_FIN, TCP_INPUT_NEXT_RCV_PROCESS, TCP_ERROR_NONE);
   _(TIME_WAIT, TCP_FLAG_FIN | TCP_FLAG_ACK, TCP_INPUT_NEXT_RCV_PROCESS,
     TCP_ERROR_NONE);

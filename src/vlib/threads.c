@@ -17,6 +17,7 @@
 #include <signal.h>
 #include <math.h>
 #include <vppinfra/format.h>
+#include <vppinfra/linux/sysfs.h>
 #include <vlib/vlib.h>
 
 #include <vlib/threads.h>
@@ -42,13 +43,8 @@ vlib_thread_main_t vlib_thread_main;
  * imapacts observed timings.
  */
 
-#ifdef BARRIER_TRACING
- /*
-  * Output of barrier tracing can be to syslog or elog as suits
-  */
-#ifdef BARRIER_TRACING_ELOG
-static u32
-elog_id_for_msg_name (const char *msg_name)
+u32
+elog_global_id_for_msg_name (const char *msg_name)
 {
   uword *p, r;
   static uword *h;
@@ -69,29 +65,28 @@ elog_id_for_msg_name (const char *msg_name)
   return r;
 }
 
-  /*
-   * elog Barrier trace functions, which are nulled out if BARRIER_TRACING isn't
-   * defined
-   */
-
 static inline void
 barrier_trace_sync (f64 t_entry, f64 t_open, f64 t_closed)
 {
+  if (!vlib_worker_threads->barrier_elog_enabled)
+    return;
+
     /* *INDENT-OFF* */
     ELOG_TYPE_DECLARE (e) =
       {
-        .format = "barrier <%d#%s(O:%dus:%dus)(%dus)",
-        .format_args = "i4T4i4i4i4",
+        .format = "bar-trace-%s-#%d",
+        .format_args = "T4i4",
       };
     /* *INDENT-ON* */
   struct
   {
-    u32 count, caller, t_entry, t_open, t_closed;
+    u32 caller, count, t_entry, t_open, t_closed;
   } *ed = 0;
 
   ed = ELOG_DATA (&vlib_global_main.elog_main, e);
   ed->count = (int) vlib_worker_threads[0].barrier_sync_count;
-  ed->caller = elog_id_for_msg_name (vlib_worker_threads[0].barrier_caller);
+  ed->caller = elog_global_id_for_msg_name
+    (vlib_worker_threads[0].barrier_caller);
   ed->t_entry = (int) (1000000.0 * t_entry);
   ed->t_open = (int) (1000000.0 * t_open);
   ed->t_closed = (int) (1000000.0 * t_closed);
@@ -100,57 +95,65 @@ barrier_trace_sync (f64 t_entry, f64 t_open, f64 t_closed)
 static inline void
 barrier_trace_sync_rec (f64 t_entry)
 {
+  if (!vlib_worker_threads->barrier_elog_enabled)
+    return;
+
     /* *INDENT-OFF* */
     ELOG_TYPE_DECLARE (e) =
       {
-        .format = "barrier    <%d(%dus)%s",
-        .format_args = "i4i4T4",
+        .format = "bar-syncrec-%s-#%d",
+        .format_args = "T4i4",
       };
     /* *INDENT-ON* */
   struct
   {
-    u32 depth, t_entry, caller;
+    u32 caller, depth;
   } *ed = 0;
 
   ed = ELOG_DATA (&vlib_global_main.elog_main, e);
   ed->depth = (int) vlib_worker_threads[0].recursion_level - 1;
-  ed->t_entry = (int) (1000000.0 * t_entry);
-  ed->caller = elog_id_for_msg_name (vlib_worker_threads[0].barrier_caller);
+  ed->caller = elog_global_id_for_msg_name
+    (vlib_worker_threads[0].barrier_caller);
 }
 
 static inline void
 barrier_trace_release_rec (f64 t_entry)
 {
+  if (!vlib_worker_threads->barrier_elog_enabled)
+    return;
+
     /* *INDENT-OFF* */
     ELOG_TYPE_DECLARE (e) =
       {
-        .format = "barrier      (%dus)%d>",
-        .format_args = "i4i4",
+        .format = "bar-relrrec-#%d",
+        .format_args = "i4",
       };
     /* *INDENT-ON* */
   struct
   {
-    u32 t_entry, depth;
+    u32 depth;
   } *ed = 0;
 
   ed = ELOG_DATA (&vlib_global_main.elog_main, e);
-  ed->t_entry = (int) (1000000.0 * t_entry);
   ed->depth = (int) vlib_worker_threads[0].recursion_level;
 }
 
 static inline void
 barrier_trace_release (f64 t_entry, f64 t_closed_total, f64 t_update_main)
 {
+  if (!vlib_worker_threads->barrier_elog_enabled)
+    return;
+
     /* *INDENT-OFF* */
     ELOG_TYPE_DECLARE (e) =
       {
-        .format = "barrier   (%dus){%d}(C:%dus)#%d>",
+        .format = "bar-rel-#%d-e%d-u%d-t%d",
         .format_args = "i4i4i4i4",
       };
     /* *INDENT-ON* */
   struct
   {
-    u32 t_entry, t_update_main, t_closed_total, count;
+    u32 count, t_entry, t_update_main, t_closed_total;
   } *ed = 0;
 
   ed = ELOG_DATA (&vlib_global_main.elog_main, e);
@@ -162,94 +165,6 @@ barrier_trace_release (f64 t_entry, f64 t_closed_total, f64 t_update_main)
   /* Reset context for next trace */
   vlib_worker_threads[0].barrier_context = NULL;
 }
-#else
-char barrier_trace[65536];
-char *btp = barrier_trace;
-
-  /*
-   * syslog Barrier trace functions, which are nulled out if BARRIER_TRACING
-   * isn't defined
-   */
-
-
-static inline void
-barrier_trace_sync (f64 t_entry, f64 t_open, f64 t_closed)
-{
-  btp += sprintf (btp, "<%u#%s",
-		  (unsigned int) vlib_worker_threads[0].barrier_sync_count,
-		  vlib_worker_threads[0].barrier_caller);
-
-  if (vlib_worker_threads[0].barrier_context)
-    {
-      btp += sprintf (btp, "[%s]", vlib_worker_threads[0].barrier_context);
-
-    }
-
-  btp += sprintf (btp, "(O:%dus:%dus)(%dus):",
-		  (int) (1000000.0 * t_entry),
-		  (int) (1000000.0 * t_open), (int) (1000000.0 * t_closed));
-
-}
-
-static inline void
-barrier_trace_sync_rec (f64 t_entry)
-{
-  btp += sprintf (btp, "<%u(%dus)%s:",
-		  (int) vlib_worker_threads[0].recursion_level - 1,
-		  (int) (1000000.0 * t_entry),
-		  vlib_worker_threads[0].barrier_caller);
-}
-
-static inline void
-barrier_trace_release_rec (f64 t_entry)
-{
-  btp += sprintf (btp, ":(%dus)%u>", (int) (1000000.0 * t_entry),
-		  (int) vlib_worker_threads[0].recursion_level);
-}
-
-static inline void
-barrier_trace_release (f64 t_entry, f64 t_closed_total, f64 t_update_main)
-{
-
-  btp += sprintf (btp, ":(%dus)", (int) (1000000.0 * t_entry));
-  if (t_update_main > 0)
-    {
-      btp += sprintf (btp, "{%dus}", (int) (1000000.0 * t_update_main));
-    }
-
-  btp += sprintf (btp, "(C:%dus)#%u>",
-		  (int) (1000000.0 * t_closed_total),
-		  (int) vlib_worker_threads[0].barrier_sync_count);
-
-  /* Dump buffer to syslog, and reset for next trace */
-  fformat (stderr, "BTRC %s\n", barrier_trace);
-  btp = barrier_trace;
-  vlib_worker_threads[0].barrier_context = NULL;
-}
-#endif
-#else
-
-  /* Null functions for default case where barrier tracing isn't used */
-static inline void
-barrier_trace_sync (f64 t_entry, f64 t_open, f64 t_closed)
-{
-}
-
-static inline void
-barrier_trace_sync_rec (f64 t_entry)
-{
-}
-
-static inline void
-barrier_trace_release_rec (f64 t_entry)
-{
-}
-
-static inline void
-barrier_trace_release (f64 t_entry, f64 t_closed_total, f64 t_update_main)
-{
-}
-#endif
 
 uword
 os_get_nthreads (void)
@@ -393,7 +308,7 @@ vlib_thread_init (vlib_main_t * vm)
   w = vlib_worker_threads;
   w->thread_mheap = clib_mem_get_heap ();
   w->thread_stack = vlib_thread_stacks[0];
-  w->lcore_id = tm->main_lcore;
+  w->cpu_id = tm->main_lcore;
   w->lwp = syscall (SYS_gettid);
   w->thread_id = pthread_self ();
   tm->n_vlib_mains = 1;
@@ -601,7 +516,7 @@ vlib_frame_queue_enqueue (vlib_main_t * vm, u32 node_runtime_index,
 
   ASSERT (fq);
 
-  new_tail = __sync_add_and_fetch (&fq->tail, 1);
+  new_tail = clib_atomic_add_fetch (&fq->tail, 1);
 
   /* Wait until a ring slot is available */
   while (new_tail >= fq->head + fq->nelts)
@@ -661,12 +576,12 @@ vlib_worker_thread_init (vlib_worker_thread_t * w)
     {
 
       /* Initial barrier sync, for both worker and i/o threads */
-      clib_smp_atomic_add (vlib_worker_threads->workers_at_barrier, 1);
+      clib_atomic_fetch_add (vlib_worker_threads->workers_at_barrier, 1);
 
       while (*vlib_worker_threads->wait_at_barrier)
 	;
 
-      clib_smp_atomic_add (vlib_worker_threads->workers_at_barrier, -1);
+      clib_atomic_fetch_add (vlib_worker_threads->workers_at_barrier, -1);
     }
 }
 
@@ -688,21 +603,42 @@ vlib_worker_thread_bootstrap_fn (void *arg)
   return rv;
 }
 
+static void
+vlib_get_thread_core_socket (vlib_worker_thread_t * w, unsigned cpu_id)
+{
+  const char *sys_cpu_path = "/sys/devices/system/cpu/cpu";
+  u8 *p = 0;
+  int core_id = -1, socket_id = -1;
+
+  p = format (p, "%s%u/topology/core_id%c", sys_cpu_path, cpu_id, 0);
+  clib_sysfs_read ((char *) p, "%d", &core_id);
+  vec_reset_length (p);
+  p =
+    format (p, "%s%u/topology/physical_package_id%c", sys_cpu_path, cpu_id,
+	    0);
+  clib_sysfs_read ((char *) p, "%d", &socket_id);
+  vec_free (p);
+
+  w->core_id = core_id;
+  w->socket_id = socket_id;
+}
+
 static clib_error_t *
-vlib_launch_thread_int (void *fp, vlib_worker_thread_t * w, unsigned lcore_id)
+vlib_launch_thread_int (void *fp, vlib_worker_thread_t * w, unsigned cpu_id)
 {
   vlib_thread_main_t *tm = &vlib_thread_main;
   void *(*fp_arg) (void *) = fp;
 
-  w->lcore_id = lcore_id;
+  w->cpu_id = cpu_id;
+  vlib_get_thread_core_socket (w, cpu_id);
   if (tm->cb.vlib_launch_thread_cb && !w->registration->use_pthreads)
-    return tm->cb.vlib_launch_thread_cb (fp, (void *) w, lcore_id);
+    return tm->cb.vlib_launch_thread_cb (fp, (void *) w, cpu_id);
   else
     {
       pthread_t worker;
       cpu_set_t cpuset;
       CPU_ZERO (&cpuset);
-      CPU_SET (lcore_id, &cpuset);
+      CPU_SET (cpu_id, &cpuset);
 
       if (pthread_create (&worker, NULL /* attr */ , fp_arg, (void *) w))
 	return clib_error_return_unix (0, "pthread_create");
@@ -1374,22 +1310,6 @@ cpu_config (vlib_main_t * vm, unformat_input_t * input)
 
 VLIB_EARLY_CONFIG_FUNCTION (cpu_config, "cpu");
 
-#if !defined (__x86_64__) && !defined (__i386__) && !defined (__aarch64__) && !defined (__powerpc64__) && !defined(__arm__)
-void
-__sync_fetch_and_add_8 (void)
-{
-  fformat (stderr, "%s called\n", __FUNCTION__);
-  abort ();
-}
-
-void
-__sync_add_and_fetch_8 (void)
-{
-  fformat (stderr, "%s called\n", __FUNCTION__);
-  abort ();
-}
-#endif
-
 void vnet_main_fixup (vlib_fork_fixup_t which) __attribute__ ((weak));
 void
 vnet_main_fixup (vlib_fork_fixup_t which)
@@ -1557,8 +1477,8 @@ vlib_worker_thread_barrier_release (vlib_main_t * vm)
 
       /* Do per thread rebuilds in parallel */
       refork_needed = 1;
-      clib_smp_atomic_add (vlib_worker_threads->node_reforks_required,
-			   (vec_len (vlib_mains) - 1));
+      clib_atomic_fetch_add (vlib_worker_threads->node_reforks_required,
+			     (vec_len (vlib_mains) - 1));
       now = vlib_time_now (vm);
       t_update_main = now - vm->barrier_epoch;
     }

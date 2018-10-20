@@ -1293,13 +1293,14 @@ vppcom_session_read_internal (uint32_t session_handle, void *buf, int n,
   is_ct = vcl_session_is_ct (s);
   mq = is_ct ? s->our_evt_q : wrk->app_event_queue;
   rx_fifo = s->rx_fifo;
+  s->has_rx_evt = 0;
 
   if (svm_fifo_is_empty (rx_fifo))
     {
       if (is_nonblocking)
 	{
 	  svm_fifo_unset_event (rx_fifo);
-	  return VPPCOM_OK;
+	  return VPPCOM_EWOULDBLOCK;
 	}
       while (svm_fifo_is_empty (rx_fifo))
 	{
@@ -1332,12 +1333,11 @@ vppcom_session_read_internal (uint32_t session_handle, void *buf, int n,
   if (svm_fifo_is_empty (rx_fifo))
     svm_fifo_unset_event (rx_fifo);
 
-  if (is_ct && n_read + svm_fifo_max_dequeue (rx_fifo) == rx_fifo->nitems)
+  if (is_ct && svm_fifo_want_tx_evt (rx_fifo))
     {
-      /* If the peer is not polling send notification */
-      if (!svm_fifo_has_event (s->rx_fifo))
-	app_send_io_evt_to_vpp (s->vpp_evt_q, s->rx_fifo,
-				SESSION_IO_EVT_CT_RX, SVM_Q_WAIT);
+      svm_fifo_set_want_tx_evt (s->rx_fifo, 0);
+      app_send_io_evt_to_vpp (s->vpp_evt_q, s->rx_fifo, SESSION_IO_EVT_CT_RX,
+			      SVM_Q_WAIT);
     }
 
   VDBG (2, "VCL<%d>: vpp handle 0x%llx, sid %u: read %d bytes from (%p)",
@@ -1386,13 +1386,14 @@ vppcom_session_read_segments (uint32_t session_handle,
   is_ct = vcl_session_is_ct (s);
   mq = is_ct ? s->our_evt_q : wrk->app_event_queue;
   rx_fifo = s->rx_fifo;
+  s->has_rx_evt = 0;
 
   if (svm_fifo_is_empty (rx_fifo))
     {
       if (is_nonblocking)
 	{
 	  svm_fifo_unset_event (rx_fifo);
-	  return VPPCOM_OK;
+	  return VPPCOM_EWOULDBLOCK;
 	}
       while (svm_fifo_is_empty (rx_fifo))
 	{
@@ -1552,7 +1553,8 @@ vppcom_session_write (uint32_t session_handle, void *buf, size_t n)
 	{
 	  svm_fifo_set_want_tx_evt (tx_fifo, 1);
 	  svm_msg_q_lock (mq);
-	  svm_msg_q_wait (mq);
+	  if (svm_msg_q_is_empty (mq))
+	    svm_msg_q_wait (mq);
 
 	  svm_msg_q_sub_w_lock (mq, &msg);
 	  e = svm_msg_q_msg_data (mq, &msg);
@@ -2304,11 +2306,12 @@ vcl_epoll_wait_handle_mq_event (vcl_worker_t * wrk, session_event_t * e,
       sid = e->fifo->client_session_index;
       session = vcl_session_get (wrk, sid);
       session_events = session->vep.ev.events;
-      if (!(EPOLLIN & session->vep.ev.events))
+      if (!(EPOLLIN & session->vep.ev.events) || session->has_rx_evt)
 	break;
       add_event = 1;
       events[*num_ev].events |= EPOLLIN;
       session_evt_data = session->vep.ev.data.u64;
+      session->has_rx_evt = 1;
       break;
     case FIFO_EVENT_APP_TX:
       sid = e->fifo->client_session_index;
@@ -2325,11 +2328,12 @@ vcl_epoll_wait_handle_mq_event (vcl_worker_t * wrk, session_event_t * e,
       session = vcl_ct_session_get_from_fifo (wrk, e->fifo, 0);
       sid = session->session_index;
       session_events = session->vep.ev.events;
-      if (!(EPOLLIN & session->vep.ev.events))
+      if (!(EPOLLIN & session->vep.ev.events) || session->has_rx_evt)
 	break;
       add_event = 1;
       events[*num_ev].events |= EPOLLIN;
       session_evt_data = session->vep.ev.data.u64;
+      session->has_rx_evt = 1;
       break;
     case SESSION_IO_EVT_CT_RX:
       session = vcl_ct_session_get_from_fifo (wrk, e->fifo, 1);
@@ -2453,15 +2457,13 @@ handle_dequeued:
     {
       msg = vec_elt_at_index (wrk->mq_msg_vector, i);
       e = svm_msg_q_msg_data (mq, msg);
-      vcl_epoll_wait_handle_mq_event (wrk, e, events, num_ev);
+      if (*num_ev < maxevents)
+	vcl_epoll_wait_handle_mq_event (wrk, e, events, num_ev);
+      else
+	vec_add1 (wrk->unhandled_evts_vector, *e);
       svm_msg_q_free_msg (mq, msg);
-      if (*num_ev == maxevents)
-	{
-	  i += 1;
-	  break;
-	}
     }
-  vec_delete (wrk->mq_msg_vector, i, 0);
+  vec_reset_length (wrk->mq_msg_vector);
 
   return *num_ev;
 }
@@ -2509,6 +2511,7 @@ vppcom_epoll_wait_eventfd (vcl_worker_t * wrk, struct epoll_event *events,
   u64 buf;
 
   vec_validate (wrk->mq_events, pool_elts (wrk->mq_evt_conns));
+again:
   n_mq_evts = epoll_wait (wrk->mqs_epfd, wrk->mq_events,
 			  vec_len (wrk->mq_events), wait_for_time);
   for (i = 0; i < n_mq_evts; i++)
@@ -2517,6 +2520,8 @@ vppcom_epoll_wait_eventfd (vcl_worker_t * wrk, struct epoll_event *events,
       n_read = read (mqc->mq_fd, &buf, sizeof (buf));
       vcl_epoll_wait_handle_mq (wrk, mqc->mq, events, maxevents, 0, &n_evts);
     }
+  if (!n_evts && n_mq_evts > 0)
+    goto again;
 
   return (int) n_evts;
 }

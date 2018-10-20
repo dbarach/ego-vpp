@@ -28,22 +28,21 @@
  */
 const f64 multipath_next_hop_error_tolerance = 0.1;
 
-#undef LB_DEBUG
+static const char *load_balance_attr_names[] = LOAD_BALANCE_ATTR_NAMES;
 
-#ifdef LB_DEBUG
+/**
+ * the logger
+ */
+vlib_log_class_t load_balance_logger;
+
 #define LB_DBG(_lb, _fmt, _args...)                                     \
 {                                                                       \
-    u8* _tmp =NULL;                                                     \
-    clib_warning("lb:[%s]:" _fmt,                                       \
-                 load_balance_format(load_balance_get_index((_lb)),     \
-                                     0, _tmp),                          \
-                 ##_args);                                              \
-    vec_free(_tmp);                                                     \
+    vlib_log_debug(load_balance_logger,                                 \
+                   "lb:[%U]:" _fmt,                                     \
+                   format_load_balance, load_balance_get_index(_lb),    \
+                   LOAD_BALANCE_FORMAT_NONE,                            \
+                   ##_args);                                            \
 }
-#else
-#define LB_DBG(_p, _fmt, _args...)
-#endif
-
 
 /**
  * Pool of all DPOs. It's not static so the DP can have fast access
@@ -131,6 +130,21 @@ load_balance_format (index_t lbi,
     s = format(s, "[proto:%U ", format_dpo_proto, lb->lb_proto);
     s = format(s, "index:%d buckets:%d ", lbi, lb->lb_n_buckets);
     s = format(s, "uRPF:%d ", lb->lb_urpf);
+    if (lb->lb_flags)
+    {
+        load_balance_attr_t attr;
+
+        s = format(s, "flags:[");
+
+        FOR_EACH_LOAD_BALANCE_ATTR(attr)
+        {
+            if (lb->lb_flags & (1 << attr))
+            {
+                s = format (s, "%s", load_balance_attr_names[attr]);
+            }
+        }
+        s = format(s, "] ");
+    }
     s = format(s, "to:[%Ld:%Ld]", to.packets, to.bytes);
     if (0 != via.packets)
     {
@@ -164,6 +178,7 @@ format_load_balance (u8 * s, va_list * args)
 
     return (load_balance_format(lbi, flags, 0, s));
 }
+
 static u8*
 format_load_balance_dpo (u8 * s, va_list * args)
 {
@@ -172,7 +187,6 @@ format_load_balance_dpo (u8 * s, va_list * args)
 
     return (load_balance_format(lbi, LOAD_BALANCE_FORMAT_DETAIL, indent, s));
 }
-
 
 static load_balance_t *
 load_balance_create_i (u32 num_buckets,
@@ -467,12 +481,12 @@ load_balance_multipath_next_hop_fixup (const load_balance_path_t *nhs,
  * next hop adjacencies.
  */
 static void
-load_balance_fill_buckets (load_balance_t *lb,
-                           load_balance_path_t *nhs,
-                           dpo_id_t *buckets,
-                           u32 n_buckets)
+load_balance_fill_buckets_norm (load_balance_t *lb,
+                                load_balance_path_t *nhs,
+                                dpo_id_t *buckets,
+                                u32 n_buckets)
 {
-    load_balance_path_t * nh;
+    load_balance_path_t *nh;
     u16 ii, bucket;
 
     bucket = 0;
@@ -488,6 +502,69 @@ load_balance_fill_buckets (load_balance_t *lb,
             ASSERT(bucket < n_buckets);
             load_balance_set_bucket_i(lb, bucket++, buckets, &nh->path_dpo);
         }
+    }
+}
+static void
+load_balance_fill_buckets_sticky (load_balance_t *lb,
+                                  load_balance_path_t *nhs,
+                                  dpo_id_t *buckets,
+                                  u32 n_buckets)
+{
+    load_balance_path_t *nh, *fwding_paths;
+    u16 ii, bucket, fpath;
+
+    fpath = bucket = 0;
+    fwding_paths = NULL;
+
+    vec_foreach (nh, nhs)
+    {
+        if (!dpo_is_drop(&nh->path_dpo))
+        {
+            vec_add1(fwding_paths, *nh);
+        }
+    }
+    if (vec_len(fwding_paths) == 0)
+        fwding_paths = vec_dup(nhs);
+
+    /*
+     * the next-hops have normalised weights. that means their sum is the number
+     * of buckets we need to fill.
+     */
+    vec_foreach (nh, nhs)
+    {
+        for (ii = 0; ii < nh->path_weight; ii++)
+        {
+            ASSERT(bucket < n_buckets);
+            if (!dpo_is_drop(&nh->path_dpo))
+            {
+                load_balance_set_bucket_i(lb, bucket++, buckets, &nh->path_dpo);
+            }
+            else
+            {
+                /* fill the bucks from the next up path */
+                load_balance_set_bucket_i(lb, bucket++, buckets, &fwding_paths[fpath].path_dpo);
+                fpath = (fpath + 1) % vec_len(fwding_paths);
+            }
+        }
+    }
+
+    vec_free(fwding_paths);
+}
+
+static void
+load_balance_fill_buckets (load_balance_t *lb,
+                           load_balance_path_t *nhs,
+                           dpo_id_t *buckets,
+                           u32 n_buckets,
+                           load_balance_flags_t flags)
+{
+    if (flags & LOAD_BALANCE_FLAG_STICKY)
+    {
+        load_balance_fill_buckets_sticky(lb, nhs, buckets, n_buckets);
+    }
+    else
+    {
+        load_balance_fill_buckets_norm(lb, nhs, buckets, n_buckets);
     }
 }
 
@@ -514,6 +591,7 @@ load_balance_multipath_update (const dpo_id_t *dpo,
 
     ASSERT(DPO_LOAD_BALANCE == dpo->dpoi_type);
     lb = load_balance_get(dpo->dpoi_index);
+    lb->lb_flags = flags;
     fixed_nhs = load_balance_multipath_next_hop_fixup(raw_nhs, lb->lb_proto);
     n_buckets =
         ip_multipath_normalize_next_hops((NULL == fixed_nhs ?
@@ -553,7 +631,7 @@ load_balance_multipath_update (const dpo_id_t *dpo,
 
         load_balance_fill_buckets(lb, nhs,
                                   load_balance_get_buckets(lb),
-                                  n_buckets);
+                                  n_buckets, flags);
         lb->lb_map = lbmi;
     }
     else
@@ -574,7 +652,7 @@ load_balance_multipath_update (const dpo_id_t *dpo,
              */
             load_balance_fill_buckets(lb, nhs,
                                       load_balance_get_buckets(lb),
-                                      n_buckets);
+                                      n_buckets, flags);
             lb->lb_map = lbmi;
         }
         else if (n_buckets > lb->lb_n_buckets)
@@ -599,7 +677,7 @@ load_balance_multipath_update (const dpo_id_t *dpo,
 
                 load_balance_fill_buckets(lb, nhs,
                                           lb->lb_buckets,
-                                          n_buckets);
+                                          n_buckets, flags);
                 CLIB_MEMORY_BARRIER();
                 load_balance_set_n_buckets(lb, n_buckets);
 
@@ -620,7 +698,7 @@ load_balance_multipath_update (const dpo_id_t *dpo,
                      */
                     load_balance_fill_buckets(lb, nhs,
                                               load_balance_get_buckets(lb),
-                                              n_buckets);
+                                              n_buckets, flags);
                     CLIB_MEMORY_BARRIER();
                     load_balance_set_n_buckets(lb, n_buckets);
                 }
@@ -639,7 +717,8 @@ load_balance_multipath_update (const dpo_id_t *dpo,
                                          n_buckets - 1,
                                          CLIB_CACHE_LINE_BYTES);
 
-                    load_balance_fill_buckets(lb, nhs, new_buckets, n_buckets);
+                    load_balance_fill_buckets(lb, nhs, new_buckets,
+                                              n_buckets, flags);
                     CLIB_MEMORY_BARRIER();
                     lb->lb_buckets = new_buckets;
                     CLIB_MEMORY_BARRIER();
@@ -683,7 +762,7 @@ load_balance_multipath_update (const dpo_id_t *dpo,
                  */
                 load_balance_fill_buckets(lb, nhs,
                                           lb->lb_buckets_inline,
-                                          n_buckets);
+                                          n_buckets, flags);
                 CLIB_MEMORY_BARRIER();
                 load_balance_set_n_buckets(lb, n_buckets);
                 CLIB_MEMORY_BARRIER();
@@ -711,9 +790,8 @@ load_balance_multipath_update (const dpo_id_t *dpo,
                 load_balance_set_n_buckets(lb, n_buckets);
                 CLIB_MEMORY_BARRIER();
 
-                load_balance_fill_buckets(lb, nhs,
-                                          buckets,
-                                          n_buckets);
+                load_balance_fill_buckets(lb, nhs, buckets,
+                                          n_buckets, flags);
 
                 for (ii = n_buckets; ii < old_n_buckets; ii++)
                 {
@@ -867,6 +945,9 @@ load_balance_module_init (void)
     lbi = load_balance_create(1, DPO_PROTO_IP4, 0);
     load_balance_set_bucket(lbi, 0, drop_dpo_get(DPO_PROTO_IP4));
 
+    load_balance_logger =
+        vlib_log_register_class("dpo", "load-balance");
+
     load_balance_map_module_init();
 }
 
@@ -887,8 +968,15 @@ load_balance_show (vlib_main_t * vm,
 
     if (INDEX_INVALID != lbi)
     {
-        vlib_cli_output (vm, "%U", format_load_balance, lbi,
+        if (pool_is_free_index(load_balance_pool, lbi))
+        {
+            vlib_cli_output (vm, "no such load-balance:%d", lbi);
+        }
+        else
+        {
+            vlib_cli_output (vm, "%U", format_load_balance, lbi,
                          LOAD_BALANCE_FORMAT_DETAIL);
+        }
     }
     else
     {

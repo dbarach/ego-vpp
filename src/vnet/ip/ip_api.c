@@ -45,6 +45,7 @@
 #include <vnet/ip/ip4_reassembly.h>
 #include <vnet/ip/ip6_reassembly.h>
 #include <vnet/ethernet/arp.h>
+#include <vnet/ip/ip_types_api.h>
 
 #include <vnet/vnet_msg_enum.h>
 
@@ -102,6 +103,7 @@ _(SW_INTERFACE_IP6_ENABLE_DISABLE, sw_interface_ip6_enable_disable )    \
 _(SW_INTERFACE_IP6_SET_LINK_LOCAL_ADDRESS, 				\
   sw_interface_ip6_set_link_local_address)				\
 _(IP_CONTAINER_PROXY_ADD_DEL, ip_container_proxy_add_del)               \
+_(IP_CONTAINER_PROXY_DUMP, ip_container_proxy_dump)                     \
 _(IOAM_ENABLE, ioam_enable)                                             \
 _(IOAM_DISABLE, ioam_disable)                                           \
 _(IP_SOURCE_AND_PORT_RANGE_CHECK_ADD_DEL,                               \
@@ -659,6 +661,7 @@ vl_api_ip_neighbor_add_del_t_handler (vl_api_ip_neighbor_add_del_t * mp,
   ip46_address_t ip = ip46_address_initializer;
   vl_api_ip_neighbor_add_del_reply_t *rmp;
   ip_neighbor_flags_t flags;
+  u32 stats_index = ~0;
   int rv = 0;
 
   VALIDATE_SW_IF_INDEX (mp);
@@ -678,14 +681,20 @@ vl_api_ip_neighbor_add_del_t_handler (vl_api_ip_neighbor_add_del_t * mp,
 
   if (mp->is_add)
     rv = ip_neighbor_add (&ip, mp->is_ipv6, mp->mac_address,
-			  ntohl (mp->sw_if_index), flags);
+			  ntohl (mp->sw_if_index), flags, &stats_index);
   else
     rv = ip_neighbor_del (&ip, mp->is_ipv6, ntohl (mp->sw_if_index));
 
   stats_dsunlock ();
 
   BAD_SW_IF_INDEX_LABEL;
-  REPLY_MACRO (VL_API_IP_NEIGHBOR_ADD_DEL_REPLY);
+
+  /* *INDENT-OFF* */
+  REPLY_MACRO2 (VL_API_IP_NEIGHBOR_ADD_DEL_REPLY,
+  ({
+    rmp->stats_index = htonl (stats_index);
+  }));
+  /* *INDENT-ON* */
 }
 
 void
@@ -1203,7 +1212,7 @@ add_del_mroute_check (fib_protocol_t table_proto,
   return (0);
 }
 
-static int
+static fib_node_index_t
 mroute_add_del_handler (u8 is_add,
 			u8 is_local,
 			u32 fib_index,
@@ -1214,6 +1223,8 @@ mroute_add_del_handler (u8 is_add,
 			u32 next_hop_sw_if_index,
 			ip46_address_t * nh, u32 itf_flags, u32 bier_imp)
 {
+  fib_node_index_t mfib_entry_index = ~0;
+
   stats_dslock_with_hint (1 /* release hint */ , 2 /* tag */ );
 
   fib_route_path_t path = {
@@ -1232,15 +1243,17 @@ mroute_add_del_handler (u8 is_add,
     }
   else if (!is_local && ~0 == next_hop_sw_if_index)
     {
-      mfib_table_entry_update (fib_index, prefix,
-			       MFIB_SOURCE_API, rpf_id, entry_flags);
+      mfib_entry_index = mfib_table_entry_update (fib_index, prefix,
+						  MFIB_SOURCE_API,
+						  rpf_id, entry_flags);
       goto done;
     }
 
   if (is_add)
     {
-      mfib_table_entry_path_update (fib_index, prefix,
-				    MFIB_SOURCE_API, &path, itf_flags);
+      mfib_entry_index = mfib_table_entry_path_update (fib_index, prefix,
+						       MFIB_SOURCE_API,
+						       &path, itf_flags);
     }
   else
     {
@@ -1250,12 +1263,14 @@ mroute_add_del_handler (u8 is_add,
 
 done:
   stats_dsunlock ();
-  return (0);
+  return (mfib_entry_index);
 }
 
 static int
-api_mroute_add_del_t_handler (vl_api_ip_mroute_add_del_t * mp)
+api_mroute_add_del_t_handler (vl_api_ip_mroute_add_del_t * mp,
+			      u32 * stats_index)
 {
+  fib_node_index_t mfib_entry_index;
   fib_protocol_t fproto;
   dpo_proto_t nh_proto;
   ip46_address_t nh;
@@ -1285,6 +1300,8 @@ api_mroute_add_del_t_handler (vl_api_ip_mroute_add_del_t * mp)
 		   sizeof (pfx.fp_src_addr.ip4));
       memset (&nh.ip6, 0, sizeof (nh.ip6));
       clib_memcpy (&nh.ip4, mp->nh_address, sizeof (nh.ip4));
+      if (!ip46_address_is_zero (&pfx.fp_src_addr))
+	pfx.fp_len = 64;
     }
   else
     {
@@ -1293,34 +1310,47 @@ api_mroute_add_del_t_handler (vl_api_ip_mroute_add_del_t * mp)
       clib_memcpy (&pfx.fp_src_addr.ip6, mp->src_address,
 		   sizeof (pfx.fp_src_addr.ip6));
       clib_memcpy (&nh.ip6, mp->nh_address, sizeof (nh.ip6));
+      if (!ip46_address_is_zero (&pfx.fp_src_addr))
+	pfx.fp_len = 256;
     }
 
-  return (mroute_add_del_handler (mp->is_add,
-				  mp->is_local,
-				  fib_index, &pfx,
-				  nh_proto,
-				  ntohl (mp->entry_flags),
-				  ntohl (mp->rpf_id),
-				  ntohl (mp->next_hop_sw_if_index),
-				  &nh,
-				  ntohl (mp->itf_flags),
-				  ntohl (mp->bier_imp)));
+  mfib_entry_index = mroute_add_del_handler (mp->is_add,
+					     mp->is_local,
+					     fib_index, &pfx,
+					     nh_proto,
+					     ntohl (mp->entry_flags),
+					     ntohl (mp->rpf_id),
+					     ntohl (mp->next_hop_sw_if_index),
+					     &nh,
+					     ntohl (mp->itf_flags),
+					     ntohl (mp->bier_imp));
+
+  if (~0 != mfib_entry_index)
+    *stats_index = mfib_entry_get_stats_index (mfib_entry_index);
+
+  return (rv);
 }
 
 void
 vl_api_ip_mroute_add_del_t_handler (vl_api_ip_mroute_add_del_t * mp)
 {
   vl_api_ip_mroute_add_del_reply_t *rmp;
+  vnet_main_t *vnm;
+  u32 stats_index;
   int rv;
-  vnet_main_t *vnm = vnet_get_main ();
 
+  vnm = vnet_get_main ();
   vnm->api_errno = 0;
+  stats_index = ~0;
 
-  rv = api_mroute_add_del_t_handler (mp);
+  rv = api_mroute_add_del_t_handler (mp, &stats_index);
 
-  rv = (rv == 0) ? vnm->api_errno : rv;
-
-  REPLY_MACRO (VL_API_IP_MROUTE_ADD_DEL_REPLY);
+  /* *INDENT-OFF* */
+  REPLY_MACRO2 (VL_API_IP_MROUTE_ADD_DEL_REPLY,
+  ({
+    rmp->stats_index = htonl (stats_index);
+  }));
+  /* *INDENT-ON* */
 }
 
 static void
@@ -1914,6 +1944,53 @@ static void
     }
 
   REPLY_MACRO (VL_API_IP_CONTAINER_PROXY_ADD_DEL_REPLY);
+}
+
+typedef struct ip_container_proxy_walk_ctx_t_
+{
+  vl_api_registration_t *reg;
+  u32 context;
+} ip_container_proxy_walk_ctx_t;
+
+static int
+ip_container_proxy_send_details (const fib_prefix_t * pfx, u32 sw_if_index,
+				 void *args)
+{
+  vl_api_ip_container_proxy_details_t *mp;
+  ip_container_proxy_walk_ctx_t *ctx = args;
+
+  mp = vl_msg_api_alloc (sizeof (*mp));
+  if (!mp)
+    return 1;
+
+  memset (mp, 0, sizeof (*mp));
+  mp->_vl_msg_id = ntohs (VL_API_IP_CONTAINER_PROXY_DETAILS);
+  mp->context = ctx->context;
+
+  mp->sw_if_index = ntohl (sw_if_index);
+  ip_prefix_encode (pfx, &mp->prefix);
+
+  vl_api_send_msg (ctx->reg, (u8 *) mp);
+
+  return 1;
+}
+
+static void
+vl_api_ip_container_proxy_dump_t_handler (vl_api_ip_container_proxy_dump_t *
+					  mp)
+{
+  vl_api_registration_t *reg;
+
+  reg = vl_api_client_index_to_registration (mp->client_index);
+  if (!reg)
+    return;
+
+  ip_container_proxy_walk_ctx_t ctx = {
+    .context = mp->context,
+    .reg = reg,
+  };
+
+  ip_container_proxy_walk (ip_container_proxy_send_details, &ctx);
 }
 
 static void
@@ -3292,6 +3369,12 @@ ip_api_hookup (vlib_main_t * vm)
                            sizeof(vl_api_##n##_t), 1);
   foreach_ip_api_msg;
 #undef _
+
+  /*
+   * Mark the route add/del API as MP safe
+   */
+  am->is_mp_safe[VL_API_IP_ADD_DEL_ROUTE] = 1;
+  am->is_mp_safe[VL_API_IP_ADD_DEL_ROUTE_REPLY] = 1;
 
   /*
    * Set up the (msg_name, crc, message-id) table

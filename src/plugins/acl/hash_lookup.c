@@ -734,12 +734,16 @@ hash_acl_apply(acl_main_t *am, u32 lc_index, int acl_index, u32 acl_position)
    * ACL, so the change adding this code also takes care of that.
    */
 
-  /* expand the applied aces vector by the necessary amount */
-  vec_resize((*applied_hash_aces), vec_len(ha->rules));
 
   vec_validate(am->hash_applied_mask_info_vec_by_lc_index, lc_index);
   /* add the rules from the ACL to the hash table for lookup and append to the vector*/
   for(i=0; i < vec_len(ha->rules); i++) {
+    /*
+     * Expand the applied aces vector to fit a new entry.
+     * One by one not to upset split_partition() if it is called.
+     */
+    vec_resize((*applied_hash_aces), 1);
+
     int is_ip6 = ha->rules[i].match.pkt.is_ip6;
     u32 new_index = base_offset + i;
     applied_hash_ace_entry_t *pae = vec_elt_at_index((*applied_hash_aces), new_index);
@@ -1483,6 +1487,8 @@ split_partition(acl_main_t *am, u32 first_index,
 	int i=0;
 	u64 collisions = vec_len(pae->colliding_rules);
 	for(i=0; i<collisions; i++){
+                /* reload the hash acl info as it might be a different ACL# */
+	        ha = vec_elt_at_index(am->hash_acl_infos, pae->acl_index);
 
 		DBG( "TM-collision: base_ace:%d (ace_mask:%d, first_collision_mask:%d)",
 				pae->ace_index, pae->mask_type_index, coll_mask_type_index);

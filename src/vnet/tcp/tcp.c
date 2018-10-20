@@ -210,7 +210,8 @@ tcp_connection_cleanup (tcp_connection_t * tc)
       /* Try to remove the half-open connection. If this is not the owning
        * thread, tc won't be removed. Retransmit or establish timers will
        * eventually expire and call again cleanup on the right thread. */
-      tcp_half_open_connection_cleanup (tc);
+      if (tcp_half_open_connection_cleanup (tc))
+	tc->flags |= TCP_CONN_HALF_OPEN_DONE;
     }
   else
     {
@@ -322,8 +323,10 @@ tcp_connection_close (tcp_connection_t * tc)
       tc->state = TCP_STATE_CLOSED;
       break;
     case TCP_STATE_SYN_RCVD:
+      tcp_connection_timers_reset (tc);
       tcp_send_fin (tc);
       tc->state = TCP_STATE_FIN_WAIT_1;
+      tcp_timer_update (tc, TCP_TIMER_WAITCLOSE, TCP_CLEANUP_TIME);
       break;
     case TCP_STATE_ESTABLISHED:
       if (!session_tx_fifo_max_dequeue (&tc->connection))
@@ -939,9 +942,11 @@ format_tcp_scoreboard (u8 * s, va_list * args)
   s = format (s, "sacked_bytes %u last_sacked_bytes %u lost_bytes %u\n",
 	      sb->sacked_bytes, sb->last_sacked_bytes, sb->lost_bytes);
   s = format (s, " last_bytes_delivered %u high_sacked %u snd_una_adv %u\n",
-	      sb->last_bytes_delivered, sb->high_sacked, sb->snd_una_adv);
+	      sb->last_bytes_delivered, sb->high_sacked - tc->iss,
+	      sb->snd_una_adv);
   s = format (s, " cur_rxt_hole %u high_rxt %u rescue_rxt %u",
-	      sb->cur_rxt_hole, sb->high_rxt, sb->rescue_rxt);
+	      sb->cur_rxt_hole, sb->high_rxt - tc->iss,
+	      sb->rescue_rxt - tc->iss);
 
   hole = scoreboard_first_hole (sb);
   if (hole)
@@ -1192,6 +1197,10 @@ tcp_timer_waitclose_handler (u32 conn_index)
 	  clib_warning ("FIN was sent and still in CLOSE WAIT. Weird!");
 	}
 
+      /* Make sure we don't try to send unsent data */
+      tcp_connection_timers_reset (tc);
+      tcp_cong_recovery_off (tc);
+      tc->snd_una_max = tc->snd_nxt = tc->snd_una;
       tcp_send_fin (tc);
       tc->state = TCP_STATE_LAST_ACK;
 

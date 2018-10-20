@@ -119,7 +119,7 @@ dpdk_device_setup (dpdk_device_t * xd)
       dpdk_mempool_private_t *privp;
       uword tidx = vnet_get_device_input_thread_index (dm->vnet_main,
 						       xd->hw_if_index, j);
-      unsigned lcore = vlib_worker_threads[tidx].lcore_id;
+      unsigned lcore = vlib_worker_threads[tidx].cpu_id;
       u16 socket_id = rte_lcore_to_socket_id (lcore);
 
       rv =
@@ -343,6 +343,19 @@ dpdk_port_state_callback (dpdk_portid_t port_id,
 			  void *ret_param __attribute__ ((unused)))
 {
   return dpdk_port_state_callback_inline (port_id, type, param);
+}
+
+/* If this device is PCI return pointer to info, otherwise NULL */
+struct rte_pci_device *
+dpdk_get_pci_device (const struct rte_eth_dev_info *info)
+{
+  const struct rte_bus *bus;
+
+  bus = rte_bus_find_by_device (info->device);
+  if (bus && !strcmp (bus->name, "pci"))
+    return RTE_DEV_TO_PCI (info->device);
+  else
+    return NULL;
 }
 
 /*
