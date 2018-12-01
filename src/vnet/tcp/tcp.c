@@ -77,7 +77,7 @@ tcp_connection_bind (u32 session_index, transport_endpoint_t * lcl)
   void *iface_ip;
 
   pool_get (tm->listener_pool, listener);
-  memset (listener, 0, sizeof (*listener));
+  clib_memset (listener, 0, sizeof (*listener));
 
   listener->c_c_index = listener - tm->listener_pool;
   listener->c_lcl_port = lcl->port;
@@ -121,7 +121,7 @@ tcp_connection_unbind (u32 listener_index)
 
   /* Poison the entry */
   if (CLIB_DEBUG > 0)
-    memset (tc, 0xFA, sizeof (*tc));
+    clib_memset (tc, 0xFA, sizeof (*tc));
 
   pool_put_index (tm->listener_pool, listener_index);
 }
@@ -153,7 +153,7 @@ tcp_half_open_connection_del (tcp_connection_t * tc)
   clib_spinlock_lock_if_init (&tm->half_open_lock);
   pool_put_index (tm->half_open_connections, tc->c_c_index);
   if (CLIB_DEBUG)
-    memset (tc, 0xFA, sizeof (*tc));
+    clib_memset (tc, 0xFA, sizeof (*tc));
   clib_spinlock_unlock_if_init (&tm->half_open_lock);
 }
 
@@ -185,7 +185,7 @@ tcp_half_open_connection_new (void)
   tcp_connection_t *tc = 0;
   ASSERT (vlib_get_thread_index () == 0);
   pool_get (tm->half_open_connections, tc);
-  memset (tc, 0, sizeof (*tc));
+  clib_memset (tc, 0, sizeof (*tc));
   tc->c_c_index = tc - tm->half_open_connections;
   return tc;
 }
@@ -225,7 +225,7 @@ tcp_connection_cleanup (tcp_connection_t * tc)
 
       /* Poison the entry */
       if (CLIB_DEBUG > 0)
-	memset (tc, 0xFA, sizeof (*tc));
+	clib_memset (tc, 0xFA, sizeof (*tc));
       pool_put (tm->connections[thread_index], tc);
     }
 }
@@ -252,7 +252,7 @@ tcp_connection_new (u8 thread_index)
   tcp_connection_t *tc;
 
   pool_get (tm->connections[thread_index], tc);
-  memset (tc, 0, sizeof (*tc));
+  clib_memset (tc, 0, sizeof (*tc));
   tc->c_c_index = tc - tm->connections[thread_index];
   tc->c_thread_index = thread_index;
   return tc;
@@ -435,7 +435,7 @@ tcp_connection_select_lb_bucket (tcp_connection_t * tc, const dpo_id_t * dpo,
   if (tc->c_is_ip4)
     {
       ip4_tcp_hdr_t hdr;
-      memset (&hdr, 0, sizeof (hdr));
+      clib_memset (&hdr, 0, sizeof (hdr));
       hdr.ip.protocol = IP_PROTOCOL_TCP;
       hdr.ip.address_pair.src.as_u32 = tc->c_lcl_ip.ip4.as_u32;
       hdr.ip.address_pair.dst.as_u32 = tc->c_rmt_ip.ip4.as_u32;
@@ -446,12 +446,12 @@ tcp_connection_select_lb_bucket (tcp_connection_t * tc, const dpo_id_t * dpo,
   else
     {
       ip6_tcp_hdr_t hdr;
-      memset (&hdr, 0, sizeof (hdr));
+      clib_memset (&hdr, 0, sizeof (hdr));
       hdr.ip.protocol = IP_PROTOCOL_TCP;
-      clib_memcpy (&hdr.ip.src_address, &tc->c_lcl_ip.ip6,
-		   sizeof (ip6_address_t));
-      clib_memcpy (&hdr.ip.dst_address, &tc->c_rmt_ip.ip6,
-		   sizeof (ip6_address_t));
+      clib_memcpy_fast (&hdr.ip.src_address, &tc->c_lcl_ip.ip6,
+			sizeof (ip6_address_t));
+      clib_memcpy_fast (&hdr.ip.dst_address, &tc->c_rmt_ip.ip6,
+			sizeof (ip6_address_t));
       hdr.tcp.src_port = tc->c_lcl_port;
       hdr.tcp.dst_port = tc->c_rmt_port;
       hash = ip6_compute_flow_hash (&hdr.ip, lb->lb_hash_config);
@@ -466,7 +466,7 @@ tcp_lookup_rmt_in_fib (tcp_connection_t * tc)
   fib_prefix_t prefix;
   u32 fib_index;
 
-  clib_memcpy (&prefix.fp_addr, &tc->c_rmt_ip, sizeof (prefix.fp_addr));
+  clib_memcpy_fast (&prefix.fp_addr, &tc->c_rmt_ip, sizeof (prefix.fp_addr));
   prefix.fp_proto = tc->c_is_ip4 ? FIB_PROTOCOL_IP4 : FIB_PROTOCOL_IP6;
   prefix.fp_len = tc->c_is_ip4 ? 32 : 128;
   fib_index = fib_table_find (prefix.fp_proto, tc->c_fib_index);
@@ -510,7 +510,7 @@ tcp_connection_fib_attach (tcp_connection_t * tc)
 static void
 tcp_cc_init (tcp_connection_t * tc)
 {
-  tc->cc_algo = tcp_cc_algo_get (TCP_CC_NEWRENO);
+  tc->cc_algo = tcp_cc_algo_get (tcp_main.cc_algo);
   tc->cc_algo->init (tc);
 }
 
@@ -546,13 +546,24 @@ tcp_init_snd_vars (tcp_connection_t * tc)
    * handshake may make it look as if time has flown in the opposite
    * direction for us.
    */
-  tcp_set_time_now (vlib_get_thread_index ());
+  tcp_set_time_now (tcp_get_worker (vlib_get_thread_index ()));
   time_now = tcp_time_now ();
 
   tc->iss = random_u32 (&time_now);
   tc->snd_una = tc->iss;
   tc->snd_nxt = tc->iss + 1;
   tc->snd_una_max = tc->snd_nxt;
+}
+
+void
+tcp_enable_pacing (tcp_connection_t * tc)
+{
+  u32 initial_bucket, byte_rate;
+  initial_bucket = 16 * tc->snd_mss;
+  byte_rate = 2 << 16;
+  transport_connection_tx_pacer_init (&tc->connection, byte_rate,
+				      initial_bucket);
+  tc->mrtt_us = (u32) ~ 0;
 }
 
 /** Initialize tcp connection variables
@@ -572,7 +583,11 @@ tcp_connection_init_vars (tcp_connection_t * tc)
   if (!tc->c_is_ip4 && ip6_address_is_link_local_unicast (&tc->c_rmt_ip6))
     tcp_add_del_adjacency (tc, 1);
 
-  //  tcp_connection_fib_attach (tc);
+  /*  tcp_connection_fib_attach (tc); */
+
+  if (transport_connection_is_tx_paced (&tc->connection)
+      || tcp_main.tx_pacing)
+    tcp_enable_pacing (tc);
 }
 
 static int
@@ -592,8 +607,8 @@ tcp_alloc_custom_local_endpoint (tcp_main_t * tm, ip46_address_t * lcl_addr,
       index = tm->last_v6_address_rotor++;
       if (tm->last_v6_address_rotor >= vec_len (tm->ip6_src_addresses))
 	tm->last_v6_address_rotor = 0;
-      clib_memcpy (&lcl_addr->ip6, &tm->ip6_src_addresses[index],
-		   sizeof (ip6_address_t));
+      clib_memcpy_fast (&lcl_addr->ip6, &tm->ip6_src_addresses[index],
+			sizeof (ip6_address_t));
     }
   port = transport_alloc_local_port (TRANSPORT_PROTO_TCP, lcl_addr);
   if (port < 1)
@@ -606,7 +621,7 @@ tcp_alloc_custom_local_endpoint (tcp_main_t * tm, ip46_address_t * lcl_addr,
 }
 
 static int
-tcp_connection_open (transport_endpoint_t * rmt)
+tcp_session_open (transport_endpoint_cfg_t * rmt)
 {
   tcp_main_t *tm = vnet_get_tcp_main ();
   tcp_connection_t *tc;
@@ -650,12 +665,6 @@ tcp_connection_open (transport_endpoint_t * rmt)
   clib_spinlock_unlock_if_init (&tm->half_open_lock);
 
   return tc->c_c_index;
-}
-
-static int
-tcp_session_open (transport_endpoint_t * tep)
-{
-  return tcp_connection_open (tep);
 }
 
 const char *tcp_dbg_evt_str[] = {
@@ -723,7 +732,6 @@ format_tcp_timers (u8 * s, va_list * args)
     if (tc->timers[i] != TCP_TIMER_HANDLE_INVALID)
       last = i;
 
-  s = format (s, "[");
   for (i = 0; i < last; i++)
     {
       if (tc->timers[i] != TCP_TIMER_HANDLE_INVALID)
@@ -731,9 +739,7 @@ format_tcp_timers (u8 * s, va_list * args)
     }
 
   if (last >= 0)
-    s = format (s, "%s]", tcp_conn_timers[i]);
-  else
-    s = format (s, "]");
+    s = format (s, "%s", tcp_conn_timers[i]);
 
   return s;
 }
@@ -758,11 +764,30 @@ tcp_rcv_wnd_available (tcp_connection_t * tc)
 }
 
 static u8 *
+format_tcp_congestion (u8 * s, va_list * args)
+{
+  tcp_connection_t *tc = va_arg (*args, tcp_connection_t *);
+  u32 indent = format_get_indent (s);
+
+  s = format (s, "%U ", format_tcp_congestion_status, tc);
+  s = format (s, "cwnd %u ssthresh %u rtx_bytes %u bytes_acked %u\n",
+	      tc->cwnd, tc->ssthresh, tc->snd_rxt_bytes, tc->bytes_acked);
+  s = format (s, "%Ucc space %u prev_ssthresh %u snd_congestion %u"
+	      " dupack %u\n", format_white_space, indent,
+	      tcp_available_cc_snd_space (tc), tc->prev_ssthresh,
+	      tc->snd_congestion - tc->iss, tc->rcv_dupacks);
+  s = format (s, "%Utsecr %u tsecr_last_ack %u limited_transmit %u\n",
+	      format_white_space, indent, tc->rcv_opts.tsecr,
+	      tc->tsecr_last_ack, tc->limited_transmit - tc->iss);
+  return s;
+}
+
+static u8 *
 format_tcp_vars (u8 * s, va_list * args)
 {
   tcp_connection_t *tc = va_arg (*args, tcp_connection_t *);
-  s = format (s, " flags: %U timers: %U\n", format_tcp_connection_flags, tc,
-	      format_tcp_timers, tc);
+  s = format (s, " index: %u flags: %U timers: %U\n", tc->c_c_index,
+	      format_tcp_connection_flags, tc, format_tcp_timers, tc);
   s = format (s, " snd_una %u snd_nxt %u snd_una_max %u",
 	      tc->snd_una - tc->iss, tc->snd_nxt - tc->iss,
 	      tc->snd_una_max - tc->iss);
@@ -772,26 +797,22 @@ format_tcp_vars (u8 * s, va_list * args)
 	      tc->snd_wnd, tc->rcv_wnd, tc->rcv_wscale);
   s = format (s, "snd_wl1 %u snd_wl2 %u\n", tc->snd_wl1 - tc->irs,
 	      tc->snd_wl2 - tc->iss);
-  s = format (s, " flight size %u out space %u cc space %u rcv_wnd_av %u\n",
+  s = format (s, " flight size %u out space %u rcv_wnd_av %u\n",
 	      tcp_flight_size (tc), tcp_available_output_snd_space (tc),
-	      tcp_available_cc_snd_space (tc), tcp_rcv_wnd_available (tc));
-  s = format (s, " cong %U ", format_tcp_congestion_status, tc);
-  s = format (s, "cwnd %u ssthresh %u rtx_bytes %u bytes_acked %u\n",
-	      tc->cwnd, tc->ssthresh, tc->snd_rxt_bytes, tc->bytes_acked);
-  s = format (s, " prev_ssthresh %u snd_congestion %u dupack %u",
-	      tc->prev_ssthresh, tc->snd_congestion - tc->iss,
-	      tc->rcv_dupacks);
-  s = format (s, " limited_transmit %u\n", tc->limited_transmit - tc->iss);
-  s = format (s, " tsecr %u tsecr_last_ack %u\n", tc->rcv_opts.tsecr,
-	      tc->tsecr_last_ack);
-  s = format (s, " rto %u rto_boff %u srtt %u rttvar %u rtt_ts %u ", tc->rto,
-	      tc->rto_boff, tc->srtt, tc->rttvar, tc->rtt_ts);
-  s = format (s, "rtt_seq %u\n", tc->rtt_seq);
+	      tcp_rcv_wnd_available (tc));
   s = format (s, " tsval_recent %u tsval_recent_age %u\n", tc->tsval_recent,
 	      tcp_time_now () - tc->tsval_recent_age);
+  s = format (s, " rto %u rto_boff %u srtt %u us %.3f rttvar %u rtt_ts %x",
+	      tc->rto, tc->rto_boff, tc->srtt, tc->mrtt_us * 1000, tc->rttvar,
+	      tc->rtt_ts);
+  s = format (s, " rtt_seq %u\n", tc->rtt_seq - tc->iss);
+  s = format (s, " cong:   %U", format_tcp_congestion, tc);
+
   if (tc->state >= TCP_STATE_ESTABLISHED)
-    s = format (s, " scoreboard: %U\n", format_tcp_scoreboard, &tc->sack_sb,
-		tc);
+    {
+      s = format (s, " sboard: %U\n", format_tcp_scoreboard, &tc->sack_sb,
+		  tc);
+    }
   if (vec_len (tc->snd_sacks))
     s = format (s, " sacks tx: %U\n", format_tcp_sacks, tc);
 
@@ -806,15 +827,15 @@ format_tcp_connection_id (u8 * s, va_list * args)
     return s;
   if (tc->c_is_ip4)
     {
-      s = format (s, "[#%d][%s] %U:%d->%U:%d", tc->c_thread_index, "T",
-		  format_ip4_address, &tc->c_lcl_ip4,
+      s = format (s, "[%d:%d][%s] %U:%d->%U:%d", tc->c_thread_index,
+		  tc->c_s_index, "T", format_ip4_address, &tc->c_lcl_ip4,
 		  clib_net_to_host_u16 (tc->c_lcl_port), format_ip4_address,
 		  &tc->c_rmt_ip4, clib_net_to_host_u16 (tc->c_rmt_port));
     }
   else
     {
-      s = format (s, "[#%d][%s] %U:%d->%U:%d", tc->c_thread_index, "T",
-		  format_ip6_address, &tc->c_lcl_ip6,
+      s = format (s, "[%d:%d][%s] %U:%d->%U:%d", tc->c_thread_index,
+		  tc->c_s_index, "T", format_ip6_address, &tc->c_lcl_ip6,
 		  clib_net_to_host_u16 (tc->c_lcl_port), format_ip6_address,
 		  &tc->c_rmt_ip6, clib_net_to_host_u16 (tc->c_rmt_port));
     }
@@ -939,18 +960,22 @@ format_tcp_scoreboard (u8 * s, va_list * args)
   sack_scoreboard_t *sb = va_arg (*args, sack_scoreboard_t *);
   tcp_connection_t *tc = va_arg (*args, tcp_connection_t *);
   sack_scoreboard_hole_t *hole;
+  u32 indent = format_get_indent (s);
+
   s = format (s, "sacked_bytes %u last_sacked_bytes %u lost_bytes %u\n",
 	      sb->sacked_bytes, sb->last_sacked_bytes, sb->lost_bytes);
-  s = format (s, " last_bytes_delivered %u high_sacked %u snd_una_adv %u\n",
-	      sb->last_bytes_delivered, sb->high_sacked - tc->iss,
-	      sb->snd_una_adv);
-  s = format (s, " cur_rxt_hole %u high_rxt %u rescue_rxt %u",
-	      sb->cur_rxt_hole, sb->high_rxt - tc->iss,
-	      sb->rescue_rxt - tc->iss);
+  s = format (s, "%Ulast_bytes_delivered %u high_sacked %u snd_una_adv %u\n",
+	      format_white_space, indent, sb->last_bytes_delivered,
+	      sb->high_sacked - tc->iss, sb->snd_una_adv);
+  s = format (s, "%Ucur_rxt_hole %u high_rxt %u rescue_rxt %u",
+	      format_white_space, indent, sb->cur_rxt_hole,
+	      sb->high_rxt - tc->iss, sb->rescue_rxt - tc->iss);
 
   hole = scoreboard_first_hole (sb);
   if (hole)
-    s = format (s, "\n head %u tail %u holes:\n", sb->head, sb->tail);
+    s = format (s, "\n%Uhead %u tail %u %u holes:\n%U", format_white_space,
+		indent, sb->head, sb->tail, pool_elts (sb->holes),
+		format_white_space, indent);
 
   while (hole)
     {
@@ -1027,48 +1052,25 @@ tcp_snd_space_inline (tcp_connection_t * tc)
 {
   int snd_space, snt_limited;
 
-  if (PREDICT_TRUE (tcp_in_cong_recovery (tc) == 0))
+  if (PREDICT_FALSE (tcp_in_fastrecovery (tc)))
+    return 0;
+
+  snd_space = tcp_available_output_snd_space (tc);
+
+  /* If we haven't gotten dupacks or if we did and have gotten sacked
+   * bytes then we can still send as per Limited Transmit (RFC3042) */
+  if (PREDICT_FALSE (tc->rcv_dupacks != 0
+		     && (tcp_opts_sack_permitted (tc)
+			 && tc->sack_sb.last_sacked_bytes == 0)))
     {
-      snd_space = tcp_available_output_snd_space (tc);
+      if (tc->rcv_dupacks == 1 && tc->limited_transmit != tc->snd_nxt)
+	tc->limited_transmit = tc->snd_nxt;
+      ASSERT (seq_leq (tc->limited_transmit, tc->snd_nxt));
 
-      /* If we haven't gotten dupacks or if we did and have gotten sacked
-       * bytes then we can still send as per Limited Transmit (RFC3042) */
-      if (PREDICT_FALSE (tc->rcv_dupacks != 0
-			 && (tcp_opts_sack_permitted (tc)
-			     && tc->sack_sb.last_sacked_bytes == 0)))
-	{
-	  if (tc->rcv_dupacks == 1 && tc->limited_transmit != tc->snd_nxt)
-	    tc->limited_transmit = tc->snd_nxt;
-	  ASSERT (seq_leq (tc->limited_transmit, tc->snd_nxt));
-
-	  snt_limited = tc->snd_nxt - tc->limited_transmit;
-	  snd_space = clib_max (2 * tc->snd_mss - snt_limited, 0);
-	}
-      return tcp_round_snd_space (tc, snd_space);
+      snt_limited = tc->snd_nxt - tc->limited_transmit;
+      snd_space = clib_max (2 * tc->snd_mss - snt_limited, 0);
     }
-
-  if (tcp_in_recovery (tc))
-    {
-      tc->snd_nxt = tc->snd_una_max;
-      snd_space = tcp_available_snd_wnd (tc) - tc->snd_rxt_bytes
-	- (tc->snd_una_max - tc->snd_congestion);
-      if (snd_space <= 0 || (tc->snd_una_max - tc->snd_una) >= tc->snd_wnd)
-	return 0;
-      return tcp_round_snd_space (tc, snd_space);
-    }
-
-  /* RFC 5681: When previously unsent data is available and the new value of
-   * cwnd and the receiver's advertised window allow, a TCP SHOULD send 1*SMSS
-   * bytes of previously unsent data. */
-  if (tcp_in_fastrecovery (tc) && !tcp_fastrecovery_sent_1_smss (tc))
-    {
-      if (tcp_available_cc_snd_space (tc) < tc->snd_mss)
-	return 0;
-      tcp_fastrecovery_1_smss_on (tc);
-      return tc->snd_mss;
-    }
-
-  return 0;
+  return tcp_round_snd_space (tc, snd_space);
 }
 
 u32
@@ -1099,11 +1101,13 @@ tcp_session_tx_fifo_offset (transport_connection_t * trans_conn)
 static void
 tcp_update_time (f64 now, u8 thread_index)
 {
-  tcp_set_time_now (thread_index);
-  tw_timer_expire_timers_16t_2w_512sl (&tcp_main.
-				       wrk_ctx[thread_index].timer_wheel,
-				       now);
-  tcp_flush_frames_to_output (thread_index);
+  tcp_worker_ctx_t *wrk = tcp_get_worker (thread_index);
+
+  tcp_set_time_now (wrk);
+  tw_timer_expire_timers_16t_2w_512sl (&wrk->timer_wheel, now);
+  tcp_do_fastretransmits (wrk);
+  tcp_send_acks (wrk);
+  tcp_flush_frames_to_output (wrk);
 }
 
 static u32
@@ -1136,6 +1140,33 @@ const static transport_proto_vft_t tcp_proto = {
   .service_type = TRANSPORT_SERVICE_VC,
 };
 /* *INDENT-ON* */
+
+void
+tcp_connection_tx_pacer_update (tcp_connection_t * tc)
+{
+  f64 srtt;
+  u64 rate;
+
+  if (!transport_connection_is_tx_paced (&tc->connection))
+    return;
+
+  srtt = clib_min ((f64) tc->srtt * TCP_TICK, tc->mrtt_us);
+  /* TODO should constrain to interface's max throughput but
+   * we don't have link speeds for sw ifs ..*/
+  rate = tc->cwnd / srtt;
+  transport_connection_tx_pacer_update (&tc->connection, rate);
+}
+
+void
+tcp_connection_tx_pacer_reset (tcp_connection_t * tc, u32 window,
+			       u32 start_bucket)
+{
+  tcp_worker_ctx_t *wrk = tcp_get_worker (tc->c_thread_index);
+  u32 byte_rate = window / ((f64) TCP_TICK * tc->srtt);
+  u64 last_time = wrk->vm->clib_time.last_cpu_time;
+  transport_connection_tx_pacer_reset (&tc->connection, byte_rate,
+				       start_bucket, last_time);
+}
 
 static void
 tcp_timer_keep_handler (u32 conn_index)
@@ -1263,13 +1294,12 @@ tcp_initialize_timer_wheels (tcp_main_t * tm)
 static clib_error_t *
 tcp_main_enable (vlib_main_t * vm)
 {
-  tcp_main_t *tm = vnet_get_tcp_main ();
   vlib_thread_main_t *vtm = vlib_get_thread_main ();
-  clib_error_t *error = 0;
-  u32 num_threads;
-  int thread;
+  u32 num_threads, n_workers, prealloc_conn_per_wrk;
   tcp_connection_t *tc __attribute__ ((unused));
-  u32 preallocated_connections_per_thread;
+  tcp_main_t *tm = vnet_get_tcp_main ();
+  clib_error_t *error = 0;
+  int thread;
 
   if ((error = vlib_call_init_function (vm, ip_main_init)))
     return error;
@@ -1291,27 +1321,32 @@ tcp_main_enable (vlib_main_t * vm)
 
   num_threads = 1 /* main thread */  + vtm->n_threads;
   vec_validate (tm->connections, num_threads - 1);
+  vec_validate (tm->wrk_ctx, num_threads - 1);
+  n_workers = num_threads == 1 ? 1 : vtm->n_threads;
+  prealloc_conn_per_wrk = tm->preallocated_connections / n_workers;
 
-  /*
-   * Preallocate connections. Assume that thread 0 won't
-   * use preallocated threads when running multi-core
-   */
-  if (num_threads == 1)
+  for (thread = 0; thread < num_threads; thread++)
     {
-      thread = 0;
-      preallocated_connections_per_thread = tm->preallocated_connections;
-    }
-  else
-    {
-      thread = 1;
-      preallocated_connections_per_thread =
-	tm->preallocated_connections / (num_threads - 1);
-    }
-  for (; thread < num_threads; thread++)
-    {
-      if (preallocated_connections_per_thread)
-	pool_init_fixed (tm->connections[thread],
-			 preallocated_connections_per_thread);
+      vec_validate (tm->wrk_ctx[thread].pending_fast_rxt, 255);
+      vec_validate (tm->wrk_ctx[thread].ongoing_fast_rxt, 255);
+      vec_validate (tm->wrk_ctx[thread].postponed_fast_rxt, 255);
+      vec_validate (tm->wrk_ctx[thread].pending_deq_acked, 255);
+      vec_validate (tm->wrk_ctx[thread].pending_acks, 255);
+      vec_validate (tm->wrk_ctx[thread].pending_disconnects, 255);
+      vec_reset_length (tm->wrk_ctx[thread].pending_fast_rxt);
+      vec_reset_length (tm->wrk_ctx[thread].ongoing_fast_rxt);
+      vec_reset_length (tm->wrk_ctx[thread].postponed_fast_rxt);
+      vec_reset_length (tm->wrk_ctx[thread].pending_deq_acked);
+      vec_reset_length (tm->wrk_ctx[thread].pending_acks);
+      vec_reset_length (tm->wrk_ctx[thread].pending_disconnects);
+      tm->wrk_ctx[thread].vm = vlib_mains[thread];
+
+      /*
+       * Preallocate connections. Assume that thread 0 won't
+       * use preallocated threads when running multi-core
+       */
+      if ((thread > 0 || num_threads == 1) && prealloc_conn_per_wrk)
+	pool_init_fixed (tm->connections[thread], prealloc_conn_per_wrk);
     }
 
   /*
@@ -1331,7 +1366,6 @@ tcp_main_enable (vlib_main_t * vm)
       clib_spinlock_init (&tm->half_open_lock);
     }
 
-  vec_validate (tm->wrk_ctx, num_threads - 1);
   tcp_initialize_timer_wheels (tm);
 
   tm->bytes_per_buffer = vlib_buffer_free_list_buffer_size
@@ -1392,10 +1426,50 @@ tcp_init (vlib_main_t * vm)
 			       FIB_PROTOCOL_IP6, tcp6_output_node.index);
 
   tcp_api_reference ();
+  tm->tx_pacing = 1;
+  tm->cc_algo = TCP_CC_NEWRENO;
   return 0;
 }
 
 VLIB_INIT_FUNCTION (tcp_init);
+
+uword
+unformat_tcp_cc_algo (unformat_input_t * input, va_list * va)
+{
+  uword *result = va_arg (*va, uword *);
+
+  if (unformat (input, "newreno"))
+    *result = TCP_CC_NEWRENO;
+  else if (unformat (input, "cubic"))
+    *result = TCP_CC_CUBIC;
+  else
+    return 0;
+
+  return 1;
+}
+
+uword
+unformat_tcp_cc_algo_cfg (unformat_input_t * input, va_list * va)
+{
+  tcp_main_t *tm = vnet_get_tcp_main ();
+  tcp_cc_algorithm_t *cc_alg;
+  unformat_input_t sub_input;
+  int found = 0;
+
+  vec_foreach (cc_alg, tm->cc_algos)
+  {
+    if (!unformat (input, cc_alg->name))
+      continue;
+
+    if (cc_alg->unformat_cfg
+	&& unformat (input, "%U", unformat_vlib_cli_sub_input, &sub_input))
+      {
+	if (cc_alg->unformat_cfg (&sub_input))
+	  found = 1;
+      }
+  }
+  return found;
+}
 
 static clib_error_t *
 tcp_config_fn (vlib_main_t * vm, unformat_input_t * input)
@@ -1415,6 +1489,13 @@ tcp_config_fn (vlib_main_t * vm, unformat_input_t * input)
 	;
       else if (unformat (input, "max-rx-fifo %U", unformat_memory_size,
 			 &tm->max_rx_fifo))
+	;
+      else if (unformat (input, "no-tx-pacing"))
+	tm->tx_pacing = 0;
+      else if (unformat (input, "cc-algo %U", unformat_tcp_cc_algo,
+			 &tm->cc_algo))
+	;
+      else if (unformat (input, "%U", unformat_tcp_cc_algo_cfg))
 	;
       else
 	return clib_error_return (0, "unknown input `%U'",
@@ -1453,7 +1534,7 @@ tcp_configure_v4_source_address_range (vlib_main_t * vm,
 			      ip4_address_t * hi_addr, u32 fib_index,
 			      int is_del);
 
-  memset (&prefix, 0, sizeof (prefix));
+  clib_memset (&prefix, 0, sizeof (prefix));
 
   fib_index = fib_table_find (FIB_PROTOCOL_IP4, table_id);
 
@@ -1538,7 +1619,7 @@ tcp_configure_v6_source_address_range (vlib_main_t * vm,
   fib_node_index_t fei;
   u32 sw_if_index;
 
-  memset (&prefix, 0, sizeof (prefix));
+  clib_memset (&prefix, 0, sizeof (prefix));
 
   fib_index = fib_table_find (FIB_PROTOCOL_IP6, table_id);
 
@@ -1760,10 +1841,16 @@ tcp_scoreboard_replay (u8 * s, tcp_connection_t * tc, u8 verbose)
   tcp_connection_t _dummy_tc, *dummy_tc = &_dummy_tc;
   sack_block_t *block;
 
+  if (!TCP_SCOREBOARD_TRACE)
+    {
+      s = format (s, "scoreboard tracing not enabled");
+      return s;
+    }
+
   if (!tc)
     return s;
 
-  memset (dummy_tc, 0, sizeof (*dummy_tc));
+  clib_memset (dummy_tc, 0, sizeof (*dummy_tc));
   tcp_connection_timers_init (dummy_tc);
   scoreboard_init (&dummy_tc->sack_sb);
   dummy_tc->rcv_opts.flags |= TCP_OPTS_FLAG_SACK;
@@ -1771,9 +1858,6 @@ tcp_scoreboard_replay (u8 * s, tcp_connection_t * tc, u8 verbose)
 #if TCP_SCOREBOARD_TRACE
   trace = tc->sack_sb.trace;
   trace_len = vec_len (tc->sack_sb.trace);
-#else
-  trace = 0;
-  trace_len = 0;
 #endif
 
   for (i = 0; i < trace_len; i++)

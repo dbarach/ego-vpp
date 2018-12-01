@@ -15,7 +15,6 @@
 #include <vnet/vnet.h>
 #include <vnet/ip/ip.h>
 #include <vnet/api_errno.h>
-#include <vnet/ipsec/ipsec.h>
 #include <vlib/node_funcs.h>
 #include <openssl/engine.h>
 #include <tlsopenssl/tls_openssl.h>
@@ -240,7 +239,7 @@ openssl_evt_alloc (void)
   if (!(*evt))
     *evt = clib_mem_alloc (sizeof (openssl_evt_t));
 
-  memset (*evt, 0, sizeof (openssl_evt_t));
+  clib_memset (*evt, 0, sizeof (openssl_evt_t));
   (*evt)->event_index = evt - tm->evt_pool[thread_index];
   return ((*evt)->event_index);
 }

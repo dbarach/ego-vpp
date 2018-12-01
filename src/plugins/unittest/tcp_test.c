@@ -83,7 +83,7 @@ tcp_test_sack_rx (vlib_main_t * vm, unformat_input_t * input)
 	return tcp_test_scoreboard_replay (vm, input);
     }
 
-  memset (tc, 0, sizeof (*tc));
+  clib_memset (tc, 0, sizeof (*tc));
 
   tc->snd_una = 0;
   tc->snd_una_max = 1000;
@@ -129,7 +129,7 @@ tcp_test_sack_rx (vlib_main_t * vm, unformat_input_t * input)
   TCP_TEST ((sb->last_sacked_bytes == 400),
 	    "last sacked bytes %d", sb->last_sacked_bytes);
   TCP_TEST ((sb->high_sacked == 900), "high sacked %u", sb->high_sacked);
-  TCP_TEST ((sb->lost_bytes == 200), "lost bytes %u", sb->lost_bytes);
+  TCP_TEST ((sb->lost_bytes == 300), "lost bytes %u", sb->lost_bytes);
 
   /*
    * Inject odd blocks
@@ -276,7 +276,7 @@ tcp_test_sack_rx (vlib_main_t * vm, unformat_input_t * input)
 		     "\n%U", format_tcp_scoreboard, sb, tc);
   TCP_TEST ((pool_elts (sb->holes) == 5),
 	    "scoreboard has %d elements", pool_elts (sb->holes));
-  TCP_TEST ((sb->lost_bytes == 200), "lost bytes %u", sb->lost_bytes);
+  TCP_TEST ((sb->lost_bytes == 300), "lost bytes %u", sb->lost_bytes);
 
   tcp_rcv_sacks (tc, 950);
 
@@ -368,7 +368,7 @@ tcp_test_sack_rx (vlib_main_t * vm, unformat_input_t * input)
 	    sb->last_sacked_bytes);
   TCP_TEST ((sb->last_bytes_delivered == 0), "last bytes delivered %d",
 	    sb->last_bytes_delivered);
-  TCP_TEST ((sb->lost_bytes == 200), "lost bytes %u", sb->lost_bytes);
+  TCP_TEST ((sb->lost_bytes == 300), "lost bytes %u", sb->lost_bytes);
 
   tc->snd_una = 100;
   tcp_rcv_sacks (tc, 200);
@@ -410,6 +410,32 @@ tcp_test_sack_rx (vlib_main_t * vm, unformat_input_t * input)
   TCP_TEST ((sb->last_bytes_delivered == 0), "last bytes delivered %d",
 	    sb->last_bytes_delivered);
   TCP_TEST ((sb->snd_una_adv == 0), "snd_una_adv %u", sb->snd_una_adv);
+
+  /*
+   * Add [1200, 1500] and test that [1000, 1200] is lost (bytes condition)
+   * snd_una = 1000 and snd_una_max = 1600
+   */
+  tc->snd_una = 1000;
+  tc->snd_una_max = 1600;
+  vec_reset_length (tc->rcv_opts.sacks);
+  block.start = 1200;
+  block.end = 1500;
+  vec_add1 (tc->rcv_opts.sacks, block);
+  tc->rcv_opts.n_sack_blocks = vec_len (tc->rcv_opts.sacks);
+  tcp_rcv_sacks (tc, 1000);
+  if (verbose)
+    vlib_cli_output (vm, "\nacked [1200, 1500] test first hole is lost:\n%U",
+		     format_tcp_scoreboard, sb, tc);
+  TCP_TEST ((pool_elts (sb->holes) == 2), "scoreboard has %d elements",
+	    pool_elts (sb->holes));
+  TCP_TEST ((sb->sacked_bytes == 300), "sacked bytes %d", sb->sacked_bytes);
+  TCP_TEST ((sb->last_sacked_bytes == 300), "last sacked bytes %d",
+	    sb->last_sacked_bytes);
+  TCP_TEST ((sb->last_bytes_delivered == 0), "last bytes delivered %d",
+	    sb->last_bytes_delivered);
+  TCP_TEST ((sb->lost_bytes == 200), "lost bytes %u", sb->lost_bytes);
+  TCP_TEST ((sb->snd_una_adv == 0), "snd_una_adv %u", sb->snd_una_adv);
+
   return 0;
 }
 
@@ -432,7 +458,7 @@ tcp_test_sack_tx (vlib_main_t * vm, unformat_input_t * input)
 	}
     }
 
-  memset (tc, 0, sizeof (*tc));
+  clib_memset (tc, 0, sizeof (*tc));
 
   /*
    * Add odd sack block pairs
@@ -714,7 +740,7 @@ fifo_prepare (u32 fifo_size)
   f = svm_fifo_create (fifo_size);
 
   /* Paint fifo data vector with -1's */
-  memset (f->data, 0xFF, fifo_size);
+  clib_memset (f->data, 0xFF, fifo_size);
 
   return f;
 }
@@ -1620,12 +1646,12 @@ tcp_test_lookup (vlib_main_t * vm, unformat_input_t * input)
   /*
    * Allocate fake session and connection 1
    */
-  pool_get (smm->sessions[0], s);
-  memset (s, 0, sizeof (*s));
-  s->session_index = sidx = s - smm->sessions[0];
+  pool_get (smm->wrk[0].sessions, s);
+  clib_memset (s, 0, sizeof (*s));
+  s->session_index = sidx = s - smm->wrk[0].sessions;
 
   pool_get (tm->connections[0], tc);
-  memset (tc, 0, sizeof (*tc));
+  clib_memset (tc, 0, sizeof (*tc));
   tc->connection.c_index = tc - tm->connections[0];
   tc->connection.s_index = s->session_index;
   s->connection_index = tc->connection.c_index;
@@ -1636,17 +1662,17 @@ tcp_test_lookup (vlib_main_t * vm, unformat_input_t * input)
   tc->connection.rmt_port = 53764;
   tc->connection.proto = TRANSPORT_PROTO_TCP;
   tc->connection.is_ip4 = 1;
-  clib_memcpy (tc1, &tc->connection, sizeof (*tc1));
+  clib_memcpy_fast (tc1, &tc->connection, sizeof (*tc1));
 
   /*
    * Allocate fake session and connection 2
    */
-  pool_get (session_manager_main.sessions[0], s);
-  memset (s, 0, sizeof (*s));
-  s->session_index = s - smm->sessions[0];
+  pool_get (smm->wrk[0].sessions, s);
+  clib_memset (s, 0, sizeof (*s));
+  s->session_index = s - smm->wrk[0].sessions;
 
   pool_get (tm->connections[0], tc);
-  memset (tc, 0, sizeof (*tc));
+  clib_memset (tc, 0, sizeof (*tc));
   tc->connection.c_index = tc - tm->connections[0];
   tc->connection.s_index = s->session_index;
   s->connection_index = tc->connection.c_index;
@@ -1657,13 +1683,13 @@ tcp_test_lookup (vlib_main_t * vm, unformat_input_t * input)
   tc->connection.rmt_port = 53764;
   tc->connection.proto = TRANSPORT_PROTO_TCP;
   tc->connection.is_ip4 = 1;
-  clib_memcpy (tc2, &tc->connection, sizeof (*tc2));
+  clib_memcpy_fast (tc2, &tc->connection, sizeof (*tc2));
 
   /*
    * Confirm that connection lookup works
    */
 
-  s1 = pool_elt_at_index (smm->sessions[0], sidx);
+  s1 = pool_elt_at_index (smm->wrk[0].sessions, sidx);
   session_lookup_add_connection (tc1, session_handle (s1));
   tconn = session_lookup_connection_wt4 (0, &tc1->lcl_ip.ip4,
 					 &tc1->rmt_ip.ip4,
@@ -1743,7 +1769,7 @@ tcp_test_session (vlib_main_t * vm, unformat_input_t * input)
       remote_port = clib_host_to_net_u16 (11234);
 
       pool_get (tm->connections[0], tc0);
-      memset (tc0, 0, sizeof (*tc0));
+      clib_memset (tc0, 0, sizeof (*tc0));
 
       tc0->state = TCP_STATE_ESTABLISHED;
       tc0->rcv_las = 1;

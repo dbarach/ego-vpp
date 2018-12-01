@@ -17,6 +17,11 @@
 find_path(DPDK_INCLUDE_DIR PATH_SUFFIXES dpdk NAMES rte_config.h)
 find_library(DPDK_LIB NAMES libdpdk.a)
 
+if (NOT DPDK_INCLUDE_DIR)
+  message(WARNING "-- DPDK not found - dpdk_plugin disabled")
+  return()
+endif()
+
 ##############################################################################
 # Find DPDK Version
 ##############################################################################
@@ -132,6 +137,9 @@ if(DPDK_INCLUDE_DIR AND DPDK_LIB)
     buffer.c
     device/device.c
     device/node.c
+    ipsec/crypto_node.c
+    ipsec/esp_decrypt.c
+    ipsec/esp_encrypt.c
 
     API_FILES
     api/dpdk.api

@@ -275,8 +275,7 @@ unformat_ip6_address (unformat_input_t * input, va_list * args)
 uword
 unformat_uri (unformat_input_t * input, va_list * args)
 {
-  session_endpoint_extended_t *sep = va_arg (*args,
-					     session_endpoint_extended_t *);
+  session_endpoint_cfg_t *sep = va_arg (*args, session_endpoint_cfg_t *);
   u32 port;
   char *tmp;
 
@@ -302,7 +301,7 @@ application_send_attach (udp_echo_main_t * utm)
 {
   vl_api_application_attach_t *bmp;
   bmp = vl_msg_api_alloc (sizeof (*bmp));
-  memset (bmp, 0, sizeof (*bmp));
+  clib_memset (bmp, 0, sizeof (*bmp));
 
   bmp->_vl_msg_id = ntohs (VL_API_APPLICATION_ATTACH);
   bmp->client_index = utm->my_client_index;
@@ -325,7 +324,7 @@ application_detach (udp_echo_main_t * utm)
 {
   vl_api_application_detach_t *bmp;
   bmp = vl_msg_api_alloc (sizeof (*bmp));
-  memset (bmp, 0, sizeof (*bmp));
+  clib_memset (bmp, 0, sizeof (*bmp));
 
   bmp->_vl_msg_id = ntohs (VL_API_APPLICATION_DETACH);
   bmp->client_index = utm->my_client_index;
@@ -508,7 +507,7 @@ session_accepted_handler (session_accepted_msg_t * mp)
   tx_fifo = uword_to_pointer (mp->server_tx_fifo, svm_fifo_t *);
 
   pool_get (utm->sessions, session);
-  memset (session, 0, sizeof (*session));
+  clib_memset (session, 0, sizeof (*session));
   session_index = session - utm->sessions;
   session->session_index = session_index;
 
@@ -540,8 +539,8 @@ session_accepted_handler (session_accepted_msg_t * mp)
       tx_fifo->client_session_index = session_index;
       session->rx_fifo = rx_fifo;
       session->tx_fifo = tx_fifo;
-      clib_memcpy (&session->transport.rmt_ip, mp->ip,
-		   sizeof (ip46_address_t));
+      clib_memcpy_fast (&session->transport.rmt_ip, mp->ip,
+			sizeof (ip46_address_t));
       session->transport.is_ip4 = mp->is_ip4;
       session->transport.rmt_port = mp->port;
     }
@@ -606,7 +605,7 @@ session_connected_handler (session_connected_msg_t * mp)
 {
   udp_echo_main_t *utm = &udp_echo_main;
   unformat_input_t _input, *input = &_input;
-  session_endpoint_extended_t _sep, *sep = &_sep;
+  session_endpoint_cfg_t _sep, *sep = &_sep;
   app_session_t *session;
 
   ASSERT (utm->i_am_server == 0);
@@ -646,8 +645,8 @@ session_connected_handler (session_connected_msg_t * mp)
 
       session->rx_fifo->client_session_index = session->session_index;
       session->tx_fifo->client_session_index = session->session_index;
-      clib_memcpy (&session->transport.lcl_ip, mp->lcl_ip,
-		   sizeof (ip46_address_t));
+      clib_memcpy_fast (&session->transport.lcl_ip, mp->lcl_ip,
+			sizeof (ip46_address_t));
       session->transport.is_ip4 = mp->is_ip4;
       session->transport.lcl_port = mp->lcl_port;
 
@@ -660,8 +659,8 @@ session_connected_handler (session_connected_msg_t * mp)
 	  return;
 	}
       unformat_free (input);
-      clib_memcpy (&session->transport.rmt_ip, &sep->ip,
-		   sizeof (ip46_address_t));
+      clib_memcpy_fast (&session->transport.rmt_ip, &sep->ip,
+			sizeof (ip46_address_t));
       session->transport.rmt_port = sep->port;
       session->is_dgram = !utm->is_connected;
     }
@@ -687,15 +686,15 @@ session_bound_handler (session_bound_msg_t * mp)
   tx_fifo = uword_to_pointer (mp->tx_fifo, svm_fifo_t *);
 
   pool_get (utm->sessions, session);
-  memset (session, 0, sizeof (*session));
+  clib_memset (session, 0, sizeof (*session));
   session_index = session - utm->sessions;
 
   rx_fifo->client_session_index = session_index;
   tx_fifo->client_session_index = session_index;
   session->rx_fifo = rx_fifo;
   session->tx_fifo = tx_fifo;
-  clib_memcpy (&session->transport.lcl_ip, mp->lcl_ip,
-	       sizeof (ip46_address_t));
+  clib_memcpy_fast (&session->transport.lcl_ip, mp->lcl_ip,
+		    sizeof (ip46_address_t));
   session->transport.is_ip4 = mp->lcl_is_ip4;
   session->transport.lcl_port = mp->lcl_port;
   session->vpp_evt_q = uword_to_pointer (mp->vpp_evt_q, svm_msg_q_t *);
@@ -730,7 +729,7 @@ udp_client_send_connect (udp_echo_main_t * utm)
 {
   vl_api_connect_uri_t *cmp;
   cmp = vl_msg_api_alloc (sizeof (*cmp));
-  memset (cmp, 0, sizeof (*cmp));
+  clib_memset (cmp, 0, sizeof (*cmp));
 
   cmp->_vl_msg_id = ntohs (VL_API_CONNECT_URI);
   cmp->client_index = utm->my_client_index;
@@ -894,15 +893,15 @@ vl_api_bind_uri_reply_t_handler (vl_api_bind_uri_reply_t * mp)
   tx_fifo = uword_to_pointer (mp->tx_fifo, svm_fifo_t *);
 
   pool_get (utm->sessions, session);
-  memset (session, 0, sizeof (*session));
+  clib_memset (session, 0, sizeof (*session));
   session_index = session - utm->sessions;
 
   rx_fifo->client_session_index = session_index;
   tx_fifo->client_session_index = session_index;
   session->rx_fifo = rx_fifo;
   session->tx_fifo = tx_fifo;
-  clib_memcpy (&session->transport.lcl_ip, mp->lcl_ip,
-	       sizeof (ip46_address_t));
+  clib_memcpy_fast (&session->transport.lcl_ip, mp->lcl_ip,
+		    sizeof (ip46_address_t));
   session->transport.is_ip4 = mp->lcl_is_ip4;
   session->transport.lcl_port = mp->lcl_port;
   session->vpp_evt_q = uword_to_pointer (mp->vpp_evt_q, svm_msg_q_t *);
@@ -916,10 +915,9 @@ vl_api_map_another_segment_t_handler (vl_api_map_another_segment_t * mp)
   udp_echo_main_t *utm = &udp_echo_main;
   svm_fifo_segment_create_args_t _a, *a = &_a;
   svm_fifo_segment_private_t *seg;
-  u8 *seg_name;
   int rv;
 
-  memset (a, 0, sizeof (*a));
+  clib_memset (a, 0, sizeof (*a));
   a->segment_name = (char *) mp->segment_name;
   a->segment_size = mp->segment_size;
   /* Attach to the segment vpp created */
@@ -933,9 +931,8 @@ vl_api_map_another_segment_t_handler (vl_api_map_another_segment_t * mp)
   seg = svm_fifo_segment_get_segment (a->new_segment_indices[0]);
   clib_warning ("Mapped new segment '%s' size %d", seg->ssvm.name,
 		seg->ssvm.ssvm_size);
-  seg_name = format (0, "%s", (char *) mp->segment_name);
-  hash_set_mem (utm->segments_table, seg_name, a->new_segment_indices[0]);
-  vec_free (seg_name);
+  hash_set (utm->segments_table, clib_net_to_host_u64 (mp->segment_handle),
+	    a->new_segment_indices[0]);
 }
 
 static void
@@ -943,22 +940,19 @@ vl_api_unmap_segment_t_handler (vl_api_unmap_segment_t * mp)
 {
   udp_echo_main_t *utm = &udp_echo_main;
   svm_fifo_segment_private_t *seg;
-  u64 *seg_indexp;
-  u8 *seg_name;
+  u64 *seg_indexp, segment_handle;
 
-
-  seg_name = format (0, "%s", mp->segment_name);
-  seg_indexp = hash_get_mem (utm->segments_table, seg_name);
+  segment_handle = clib_net_to_host_u64 (mp->segment_handle);
+  seg_indexp = hash_get (utm->segments_table, segment_handle);
   if (!seg_indexp)
     {
-      clib_warning ("segment not mapped: %s", seg_name);
+      clib_warning ("segment not mapped: %s", segment_handle);
       return;
     }
-  hash_unset_mem (utm->segments_table, seg_name);
+  hash_unset (utm->segments_table, segment_handle);
   seg = svm_fifo_segment_get_segment ((u32) seg_indexp[0]);
   svm_fifo_segment_delete (seg);
-  clib_warning ("Unmapped segment '%s'", seg_name);
-  vec_free (seg_name);
+  clib_warning ("Unmapped segment '%s'", segment_handle);
 }
 
 static void
@@ -1154,7 +1148,7 @@ server_unbind (udp_echo_main_t * utm)
   vl_api_unbind_uri_t *ump;
 
   ump = vl_msg_api_alloc (sizeof (*ump));
-  memset (ump, 0, sizeof (*ump));
+  clib_memset (ump, 0, sizeof (*ump));
 
   ump->_vl_msg_id = ntohs (VL_API_UNBIND_URI);
   ump->client_index = utm->my_client_index;
@@ -1168,7 +1162,7 @@ server_bind (udp_echo_main_t * utm)
   vl_api_bind_uri_t *bmp;
 
   bmp = vl_msg_api_alloc (sizeof (*bmp));
-  memset (bmp, 0, sizeof (*bmp));
+  clib_memset (bmp, 0, sizeof (*bmp));
 
   bmp->_vl_msg_id = ntohs (VL_API_BIND_URI);
   bmp->client_index = utm->my_client_index;
@@ -1229,7 +1223,6 @@ main (int argc, char **argv)
   utm->session_index_by_vpp_handles = hash_create (0, sizeof (uword));
   utm->my_pid = getpid ();
   utm->configured_segment_size = 1 << 20;
-  utm->segments_table = hash_create_vec (0, sizeof (u8), sizeof (u64));
   utm->have_return = 1;
   utm->bytes_to_send = 1024;
   utm->fifo_size = 128 << 10;
@@ -1303,7 +1296,7 @@ main (int argc, char **argv)
   for (i = 0; i < 200000; i++)
     {
       pool_get (utm->sessions, session);
-      memset (session, 0, sizeof (*session));
+      clib_memset (session, 0, sizeof (*session));
     }
   for (i = 0; i < 200000; i++)
     pool_put_index (utm->sessions, i);

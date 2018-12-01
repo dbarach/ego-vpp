@@ -6,11 +6,20 @@ import struct
 import threading
 import select
 import multiprocessing
-import queue
+try:
+    import queue as queue
+except ImportError:
+    import Queue as queue
 import logging
 
 
-class VppTransport:
+class VppTransportSocketIOError(IOError):
+    pass
+
+
+class VppTransport(object):
+    VppTransportSocketIOError = VppTransportSocketIOError
+
     def __init__(self, parent, read_timeout, server_address):
         self.connected = False
         self.read_timeout = read_timeout if read_timeout > 0 else 1
@@ -56,7 +65,8 @@ class VppTransport:
                     else:
                         self.parent.msg_handler_async(msg)
                 else:
-                    raise IOError(2, 'Unknown response from select')
+                    raise VppTransportSocketIOError(
+                        2, 'Unknown response from select')
 
     def connect(self, name, pfx, msg_handler, rx_qlen):
 
@@ -84,7 +94,7 @@ class VppTransport:
         msg = self._read()
         hdr, length = self.parent.header.unpack(msg, 0)
         if hdr.msgid != 16:
-            raise IOError('Invalid reply message')
+            raise VppTransportSocketIOError('Invalid reply message')
 
         r, length = sockclnt_create_reply.unpack(msg)
         self.socket_index = r.index
@@ -98,6 +108,7 @@ class VppTransport:
         return 0
 
     def disconnect(self):
+        rv = 0
         try:  # Might fail, if VPP closes socket before packet makes it out
             rv = self.parent.api.sockclnt_delete(index=self.socket_index)
         except IOError:
@@ -106,6 +117,7 @@ class VppTransport:
         self.socket.close()
         self.sque.put(True)  # Terminate listening thread
         self.message_thread.join()
+        return rv
 
     def suspend(self):
         pass
@@ -114,9 +126,9 @@ class VppTransport:
         pass
 
     def callback(self):
-        raise NotImplemented
+        raise NotImplementedError
 
-    def get_callback(self, async):
+    def get_callback(self, do_async):
         return self.callback
 
     def get_msg_index(self, name):
@@ -131,7 +143,7 @@ class VppTransport:
     def write(self, buf):
         """Send a binary-packed message to VPP."""
         if not self.connected:
-            raise IOError(1, 'Not connected')
+            raise VppTransportSocketIOError(1, 'Not connected')
 
         # Send header
         header = self.header.pack(0, len(buf), 0)
@@ -172,7 +184,7 @@ class VppTransport:
 
     def read(self):
         if not self.connected:
-            raise IOError(1, 'Not connected')
+            raise VppTransportSocketIOError(1, 'Not connected')
         try:
             return self.q.get(True, self.read_timeout)
         except queue.Empty:

@@ -51,6 +51,14 @@
 #define VLIB_BUFFER_DATA_SIZE		(2048)
 #define VLIB_BUFFER_PRE_DATA_SIZE	__PRE_DATA_SIZE
 
+/* Minimum buffer chain segment size. Does not apply to last buffer in chain.
+   Dataplane code can safely asume that specified amount of data is not split
+   into 2 chained buffers */
+#define VLIB_BUFFER_MIN_CHAIN_SEG_SIZE	(128)
+
+/* Amount of head buffer data copied to each replica head buffer */
+#define VLIB_BUFFER_CLONE_HEAD_SIZE (256)
+
 typedef u8 vlib_buffer_free_list_index_t;
 
 /** \file
@@ -177,6 +185,8 @@ typedef struct
 */
 
 #define vlib_prefetch_buffer_header(b,type) CLIB_PREFETCH (b, 64, type)
+#define vlib_prefetch_buffer_data(b,type) \
+  CLIB_PREFETCH (vlib_buffer_get_current(b), CLIB_CACHE_LINE_BYTES, type)
 
 always_inline void
 vlib_buffer_struct_is_sane (vlib_buffer_t * b)
@@ -185,6 +195,12 @@ vlib_buffer_struct_is_sane (vlib_buffer_t * b)
 
   /* Rewrite data must be before and contiguous with packet data. */
   ASSERT (b->pre_data + VLIB_BUFFER_PRE_DATA_SIZE == b->data);
+}
+
+always_inline uword
+vlib_buffer_get_va (vlib_buffer_t * b)
+{
+  return pointer_to_uword (b->data);
 }
 
 /** \brief Get pointer to current data to process
@@ -201,6 +217,12 @@ vlib_buffer_get_current (vlib_buffer_t * b)
   return b->data + b->current_data;
 }
 
+always_inline uword
+vlib_buffer_get_current_va (vlib_buffer_t * b)
+{
+  return vlib_buffer_get_va (b) + b->current_data;
+}
+
 /** \brief Advance current data pointer by the supplied (signed!) amount
 
     @param b - (vlib_buffer_t *) pointer to the buffer
@@ -212,6 +234,9 @@ vlib_buffer_advance (vlib_buffer_t * b, word l)
   ASSERT (b->current_length >= l);
   b->current_data += l;
   b->current_length -= l;
+
+  ASSERT ((b->flags & VLIB_BUFFER_NEXT_PRESENT) == 0 ||
+	  b->current_length >= VLIB_BUFFER_MIN_CHAIN_SEG_SIZE);
 }
 
 /** \brief Check if there is enough space in buffer to advance
@@ -277,7 +302,7 @@ vlib_buffer_get_tail (vlib_buffer_t * b)
  * @return      pointer to beginning of uninitialized data
  */
 always_inline void *
-vlib_buffer_put_uninit (vlib_buffer_t * b, u8 size)
+vlib_buffer_put_uninit (vlib_buffer_t * b, u16 size)
 {
   void *p = vlib_buffer_get_tail (b);
   /* XXX make sure there's enough space */
@@ -400,16 +425,9 @@ typedef struct
   uword start;
   uword size;
   uword log2_page_size;
-  vlib_physmem_region_index_t physmem_region;
-
+  u32 physmem_map_index;
+  u32 buffer_size;
   u32 *buffers;
-
-  u16 buffer_size;
-  uword buffers_per_page;
-  uword n_elts;
-  uword n_used;
-  uword next_clear;
-  uword *bitmap;
   clib_spinlock_t lock;
 } vlib_buffer_pool_t;
 
@@ -454,9 +472,8 @@ vlib_buffer_pool_get (u8 buffer_pool_index)
   return vec_elt_at_index (bm->buffer_pools, buffer_pool_index);
 }
 
-u8 vlib_buffer_pool_create (struct vlib_main_t * vm,
-			    vlib_physmem_region_index_t region,
-			    u16 buffer_size);
+u8 vlib_buffer_register_physmem_map (struct vlib_main_t * vm,
+				     u32 physmem_map_index);
 
 clib_error_t *vlib_buffer_main_init (struct vlib_main_t *vm);
 

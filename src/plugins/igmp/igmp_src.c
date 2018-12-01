@@ -78,7 +78,7 @@ igmp_src_alloc (u32 group_index, const igmp_key_t * skey, igmp_mode_t mode)
   IGMP_DBG ("new-src: (%U)", format_igmp_key, skey);
 
   pool_get (im->srcs, src);
-  memset (src, 0, sizeof (igmp_src_t));
+  clib_memset (src, 0, sizeof (igmp_src_t));
   src->mode = mode;
   src->key = clib_mem_alloc (sizeof (*skey));
   src->group = group_index;
@@ -143,6 +143,19 @@ igmp_src_index (igmp_src_t * src)
   return (src - igmp_main.srcs);
 }
 
+u8 *
+format_igmp_src (u8 * s, va_list * args)
+{
+  igmp_src_t *src = va_arg (*args, igmp_src_t *);
+  u32 indent = va_arg (*args, u32);
+
+  s = format (s, "%U%U %U",
+	      format_white_space, indent,
+	      format_igmp_key, src->key,
+	      format_igmp_timer_id, src->timers[IGMP_SRC_TIMER_EXP]);
+
+  return (s);
+}
 
 /*
  * fd.io coding-style-patch-verification: ON

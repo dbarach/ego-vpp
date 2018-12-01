@@ -57,6 +57,17 @@ typedef uword (vlib_node_function_t) (struct vlib_main_t * vm,
 
 typedef enum
 {
+  VLIB_NODE_PROTO_HINT_NONE = 0,
+  VLIB_NODE_PROTO_HINT_ETHERNET,
+  VLIB_NODE_PROTO_HINT_IP4,
+  VLIB_NODE_PROTO_HINT_IP6,
+  VLIB_NODE_PROTO_HINT_TCP,
+  VLIB_NODE_PROTO_HINT_UDP,
+  VLIB_NODE_N_PROTO_HINTS,
+} vlib_node_proto_hint_t;
+
+typedef enum
+{
   /* An internal node on the call graph (could be output). */
   VLIB_NODE_TYPE_INTERNAL,
 
@@ -133,6 +144,9 @@ typedef struct _vlib_node_registration
 
   /* Node flags. */
   u16 flags;
+
+  /* protocol at b->data[b->current_data] upon entry to the dispatch fn */
+  u8 protocol_hint;
 
   /* Size of scalar and vector arguments in bytes. */
   u16 scalar_size, vector_size;
@@ -244,6 +258,8 @@ typedef struct
   u64 calls, vectors, clocks, suspends;
   u64 max_clock;
   u64 max_clock_n;
+  u64 perf_counter_ticks;
+  u64 perf_counter_vectors;
 } vlib_node_stats_t;
 
 #define foreach_vlib_node_state					\
@@ -317,6 +333,9 @@ typedef struct vlib_node_t
 
   /* Number of bytes of run time data. */
   u8 runtime_data_bytes;
+
+  /* protocol at b->data[b->current_data] upon entry to the dispatch fn */
+  u8 protocol_hint;
 
   /* Number of error codes used by this node. */
   u16 n_errors;
@@ -442,7 +461,7 @@ typedef struct
 always_inline void
 vlib_next_frame_init (vlib_next_frame_t * nf)
 {
-  memset (nf, 0, sizeof (nf[0]));
+  clib_memset (nf, 0, sizeof (nf[0]));
   nf->frame_index = ~0;
   nf->node_runtime_index = ~0;
 }
@@ -487,6 +506,9 @@ typedef struct vlib_node_runtime_t
 
   u32 vectors_since_last_overflow;	/**< Number of vector elements
 					  processed by this node. */
+
+  u32 perf_counter_ticks_since_last_overflow; /**< Perf counter ticks */
+  u32 perf_counter_vectors_since_last_overflow;	/**< Perf counter vectors */
 
   u32 next_frame_index;			/**< Start of next frames for this
 					  node. */

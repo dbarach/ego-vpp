@@ -120,6 +120,10 @@ class VppIpAddress():
         return self.addr.bytes
 
     @property
+    def bytes(self):
+        return self.addr.bytes
+
+    @property
     def address(self):
         return self.addr.address
 
@@ -169,8 +173,16 @@ class VppIpPrefix():
         return self.addr.address
 
     @property
+    def bytes(self):
+        return self.addr.bytes
+
+    @property
     def length(self):
         return self.len
+
+    @property
+    def is_ip6(self):
+        return self.addr.is_ip6
 
     def __str__(self):
         return "%s/%d" % (self.address, self.length)
@@ -186,6 +198,20 @@ class VppIpPrefix():
             raise Exception("Comparing VppIpPrefix:%s with unknown type: %s" %
                             (self, other))
         return False
+
+
+class VppIp6Prefix():
+    def __init__(self, prefix, prefixlen):
+        self.ip_prefix = ip_address(unicode(prefix))
+        self.prefixlen = prefixlen
+
+    def encode(self):
+        return {'prefix': {'address': self.ip_prefix.packed},
+                'len': self.prefixlen}
+
+
+class VppIp4Prefix(VppIp6Prefix):
+    pass
 
 
 class VppIpMPrefix():

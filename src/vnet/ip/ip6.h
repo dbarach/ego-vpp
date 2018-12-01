@@ -49,6 +49,7 @@
 #include <vppinfra/bihash_24_8.h>
 #include <vppinfra/bihash_template.h>
 #include <vnet/util/radix.h>
+#include <vnet/util/throttle.h>
 
 /*
  * Default size of the ip6 fib hash table
@@ -220,10 +221,7 @@ typedef struct ip6_main_t
   u8 hbh_enabled;
 
   /** ND throttling */
-  uword **nd_throttle_bitmaps;
-  u64 *nd_throttle_seeds;
-  f64 *nd_throttle_last_seed_change_time;
-
+  throttle_t nd_throttle;
 } ip6_main_t;
 
 #define ND_THROTTLE_BITS 512
@@ -470,7 +468,6 @@ ip6_compute_flow_hash (const ip6_header_t * ip,
 
   a = (flow_hash_config & IP_FLOW_HASH_REVERSE_SRC_DST) ? t2 : t1;
   b = (flow_hash_config & IP_FLOW_HASH_REVERSE_SRC_DST) ? t1 : t2;
-  b ^= (flow_hash_config & IP_FLOW_HASH_PROTO) ? protocol : 0;
 
   t1 = is_tcp_udp ? tcp->src : 0;
   t2 = is_tcp_udp ? tcp->dst : 0;
@@ -478,6 +475,23 @@ ip6_compute_flow_hash (const ip6_header_t * ip,
   t1 = (flow_hash_config & IP_FLOW_HASH_SRC_PORT) ? t1 : 0;
   t2 = (flow_hash_config & IP_FLOW_HASH_DST_PORT) ? t2 : 0;
 
+  if (flow_hash_config & IP_FLOW_HASH_SYMMETRIC)
+    {
+      if (b < a)
+	{
+	  c = a;
+	  a = b;
+	  b = c;
+	}
+      if (t2 < t1)
+	{
+	  t2 += t1;
+	  t1 = t2 - t1;
+	  t2 = t2 - t1;
+	}
+    }
+
+  b ^= (flow_hash_config & IP_FLOW_HASH_PROTO) ? protocol : 0;
   c = (flow_hash_config & IP_FLOW_HASH_REVERSE_SRC_DST) ?
     ((t1 << 16) | t2) : ((t2 << 16) | t1);
 
@@ -618,10 +632,10 @@ vlib_buffer_push_ip6 (vlib_main_t * vm, vlib_buffer_t * b,
 
   ip6h->hop_limit = 0xff;
   ip6h->protocol = proto;
-  clib_memcpy (ip6h->src_address.as_u8, src->as_u8,
-	       sizeof (ip6h->src_address));
-  clib_memcpy (ip6h->dst_address.as_u8, dst->as_u8,
-	       sizeof (ip6h->src_address));
+  clib_memcpy_fast (ip6h->src_address.as_u8, src->as_u8,
+		    sizeof (ip6h->src_address));
+  clib_memcpy_fast (ip6h->dst_address.as_u8, dst->as_u8,
+		    sizeof (ip6h->src_address));
   b->flags |= VNET_BUFFER_F_IS_IP6;
 
   return ip6h;

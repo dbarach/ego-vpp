@@ -38,7 +38,7 @@ ip_address_union_decode (const vl_api_address_union_t * in,
   switch (clib_net_to_host_u32 (af))
     {
     case ADDRESS_IP4:
-      memset (out, 0, sizeof (*out));
+      clib_memset (out, 0, sizeof (*out));
       clib_memcpy (&out->ip4, &in->ip4, sizeof (out->ip4));
       type = IP46_TYPE_IP4;
       break;
@@ -107,6 +107,7 @@ ip_prefix_decode (const vl_api_prefix_t * in, fib_prefix_t * out)
       break;
     }
   out->fp_len = in->address_length;
+  out->___fp___pad = 0;
   ip_address_decode (&in->address, &out->fp_addr);
 }
 
@@ -138,45 +139,6 @@ ip_mprefix_decode (const vl_api_mprefix_t * in, mfib_prefix_t * out)
 
   ip_address_union_decode (&in->grp_address, in->af, &out->fp_grp_addr);
   ip_address_union_decode (&in->src_address, in->af, &out->fp_src_addr);
-}
-
-u8 *
-format_vl_api_address (u8 * s, va_list * args)
-{
-  const vl_api_address_t *addr = va_arg (*args, vl_api_address_t *);
-
-  if (ADDRESS_IP6 == clib_net_to_host_u32 (addr->af))
-    s = format (s, "ip6:%U", format_ip6_address, addr->un.ip6.address);
-  else
-    s = format (s, "ip4:%U", format_ip4_address, addr->un.ip4.address);
-
-  return s;
-}
-
-u8 *
-format_vl_api_address_union (u8 * s, va_list * args)
-{
-  const vl_api_address_union_t *addr =
-    va_arg (*args, vl_api_address_union_t *);
-  vl_api_address_family_t af = va_arg (*args, vl_api_address_family_t);
-
-  if (ADDRESS_IP6 == af)
-    s = format (s, "ip6:%U", format_ip6_address, addr->ip6.address);
-  else
-    s = format (s, "ip4:%U", format_ip4_address, addr->ip4.address);
-
-  return s;
-}
-
-u8 *
-format_vl_api_prefix (u8 * s, va_list * args)
-{
-  const vl_api_prefix_t *pfx = va_arg (*args, vl_api_prefix_t *);
-
-  s = format (s, "%U/%d", format_vl_api_address,
-	      &pfx->address, pfx->address_length);
-
-  return s;
 }
 
 /*

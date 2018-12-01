@@ -105,7 +105,7 @@ vnet_ipsec_gre_add_del_tunnel (vnet_ipsec_gre_add_del_tunnel_args_t * a,
   u64 key;
   ipsec_add_del_ipsec_gre_tunnel_args_t args;
 
-  memset (&args, 0, sizeof (args));
+  clib_memset (&args, 0, sizeof (args));
   args.is_add = a->is_add;
   args.local_sa_id = a->lsa;
   args.remote_sa_id = a->rsa;
@@ -122,7 +122,7 @@ vnet_ipsec_gre_add_del_tunnel (vnet_ipsec_gre_add_del_tunnel_args_t * a,
 	return VNET_API_ERROR_INVALID_VALUE;
 
       pool_get_aligned (igm->tunnels, t, CLIB_CACHE_LINE_BYTES);
-      memset (t, 0, sizeof (*t));
+      clib_memset (t, 0, sizeof (*t));
 
       if (vec_len (igm->free_ipsec_gre_tunnel_hw_if_indices) > 0)
 	{
@@ -186,7 +186,7 @@ vnet_ipsec_gre_add_del_tunnel (vnet_ipsec_gre_add_del_tunnel_args_t * a,
       hash_set (igm->tunnel_by_key, key, t - igm->tunnels);
 
       slot = vlib_node_add_named_next_with_slot
-	(vnm->vlib_main, hi->tx_node_index, "esp-encrypt",
+	(vnm->vlib_main, hi->tx_node_index, "esp4-encrypt",
 	 IPSEC_GRE_OUTPUT_NEXT_ESP_ENCRYPT);
 
       ASSERT (slot == IPSEC_GRE_OUTPUT_NEXT_ESP_ENCRYPT);
@@ -270,7 +270,7 @@ create_ipsec_gre_tunnel_command_fn (vlib_main_t * vm,
       goto done;
     }
 
-  memset (a, 0, sizeof (*a));
+  clib_memset (a, 0, sizeof (*a));
   a->is_add = is_add;
   a->lsa = lsa;
   a->rsa = rsa;

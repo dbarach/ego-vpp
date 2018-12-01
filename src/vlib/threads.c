@@ -393,7 +393,7 @@ vlib_frame_queue_alloc (int nelts)
   vlib_frame_queue_t *fq;
 
   fq = clib_mem_alloc_aligned (sizeof (*fq), CLIB_CACHE_LINE_BYTES);
-  memset (fq, 0, sizeof (*fq));
+  clib_memset (fq, 0, sizeof (*fq));
   fq->nelts = nelts;
   fq->vector_threshold = 128;	// packets
   vec_validate_aligned (fq->elts, nelts - 1, CLIB_CACHE_LINE_BYTES);
@@ -699,6 +699,9 @@ start_workers (vlib_main_t * vm)
       vlib_worker_threads->node_reforks_required =
 	clib_mem_alloc_aligned (sizeof (u32), CLIB_CACHE_LINE_BYTES);
 
+      /* We'll need the rpc vector lock... */
+      clib_spinlock_init (&vm->pending_rpc_lock);
+
       /* Ask for an initial barrier sync */
       *vlib_worker_threads->workers_at_barrier = 0;
       *vlib_worker_threads->wait_at_barrier = 1;
@@ -775,8 +778,8 @@ start_workers (vlib_main_t * vm)
 	      vm_clone->pending_rpc_requests = 0;
 	      vec_validate (vm_clone->pending_rpc_requests, 0);
 	      _vec_len (vm_clone->pending_rpc_requests) = 0;
-	      memset (&vm_clone->random_buffer, 0,
-		      sizeof (vm_clone->random_buffer));
+	      clib_memset (&vm_clone->random_buffer, 0,
+			   sizeof (vm_clone->random_buffer));
 
 	      nm = &vlib_mains[0]->node_main;
 	      nm_clone = &vm_clone->node_main;
@@ -812,9 +815,9 @@ start_workers (vlib_main_t * vm)
 		  clib_memcpy (n, nm->nodes[j], sizeof (*n));
 		  /* none of the copied nodes have enqueue rights given out */
 		  n->owner_node_index = VLIB_INVALID_NODE_INDEX;
-		  memset (&n->stats_total, 0, sizeof (n->stats_total));
-		  memset (&n->stats_last_clear, 0,
-			  sizeof (n->stats_last_clear));
+		  clib_memset (&n->stats_total, 0, sizeof (n->stats_total));
+		  clib_memset (&n->stats_last_clear, 0,
+			       sizeof (n->stats_last_clear));
 		  vec_add1 (nm_clone->nodes, n);
 		  n++;
 		}
@@ -879,6 +882,8 @@ start_workers (vlib_main_t * vm)
 
                             fl_clone[0] = fl_orig[0];
                             fl_clone->buffers = 0;
+                            vec_validate(fl_clone->buffers, 0);
+                            vec_reset_length(fl_clone->buffers);
                             fl_clone->n_alloc = 0;
                           }));
 /* *INDENT-ON* */
@@ -1038,8 +1043,8 @@ vlib_worker_thread_node_refork (void)
   u64 *old_counters = vm_clone->error_main.counters;
   u64 *old_counters_all_clear = vm_clone->error_main.counters_last_clear;
 
-  clib_memcpy (&vm_clone->error_main, &vm->error_main,
-	       sizeof (vm->error_main));
+  clib_memcpy_fast (&vm_clone->error_main, &vm->error_main,
+		    sizeof (vm->error_main));
   j = vec_len (vm->error_main.counters) - 1;
   vec_validate_aligned (old_counters, j, CLIB_CACHE_LINE_BYTES);
   vec_validate_aligned (old_counters_all_clear, j, CLIB_CACHE_LINE_BYTES);
@@ -1080,27 +1085,27 @@ vlib_worker_thread_node_refork (void)
       new_n = nm->nodes[j];
       old_n_clone = old_nodes_clone[j];
 
-      clib_memcpy (new_n_clone, new_n, sizeof (*new_n));
+      clib_memcpy_fast (new_n_clone, new_n, sizeof (*new_n));
       /* none of the copied nodes have enqueue rights given out */
       new_n_clone->owner_node_index = VLIB_INVALID_NODE_INDEX;
 
       if (j >= vec_len (old_nodes_clone))
 	{
 	  /* new node, set to zero */
-	  memset (&new_n_clone->stats_total, 0,
-		  sizeof (new_n_clone->stats_total));
-	  memset (&new_n_clone->stats_last_clear, 0,
-		  sizeof (new_n_clone->stats_last_clear));
+	  clib_memset (&new_n_clone->stats_total, 0,
+		       sizeof (new_n_clone->stats_total));
+	  clib_memset (&new_n_clone->stats_last_clear, 0,
+		       sizeof (new_n_clone->stats_last_clear));
 	}
       else
 	{
 	  /* Copy stats if the old data is valid */
-	  clib_memcpy (&new_n_clone->stats_total,
-		       &old_n_clone->stats_total,
-		       sizeof (new_n_clone->stats_total));
-	  clib_memcpy (&new_n_clone->stats_last_clear,
-		       &old_n_clone->stats_last_clear,
-		       sizeof (new_n_clone->stats_last_clear));
+	  clib_memcpy_fast (&new_n_clone->stats_total,
+			    &old_n_clone->stats_total,
+			    sizeof (new_n_clone->stats_total));
+	  clib_memcpy_fast (&new_n_clone->stats_last_clear,
+			    &old_n_clone->stats_last_clear,
+			    sizeof (new_n_clone->stats_last_clear));
 
 	  /* keep previous node state */
 	  new_n_clone->state = old_n_clone->state;
@@ -1126,17 +1131,17 @@ vlib_worker_thread_node_refork (void)
     rt->thread_index = vm_clone->thread_index;
     /* copy runtime_data, will be overwritten later for existing rt */
     if (n->runtime_data && n->runtime_data_bytes > 0)
-      clib_memcpy (rt->runtime_data, n->runtime_data,
-		   clib_min (VLIB_NODE_RUNTIME_DATA_SIZE,
-			     n->runtime_data_bytes));
+      clib_memcpy_fast (rt->runtime_data, n->runtime_data,
+			clib_min (VLIB_NODE_RUNTIME_DATA_SIZE,
+				  n->runtime_data_bytes));
   }
 
   for (j = 0; j < vec_len (old_rt); j++)
     {
       rt = vlib_node_get_runtime (vm_clone, old_rt[j].node_index);
       rt->state = old_rt[j].state;
-      clib_memcpy (rt->runtime_data, old_rt[j].runtime_data,
-		   VLIB_NODE_RUNTIME_DATA_SIZE);
+      clib_memcpy_fast (rt->runtime_data, old_rt[j].runtime_data,
+			VLIB_NODE_RUNTIME_DATA_SIZE);
     }
 
   vec_free (old_rt);
@@ -1153,17 +1158,17 @@ vlib_worker_thread_node_refork (void)
     rt->thread_index = vm_clone->thread_index;
     /* copy runtime_data, will be overwritten later for existing rt */
     if (n->runtime_data && n->runtime_data_bytes > 0)
-      clib_memcpy (rt->runtime_data, n->runtime_data,
-		   clib_min (VLIB_NODE_RUNTIME_DATA_SIZE,
-			     n->runtime_data_bytes));
+      clib_memcpy_fast (rt->runtime_data, n->runtime_data,
+			clib_min (VLIB_NODE_RUNTIME_DATA_SIZE,
+				  n->runtime_data_bytes));
   }
 
   for (j = 0; j < vec_len (old_rt); j++)
     {
       rt = vlib_node_get_runtime (vm_clone, old_rt[j].node_index);
       rt->state = old_rt[j].state;
-      clib_memcpy (rt->runtime_data, old_rt[j].runtime_data,
-		   VLIB_NODE_RUNTIME_DATA_SIZE);
+      clib_memcpy_fast (rt->runtime_data, old_rt[j].runtime_data,
+			VLIB_NODE_RUNTIME_DATA_SIZE);
     }
 
   vec_free (old_rt);

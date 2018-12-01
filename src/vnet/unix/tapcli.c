@@ -170,7 +170,7 @@ static tapcli_main_t tapcli_main;
 static uword
 tapcli_tx (vlib_main_t * vm, vlib_node_runtime_t * node, vlib_frame_t * frame)
 {
-  u32 *buffers = vlib_frame_args (frame);
+  u32 *buffers = vlib_frame_vector_args (frame);
   uword n_packets = frame->n_vectors;
   tapcli_main_t *tm = &tapcli_main;
   tapcli_interface_t *ti;
@@ -603,7 +603,7 @@ static void
 tapcli_nopunt_frame (vlib_main_t * vm,
 		     vlib_node_runtime_t * node, vlib_frame_t * frame)
 {
-  u32 *buffers = vlib_frame_args (frame);
+  u32 *buffers = vlib_frame_vector_args (frame);
   uword n_packets = frame->n_vectors;
   vlib_buffer_free (vm, buffers, n_packets);
   vlib_frame_free (vm, node, frame);
@@ -746,13 +746,11 @@ tapcli_interface_admin_up_down (vnet_main_t * vnm, u32 hw_if_index, u32 flags)
 {
   uword is_admin_up = (flags & VNET_SW_INTERFACE_FLAG_ADMIN_UP) != 0;
   u32 hw_flags;
-  u32 speed_duplex = VNET_HW_INTERFACE_FLAG_FULL_DUPLEX
-    | VNET_HW_INTERFACE_FLAG_SPEED_1G;
 
   if (is_admin_up)
-    hw_flags = VNET_HW_INTERFACE_FLAG_LINK_UP | speed_duplex;
+    hw_flags = VNET_HW_INTERFACE_FLAG_LINK_UP;
   else
-    hw_flags = speed_duplex;
+    hw_flags = 0;
 
   vnet_hw_interface_set_flags (vnm, hw_if_index, hw_flags);
   return 0;
@@ -874,7 +872,7 @@ vnet_tap_connect (vlib_main_t * vm, vnet_tap_connect_args_t * ap)
   if ((dev_net_tun_fd = open ("/dev/net/tun", O_RDWR)) < 0)
     return VNET_API_ERROR_SYSCALL_ERROR_1;
 
-  memset (&ifr, 0, sizeof (ifr));
+  clib_memset (&ifr, 0, sizeof (ifr));
   strncpy (ifr.ifr_name, (char *) ap->intfc_name, sizeof (ifr.ifr_name) - 1);
   ifr.ifr_flags = flags;
   if (ioctl (dev_net_tun_fd, TUNSETIFF, (void *) &ifr) < 0)
@@ -895,7 +893,7 @@ vnet_tap_connect (vlib_main_t * vm, vnet_tap_connect_args_t * ap)
     struct ifreq ifr;
     struct sockaddr_ll sll;
 
-    memset (&ifr, 0, sizeof (ifr));
+    clib_memset (&ifr, 0, sizeof (ifr));
     strncpy (ifr.ifr_name, (char *) ap->intfc_name,
 	     sizeof (ifr.ifr_name) - 1);
     if (ioctl (dev_tap_fd, SIOCGIFINDEX, &ifr) < 0)
@@ -905,7 +903,7 @@ vnet_tap_connect (vlib_main_t * vm, vnet_tap_connect_args_t * ap)
       }
 
     /* Bind the provisioning socket to the interface. */
-    memset (&sll, 0, sizeof (sll));
+    clib_memset (&sll, 0, sizeof (sll));
     sll.sll_family = AF_PACKET;
     sll.sll_ifindex = ifr.ifr_ifindex;
     sll.sll_protocol = htons (ETH_P_ALL);
@@ -954,7 +952,7 @@ vnet_tap_connect (vlib_main_t * vm, vnet_tap_connect_args_t * ap)
       /* ip4: mask defaults to /24 */
       u32 mask = clib_host_to_net_u32 (0xFFFFFF00);
 
-      memset (&sin, 0, sizeof (sin));
+      clib_memset (&sin, 0, sizeof (sin));
       sin.sin_family = AF_INET;
       /* sin.sin_port = 0; */
       sin.sin_addr.s_addr = ap->ip4_address->as_u32;
@@ -998,7 +996,7 @@ vnet_tap_connect (vlib_main_t * vm, vnet_tap_connect_args_t * ap)
 	  goto error;
 	}
 
-      memset (&ifr2, 0, sizeof (ifr));
+      clib_memset (&ifr2, 0, sizeof (ifr));
       strncpy (ifr2.ifr_name, (char *) ap->intfc_name,
 	       sizeof (ifr2.ifr_name) - 1);
       if (ioctl (sockfd6, SIOCGIFINDEX, &ifr2) < 0)
@@ -1316,7 +1314,7 @@ tap_modify_command_fn (vlib_main_t * vm,
     user_hwaddr = 1;
 
 
-  memset (ap, 0, sizeof (*ap));
+  clib_memset (ap, 0, sizeof (*ap));
   ap->orig_sw_if_index = sw_if_index;
   ap->intfc_name = intfc_name;
   ap->sw_if_indexp = &new_sw_if_index;
@@ -1418,7 +1416,7 @@ tap_connect_command_fn (vlib_main_t * vm,
       goto done;
     }
 
-  memset (ap, 0, sizeof (*ap));
+  clib_memset (ap, 0, sizeof (*ap));
 
   ap->intfc_name = intfc_name;
   ap->hwaddr_arg = hwaddr_arg;

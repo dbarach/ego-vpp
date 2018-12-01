@@ -14,13 +14,14 @@
  */
 
 #include "vom/ip_punt_redirect_cmds.hpp"
+#include <vom/api_types.hpp>
 
 namespace VOM {
 namespace ip_punt_redirect_cmds {
 
 config_cmd::config_cmd(HW::item<bool>& item,
-                       const handle_t& rx_itf,
-                       const handle_t& tx_itf,
+                       const handle_t rx_itf,
+                       const handle_t tx_itf,
                        const boost::asio::ip::address& addr)
   : rpc_cmd(item)
   , m_rx_itf(rx_itf)
@@ -44,10 +45,9 @@ config_cmd::issue(connection& con)
   auto& payload = req.get_request().get_payload();
 
   payload.is_add = 1;
-  payload.rx_sw_if_index = m_rx_itf.value();
-  payload.tx_sw_if_index = m_tx_itf.value();
-
-  to_bytes(m_addr, &payload.is_ip6, payload.nh);
+  payload.punt.rx_sw_if_index = m_rx_itf.value();
+  payload.punt.tx_sw_if_index = m_tx_itf.value();
+  payload.punt.nh = to_api(m_addr);
 
   VAPI_CALL(req.execute());
 
@@ -58,7 +58,7 @@ std::string
 config_cmd::to_string() const
 {
   std::ostringstream s;
-  s << "IP-punt-redirect-config: " << m_hw_item.to_string()
+  s << "IP-punt-redirect: " << m_hw_item.to_string()
     << " rx-itf:" << m_rx_itf.to_string() << " tx-itf:" << m_tx_itf.to_string()
     << " next-hop:" << m_addr;
 
@@ -66,8 +66,8 @@ config_cmd::to_string() const
 }
 
 unconfig_cmd::unconfig_cmd(HW::item<bool>& item,
-                           const handle_t& rx_itf,
-                           const handle_t& tx_itf,
+                           const handle_t rx_itf,
+                           const handle_t tx_itf,
                            const boost::asio::ip::address& addr)
   : rpc_cmd(item)
   , m_rx_itf(rx_itf)
@@ -91,10 +91,9 @@ unconfig_cmd::issue(connection& con)
   auto& payload = req.get_request().get_payload();
 
   payload.is_add = 0;
-  payload.rx_sw_if_index = m_rx_itf.value();
-  payload.tx_sw_if_index = m_tx_itf.value();
-
-  to_bytes(m_addr, &payload.is_ip6, payload.nh);
+  payload.punt.rx_sw_if_index = m_rx_itf.value();
+  payload.punt.tx_sw_if_index = m_tx_itf.value();
+  payload.punt.nh = to_api(m_addr);
 
   VAPI_CALL(req.execute());
 
@@ -113,6 +112,30 @@ unconfig_cmd::to_string() const
     << " next-hop:" << m_addr.to_string();
 
   return (s.str());
+}
+
+bool
+dump_cmd::operator==(const dump_cmd& other) const
+{
+  return (true);
+}
+
+rc_t
+dump_cmd::issue(connection& con)
+{
+  m_dump.reset(new msg_t(con.ctx(), std::ref(*this)));
+
+  VAPI_CALL(m_dump->execute());
+
+  wait();
+
+  return rc_t::OK;
+}
+
+std::string
+dump_cmd::to_string() const
+{
+  return ("ip-punt-redirect-dump");
 }
 
 }; // namespace ip_punt_redirect_cmds

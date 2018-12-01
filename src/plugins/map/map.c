@@ -101,8 +101,7 @@ map_create_domain (ip4_address_t * ip4_prefix,
   /* How many, and which bits to grab from the IPv4 DA */
   if (ip4_prefix_len + ea_bits_len < 32)
     {
-      if (!(flags & MAP_DOMAIN_TRANSLATION))
-	flags |= MAP_DOMAIN_PREFIX;
+      flags |= MAP_DOMAIN_PREFIX;
       suffix_shift = 32 - ip4_prefix_len - ea_bits_len;
       suffix_len = ea_bits_len;
     }
@@ -122,15 +121,9 @@ map_create_domain (ip4_address_t * ip4_prefix,
       return -1;
     }
 
-  if (mm->is_ce && !(flags & MAP_DOMAIN_TRANSLATION))
-    {
-      clib_warning ("MAP-E CE is not supported yet");
-      return -1;
-    }
-
   /* Get domain index */
   pool_get_aligned (mm->domains, d, CLIB_CACHE_LINE_BYTES);
-  memset (d, 0, sizeof (*d));
+  clib_memset (d, 0, sizeof (*d));
   *map_domain_index = d - mm->domains;
 
   /* Init domain struct */
@@ -159,23 +152,11 @@ map_create_domain (ip4_address_t * ip4_prefix,
     map_dpo_create (DPO_PROTO_IP4, *map_domain_index, &dpo_v4);
 
   /* Create ip4 route */
-  u8 ip4_pfx_len;
-  ip4_address_t ip4_pfx;
-  if (mm->is_ce)
-    {
-      ip4_pfx_len = 0;
-      ip4_pfx.as_u32 = 0;
-    }
-  else
-    {
-      ip4_pfx_len = d->ip4_prefix_len;
-      ip4_pfx = d->ip4_prefix;
-    }
   fib_prefix_t pfx = {
     .fp_proto = FIB_PROTOCOL_IP4,
-    .fp_len = ip4_pfx_len,
+    .fp_len = d->ip4_prefix_len,
     .fp_addr = {
-		.ip4 = ip4_pfx,
+		.ip4 = d->ip4_prefix,
 		}
     ,
   };
@@ -201,22 +182,10 @@ map_create_domain (ip4_address_t * ip4_prefix,
    * already exists and is MAP sourced, it is now MAP source n+1 times
    * and will need to be removed n+1 times.
    */
-  u8 ip6_pfx_len;
-  ip6_address_t ip6_pfx;
-  if (mm->is_ce)
-    {
-      ip6_pfx_len = d->ip6_prefix_len;
-      ip6_pfx = d->ip6_prefix;
-    }
-  else
-    {
-      ip6_pfx_len = d->ip6_src_len;
-      ip6_pfx = d->ip6_src;
-    }
   fib_prefix_t pfx6 = {
     .fp_proto = FIB_PROTOCOL_IP6,
-    .fp_len = ip6_pfx_len,
-    .fp_addr.ip6 = ip6_pfx,
+    .fp_len = d->ip6_src_len,
+    .fp_addr.ip6 = d->ip6_src,
   };
 
   fib_table_entry_special_dpo_add (0, &pfx6,
@@ -316,7 +285,7 @@ map_add_del_psid (u32 map_domain_index, u16 psid, ip6_address_t * tep,
       d->rules = clib_mem_alloc_aligned (l, CLIB_CACHE_LINE_BYTES);
       if (!d->rules)
 	return -1;
-      memset (d->rules, 0, l);
+      clib_memset (d->rules, 0, l);
     }
 
   if (psid >= (0x1 << d->psid_length))
@@ -332,7 +301,7 @@ map_add_del_psid (u32 map_domain_index, u16 psid, ip6_address_t * tep,
     }
   else
     {
-      memset (&d->rules[psid], 0, sizeof (ip6_address_t));
+      clib_memset (&d->rules[psid], 0, sizeof (ip6_address_t));
     }
   return 0;
 }
@@ -745,8 +714,8 @@ map_pre_resolve_command_fn (vlib_main_t * vm,
   clib_error_t *error = NULL;
   int is_del = 0;
 
-  memset (&ip4nh, 0, sizeof (ip4nh));
-  memset (&ip6nh, 0, sizeof (ip6nh));
+  clib_memset (&ip4nh, 0, sizeof (ip4nh));
+  clib_memset (&ip6nh, 0, sizeof (ip6nh));
 
   /* Get a line of input. */
   if (!unformat_user (input, unformat_line_input, line_input))
@@ -974,7 +943,7 @@ format_map_domain (u8 * s, va_list * args)
   ip6_address_t ip6_prefix;
 
   if (d->rules)
-    memset (&ip6_prefix, 0, sizeof (ip6_prefix));
+    clib_memset (&ip6_prefix, 0, sizeof (ip6_prefix));
   else
     ip6_prefix = d->ip6_prefix;
 
@@ -1210,8 +1179,8 @@ show_map_stats_command_fn (vlib_main_t * vm, unformat_input_t * input,
   int which, i;
   vlib_counter_t v;
 
-  memset (total_pkts, 0, sizeof (total_pkts));
-  memset (total_bytes, 0, sizeof (total_bytes));
+  clib_memset (total_pkts, 0, sizeof (total_pkts));
+  clib_memset (total_bytes, 0, sizeof (total_bytes));
 
   map_domain_counter_lock (mm);
   vec_foreach (cm, mm->domain_counters)
@@ -1807,7 +1776,7 @@ map_ip6_reass_add_fragment (map_ip6_reass_t * r, u32 pi,
       if (!prev_f)
 	return -1;
 
-      clib_memcpy (prev_f->next_data, data_start, copied_len);
+      clib_memcpy_fast (prev_f->next_data, data_start, copied_len);
       prev_f->next_data_len = copied_len;
       prev_f->next_data_offset = data_offset;
     }
@@ -1817,7 +1786,7 @@ map_ip6_reass_add_fragment (map_ip6_reass_t * r, u32 pi,
 	return -1;
 
       if (r->ip4_header.ip_version_and_header_length == 0)
-	clib_memcpy (&r->ip4_header, data_start, sizeof (ip4_header_t));
+	clib_memcpy_fast (&r->ip4_header, data_start, sizeof (ip4_header_t));
     }
 
   if (data_len > 20)
@@ -2172,7 +2141,7 @@ VLIB_CLI_COMMAND(map_add_domain_command, static) = {
   .path = "map add domain",
   .short_help = "map add domain ip4-pfx <ip4-pfx> ip6-pfx <ip6-pfx> "
       "ip6-src <ip6-pfx> ea-bits-len <n> psid-offset <n> psid-len <n> "
-      "[map-t] [map-ce] [mtu <mtu>]",
+      "[map-t] [mtu <mtu>]",
   .function = map_add_domain_command_fn,
 };
 
@@ -2248,28 +2217,6 @@ VLIB_PLUGIN_REGISTER() = {
 
 /* *INDENT-ON* */
 
-static clib_error_t *
-map_config (vlib_main_t * vm, unformat_input_t * input)
-{
-  map_main_t *mm = &map_main;
-  u8 is_ce = false;
-
-  while (unformat_check_input (input) != UNFORMAT_END_OF_INPUT)
-    {
-      if (unformat (input, "customer edge"))
-	is_ce = true;
-      else
-	return clib_error_return (0, "unknown input '%U'",
-				  format_unformat_error, input);
-    }
-
-  mm->is_ce = is_ce;
-
-  return 0;
-}
-
-VLIB_CONFIG_FUNCTION (map_config, "map");
-
 /*
  * map_init
  */
@@ -2300,8 +2247,6 @@ map_init (vlib_main_t * vm)
 
   /* ICMP6 Type 1, Code 5 for security check failure */
   mm->icmp6_enabled = false;
-
-  mm->is_ce = false;
 
   /* Inner or outer fragmentation */
   mm->frag_inner = false;

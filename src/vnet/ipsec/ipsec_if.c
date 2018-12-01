@@ -108,7 +108,7 @@ ipsec_if_tx_node_fn (vlib_main_t * vm, vlib_node_runtime_t * node,
 	  hi0 = vnet_get_sup_hw_interface (vnm, sw_if_index0);
 	  t0 = pool_elt_at_index (im->tunnel_interfaces, hi0->dev_instance);
 	  vnet_buffer (b0)->ipsec.sad_index = t0->output_sa_index;
-	  next0 = IPSEC_OUTPUT_NEXT_ESP_ENCRYPT;
+	  next0 = IPSEC_OUTPUT_NEXT_ESP4_ENCRYPT;
 
 	  len0 = vlib_buffer_length_in_chain (vm, b0);
 
@@ -170,33 +170,25 @@ ipsec_admin_up_down_function (vnet_main_t * vnm, u32 hw_if_index, u32 flags)
 
   if (flags & VNET_SW_INTERFACE_FLAG_ADMIN_UP)
     {
-      ASSERT (im->cb.check_support_cb);
-
       sa = pool_elt_at_index (im->sad, t->input_sa_index);
 
-      err = im->cb.check_support_cb (sa);
+      err = ipsec_check_support_cb (im, sa);
       if (err)
 	return err;
 
-      if (im->cb.add_del_sa_sess_cb)
-	{
-	  err = im->cb.add_del_sa_sess_cb (t->input_sa_index, 1);
-	  if (err)
-	    return err;
-	}
+      err = ipsec_add_del_sa_sess_cb (im, t->input_sa_index, 1);
+      if (err)
+	return err;
 
       sa = pool_elt_at_index (im->sad, t->output_sa_index);
 
-      err = im->cb.check_support_cb (sa);
+      err = ipsec_check_support_cb (im, sa);
       if (err)
 	return err;
 
-      if (im->cb.add_del_sa_sess_cb)
-	{
-	  err = im->cb.add_del_sa_sess_cb (t->output_sa_index, 1);
-	  if (err)
-	    return err;
-	}
+      err = ipsec_add_del_sa_sess_cb (im, t->output_sa_index, 1);
+      if (err)
+	return err;
 
       vnet_hw_interface_set_flags (vnm, hw_if_index,
 				   VNET_HW_INTERFACE_FLAG_LINK_UP);
@@ -204,24 +196,14 @@ ipsec_admin_up_down_function (vnet_main_t * vnm, u32 hw_if_index, u32 flags)
   else
     {
       vnet_hw_interface_set_flags (vnm, hw_if_index, 0 /* down */ );
-
       sa = pool_elt_at_index (im->sad, t->input_sa_index);
-
-      if (im->cb.add_del_sa_sess_cb)
-	{
-	  err = im->cb.add_del_sa_sess_cb (t->input_sa_index, 0);
-	  if (err)
-	    return err;
-	}
-
+      err = ipsec_add_del_sa_sess_cb (im, t->input_sa_index, 0);
+      if (err)
+	return err;
       sa = pool_elt_at_index (im->sad, t->output_sa_index);
-
-      if (im->cb.add_del_sa_sess_cb)
-	{
-	  err = im->cb.add_del_sa_sess_cb (t->output_sa_index, 0);
-	  if (err)
-	    return err;
-	}
+      err = ipsec_add_del_sa_sess_cb (im, t->output_sa_index, 0);
+      if (err)
+	return err;
     }
 
   return /* no error */ 0;
@@ -291,7 +273,7 @@ ipsec_add_del_tunnel_if_internal (vnet_main_t * vnm,
 	return VNET_API_ERROR_INVALID_VALUE;
 
       pool_get_aligned (im->tunnel_interfaces, t, CLIB_CACHE_LINE_BYTES);
-      memset (t, 0, sizeof (*t));
+      clib_memset (t, 0, sizeof (*t));
 
       dev_instance = t - im->tunnel_interfaces;
       if (args->renumber)
@@ -309,7 +291,7 @@ ipsec_add_del_tunnel_if_internal (vnet_main_t * vnm,
 		dev_instance);
 
       pool_get (im->sad, sa);
-      memset (sa, 0, sizeof (*sa));
+      clib_memset (sa, 0, sizeof (*sa));
       t->input_sa_index = sa - im->sad;
       sa->spi = args->remote_spi;
       sa->tunnel_src_addr.ip4.as_u32 = args->remote_ip.as_u32;
@@ -334,7 +316,7 @@ ipsec_add_del_tunnel_if_internal (vnet_main_t * vnm,
 	}
 
       pool_get (im->sad, sa);
-      memset (sa, 0, sizeof (*sa));
+      clib_memset (sa, 0, sizeof (*sa));
       t->output_sa_index = sa - im->sad;
       sa->spi = args->local_spi;
       sa->tunnel_src_addr.ip4.as_u32 = args->local_ip.as_u32;
@@ -369,10 +351,10 @@ ipsec_add_del_tunnel_if_internal (vnet_main_t * vnm,
       hi = vnet_get_hw_interface (vnm, hw_if_index);
 
       slot = vlib_node_add_next_with_slot
-	(vnm->vlib_main, hi->tx_node_index, im->esp_encrypt_node_index,
-	 IPSEC_OUTPUT_NEXT_ESP_ENCRYPT);
+	(vnm->vlib_main, hi->tx_node_index, im->esp4_encrypt_node_index,
+	 IPSEC_OUTPUT_NEXT_ESP4_ENCRYPT);
 
-      ASSERT (slot == IPSEC_OUTPUT_NEXT_ESP_ENCRYPT);
+      ASSERT (slot == IPSEC_OUTPUT_NEXT_ESP4_ENCRYPT);
 
       t->hw_if_index = hw_if_index;
 
@@ -456,7 +438,7 @@ ipsec_add_del_ipsec_gre_tunnel (vnet_main_t * vnm,
 	return VNET_API_ERROR_INVALID_VALUE;
 
       pool_get_aligned (im->tunnel_interfaces, t, CLIB_CACHE_LINE_BYTES);
-      memset (t, 0, sizeof (*t));
+      clib_memset (t, 0, sizeof (*t));
 
       t->input_sa_index = isa;
       t->output_sa_index = osa;
@@ -596,15 +578,11 @@ ipsec_set_interface_sa (vnet_main_t * vnm, u32 hw_if_index, u32 sa_id,
   if (ipsec_get_sa_index_by_sa_id (old_sa->id) == old_sa_index)
     hash_unset (im->sa_index_by_sa_id, old_sa->id);
 
-  if (im->cb.add_del_sa_sess_cb)
+  if (!ipsec_add_del_sa_sess_cb (im, old_sa_index, 0))
     {
-      clib_error_t *err;
-
-      err = im->cb.add_del_sa_sess_cb (old_sa_index, 0);
-      if (err)
-	return VNET_API_ERROR_SYSCALL_ERROR_1;
+      clib_warning ("IPsec backend add/del callback returned error");
+      return VNET_API_ERROR_SYSCALL_ERROR_1;
     }
-
   pool_put (im->sad, old_sa);
 
   return 0;

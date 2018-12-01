@@ -20,6 +20,8 @@ from scapy.layers.inet6 import IPv6, UDP, ICMPv6ND_NS, ICMPv6ND_RS, \
 
 from framework import VppTestCase, VppTestRunner
 from util import Host, ppp, mactobinary
+from vpp_mac import VppMacAddress
+from vpp_ip import VppIpAddress
 
 
 class TestL2bdArpTerm(VppTestCase):
@@ -69,10 +71,10 @@ class TestL2bdArpTerm(VppTestCase):
 
     def add_del_arp_term_hosts(self, entries, bd_id=1, is_add=1, is_ipv6=0):
         for e in entries:
-            ip = e.ip4n if is_ipv6 == 0 else e.ip6n
+            ip = e.ip4 if is_ipv6 == 0 else e.ip6
             self.vapi.bd_ip_mac_add_del(bd_id=bd_id,
-                                        mac=e.bin_mac,
-                                        ip=ip,
+                                        mac=VppMacAddress(e.mac).encode(),
+                                        ip=VppIpAddress(ip).encode(),
                                         is_ipv6=is_ipv6,
                                         is_add=is_add)
 
@@ -154,12 +156,13 @@ class TestL2bdArpTerm(VppTestCase):
     def arp_resp_hosts(self, src_host, pkts):
         return {self.arp_resp_host(src_host, p) for p in pkts}
 
-    def inttoip4(self, ip):
+    @staticmethod
+    def inttoip4(ip):
         o1 = int(ip / 16777216) % 256
         o2 = int(ip / 65536) % 256
         o3 = int(ip / 256) % 256
         o4 = int(ip) % 256
-        return '%(o1)s.%(o2)s.%(o3)s.%(o4)s' % locals()
+        return '%s.%s.%s.%s' % (o1, o2, o3, o4)
 
     def arp_event_host(self, e):
         return Host(mac=':'.join(['%02x' % ord(char) for char in e.new_mac]),
@@ -271,6 +274,7 @@ class TestL2bdArpTerm(VppTestCase):
         macs = self.mac_list(range(1, 5))
         hosts = self.ip4_hosts(4, 1, macs)
         self.add_del_arp_term_hosts(hosts, is_add=1)
+
         self.verify_arp(src_host, hosts, hosts)
         type(self).hosts = hosts
 

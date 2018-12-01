@@ -28,18 +28,20 @@ typedef struct _vnet_app_attach_args_t
 #undef _
   ssvm_private_t * segment;
   svm_msg_q_t *app_evt_q;
+  u64 segment_handle;
 } vnet_app_attach_args_t;
 
 typedef struct _vnet_app_detach_args_t
 {
   u32 app_index;
+  u32 api_client_index;
 } vnet_app_detach_args_t;
 
 typedef struct _vnet_bind_args_t
 {
   union
   {
-    session_endpoint_extended_t sep_ext;
+    session_endpoint_cfg_t sep_ext;
     session_endpoint_t sep;
     char *uri;
   };
@@ -71,7 +73,7 @@ typedef struct _vnet_connect_args
 {
   union
   {
-    session_endpoint_extended_t sep_ext;
+    session_endpoint_cfg_t sep_ext;
     session_endpoint_t sep;
     char *uri;
   };
@@ -233,6 +235,7 @@ typedef struct session_accepted_msg_
   u64 handle;
   u64 server_rx_fifo;
   u64 server_tx_fifo;
+  u64 segment_handle;
   u64 vpp_event_queue_address;
   u64 server_event_queue_address;
   u64 client_event_queue_address;
@@ -259,6 +262,7 @@ typedef struct session_connected_msg_
   u64 handle;
   u64 server_rx_fifo;
   u64 server_tx_fifo;
+  u64 segment_handle;
   u64 vpp_event_queue_address;
   u64 client_event_queue_address;
   u64 server_event_queue_address;
@@ -314,7 +318,7 @@ app_alloc_ctrl_evt_to_vpp (svm_msg_q_t * mq, app_session_evt_t * app_evt,
 				       SVM_Q_WAIT, &app_evt->msg);
   svm_msg_q_unlock (mq);
   app_evt->evt = svm_msg_q_msg_data (mq, &app_evt->msg);
-  memset (app_evt->evt, 0, sizeof (*app_evt->evt));
+  clib_memset (app_evt->evt, 0, sizeof (*app_evt->evt));
   app_evt->evt->event_type = evt_type;
 }
 
@@ -397,10 +401,10 @@ app_send_dgram_raw (svm_fifo_t * f, app_session_transport_t * at,
   actual_write = clib_min (len, max_enqueue);
   hdr.data_length = actual_write;
   hdr.data_offset = 0;
-  clib_memcpy (&hdr.rmt_ip, &at->rmt_ip, sizeof (ip46_address_t));
+  clib_memcpy_fast (&hdr.rmt_ip, &at->rmt_ip, sizeof (ip46_address_t));
   hdr.is_ip4 = at->is_ip4;
   hdr.rmt_port = at->rmt_port;
-  clib_memcpy (&hdr.lcl_ip, &at->lcl_ip, sizeof (ip46_address_t));
+  clib_memcpy_fast (&hdr.lcl_ip, &at->lcl_ip, sizeof (ip46_address_t));
   hdr.lcl_port = at->lcl_port;
   rv = svm_fifo_enqueue_nowait (f, sizeof (hdr), (u8 *) & hdr);
   ASSERT (rv == sizeof (hdr));

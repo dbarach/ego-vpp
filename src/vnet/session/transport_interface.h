@@ -47,7 +47,7 @@ typedef struct _transport_proto_vft
    */
   u32 (*bind) (u32 session_index, transport_endpoint_t * lcl);
   u32 (*unbind) (u32);
-  int (*open) (transport_endpoint_t * rmt);
+  int (*open) (transport_endpoint_cfg_t * rmt);
   void (*close) (u32 conn_index, u32 thread_index);
   void (*cleanup) (u32 conn_index, u32 thread_index);
   clib_error_t *(*enable) (vlib_main_t * vm, u8 is_en);
@@ -89,7 +89,7 @@ extern transport_proto_vft_t *tp_vfts;
 #define transport_proto_foreach(VAR, BODY)			\
 do {								\
     for (VAR = 0; VAR < vec_len (tp_vfts); VAR++)		\
-      if (tp_vfts[VAR].push_header != 0)				\
+      if (tp_vfts[VAR].push_header != 0)			\
 	do { BODY; } while (0);					\
 } while (0)
 
@@ -101,6 +101,78 @@ transport_service_type_t transport_protocol_service_type (transport_proto_t);
 transport_tx_fn_type_t transport_protocol_tx_fn_type (transport_proto_t tp);
 void transport_update_time (f64 time_now, u8 thread_index);
 void transport_enable_disable (vlib_main_t * vm, u8 is_en);
+
+void transport_connection_tx_pacer_reset (transport_connection_t * tc,
+					  u32 rate_bytes_per_sec,
+					  u32 initial_bucket, u64 time_now);
+/**
+ * Initialize tx pacer for connection
+ *
+ * @param tc				transport connection
+ * @param rate_bytes_per_second		initial byte rate
+ * @param burst_bytes			initial burst size in bytes
+ */
+void transport_connection_tx_pacer_init (transport_connection_t * tc,
+					 u32 rate_bytes_per_sec,
+					 u32 initial_bucket);
+
+/**
+ * Update tx pacer pacing rate
+ *
+ * @param tc			transport connection
+ * @param bytes_per_sec		new pacing rate
+ */
+void transport_connection_tx_pacer_update (transport_connection_t * tc,
+					   u64 bytes_per_sec);
+
+/**
+ * Get maximum tx burst allowed for transport connection
+ *
+ * @param tc		transport connection
+ * @param time_now	current cpu time as returned by @ref clib_cpu_time_now
+ * @param mss		transport's mss
+ */
+u32 transport_connection_snd_space (transport_connection_t * tc,
+				    u64 time_now, u16 mss);
+
+u32 transport_connection_tx_pacer_burst (transport_connection_t * tc,
+					 u64 time_now);
+
+/**
+ * Initialize period for tx pacers
+ *
+ * Defines a unit of time with respect to number of cpu cycles that is to
+ * be used by all tx pacers.
+ */
+void transport_init_tx_pacers_period (void);
+
+/**
+ * Check if transport connection is paced
+ */
+always_inline u8
+transport_connection_is_tx_paced (transport_connection_t * tc)
+{
+  return (tc->flags & TRANSPORT_CONNECTION_F_IS_TX_PACED);
+}
+
+u8 *format_transport_pacer (u8 * s, va_list * args);
+
+/**
+ * Update tx byte stats for transport connection
+ *
+ * If tx pacing is enabled, this also updates pacer bucket to account for the
+ * amount of bytes that have been sent.
+ *
+ * @param tc		transport connection
+ * @param pkts		packets recently sent
+ * @param bytes		bytes recently sent
+ */
+void transport_connection_update_tx_stats (transport_connection_t * tc,
+					   u32 bytes);
+
+void
+transport_connection_tx_pacer_update_bytes (transport_connection_t * tc,
+					    u32 bytes);
 
 #endif /* SRC_VNET_SESSION_TRANSPORT_INTERFACE_H_ */
 

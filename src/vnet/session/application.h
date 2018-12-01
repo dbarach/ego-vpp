@@ -31,11 +31,10 @@
 typedef struct _stream_session_cb_vft
 {
   /** Notify server of new segment */
-  int (*add_segment_callback) (u32 api_client_index,
-			       const ssvm_private_t * ssvm_seg);
+  int (*add_segment_callback) (u32 api_client_index, u64 segment_handle);
+
   /** Notify server of new segment */
-  int (*del_segment_callback) (u32 api_client_index,
-			       const ssvm_private_t * ssvm_seg);
+  int (*del_segment_callback) (u32 api_client_index, u64 segment_handle);
 
   /** Notify server of newly accepted session */
   int (*session_accept_callback) (stream_session_t * new_session);
@@ -101,6 +100,9 @@ typedef struct app_worker_
   /** Hash table of the app's local connects */
   uword *local_connects;
 
+  /** API index for the worker. Needed for multi-process apps */
+  u32 api_client_index;
+
   u8 app_is_builtin;
 } app_worker_t;
 
@@ -120,9 +122,6 @@ typedef struct application_
 {
   /** App index in app pool */
   u32 app_index;
-
-  /** Binary API connection index, ~0 if internal */
-  u32 api_client_index;
 
   /** Flags */
   u32 flags;
@@ -209,8 +208,10 @@ typedef struct app_init_args_
 typedef struct _vnet_app_worker_add_del_args
 {
   u32 app_index;		/**< App for which a new worker is requested */
-  u32 wrk_index;		/**< Index to delete or return value if add */
+  u32 wrk_map_index;		/**< Index to delete or return value if add */
+  u32 api_client_index;		/**< Binary API client index */
   ssvm_private_t *segment;	/**< First segment in segment manager */
+  u64 segment_handle;		/**< Handle for the segment */
   svm_msg_q_t *evt_q;		/**< Worker message queue */
   u8 is_add;			/**< Flag set if addition */
 } vnet_app_worker_add_del_args_t;
@@ -231,7 +232,7 @@ segment_manager_t *app_worker_get_listen_segment_manager (app_worker_t *,
 							  stream_session_t *);
 segment_manager_t *app_worker_get_connect_segment_manager (app_worker_t *);
 int app_worker_alloc_connects_segment_manager (app_worker_t * app);
-int app_worker_add_segment_notify (u32 app_or_wrk, ssvm_private_t * fs);
+int app_worker_add_segment_notify (u32 app_or_wrk, u64 segment_handle);
 u32 app_worker_n_listeners (app_worker_t * app);
 stream_session_t *app_worker_first_listener (app_worker_t * app,
 					     u8 fib_proto,
@@ -243,7 +244,7 @@ int app_worker_lock_and_send_event (app_worker_t * app, stream_session_t * s,
 clib_error_t *vnet_app_worker_add_del (vnet_app_worker_add_del_args_t * a);
 
 int application_start_listen (application_t * app,
-			      session_endpoint_extended_t * tep,
+			      session_endpoint_cfg_t * tep,
 			      session_handle_t * handle);
 int application_stop_listen (u32 app_index, u32 app_or_wrk,
 			     session_handle_t handle);
@@ -251,24 +252,22 @@ int application_stop_listen (u32 app_index, u32 app_or_wrk,
 application_t *application_alloc (void);
 int application_alloc_and_init (app_init_args_t * args);
 void application_free (application_t * app);
+void application_detach_process (application_t * app, u32 api_client_index);
 application_t *application_get (u32 index);
 application_t *application_get_if_valid (u32 index);
 application_t *application_lookup (u32 api_client_index);
 application_t *application_lookup_name (const u8 * name);
-u32 application_index (application_t * app);
 app_worker_t *application_get_worker (application_t * app, u32 wrk_index);
 app_worker_t *application_get_default_worker (application_t * app);
 app_worker_t *application_listener_select_worker (stream_session_t * ls,
 						  u8 is_local);
-
-int application_api_queue_is_full (application_t * app);
 
 int application_is_proxy (application_t * app);
 int application_is_builtin (application_t * app);
 int application_is_builtin_proxy (application_t * app);
 u32 application_session_table (application_t * app, u8 fib_proto);
 u32 application_local_session_table (application_t * app);
-u8 *application_name_from_index (u32 app_or_wrk);
+const u8 *application_name_from_index (u32 app_or_wrk);
 u8 application_has_local_scope (application_t * app);
 u8 application_has_global_scope (application_t * app);
 u8 application_use_mq_for_ctrl (application_t * app);
@@ -295,7 +294,7 @@ local_session_t *application_get_local_session_from_handle (session_handle_t
 local_session_t
   * application_get_local_listen_session_from_handle (session_handle_t lh);
 int application_start_local_listen (application_t * server,
-				    session_endpoint_extended_t * sep,
+				    session_endpoint_cfg_t * sep,
 				    session_handle_t * handle);
 int application_stop_local_listen (u32 app_index, u32 app_or_wrk,
 				   session_handle_t lh);

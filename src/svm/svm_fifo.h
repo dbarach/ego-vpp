@@ -39,6 +39,7 @@ format_function_t format_ooo_list;
 #define SVM_FIFO_TRACE 			(0)
 #define OOO_SEGMENT_INVALID_INDEX 	((u32)~0)
 #define SVM_FIFO_INVALID_SESSION_INDEX 	((u32)~0)
+#define SVM_FIFO_INVALID_INDEX		((u32)~0)
 
 typedef struct
 {
@@ -61,6 +62,7 @@ typedef struct _svm_fifo
   u8 master_thread_index;
   u8 client_thread_index;
   u32 segment_manager;
+  u32 segment_index;
   u32 ct_session_index;		/**< Local session index for vpp */
     CLIB_CACHE_LINE_ALIGN_MARK (end_shared);
   u32 head;
@@ -113,19 +115,19 @@ u8 *svm_fifo_replay (u8 * s, svm_fifo_t * f, u8 no_read, u8 verbose);
 static inline u32
 svm_fifo_max_dequeue (svm_fifo_t * f)
 {
-  return f->cursize;
+  return clib_atomic_load_acq_n (&f->cursize);
 }
 
 static inline int
 svm_fifo_is_full (svm_fifo_t * f)
 {
-  return (f->cursize == f->nitems);
+  return (clib_atomic_load_acq_n (&f->cursize) == f->nitems);
 }
 
 static inline int
 svm_fifo_is_empty (svm_fifo_t * f)
 {
-  return (f->cursize == 0);
+  return (clib_atomic_load_acq_n (&f->cursize) == 0);
 }
 
 static inline u32

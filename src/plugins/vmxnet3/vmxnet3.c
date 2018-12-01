@@ -139,21 +139,18 @@ vmxnet3_write_mac (vmxnet3_device_t * vd)
 static clib_error_t *
 vmxnet3_provision_driver_shared (vlib_main_t * vm, vmxnet3_device_t * vd)
 {
-  vmxnet3_main_t *vmxm = &vmxnet3_main;
   vmxnet3_shared *shared;
   vmxnet3_queues *q;
   u64 shared_dma;
-  clib_error_t *error;
   u16 qid = 0, rid;
   vmxnet3_rxq_t *rxq = vec_elt_at_index (vd->rxqs, qid);
   vmxnet3_txq_t *txq = vec_elt_at_index (vd->txqs, qid);
 
-  vd->dma = vlib_physmem_alloc_aligned (vm, vmxm->physmem_region, &error,
-					sizeof (*vd->dma), 512);
-  if (error)
-    return error;
+  vd->dma = vlib_physmem_alloc_aligned (vm, sizeof (*vd->dma), 512);
+  if (vd->dma == 0)
+    return vlib_physmem_last_error (vm);
 
-  memset (vd->dma, 0, sizeof (*vd->dma));
+  clib_memset (vd->dma, 0, sizeof (*vd->dma));
 
   q = &vd->dma->queues;
   q->tx.cfg.desc_address = vmxnet3_dma_addr (vm, vd, txq->tx_desc);
@@ -188,7 +185,7 @@ vmxnet3_provision_driver_shared (vlib_main_t * vm, vmxnet3_device_t * vd)
   shared->interrupt.event_intr_index = 1;
   shared->interrupt.control = VMXNET3_IC_DISABLE_ALL;
   shared->rx_filter.mode = VMXNET3_RXMODE_UCAST | VMXNET3_RXMODE_BCAST |
-    VMXNET3_RXMODE_ALL_MULTI;
+    VMXNET3_RXMODE_ALL_MULTI | VMXNET3_RXMODE_PROMISC;
   shared_dma = vmxnet3_dma_addr (vm, vd, shared);
 
   vmxnet3_reg_write (vd, 1, VMXNET3_REG_DSAL, shared_dma);
@@ -222,31 +219,29 @@ vmxnet3_disable_interrupt (vmxnet3_device_t * vd)
 static clib_error_t *
 vmxnet3_rxq_init (vlib_main_t * vm, vmxnet3_device_t * vd, u16 qid, u16 qsz)
 {
-  vmxnet3_main_t *vmxm = &vmxnet3_main;
   vmxnet3_rxq_t *rxq;
-  clib_error_t *error;
   u16 rid;
 
   vec_validate_aligned (vd->rxqs, qid, CLIB_CACHE_LINE_BYTES);
   rxq = vec_elt_at_index (vd->rxqs, qid);
-  memset (rxq, 0, sizeof (*rxq));
+  clib_memset (rxq, 0, sizeof (*rxq));
   rxq->size = qsz;
   for (rid = 0; rid < VMXNET3_RX_RING_SIZE; rid++)
     {
-      rxq->rx_desc[rid] =
-	vlib_physmem_alloc_aligned (vm, vmxm->physmem_region,
-				    &error, qsz * sizeof (*rxq->rx_desc[rid]),
-				    512);
-      if (error)
-	return error;
-      memset (rxq->rx_desc[rid], 0, qsz * sizeof (*rxq->rx_desc[rid]));
+      rxq->rx_desc[rid] = vlib_physmem_alloc_aligned
+	(vm, qsz * sizeof (*rxq->rx_desc[rid]), 512);
+
+      if (rxq->rx_desc[rid] == 0)
+	return vlib_physmem_last_error (vm);
+
+      clib_memset (rxq->rx_desc[rid], 0, qsz * sizeof (*rxq->rx_desc[rid]));
     }
-  rxq->rx_comp = vlib_physmem_alloc_aligned (vm, vmxm->physmem_region, &error,
-					     qsz * sizeof (*rxq->rx_comp),
+  rxq->rx_comp = vlib_physmem_alloc_aligned (vm, qsz * sizeof (*rxq->rx_comp),
 					     512);
-  if (error)
-    return error;
-  memset (rxq->rx_comp, 0, qsz * sizeof (*rxq->rx_comp));
+  if (rxq->rx_comp == 0)
+    return vlib_physmem_last_error (vm);
+
+  clib_memset (rxq->rx_comp, 0, qsz * sizeof (*rxq->rx_comp));
   for (rid = 0; rid < VMXNET3_RX_RING_SIZE; rid++)
     {
       vmxnet3_rx_ring *ring;
@@ -264,9 +259,7 @@ vmxnet3_rxq_init (vlib_main_t * vm, vmxnet3_device_t * vd, u16 qid, u16 qsz)
 static clib_error_t *
 vmxnet3_txq_init (vlib_main_t * vm, vmxnet3_device_t * vd, u16 qid, u16 qsz)
 {
-  vmxnet3_main_t *vmxm = &vmxnet3_main;
   vmxnet3_txq_t *txq;
-  clib_error_t *error;
 
   if (qid >= vd->num_tx_queues)
     {
@@ -280,20 +273,20 @@ vmxnet3_txq_init (vlib_main_t * vm, vmxnet3_device_t * vd, u16 qid, u16 qsz)
 
   vec_validate_aligned (vd->txqs, qid, CLIB_CACHE_LINE_BYTES);
   txq = vec_elt_at_index (vd->txqs, qid);
-  memset (txq, 0, sizeof (*txq));
+  clib_memset (txq, 0, sizeof (*txq));
   txq->size = qsz;
-  txq->tx_desc = vlib_physmem_alloc_aligned (vm, vmxm->physmem_region, &error,
-					     qsz * sizeof (*txq->tx_desc),
+  txq->tx_desc = vlib_physmem_alloc_aligned (vm, qsz * sizeof (*txq->tx_desc),
 					     512);
-  if (error)
-    return error;
+  if (txq->tx_desc == 0)
+    return vlib_physmem_last_error (vm);
+
   memset (txq->tx_desc, 0, qsz * sizeof (*txq->tx_desc));
-  txq->tx_comp = vlib_physmem_alloc_aligned (vm, vmxm->physmem_region, &error,
-					     qsz * sizeof (*txq->tx_comp),
+  txq->tx_comp = vlib_physmem_alloc_aligned (vm, qsz * sizeof (*txq->tx_comp),
 					     512);
-  if (error)
-    return error;
-  memset (txq->tx_comp, 0, qsz * sizeof (*txq->tx_comp));
+  if (txq->tx_comp == 0)
+    return vlib_physmem_last_error (vm);
+
+  clib_memset (txq->tx_comp, 0, qsz * sizeof (*txq->tx_comp));
   vec_validate_aligned (txq->tx_ring.bufs, txq->size, CLIB_CACHE_LINE_BYTES);
   txq->tx_ring.gen = VMXNET3_TXF_GEN;
   txq->tx_comp_ring.gen = VMXNET3_TXCF_GEN;
@@ -307,7 +300,6 @@ vmxnet3_device_init (vlib_main_t * vm, vmxnet3_device_t * vd,
 {
   clib_error_t *error = 0;
   u32 ret, i;
-  vmxnet3_main_t *vmxm = &vmxnet3_main;
   vlib_thread_main_t *tm = vlib_get_thread_main ();
 
   vd->num_tx_queues = 1;
@@ -319,7 +311,7 @@ vmxnet3_device_init (vlib_main_t * vm, vmxnet3_device_t * vd,
   ret = vmxnet3_reg_read (vd, 1, VMXNET3_REG_CMD);
   if (ret != 0)
     {
-      error = clib_error_return (0, "error on quisecing device rc (%u)", ret);
+      error = clib_error_return (0, "error on quiescing device rc (%u)", ret);
       return error;
     }
 
@@ -372,17 +364,6 @@ vmxnet3_device_init (vlib_main_t * vm, vmxnet3_device_t * vd,
   ret = vmxnet3_reg_read (vd, 1, VMXNET3_REG_MACH);
   clib_memcpy (vd->mac_addr + 4, &ret, 2);
 
-  if (vmxm->physmem_region_alloc == 0)
-    {
-      u32 flags = VLIB_PHYSMEM_F_INIT_MHEAP | VLIB_PHYSMEM_F_HUGETLB;
-      error =
-	vlib_physmem_region_alloc (vm, "vmxnet3 descriptors", 4 << 20, 0,
-				   flags, &vmxm->physmem_region);
-      if (error)
-	return error;
-      vmxm->physmem_region_alloc = 1;
-    }
-
   error = vmxnet3_rxq_init (vm, vd, 0, args->rxq_size);
   if (error)
     return error;
@@ -428,11 +409,11 @@ vmxnet3_device_init (vlib_main_t * vm, vmxnet3_device_t * vd,
 }
 
 static void
-vmxnet3_irq_0_handler (vlib_pci_dev_handle_t h, u16 line)
+vmxnet3_irq_0_handler (vlib_main_t * vm, vlib_pci_dev_handle_t h, u16 line)
 {
   vnet_main_t *vnm = vnet_get_main ();
   vmxnet3_main_t *vmxm = &vmxnet3_main;
-  uword pd = vlib_pci_get_private_data (h);
+  uword pd = vlib_pci_get_private_data (vm, h);
   vmxnet3_device_t *vd = pool_elt_at_index (vmxm->devices, pd);
   u16 qid = line;
 
@@ -441,11 +422,11 @@ vmxnet3_irq_0_handler (vlib_pci_dev_handle_t h, u16 line)
 }
 
 static void
-vmxnet3_irq_1_handler (vlib_pci_dev_handle_t h, u16 line)
+vmxnet3_irq_1_handler (vlib_main_t * vm, vlib_pci_dev_handle_t h, u16 line)
 {
   vnet_main_t *vnm = vnet_get_main ();
   vmxnet3_main_t *vmxm = &vmxnet3_main;
-  uword pd = vlib_pci_get_private_data (h);
+  uword pd = vlib_pci_get_private_data (vm, h);
   vmxnet3_device_t *vd = pool_elt_at_index (vmxm->devices, pd);
   u32 ret;
 
@@ -497,6 +478,9 @@ vmxnet3_create_if (vlib_main_t * vm, vmxnet3_create_if_args_t * args)
 	clib_error_return (error,
 			   "queue size must be <= 4096, >= 64, "
 			   "and multiples of 64");
+      vlib_log (VLIB_LOG_LEVEL_ERR, vmxm->log_default, "%U: %s",
+		format_vlib_pci_addr, &args->addr,
+		"queue size must be <= 4096, >= 64, and multiples of 64");
       return;
     }
 
@@ -507,6 +491,8 @@ vmxnet3_create_if (vlib_main_t * vm, vmxnet3_create_if_args_t * args)
 	args->rv = VNET_API_ERROR_INVALID_VALUE;
 	args->error =
 	  clib_error_return (error, "PCI address in use");
+	vlib_log (VLIB_LOG_LEVEL_ERR, vmxm->log_default, "%U: %s",
+		  format_vlib_pci_addr, &args->addr, "pci address in use");
 	return;
       }
   }));
@@ -521,44 +507,77 @@ vmxnet3_create_if (vlib_main_t * vm, vmxnet3_create_if_args_t * args)
     vd->flags |= VMXNET3_DEVICE_F_ELOG;
 
   if ((error =
-       vlib_pci_device_open (&args->addr, vmxnet3_pci_device_ids, &h)))
+       vlib_pci_device_open (vm, &args->addr, vmxnet3_pci_device_ids, &h)))
     {
       pool_put (vmxm->devices, vd);
       args->rv = VNET_API_ERROR_INVALID_INTERFACE;
       args->error =
 	clib_error_return (error, "pci-addr %U", format_vlib_pci_addr,
 			   &args->addr);
+      vlib_log (VLIB_LOG_LEVEL_ERR, vmxm->log_default, "%U: %s",
+		format_vlib_pci_addr, &args->addr,
+		"error encountered on pci device open");
       return;
     }
+
+  /*
+   * Do not use vmxnet3_log_error prior to this line since the macro
+   * references vd->pci_dev_handle
+   */
   vd->pci_dev_handle = h;
+  vlib_pci_set_private_data (vm, h, vd->dev_instance);
 
-  vlib_pci_set_private_data (h, vd->dev_instance);
+  if ((error = vlib_pci_bus_master_enable (vm, h)))
+    {
+      vmxnet3_log_error (vd, "error encountered on pci bus master enable");
+      goto error;
+    }
 
-  if ((error = vlib_pci_bus_master_enable (h)))
-    goto error;
+  if ((error = vlib_pci_map_region (vm, h, 0, (void **) &vd->bar[0])))
+    {
+      vmxnet3_log_error (vd, "error encountered on pci map region for bar 0");
+      goto error;
+    }
 
-  if ((error = vlib_pci_map_region (h, 0, (void **) &vd->bar[0])))
-    goto error;
+  if ((error = vlib_pci_map_region (vm, h, 1, (void **) &vd->bar[1])))
+    {
+      vmxnet3_log_error (vd, "error encountered on pci map region for bar 1");
+      goto error;
+    }
 
-  if ((error = vlib_pci_map_region (h, 1, (void **) &vd->bar[1])))
-    goto error;
-
-  if ((error = vlib_pci_register_msix_handler (h, 0, 1,
+  if ((error = vlib_pci_register_msix_handler (vm, h, 0, 1,
 					       &vmxnet3_irq_0_handler)))
-    goto error;
+    {
+      vmxnet3_log_error (vd,
+			 "error encountered on pci register msix handler 0");
+      goto error;
+    }
 
-  if ((error = vlib_pci_register_msix_handler (h, 1, 1,
+  if ((error = vlib_pci_register_msix_handler (vm, h, 1, 1,
 					       &vmxnet3_irq_1_handler)))
-    goto error;
+    {
+      vmxnet3_log_error (vd,
+			 "error encountered on pci register msix handler 1");
+      goto error;
+    }
 
-  if ((error = vlib_pci_enable_msix_irq (h, 0, 2)))
-    goto error;
+  if ((error = vlib_pci_enable_msix_irq (vm, h, 0, 2)))
+    {
+      vmxnet3_log_error (vd, "error encountered on pci enable msix irq");
+      goto error;
+    }
 
-  if ((error = vlib_pci_intr_enable (h)))
-    goto error;
+  if ((error = vlib_pci_intr_enable (vm, h)))
+    {
+      vmxnet3_log_error (vd, "error encountered on pci interrupt enable");
+      goto error;
+    }
 
   if ((error = vmxnet3_device_init (vm, vd, args)))
-    goto error;
+    {
+      vmxnet3_log_error (vd, "error encountered on device init");
+      goto error;
+    }
 
   /* create interface */
   error = ethernet_register_interface (vnm, vmxnet3_device_class.index,
@@ -566,7 +585,11 @@ vmxnet3_create_if (vlib_main_t * vm, vmxnet3_create_if_args_t * args)
 				       &vd->hw_if_index, vmxnet3_flag_change);
 
   if (error)
-    goto error;
+    {
+      vmxnet3_log_error (vd,
+			 "error encountered on ethernet register interface");
+      goto error;
+    }
 
   vnet_sw_interface_t *sw = vnet_get_hw_sw_interface (vnm, vd->hw_if_index);
   vd->sw_if_index = sw->sw_if_index;
@@ -611,7 +634,7 @@ vmxnet3_delete_if (vlib_main_t * vm, vmxnet3_device_t * vd)
       ethernet_delete_interface (vnm, vd->hw_if_index);
     }
 
-  vlib_pci_device_close (vd->pci_dev_handle);
+  vlib_pci_device_close (vm, vd->pci_dev_handle);
 
   /* *INDENT-OFF* */
   vec_foreach_index (i, vd->rxqs)
@@ -629,9 +652,9 @@ vmxnet3_delete_if (vlib_main_t * vm, vmxnet3_device_t * vd)
 	  vlib_buffer_free_from_ring (vm, ring->bufs, desc_idx, rxq->size,
 				      ring->fill);
 	  vec_free (ring->bufs);
-	  vlib_physmem_free (vm, vmxm->physmem_region, rxq->rx_desc[rid]);
+	  vlib_physmem_free (vm, rxq->rx_desc[rid]);
 	}
-      vlib_physmem_free (vm, vmxm->physmem_region, rxq->rx_comp);
+      vlib_physmem_free (vm, rxq->rx_comp);
     }
   /* *INDENT-ON* */
   vec_free (vd->rxqs);
@@ -654,16 +677,16 @@ vmxnet3_delete_if (vlib_main_t * vm, vmxnet3_device_t * vd)
 	}
       clib_spinlock_free (&txq->lock);
       vec_free (txq->tx_ring.bufs);
-      vlib_physmem_free (vm, vmxm->physmem_region, txq->tx_desc);
-      vlib_physmem_free (vm, vmxm->physmem_region, txq->tx_comp);
+      vlib_physmem_free (vm, txq->tx_desc);
+      vlib_physmem_free (vm, txq->tx_comp);
     }
   /* *INDENT-ON* */
   vec_free (vd->txqs);
 
-  vlib_physmem_free (vm, vmxm->physmem_region, vd->dma);
+  vlib_physmem_free (vm, vd->dma);
 
   clib_error_free (vd->error);
-  memset (vd, 0, sizeof (*vd));
+  clib_memset (vd, 0, sizeof (*vd));
   pool_put (vmxm->devices, vd);
 }
 

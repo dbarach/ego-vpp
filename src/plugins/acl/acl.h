@@ -142,7 +142,7 @@ typedef struct {
   hash_acl_info_t *hash_acl_infos; /* corresponding hash matching housekeeping info */
   clib_bihash_48_8_t acl_lookup_hash; /* ACL lookup hash table. */
   u32 hash_lookup_hash_buckets;
-  u32 hash_lookup_hash_memory;
+  uword hash_lookup_hash_memory;
 
   /* mheap to hold all the miscellaneous allocations related to hash-based lookups */
   void *hash_lookup_mheap;
@@ -250,19 +250,6 @@ typedef struct {
   u64 fa_session_total_dels;
   /* how many sessions went into purgatory */
   u64 fa_session_total_deactivations;
-
-  /* L2 datapath glue */
-
-  /* next indices within L2 classifiers for ip4/ip6 fa L2 nodes */
-  u32 l2_input_classify_next_acl_ip4;
-  u32 l2_input_classify_next_acl_ip6;
-  u32 l2_output_classify_next_acl_ip4;
-  u32 l2_output_classify_next_acl_ip6;
-  /* next node indices for L2 dispatch */
-  u32 fa_acl_in_ip4_l2_node_feat_next_node_index[32];
-  u32 fa_acl_in_ip6_l2_node_feat_next_node_index[32];
-  u32 fa_acl_out_ip4_l2_node_feat_next_node_index[32];
-  u32 fa_acl_out_ip6_l2_node_feat_next_node_index[32];
 
   /* EH values that we can skip over */
   uword *fa_ipv6_known_eh_bitmap;

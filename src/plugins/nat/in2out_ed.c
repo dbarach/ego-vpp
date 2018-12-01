@@ -28,6 +28,7 @@
 #include <nat/nat_ipfix_logging.h>
 #include <nat/nat_reass.h>
 #include <nat/nat_inlines.h>
+#include <nat/nat_syslog.h>
 
 #define foreach_nat_in2out_ed_error                       \
 _(UNSUPPORTED_PROTOCOL, "Unsupported protocol")         \
@@ -37,7 +38,8 @@ _(BAD_ICMP_TYPE, "unsupported ICMP type")               \
 _(MAX_SESSIONS_EXCEEDED, "Maximum sessions exceeded")   \
 _(DROP_FRAGMENT, "Drop fragment")                       \
 _(MAX_REASS, "Maximum reassemblies exceeded")           \
-_(MAX_FRAG, "Maximum fragments per reassembly exceeded")
+_(MAX_FRAG, "Maximum fragments per reassembly exceeded")\
+_(NON_SYN, "non-SYN packet try to create session")
 
 typedef enum
 {
@@ -196,6 +198,13 @@ nat44_i2o_ed_is_idle_session_cb (clib_bihash_kv_16_8_t * kv, void *arg)
 					   s->out2in.port,
 					   s->in2out.fib_index);
 
+      nat_syslog_nat44_sdel (s->user_index, s->in2out.fib_index,
+			     &s->in2out.addr, s->in2out.port,
+			     &s->ext_host_nat_addr, s->ext_host_nat_port,
+			     &s->out2in.addr, s->out2in.port,
+			     &s->ext_host_addr, s->ext_host_port,
+			     s->in2out.protocol, is_twice_nat_session (s));
+
       if (is_twice_nat_session (s))
 	{
 	  for (i = 0; i < vec_len (sm->twice_nat_addresses); i++)
@@ -254,7 +263,8 @@ slow_path_ed (snat_main_t * sm,
 	      u32 rx_fib_index,
 	      clib_bihash_kv_16_8_t * kv,
 	      snat_session_t ** sessionp,
-	      vlib_node_runtime_t * node, u32 next, u32 thread_index, f64 now)
+	      vlib_node_runtime_t * node, u32 next, u32 thread_index, f64 now,
+	      tcp_header_t * tcp)
 {
   snat_session_t *s = 0;
   snat_user_t *u;
@@ -312,6 +322,15 @@ slow_path_ed (snat_main_t * sm,
 	}
 
       is_sm = 1;
+    }
+
+  if (proto == SNAT_PROTOCOL_TCP)
+    {
+      if (!tcp_is_init (tcp))
+	{
+	  b->error = node->errors[NAT_IN2OUT_ED_ERROR_NON_SYN];
+	  return NAT_IN2OUT_ED_NEXT_DROP;
+	}
     }
 
   u = nat_user_get_or_create (sm, &key->l_addr, rx_fib_index, thread_index);
@@ -398,6 +417,14 @@ slow_path_ed (snat_main_t * sm,
 				       s->in2out.protocol,
 				       s->in2out.port,
 				       s->out2in.port, s->in2out.fib_index);
+
+  nat_syslog_nat44_sadd (s->user_index, s->in2out.fib_index,
+			 &s->in2out.addr, s->in2out.port,
+			 &s->ext_host_nat_addr, s->ext_host_nat_port,
+			 &s->out2in.addr, s->out2in.port,
+			 &s->ext_host_addr, s->ext_host_port,
+			 s->in2out.protocol, 0);
+
   return next;
 }
 
@@ -513,7 +540,19 @@ nat44_ed_not_translate_output_feature (snat_main_t * sm, ip4_header_t * ip,
   make_ed_kv (&kv, &ip->src_address, &ip->dst_address, proto, tx_fib_index,
 	      src_port, dst_port);
   if (!clib_bihash_search_16_8 (&tsm->out2in_ed, &kv, &value))
-    return 1;
+    {
+      s = pool_elt_at_index (tsm->sessions, value.value);
+      if (nat44_is_ses_closed (s))
+	{
+	  nat_log_debug ("TCP close connection %U", format_snat_session,
+			 &sm->per_thread_data[thread_index], s);
+	  nat_free_session_data (sm, s, thread_index);
+	  nat44_delete_session (sm, s, thread_index);
+	}
+      else
+	s->flags |= SNAT_SESSION_FLAG_OUTPUT_FEATURE;
+      return 1;
+    }
 
   /* dst NAT check */
   make_ed_kv (&kv, &ip->dst_address, &ip->src_address, proto, rx_fib_index,
@@ -613,7 +652,7 @@ icmp_match_in2out_ed (snat_main_t * sm, vlib_node_runtime_t * node,
 	}
 
       next = slow_path_ed (sm, b, rx_fib_index, &kv, &s, node, next,
-			   thread_index, vlib_time_now (sm->vlib_main));
+			   thread_index, vlib_time_now (sm->vlib_main), 0);
 
       if (PREDICT_FALSE (next == NAT_IN2OUT_ED_NEXT_DROP))
 	goto out;
@@ -1023,7 +1062,7 @@ nat44_ed_in2out_node_fn_inline (vlib_main_t * vm,
 
 		  next0 =
 		    slow_path_ed (sm, b0, rx_fib_index0, &kv0, &s0, node,
-				  next0, thread_index, now);
+				  next0, thread_index, now, tcp0);
 
 		  if (PREDICT_FALSE (next0 == NAT_IN2OUT_ED_NEXT_DROP))
 		    goto trace00;
@@ -1227,7 +1266,7 @@ nat44_ed_in2out_node_fn_inline (vlib_main_t * vm,
 
 		  next1 =
 		    slow_path_ed (sm, b1, rx_fib_index1, &kv1, &s1, node,
-				  next1, thread_index, now);
+				  next1, thread_index, now, tcp1);
 
 		  if (PREDICT_FALSE (next1 == NAT_IN2OUT_ED_NEXT_DROP))
 		    goto trace01;
@@ -1460,7 +1499,7 @@ nat44_ed_in2out_node_fn_inline (vlib_main_t * vm,
 
 		  next0 =
 		    slow_path_ed (sm, b0, rx_fib_index0, &kv0, &s0, node,
-				  next0, thread_index, now);
+				  next0, thread_index, now, tcp0);
 
 		  if (PREDICT_FALSE (next0 == NAT_IN2OUT_ED_NEXT_DROP))
 		    goto trace0;
@@ -1859,7 +1898,8 @@ nat44_ed_in2out_reass_node_fn_inline (vlib_main_t * vm,
 		    }
 
 		  next0 = slow_path_ed (sm, b0, rx_fib_index0, &kv0,
-					&s0, node, next0, thread_index, now);
+					&s0, node, next0, thread_index, now,
+					tcp0);
 
 		  if (PREDICT_FALSE (next0 == NAT_IN2OUT_ED_NEXT_DROP))
 		    goto trace0;
@@ -2002,17 +2042,16 @@ nat44_ed_in2out_reass_node_fn_inline (vlib_main_t * vm,
 	      u32 len = vec_len (fragments_to_loopback);
 	      if (len <= VLIB_FRAME_SIZE)
 		{
-		  clib_memcpy (from, fragments_to_loopback,
-			       sizeof (u32) * len);
+		  clib_memcpy_fast (from, fragments_to_loopback,
+				    sizeof (u32) * len);
 		  n_left_from = len;
 		  vec_reset_length (fragments_to_loopback);
 		}
 	      else
 		{
-		  clib_memcpy (from,
-			       fragments_to_loopback + (len -
-							VLIB_FRAME_SIZE),
-			       sizeof (u32) * VLIB_FRAME_SIZE);
+		  clib_memcpy_fast (from, fragments_to_loopback +
+				    (len - VLIB_FRAME_SIZE),
+				    sizeof (u32) * VLIB_FRAME_SIZE);
 		  n_left_from = VLIB_FRAME_SIZE;
 		  _vec_len (fragments_to_loopback) = len - VLIB_FRAME_SIZE;
 		}

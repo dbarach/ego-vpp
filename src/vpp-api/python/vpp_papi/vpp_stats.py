@@ -2,6 +2,7 @@
 
 from __future__ import print_function
 from cffi import FFI
+import time
 
 ffi = FFI()
 ffi.cdef("""
@@ -44,12 +45,37 @@ typedef struct
   };
 } stat_segment_data_t;
 
+typedef struct
+{
+  uint64_t epoch;
+  uint64_t in_progress;
+  uint64_t directory_offset;
+  uint64_t error_offset;
+  uint64_t stats_offset;
+} stat_segment_shared_header_t;
+
+typedef struct
+{
+  uint64_t current_epoch;
+  stat_segment_shared_header_t *shared_header;
+  stat_segment_directory_entry_t *directory_vector;
+  ssize_t memory_size;
+} stat_client_main_t;
+
+stat_client_main_t * stat_client_get(void);
+void stat_client_free(stat_client_main_t * sm);
+int stat_segment_connect_r (char *socket_name, stat_client_main_t * sm);
 int stat_segment_connect (char *socket_name);
+void stat_segment_disconnect_r (stat_client_main_t * sm);
 void stat_segment_disconnect (void);
 
+uint32_t *stat_segment_ls_r (uint8_t ** patterns, stat_client_main_t * sm);
 uint32_t *stat_segment_ls (uint8_t ** pattern);
+stat_segment_data_t *stat_segment_dump_r (uint32_t * stats, stat_client_main_t * sm);
 stat_segment_data_t *stat_segment_dump (uint32_t * counter_vec);
 void stat_segment_data_free (stat_segment_data_t * res);
+
+double stat_segment_heartbeat_r (stat_client_main_t * sm);
 double stat_segment_heartbeat (void);
 int stat_segment_vec_len(void *vec);
 uint8_t **stat_segment_string_vector(uint8_t **string_vector, char *string);
@@ -62,7 +88,8 @@ def make_string_vector(api, strings):
     if type(strings) is not list:
         strings = [strings]
     for s in strings:
-        vec = api.stat_segment_string_vector(vec, ffi.new("char []", s.encode()))
+        vec = api.stat_segment_string_vector(vec, ffi.new("char []",
+                                                          s.encode()))
     return vec
 
 
@@ -111,30 +138,57 @@ def stat_entry_to_python(api, e):
     return None
 
 
-class VPPStats:
-    def __init__(self, socketname='/var/run/stats.sock'):
-        self.api = ffi.dlopen('libvppapiclient.so')
-        rv = self.api.stat_segment_connect(socketname.encode())
+class VPPStatsIOError(IOError):
+    pass
+
+
+class VPPStatsClientLoadError(RuntimeError):
+    pass
+
+
+class VPPStats(object):
+    VPPStatsIOError = VPPStatsIOError
+
+    default_socketname = '/var/run/stats.sock'
+    sharedlib_name = 'libvppapiclient.so'
+
+    def __init__(self, socketname=default_socketname, timeout=10):
+        try:
+            self.api = ffi.dlopen(VPPStats.sharedlib_name)
+        except Exception:
+            raise VPPStatsClientLoadError("Could not open: %s" %
+                                          VPPStats.sharedlib_name)
+        self.client = self.api.stat_client_get()
+
+        poll_end_time = time.time() + timeout
+        while time.time() < poll_end_time:
+            rv = self.api.stat_segment_connect_r(socketname.encode(),
+                                                 self.client)
+            if rv == 0:
+                break
+
         if rv != 0:
-            raise IOError()
+            raise VPPStatsIOError()
 
     def heartbeat(self):
-        return self.api.stat_segment_heartbeat()
+        return self.api.stat_segment_heartbeat_r(self.client)
 
     def ls(self, patterns):
-        return self.api.stat_segment_ls(make_string_vector(self.api, patterns))
+        return self.api.stat_segment_ls_r(make_string_vector(self.api,
+                                                             patterns),
+                                          self.client)
 
     def dump(self, counters):
         stats = {}
-        rv = self.api.stat_segment_dump(counters)
+        rv = self.api.stat_segment_dump_r(counters, self.client)
         # Raise exception and retry
         if rv == ffi.NULL:
-            raise IOError()
+            raise VPPStatsIOError()
         rv_len = self.api.stat_segment_vec_len(rv)
         for i in range(rv_len):
             n = ffi.string(rv[i].name).decode()
             e = stat_entry_to_python(self.api, rv[i])
-            if e != None:
+            if e is not None:
                 stats[n] = e
         return stats
 
@@ -144,14 +198,14 @@ class VPPStats:
             try:
                 dir = self.ls(name)
                 return self.dump(dir).values()[0]
-            except:
+            except VPPStatsIOError as e:
                 if retries > 10:
                     return None
                 retries += 1
-                pass
 
     def disconnect(self):
-        self.api.stat_segment_disconnect()
+        self.api.stat_segment_disconnect_r(self.client)
+        self.api.stat_client_free(self.client)
 
     def set_errors(self):
         '''Return all errors counters > 0'''
@@ -161,11 +215,11 @@ class VPPStats:
                 error_names = self.ls(['/err/'])
                 error_counters = self.dump(error_names)
                 break
-            except:
+            except VPPStatsIOError as e:
                 if retries > 10:
                     return None
                 retries += 1
-                pass
+
         return {k: error_counters[k]
                 for k in error_counters.keys() if error_counters[k]}
 

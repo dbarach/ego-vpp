@@ -155,7 +155,7 @@ vhost_user_tx_trace (vhost_trace_t * t,
   vring_desc_t *hdr_desc = 0;
   u32 hint = 0;
 
-  memset (t, 0, sizeof (*t));
+  clib_memset (t, 0, sizeof (*t));
   t->device_index = vui - vum->vhost_user_interfaces;
   t->qid = qid;
 
@@ -205,8 +205,8 @@ vhost_user_tx_copy (vhost_user_intf_t * vui, vhost_copy_t * cpy,
 	  CLIB_PREFETCH ((void *) cpy[2].src, 64, LOAD);
 	  CLIB_PREFETCH ((void *) cpy[3].src, 64, LOAD);
 
-	  clib_memcpy (dst0, (void *) cpy[0].src, cpy[0].len);
-	  clib_memcpy (dst1, (void *) cpy[1].src, cpy[1].len);
+	  clib_memcpy_fast (dst0, (void *) cpy[0].src, cpy[0].len);
+	  clib_memcpy_fast (dst1, (void *) cpy[1].src, cpy[1].len);
 
 	  vhost_user_log_dirty_pages_2 (vui, cpy[0].dst, cpy[0].len, 1);
 	  vhost_user_log_dirty_pages_2 (vui, cpy[1].dst, cpy[1].len, 1);
@@ -218,7 +218,7 @@ vhost_user_tx_copy (vhost_user_intf_t * vui, vhost_copy_t * cpy,
     {
       if (PREDICT_FALSE (!(dst0 = map_guest_mem (vui, cpy->dst, map_hint))))
 	return 1;
-      clib_memcpy (dst0, (void *) cpy->src, cpy->len);
+      clib_memcpy_fast (dst0, (void *) cpy->src, cpy->len);
       vhost_user_log_dirty_pages_2 (vui, cpy->dst, cpy->len, 1);
       copy_len -= 1;
       cpy += 1;
@@ -230,7 +230,7 @@ VNET_DEVICE_CLASS_TX_FN (vhost_user_device_class) (vlib_main_t * vm,
 						   vlib_node_runtime_t *
 						   node, vlib_frame_t * frame)
 {
-  u32 *buffers = vlib_frame_args (frame);
+  u32 *buffers = vlib_frame_vector_args (frame);
   u32 n_left = frame->n_vectors;
   vhost_user_main_t *vum = &vhost_user_main;
   vnet_interface_output_runtime_t *rd = (void *) node->runtime_data;
@@ -240,6 +240,7 @@ VNET_DEVICE_CLASS_TX_FN (vhost_user_device_class) (vlib_main_t * vm,
   vhost_user_vring_t *rxvq;
   u8 error;
   u32 thread_index = vm->thread_index;
+  vhost_cpu_t *cpu = &vum->cpus[thread_index];
   u32 map_hint = 0;
   u8 retry = 8;
   u16 copy_len;
@@ -257,10 +258,15 @@ VNET_DEVICE_CLASS_TX_FN (vhost_user_device_class) (vlib_main_t * vm,
       goto done3;
     }
 
-  qid =
-    VHOST_VRING_IDX_RX (*vec_elt_at_index
-			(vui->per_cpu_tx_qid, thread_index));
+  qid = VHOST_VRING_IDX_RX (*vec_elt_at_index (vui->per_cpu_tx_qid,
+					       thread_index));
   rxvq = &vui->vrings[qid];
+  if (PREDICT_FALSE (rxvq->avail == 0))
+    {
+      error = VHOST_USER_TX_FUNC_ERROR_MMAP_FAIL;
+      goto done3;
+    }
+
   if (PREDICT_FALSE (vui->use_tx_spinlock))
     vhost_user_vring_lock (vui, qid);
 
@@ -284,11 +290,9 @@ retry:
 
       if (PREDICT_FALSE (b0->flags & VLIB_BUFFER_IS_TRACED))
 	{
-	  vum->cpus[thread_index].current_trace =
-	    vlib_add_trace (vm, node, b0,
-			    sizeof (*vum->cpus[thread_index].current_trace));
-	  vhost_user_tx_trace (vum->cpus[thread_index].current_trace,
-			       vui, qid / 2, b0, rxvq);
+	  cpu->current_trace = vlib_add_trace (vm, node, b0,
+					       sizeof (*cpu->current_trace));
+	  vhost_user_tx_trace (cpu->current_trace, vui, qid / 2, b0, rxvq);
 	}
 
       if (PREDICT_FALSE (rxvq->last_avail_idx == rxvq->avail->idx))
@@ -328,15 +332,14 @@ retry:
 
       {
 	// Get a header from the header array
-	virtio_net_hdr_mrg_rxbuf_t *hdr =
-	  &vum->cpus[thread_index].tx_headers[tx_headers_len];
+	virtio_net_hdr_mrg_rxbuf_t *hdr = &cpu->tx_headers[tx_headers_len];
 	tx_headers_len++;
 	hdr->hdr.flags = 0;
 	hdr->hdr.gso_type = 0;
 	hdr->num_buffers = 1;	//This is local, no need to check
 
 	// Prepare a copy order executed later for the header
-	vhost_copy_t *cpy = &vum->cpus[thread_index].copy[copy_len];
+	vhost_copy_t *cpy = &cpu->copy[copy_len];
 	copy_len++;
 	cpy->len = vui->virtio_net_hdr_sz;
 	cpy->dst = buffer_map_addr;
@@ -361,7 +364,7 @@ retry:
 	      else if (vui->virtio_net_hdr_sz == 12)	//MRG is available
 		{
 		  virtio_net_hdr_mrg_rxbuf_t *hdr =
-		    &vum->cpus[thread_index].tx_headers[tx_headers_len - 1];
+		    &cpu->tx_headers[tx_headers_len - 1];
 
 		  //Move from available to used buffer
 		  rxvq->used->ring[rxvq->last_used_idx & rxvq->qsz_mask].id =
@@ -423,7 +426,7 @@ retry:
 	    }
 
 	  {
-	    vhost_copy_t *cpy = &vum->cpus[thread_index].copy[copy_len];
+	    vhost_copy_t *cpy = &cpu->copy[copy_len];
 	    copy_len++;
 	    cpy->len = bytes_left;
 	    cpy->len = (cpy->len > buffer_len) ? buffer_len : cpy->len;
@@ -466,21 +469,19 @@ retry:
 
       if (PREDICT_FALSE (b0->flags & VLIB_BUFFER_IS_TRACED))
 	{
-	  vum->cpus[thread_index].current_trace->hdr =
-	    vum->cpus[thread_index].tx_headers[tx_headers_len - 1];
+	  cpu->current_trace->hdr = cpu->tx_headers[tx_headers_len - 1];
 	}
 
       n_left--;			//At the end for error counting when 'goto done' is invoked
 
       /*
        * Do the copy periodically to prevent
-       * vum->cpus[thread_index].copy array overflow and corrupt memory
+       * cpu->copy array overflow and corrupt memory
        */
       if (PREDICT_FALSE (copy_len >= VHOST_USER_TX_COPY_THRESHOLD))
 	{
-	  if (PREDICT_FALSE
-	      (vhost_user_tx_copy (vui, vum->cpus[thread_index].copy,
-				   copy_len, &map_hint)))
+	  if (PREDICT_FALSE (vhost_user_tx_copy (vui, cpu->copy, copy_len,
+						 &map_hint)))
 	    {
 	      vlib_error_count (vm, node->node_index,
 				VHOST_USER_TX_FUNC_ERROR_MMAP_FAIL, 1);
@@ -497,9 +498,8 @@ retry:
 
 done:
   //Do the memory copies
-  if (PREDICT_FALSE
-      (vhost_user_tx_copy (vui, vum->cpus[thread_index].copy,
-			   copy_len, &map_hint)))
+  if (PREDICT_FALSE (vhost_user_tx_copy (vui, cpu->copy, copy_len,
+					 &map_hint)))
     {
       vlib_error_count (vm, node->node_index,
 			VHOST_USER_TX_FUNC_ERROR_MMAP_FAIL, 1);
@@ -549,7 +549,7 @@ done3:
 	 thread_index, vui->sw_if_index, n_left);
     }
 
-  vlib_buffer_free (vm, vlib_frame_args (frame), frame->n_vectors);
+  vlib_buffer_free (vm, vlib_frame_vector_args (frame), frame->n_vectors);
   return frame->n_vectors;
 }
 

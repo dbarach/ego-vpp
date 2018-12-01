@@ -68,8 +68,8 @@ class TestResult(dict):
 
     def was_successful(self):
         return 0 == len(self[FAIL]) == len(self[ERROR]) \
-               and len(self[PASS] + self[SKIP]) \
-               == self.testcase_suite.countTestCases() == len(self[TEST_RUN])
+            and len(self[PASS] + self[SKIP]) \
+            == self.testcase_suite.countTestCases() == len(self[TEST_RUN])
 
     def no_tests_run(self):
         return 0 == len(self[TEST_RUN])
@@ -120,12 +120,13 @@ def test_runner_wrapper(suite, keep_alive_pipe, stdouterr_queue,
                         finished_pipe, result_pipe, logger):
     sys.stdout = stdouterr_queue
     sys.stderr = stdouterr_queue
-    VppTestCase.logger = logger
+    VppTestCase.parallel_handler = logger.handlers[0]
     result = VppTestRunner(keep_alive_pipe=keep_alive_pipe,
                            descriptions=descriptions,
                            verbosity=verbose,
                            result_pipe=result_pipe,
-                           failfast=failfast).run(suite)
+                           failfast=failfast,
+                           print_summary=False).run(suite)
     finished_pipe.send(result.wasSuccessful())
     finished_pipe.close()
     keep_alive_pipe.close()
@@ -231,15 +232,12 @@ def handle_failed_suite(logger, last_test_temp_dir, vpp_pid):
     if last_test_temp_dir:
         # Need to create link in case of a timeout or core dump without failure
         lttd = os.path.basename(last_test_temp_dir)
-        failed_dir = os.getenv('VPP_TEST_FAILED_DIR')
+        failed_dir = os.getenv('FAILED_DIR')
         link_path = '%s%s-FAILED' % (failed_dir, lttd)
         if not os.path.exists(link_path):
-            logger.error("Creating a link to the failed test: %s -> %s" %
-                         (link_path, lttd))
             os.symlink(last_test_temp_dir, link_path)
-        else:
-            logger.error("Link to the failed test already exists: %s -> %s" %
-                         (link_path, lttd))
+        logger.error("Symlink to failed testcase directory: %s -> %s"
+                     % (link_path, lttd))
 
         # Report core existence
         core_path = get_core_path(last_test_temp_dir)
@@ -575,10 +573,7 @@ class AllResults(dict):
             retval = 1
 
         if retval != 0:
-            if concurrent_tests == 1:
-                self.rerun.append(result.suite_from_failed())
-            else:
-                self.rerun.append(result.testcase_suite)
+            self.rerun.append(result.testcase_suite)
 
         return retval
 
@@ -617,8 +612,8 @@ class AllResults(dict):
                             print('  Testcase name: {}'.format(
                                 colorize(new_testcase_name, RED)))
                             old_testcase_name = new_testcase_name
-                        print('    FAILURE: {}'.format(
-                            colorize(test_name, RED)))
+                        print('    FAILURE: {} [{}]'.format(
+                            colorize(test_name, RED), failed_test_id))
                     for failed_test_id in errored_testcase_ids:
                         new_testcase_name, test_name = \
                             result.get_testcase_names(failed_test_id)
@@ -626,8 +621,8 @@ class AllResults(dict):
                             print('  Testcase name: {}'.format(
                                 colorize(new_testcase_name, RED)))
                             old_testcase_name = new_testcase_name
-                        print('      ERROR: {}'.format(
-                            colorize(test_name, RED)))
+                        print('      ERROR: {} [{}]'.format(
+                            colorize(test_name, RED), failed_test_id))
         if len(self.testsuites_no_tests_run) > 0:
             print('TESTCASES WHERE NO TESTS WERE SUCCESSFULLY EXECUTED:')
             tc_classes = set()
@@ -755,10 +750,11 @@ if __name__ == '__main__':
 
     filter_cb = FilterByTestOption(filter_file, filter_class, filter_func)
 
+    ignore_path = os.getenv("VENV_PATH", None)
     cb = SplitToSuitesCallback(filter_cb)
     for d in args.dir:
         print("Adding tests from directory tree %s" % d)
-        discover_tests(d, cb)
+        discover_tests(d, cb, ignore_path)
 
     # suites are not hashable, need to use list
     suites = []
@@ -766,13 +762,6 @@ if __name__ == '__main__':
     for testcase_suite in cb.suites.values():
         tests_amount += testcase_suite.countTestCases()
         suites.append(testcase_suite)
-
-    if concurrent_tests == 1:
-        new_suite = unittest.TestSuite()
-        for suite in suites:
-            new_suite.addTests(suite)
-
-        suites = [new_suite]
 
     print("%s out of %s tests match specified filters" % (
         tests_amount, tests_amount + cb.filtered.countTestCases()))
@@ -786,8 +775,9 @@ if __name__ == '__main__':
 
     if run_interactive:
         # don't fork if requiring interactive terminal
-        result = VppTestRunner(verbosity=verbose, failfast=failfast)\
-            .run(suites[0])
+        result = VppTestRunner(verbosity=verbose,
+                               failfast=failfast,
+                               print_summary=True).run(suites[0])
         was_successful = result.wasSuccessful()
         if not was_successful:
             for test_case_info in result.failed_test_cases_info:

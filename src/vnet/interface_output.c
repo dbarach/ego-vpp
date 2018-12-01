@@ -99,7 +99,7 @@ vnet_interface_output_trace (vlib_main_t * vm,
   u32 n_left, *from;
 
   n_left = n_buffers;
-  from = vlib_frame_args (frame);
+  from = vlib_frame_vector_args (frame);
 
   while (n_left >= 4)
     {
@@ -121,15 +121,15 @@ vnet_interface_output_trace (vlib_main_t * vm,
 	{
 	  t0 = vlib_add_trace (vm, node, b0, sizeof (t0[0]));
 	  t0->sw_if_index = vnet_buffer (b0)->sw_if_index[VLIB_TX];
-	  clib_memcpy (t0->data, vlib_buffer_get_current (b0),
-		       sizeof (t0->data));
+	  clib_memcpy_fast (t0->data, vlib_buffer_get_current (b0),
+			    sizeof (t0->data));
 	}
       if (b1->flags & VLIB_BUFFER_IS_TRACED)
 	{
 	  t1 = vlib_add_trace (vm, node, b1, sizeof (t1[0]));
 	  t1->sw_if_index = vnet_buffer (b1)->sw_if_index[VLIB_TX];
-	  clib_memcpy (t1->data, vlib_buffer_get_current (b1),
-		       sizeof (t1->data));
+	  clib_memcpy_fast (t1->data, vlib_buffer_get_current (b1),
+			    sizeof (t1->data));
 	}
       from += 2;
       n_left -= 2;
@@ -149,8 +149,8 @@ vnet_interface_output_trace (vlib_main_t * vm,
 	{
 	  t0 = vlib_add_trace (vm, node, b0, sizeof (t0[0]));
 	  t0->sw_if_index = vnet_buffer (b0)->sw_if_index[VLIB_TX];
-	  clib_memcpy (t0->data, vlib_buffer_get_current (b0),
-		       sizeof (t0->data));
+	  clib_memcpy_fast (t0->data, vlib_buffer_get_current (b0),
+			    sizeof (t0->data));
 	}
       from += 1;
       n_left -= 1;
@@ -222,7 +222,7 @@ vnet_interface_output_node_inline (vlib_main_t * vm,
   if (node->flags & VLIB_NODE_FLAG_TRACE)
     vnet_interface_output_trace (vm, node, frame, n_buffers);
 
-  from = vlib_frame_args (frame);
+  from = vlib_frame_vector_args (frame);
 
   if (rt->is_deleted)
     return vlib_error_drop_buffers (vm, node, from,
@@ -475,7 +475,7 @@ vnet_per_buffer_interface_output (vlib_main_t * vm,
 
   n_left_from = frame->n_vectors;
 
-  from = vlib_frame_args (frame);
+  from = vlib_frame_vector_args (frame);
   next_index = node->cached_next_index;
 
   while (n_left_from > 0)
@@ -669,7 +669,7 @@ static u8 *
 validate_error_frame (vlib_main_t * vm,
 		      vlib_node_runtime_t * node, vlib_frame_t * f)
 {
-  u32 *buffers = vlib_frame_args (f);
+  u32 *buffers = vlib_frame_vector_args (f);
   vlib_buffer_t *b;
   u8 *msg = 0;
   uword i;
@@ -719,7 +719,7 @@ process_drop_punt (vlib_main_t * vm,
   static vlib_error_t memory[VNET_ERROR_N_DISPOSITION];
   static char memory_init[VNET_ERROR_N_DISPOSITION];
 
-  buffers = vlib_frame_args (frame);
+  buffers = vlib_frame_vector_args (frame);
   first_buffer = buffers;
 
   {
@@ -1080,6 +1080,7 @@ VNET_FEATURE_ARC_INIT (interface_output, static) =
 {
   .arc_name  = "interface-output",
   .start_nodes = VNET_FEATURES (0),
+  .last_in_arc = "interface-tx",
   .arc_index_ptr = &vnet_main.interface_main.output_feature_arc_index,
 };
 
@@ -1157,7 +1158,7 @@ pcap_drop_trace_command_fn (vlib_main_t * vm,
 	      if (im->pcap_filename == 0)
 		im->pcap_filename = format (0, "/tmp/drop.pcap%c", 0);
 
-	      memset (&im->pcap_main, 0, sizeof (im->pcap_main));
+	      clib_memset (&im->pcap_main, 0, sizeof (im->pcap_main));
 	      im->pcap_main.file_name = (char *) im->pcap_filename;
 	      im->pcap_main.n_packets_to_capture = 100;
 	      if (im->pcap_pkts_to_capture)

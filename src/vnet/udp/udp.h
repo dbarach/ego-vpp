@@ -107,6 +107,9 @@ typedef struct
 
   /* Next index for this type. */
   u32 next_index;
+
+  /* Parser for packet generator edits for this protocol */
+  unformat_function_t *unformat_pg_edit;
 } udp_dst_port_info_t;
 
 typedef enum
@@ -225,7 +228,7 @@ udp_connection_clone_safe (u32 connection_index, u32 thread_index)
    */
   udp_pool_add_peeker (thread_index);
   old_c = udp_main.connections[thread_index] + connection_index;
-  clib_memcpy (new_c, old_c, sizeof (*new_c));
+  clib_memcpy_fast (new_c, old_c, sizeof (*new_c));
   udp_pool_remove_peeker (thread_index);
   new_c->c_thread_index = current_thread_index;
   new_c->c_c_index = udp_connection_index (new_c);
@@ -340,7 +343,7 @@ ip_udp_encap_one (vlib_main_t * vm, vlib_buffer_t * b0, u8 * ec0, word ec_len,
       ip0 = vlib_buffer_get_current (b0);
 
       /* Apply the encap string. */
-      clib_memcpy (ip0, ec0, ec_len);
+      clib_memcpy_fast (ip0, ec0, ec_len);
       ip_udp_fixup_one (vm, b0, 1);
     }
   else
@@ -350,7 +353,7 @@ ip_udp_encap_one (vlib_main_t * vm, vlib_buffer_t * b0, u8 * ec0, word ec_len,
       ip0 = vlib_buffer_get_current (b0);
 
       /* Apply the encap string. */
-      clib_memcpy (ip0, ec0, ec_len);
+      clib_memcpy_fast (ip0, ec0, ec_len);
       ip_udp_fixup_one (vm, b0, 0);
     }
 }
@@ -377,8 +380,8 @@ ip_udp_encap_two (vlib_main_t * vm, vlib_buffer_t * b0, vlib_buffer_t * b1,
       ip1 = vlib_buffer_get_current (b1);
 
       /* Apply the encap string */
-      clib_memcpy (ip0, ec0, ec_len);
-      clib_memcpy (ip1, ec1, ec_len);
+      clib_memcpy_fast (ip0, ec0, ec_len);
+      clib_memcpy_fast (ip1, ec1, ec_len);
 
       /* fix the <bleep>ing outer-IP checksum */
       sum0 = ip0->checksum;
@@ -421,8 +424,8 @@ ip_udp_encap_two (vlib_main_t * vm, vlib_buffer_t * b0, vlib_buffer_t * b1,
       ip1 = vlib_buffer_get_current (b1);
 
       /* Apply the encap string. */
-      clib_memcpy (ip0, ec0, ec_len);
-      clib_memcpy (ip1, ec1, ec_len);
+      clib_memcpy_fast (ip0, ec0, ec_len);
+      clib_memcpy_fast (ip1, ec1, ec_len);
 
       new_l0 = clib_host_to_net_u16 (vlib_buffer_length_in_chain (vm, b0)
 				     - sizeof (*ip0));

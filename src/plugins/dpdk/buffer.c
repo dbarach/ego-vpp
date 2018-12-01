@@ -44,8 +44,6 @@
  */
 
 #include <unistd.h>
-#include <linux/vfio.h>
-#include <sys/ioctl.h>
 
 #include <rte_config.h>
 
@@ -64,7 +62,7 @@
 #include <rte_per_lcore.h>
 #include <rte_branch_prediction.h>
 #include <rte_interrupts.h>
-#include <rte_pci.h>
+#include <rte_vfio.h>
 #include <rte_random.h>
 #include <rte_debug.h>
 #include <rte_ether.h>
@@ -76,8 +74,6 @@
 
 #include <vlib/vlib.h>
 #include <vlib/unix/unix.h>
-#include <vlib/pci/pci.h>
-#include <vlib/linux/vfio.h>
 #include <vnet/vnet.h>
 #include <dpdk/device/dpdk.h>
 #include <dpdk/device/dpdk_priv.h>
@@ -144,7 +140,7 @@ del_free_list (vlib_main_t * vm, vlib_buffer_free_list_t * f)
   vec_free (f->name);
   vec_free (f->buffers);
   /* Poison it. */
-  memset (f, 0xab, sizeof (f[0]));
+  clib_memset (f, 0xab, sizeof (f[0]));
 }
 
 /* Add buffer free list. */
@@ -213,7 +209,7 @@ CLIB_MULTIARCH_FN (dpdk_buffer_fill_free_list) (vlib_main_t * vm,
   if (rte_mempool_get_bulk (rmp, (void *) d->mbuf_alloc_list, n_alloc) < 0)
     return 0;
 
-  memset (&bt, 0, sizeof (vlib_buffer_t));
+  clib_memset (&bt, 0, sizeof (vlib_buffer_t));
   vlib_buffer_init_for_free_list (&bt, fl);
   bt.buffer_pool_index = privp->buffer_pool_index;
 
@@ -387,54 +383,28 @@ dpdk_packet_template_init (vlib_main_t * vm,
   vlib_packet_template_t *t = (vlib_packet_template_t *) vt;
 
   vlib_worker_thread_barrier_sync (vm);
-  memset (t, 0, sizeof (t[0]));
+  clib_memset (t, 0, sizeof (t[0]));
 
   vec_add (t->packet_data, packet_data, n_packet_data_bytes);
 
   vlib_worker_thread_barrier_release (vm);
 }
 
-static clib_error_t *
-scan_vfio_fd (void *arg, u8 * path_name, u8 * file_name)
-{
-  dpdk_buffer_main_t *dbm = &dpdk_buffer_main;
-  linux_vfio_main_t *lvm = &vfio_main;
-  const char fn[] = "/dev/vfio/vfio";
-  char buff[sizeof (fn)] = { 0 };
-  int fd;
-  u8 *path = format (0, "%v%c", path_name, 0);
-
-  if (readlink ((char *) path, buff, sizeof (fn)) + 1 != sizeof (fn))
-    goto done;
-
-  if (strncmp (fn, buff, sizeof (fn)))
-    goto done;
-
-  fd = atoi ((char *) file_name);
-  if (fd != lvm->container_fd)
-    dbm->vfio_container_fd = fd;
-
-done:
-  vec_free (path);
-  return 0;
-}
-
 clib_error_t *
 dpdk_pool_create (vlib_main_t * vm, u8 * pool_name, u32 elt_size,
 		  u32 num_elts, u32 pool_priv_size, u16 cache_size, u8 numa,
-		  struct rte_mempool ** _mp,
-		  vlib_physmem_region_index_t * pri)
+		  struct rte_mempool **_mp, u32 * map_index)
 {
-  dpdk_buffer_main_t *dbm = &dpdk_buffer_main;
   struct rte_mempool *mp;
-  vlib_physmem_region_t *pr;
+  enum rte_iova_mode iova_mode;
   dpdk_mempool_private_t priv;
+  vlib_physmem_map_t *pm;
   clib_error_t *error = 0;
   size_t min_chunk_size, align;
+  int map_dma = 1;
   u32 size;
   i32 ret;
   uword i;
-
 
   mp = rte_mempool_create_empty ((char *) pool_name, num_elts, elt_size,
 				 512, pool_priv_size, numa, 0);
@@ -446,16 +416,13 @@ dpdk_pool_create (vlib_main_t * vm, u8 * pool_name, u32 elt_size,
   size = rte_mempool_op_calc_mem_size_default (mp, num_elts, 21,
 					       &min_chunk_size, &align);
 
-  error = vlib_physmem_region_alloc (vm, (char *) pool_name, size, numa,
-				     VLIB_PHYSMEM_F_HUGETLB |
-				     VLIB_PHYSMEM_F_SHARED, pri);
-  if (error)
+  if ((error = vlib_physmem_shared_map_create (vm, (char *) pool_name, size,
+					       0, numa, map_index)))
     {
       rte_mempool_free (mp);
       return error;
     }
-
-  pr = vlib_physmem_get_region (vm, pri[0]);
+  pm = vlib_physmem_get_map (vm, *map_index);
 
   /* Call the mempool priv initializer */
   priv.mbp_priv.mbuf_data_room_size = VLIB_BUFFER_PRE_DATA_SIZE +
@@ -463,46 +430,29 @@ dpdk_pool_create (vlib_main_t * vm, u8 * pool_name, u32 elt_size,
   priv.mbp_priv.mbuf_priv_size = VLIB_BUFFER_HDR_SIZE;
   rte_pktmbuf_pool_init (mp, &priv);
 
-  for (i = 0; i < pr->n_pages; i++)
+  if (rte_eth_dev_count_avail () == 0)
+    map_dma = 0;
+
+  iova_mode = rte_eal_iova_mode ();
+  for (i = 0; i < pm->n_pages; i++)
     {
-      size_t page_size = 1ull << pr->log2_page_size;
-      ret = rte_mempool_populate_iova (mp, ((char *) pr->mem) + i * page_size,
-				       pr->page_table[i], page_size, 0, 0);
+      size_t page_sz = 1ULL << pm->log2_page_size;
+      char *va = ((char *) pm->base) + i * page_sz;
+      uword pa = iova_mode == RTE_IOVA_VA ?
+	pointer_to_uword (va) : pm->page_table[i];
+      ret = rte_mempool_populate_iova (mp, va, pa, page_sz, 0, 0);
       if (ret < 0)
 	{
 	  rte_mempool_free (mp);
 	  return clib_error_return (0, "failed to populate %s", pool_name);
 	}
+      /* -1 likely means there is no PCI devices assigned to vfio
+         container or noiommu mode is used  so we stop trying */
+      if (map_dma && rte_vfio_dma_map (pointer_to_uword (va), pa, page_sz))
+	map_dma = 0;
     }
 
   _mp[0] = mp;
-
-  /* DPDK currently doesn't provide API to map DMA memory for empty mempool
-     so we are using this hack, will be nice to have at least API to get
-     VFIO container FD */
-  if (dbm->vfio_container_fd == -1)
-    foreach_directory_file ("/proc/self/fd", scan_vfio_fd, 0, 0);
-
-  if (dbm->vfio_container_fd != -1)
-    {
-      struct vfio_iommu_type1_dma_map dm = { 0 };
-      int i, rv = 0;
-      dm.argsz = sizeof (struct vfio_iommu_type1_dma_map);
-      dm.flags = VFIO_DMA_MAP_FLAG_READ | VFIO_DMA_MAP_FLAG_WRITE;
-
-      /* *INDENT-OFF* */
-      vec_foreach_index (i, pr->page_table)
-	{
-	  dm.vaddr = pointer_to_uword (pr->mem) + ((u64)i << pr->log2_page_size);
-	  dm.size = 1ull << pr->log2_page_size;
-	  dm.iova = pr->page_table[i];
-	  if ((rv = ioctl (dbm->vfio_container_fd, VFIO_IOMMU_MAP_DMA, &dm)))
-	    break;
-	}
-      /* *INDENT-ON* */
-      if (rv != 0 && errno != EINVAL)
-	clib_unix_warning ("ioctl(VFIO_IOMMU_MAP_DMA) pool '%s'", pool_name);
-    }
 
   return 0;
 }
@@ -513,10 +463,10 @@ dpdk_buffer_pool_create (vlib_main_t * vm, unsigned num_mbufs,
 {
   dpdk_main_t *dm = &dpdk_main;
   struct rte_mempool *rmp;
-  vlib_physmem_region_index_t pri;
   clib_error_t *error = 0;
   u8 *pool_name;
   u32 elt_size, i;
+  u32 map_index;
 
   vec_validate_aligned (dm->pktmbuf_pools, socket_id, CLIB_CACHE_LINE_BYTES);
 
@@ -530,10 +480,9 @@ dpdk_buffer_pool_create (vlib_main_t * vm, unsigned num_mbufs,
     VLIB_BUFFER_HDR_SIZE /* priv size */  +
     VLIB_BUFFER_PRE_DATA_SIZE + VLIB_BUFFER_DATA_SIZE;	/*data room size */
 
-  error =
-    dpdk_pool_create (vm, pool_name, elt_size, num_mbufs,
-		      sizeof (dpdk_mempool_private_t), 512, socket_id,
-		      &rmp, &pri);
+  error = dpdk_pool_create (vm, pool_name, elt_size, num_mbufs,
+			    sizeof (dpdk_mempool_private_t), 512, socket_id,
+			    &rmp, &map_index);
 
   vec_free (pool_name);
 
@@ -543,7 +492,8 @@ dpdk_buffer_pool_create (vlib_main_t * vm, unsigned num_mbufs,
       rte_mempool_obj_iter (rmp, rte_pktmbuf_init, 0);
 
       dpdk_mempool_private_t *privp = rte_mempool_get_priv (rmp);
-      privp->buffer_pool_index = vlib_buffer_pool_create (vm, pri, 0);
+      privp->buffer_pool_index =
+	vlib_buffer_register_physmem_map (vm, map_index);
 
       dm->pktmbuf_pools[socket_id] = rmp;
 

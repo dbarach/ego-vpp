@@ -136,6 +136,12 @@ do {                                            \
 #define VCL_SESS_ATTR_TEST(ATTR, VAL)           \
   ((ATTR) & (1 << (VAL)) ? 1 : 0)
 
+typedef struct vcl_shared_session_
+{
+  u32 ss_index;
+  u32 *workers;
+} vcl_shared_session_t;
+
 typedef struct
 {
   CLIB_CACHE_LINE_ALIGN_MARK (cacheline0);
@@ -161,6 +167,7 @@ typedef struct
   svm_msg_q_t *our_evt_q;
   u64 options[16];
   vcl_session_msg_t *accept_evts_fifo;
+  u32 shared_index;
 #if VCL_ELOG
   elog_track_t elog_track;
 #endif
@@ -219,7 +226,20 @@ typedef struct vcl_worker_
   /* Session pool */
   vcl_session_t *sessions;
 
+  /** Worker/thread index in current process */
   u32 wrk_index;
+
+  /** Worker index in vpp*/
+  u32 vpp_wrk_index;
+
+  /** API client handle */
+  u32 my_client_index;
+
+  /** State of the connection, shared between msg RX thread and main thread */
+  volatile app_state_t wrk_state;
+
+  /** VPP binary api input queue */
+  svm_queue_t *vl_input_queue;
 
   /** Message queues epoll fd. Initialized only if using mqs with eventfds */
   int mqs_epfd;
@@ -264,6 +284,9 @@ typedef struct vcl_worker_
 
   /** Used also as a thread stop key buffer */
   pthread_t thread_id;
+
+  /** Current pid, may be different from main_pid if forked child */
+  pid_t current_pid;
 } vcl_worker_t;
 
 typedef struct vppcom_main_t_
@@ -272,26 +295,36 @@ typedef struct vppcom_main_t_
   u32 debug;
   pthread_t main_cpu;
 
-  /** VPP binary api input queue */
-  svm_queue_t *vl_input_queue;
+  /** Main process pid */
+  pid_t main_pid;
 
-  /** API client handle */
-  u32 my_client_index;
+  /** App's index in vpp. It's used by vpp to identify the app */
+  u32 app_index;
 
   /** State of the connection, shared between msg RX thread and main thread */
   volatile app_state_t app_state;
 
+  u8 *app_name;
+
   /** VCL configuration */
   vppcom_cfg_t cfg;
 
-  /** Flag indicating that a new segment is being mounted */
-  volatile u32 mounting_segment;
+  volatile u32 forking;
 
   /** Workers */
   vcl_worker_t *workers;
 
   /** Lock to protect worker registrations */
   clib_spinlock_t workers_lock;
+
+  /** Pool of shared sessions */
+  vcl_shared_session_t *shared_sessions;
+
+  /** Lock to protect segment hash table */
+  clib_rwlock_t segment_table_lock;
+
+  /** Mapped segments table */
+  uword *segment_table;
 
 #ifdef VCL_ELOG
   /* VPP Event-logger */
@@ -307,6 +340,8 @@ typedef struct vppcom_main_t_
 extern vppcom_main_t *vcm;
 
 #define VCL_INVALID_SESSION_INDEX ((u32)~0)
+#define VCL_INVALID_SEGMENT_INDEX ((u32)~0)
+#define VCL_INVALID_SEGMENT_HANDLE ((u64)~0)
 
 static inline vcl_session_t *
 vcl_session_alloc (vcl_worker_t * wrk)
@@ -315,6 +350,7 @@ vcl_session_alloc (vcl_worker_t * wrk)
   pool_get (wrk->sessions, s);
   memset (s, 0, sizeof (*s));
   s->session_index = s - wrk->sessions;
+  s->shared_index = ~0;
   return s;
 }
 
@@ -466,6 +502,16 @@ int vcl_mq_epoll_add_evfd (vcl_worker_t * wrk, svm_msg_q_t * mq);
 int vcl_mq_epoll_del_evfd (vcl_worker_t * wrk, u32 mqc_index);
 
 vcl_worker_t *vcl_worker_alloc_and_init (void);
+void vcl_worker_cleanup (void);
+int vcl_worker_register_with_vpp (void);
+int vcl_worker_set_bapi (void);
+void vcl_worker_share_sessions (u32 parent_wrk_index);
+int vcl_worker_unshare_session (vcl_worker_t * wrk, vcl_session_t * s);
+int vcl_session_get_refcnt (vcl_session_t * s);
+
+void vcl_segment_table_add (u64 segment_handle, u32 svm_segment_index);
+u32 vcl_segment_table_lookup (u64 segment_handle);
+void vcl_segment_table_del (u64 segment_handle);
 
 static inline vcl_worker_t *
 vcl_worker_get (u32 wrk_index)

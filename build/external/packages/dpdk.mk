@@ -21,12 +21,12 @@ DPDK_MLX5_PMD_DLOPEN_DEPS    ?= n
 DPDK_TAP_PMD                 ?= n
 DPDK_FAILSAFE_PMD            ?= n
 
-DPDK_VERSION                 ?= 18.08
+DPDK_VERSION                 ?= 18.11
 DPDK_BASE_URL                ?= http://fast.dpdk.org/rel
 DPDK_TARBALL                 := dpdk-$(DPDK_VERSION).tar.xz
 DPDK_TAR_URL                 := $(DPDK_BASE_URL)/$(DPDK_TARBALL)
-DPDK_18.05_TARBALL_MD5_CKSUM := 9fc86367cd9407ff6a8dfea56c4eddc4
 DPDK_18.08_TARBALL_MD5_CKSUM := da5e7fb25ab063c47e53929fb8c58be5
+DPDK_18.11_TARBALL_MD5_CKSUM := 04b86f4a77f4f81a7fbd26467dd2ea9f
 MACHINE=$(shell uname -m)
 
 # replace dot with space, and if 3rd word exists we deal with stable dpdk rel
@@ -194,17 +194,35 @@ $(B)/custom-config: $(B)/.patch.ok Makefile
 	$(call set,RTE_LIBRTE_MLX4_DLOPEN_DEPS,$(DPDK_MLX4_PMD))
 	$(call set,RTE_LIBRTE_MLX5_DLOPEN_DEPS,$(DPDK_MLX5_PMD_DLOPEN_DEPS))
 	$(call set,RTE_LIBRTE_PMD_TAP,$(DPDK_TAP_PMD))
+	$(call set,RTE_LIBRTE_GSO,$(DPDK_TAP_PMD))
 	$(call set,RTE_LIBRTE_PMD_FAILSAFE,$(DPDK_FAILSAFE_PMD))
 	@# not needed
+	$(call set,RTE_ETHDEV_RXTX_CALLBACKS,n)
 	$(call set,RTE_LIBRTE_CFGFILE,n)
 	$(call set,RTE_LIBRTE_LPM,n)
 	$(call set,RTE_LIBRTE_ACL,n)
+	$(call set,RTE_LIBRTE_JOBSTATS,n)
+	$(call set,RTE_LIBRTE_EFD,n)
+	$(call set,RTE_LIBRTE_MEMBER,n)
+	$(call set,RTE_LIBRTE_BITRATE,n)
+	$(call set,RTE_LIBRTE_LATENCY_STATS,n)
 	$(call set,RTE_LIBRTE_POWER,n)
 	$(call set,RTE_LIBRTE_DISTRIBUTOR,n)
 	$(call set,RTE_LIBRTE_PORT,n)
 	$(call set,RTE_LIBRTE_TABLE,n)
 	$(call set,RTE_LIBRTE_PIPELINE,n)
+	$(call set,RTE_LIBRTE_PMD_SOFTNIC,n)
 	$(call set,RTE_LIBRTE_FLOW_CLASSIFY,n)
+	$(call set,RTE_LIBRTE_ACL,n)
+	$(call set,RTE_LIBRTE_GRO,n)
+	$(call set,RTE_LIBRTE_KNI,n)
+	$(call set,RTE_LIBRTE_BPF,n)
+	$(call set,RTE_LIBRTE_RAWDEV,n)
+	$(call set,RTE_LIBRTE_PMD_IFPGA_RAWDEV,n)
+	$(call set,RTE_LIBRTE_IFPGA_BUS,n)
+	$(call set,RTE_LIBRTE_BBDEV,n)
+	$(call set,RTE_LIBRTE_BBDEV_NULL,n)
+	$(call set,RTE_TEST_PMD,n)
 	$(call set,RTE_KNI_KMOD,n)
 	$(call set,RTE_EAL_IGB_UIO,n)
 	@# currently broken in 18.02

@@ -247,8 +247,6 @@ typedef struct {
   bool sec_check_frag;		/* Inbound security check for (subsequent) fragments */
   bool icmp6_enabled;		/* Send destination unreachable for security check failure */
 
-  bool is_ce;                   /* If this MAP node is a Customer Edge router*/
-
   /* ICMPv6 -> ICMPv4 relay parameters */
   ip4_address_t icmp4_src_address;
   vlib_simple_counter_main_t icmp_relayed;
@@ -538,7 +536,7 @@ ip4_map_t_embedded_address (map_domain_t *d,
   u8 offset = d->ip6_src_len == 64 ? 9 : 12;
   ip6->as_u64[0] = d->ip6_src.as_u64[0];
   ip6->as_u64[1] = d->ip6_src.as_u64[1];
-  clib_memcpy(&ip6->as_u8[offset], ip4, 4);
+  clib_memcpy_fast(&ip6->as_u8[offset], ip4, 4);
 }
 
 static_always_inline u32

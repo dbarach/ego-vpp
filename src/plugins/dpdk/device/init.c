@@ -74,6 +74,35 @@ port_type_from_speed_capa (struct rte_eth_dev_info *dev_info)
   return VNET_DPDK_PORT_TYPE_UNKNOWN;
 }
 
+static dpdk_port_type_t
+port_type_from_link_speed (u32 link_speed)
+{
+  switch (link_speed)
+    {
+    case ETH_SPEED_NUM_1G:
+      return VNET_DPDK_PORT_TYPE_ETH_1G;
+    case ETH_SPEED_NUM_2_5G:
+      return VNET_DPDK_PORT_TYPE_ETH_2_5G;
+    case ETH_SPEED_NUM_5G:
+      return VNET_DPDK_PORT_TYPE_ETH_5G;
+    case ETH_SPEED_NUM_10G:
+      return VNET_DPDK_PORT_TYPE_ETH_10G;
+    case ETH_SPEED_NUM_20G:
+      return VNET_DPDK_PORT_TYPE_ETH_20G;
+    case ETH_SPEED_NUM_25G:
+      return VNET_DPDK_PORT_TYPE_ETH_25G;
+    case ETH_SPEED_NUM_40G:
+      return VNET_DPDK_PORT_TYPE_ETH_40G;
+    case ETH_SPEED_NUM_50G:
+      return VNET_DPDK_PORT_TYPE_ETH_50G;
+    case ETH_SPEED_NUM_56G:
+      return VNET_DPDK_PORT_TYPE_ETH_56G;
+    case ETH_SPEED_NUM_100G:
+      return VNET_DPDK_PORT_TYPE_ETH_100G;
+    default:
+      return VNET_DPDK_PORT_TYPE_UNKNOWN;
+    }
+}
 
 static u32
 dpdk_flag_change (vnet_main_t * vnm, vnet_hw_interface_t * hi, u32 flags)
@@ -116,7 +145,7 @@ dpdk_device_lock_init (dpdk_device_t * xd)
     {
       xd->lockp[q] = clib_mem_alloc_aligned (CLIB_CACHE_LINE_BYTES,
 					     CLIB_CACHE_LINE_BYTES);
-      memset ((void *) xd->lockp[q], 0, CLIB_CACHE_LINE_BYTES);
+      clib_memset ((void *) xd->lockp[q], 0, CLIB_CACHE_LINE_BYTES);
     }
 }
 
@@ -177,13 +206,11 @@ dpdk_ring_alloc (struct rte_mempool *mp)
 static int
 dpdk_port_crc_strip_enabled (dpdk_device_t * xd)
 {
-#if RTE_VERSION < RTE_VERSION_NUM(18, 8, 0, 0)
-  if (xd->port_conf.rxmode.hw_strip_crc)
+#if RTE_VERSION < RTE_VERSION_NUM(18, 11, 0, 0)
+  return ! !(xd->port_conf.rxmode.offloads & DEV_RX_OFFLOAD_CRC_STRIP);
 #else
-  if (xd->port_conf.rxmode.offloads & DEV_RX_OFFLOAD_CRC_STRIP)
+  return !(xd->port_conf.rxmode.offloads & DEV_RX_OFFLOAD_KEEP_CRC);
 #endif
-    return 1;
-  return 0;
 }
 
 static clib_error_t *
@@ -291,16 +318,20 @@ dpdk_lib_init (dpdk_main_t * dm)
 			pci_addr.as_u32);
 	}
 
-      if (p)
-	devconf = pool_elt_at_index (dm->conf->dev_confs, p[0]);
-      else
-	devconf = &dm->conf->default_devconf;
 
       /* Create vnet interface */
       vec_add2_aligned (dm->devices, xd, 1, CLIB_CACHE_LINE_BYTES);
       xd->nb_rx_desc = DPDK_NB_RX_DESC_DEFAULT;
       xd->nb_tx_desc = DPDK_NB_TX_DESC_DEFAULT;
       xd->cpu_socket = (i8) rte_eth_dev_socket_id (i);
+
+      if (p)
+	{
+	  devconf = pool_elt_at_index (dm->conf->dev_confs, p[0]);
+	  xd->name = devconf->name;
+	}
+      else
+	devconf = &dm->conf->default_devconf;
 
       /* Handle interface naming for devices with multiple ports sharing same PCI ID */
       if (pci_dev)
@@ -334,29 +365,23 @@ dpdk_lib_init (dpdk_main_t * dm)
       clib_memcpy (&xd->tx_conf, &dev_info.default_txconf,
 		   sizeof (struct rte_eth_txconf));
 
+      if (dev_info.rx_offload_capa & DEV_RX_OFFLOAD_IPV4_CKSUM)
+	{
+	  xd->port_conf.rxmode.offloads |= DEV_RX_OFFLOAD_IPV4_CKSUM;
+	  xd->flags |= DPDK_DEVICE_FLAG_RX_IP4_CKSUM;
+	}
+
       if (dm->conf->no_multi_seg)
 	{
-#if RTE_VERSION < RTE_VERSION_NUM(18, 8, 0, 0)
-	  xd->tx_conf.txq_flags |= ETH_TXQ_FLAGS_NOMULTSEGS;
-	  xd->port_conf.rxmode.jumbo_frame = 0;
-	  xd->port_conf.rxmode.enable_scatter = 0;
-#else
 	  xd->port_conf.txmode.offloads &= ~DEV_TX_OFFLOAD_MULTI_SEGS;
 	  xd->port_conf.rxmode.offloads &= ~DEV_RX_OFFLOAD_JUMBO_FRAME;
 	  xd->port_conf.rxmode.offloads &= ~DEV_RX_OFFLOAD_SCATTER;
-#endif
 	}
       else
 	{
-#if RTE_VERSION < RTE_VERSION_NUM(18, 8, 0, 0)
-	  xd->tx_conf.txq_flags &= ~ETH_TXQ_FLAGS_NOMULTSEGS;
-	  xd->port_conf.rxmode.jumbo_frame = 1;
-	  xd->port_conf.rxmode.enable_scatter = 1;
-#else
 	  xd->port_conf.txmode.offloads |= DEV_TX_OFFLOAD_MULTI_SEGS;
 	  xd->port_conf.rxmode.offloads |= DEV_RX_OFFLOAD_JUMBO_FRAME;
 	  xd->port_conf.rxmode.offloads |= DEV_RX_OFFLOAD_SCATTER;
-#endif
 	  xd->flags |= DPDK_DEVICE_FLAG_MAYBE_MULTISEG;
 	}
 
@@ -431,13 +456,8 @@ dpdk_lib_init (dpdk_main_t * dm)
 
 	      if (dm->conf->no_tx_checksum_offload == 0)
 		{
-#if RTE_VERSION < RTE_VERSION_NUM(18, 8, 0, 0)
-		  xd->tx_conf.txq_flags &= ~(ETH_TXQ_FLAGS_NOXSUMUDP |
-				                     ETH_TXQ_FLAGS_NOXSUMTCP);
-#else
 	          xd->port_conf.txmode.offloads |= DEV_TX_OFFLOAD_TCP_CKSUM;
 	          xd->port_conf.txmode.offloads |= DEV_TX_OFFLOAD_UDP_CKSUM;
-#endif
 		  xd->flags |=
 		    DPDK_DEVICE_FLAG_TX_OFFLOAD |
 		    DPDK_DEVICE_FLAG_INTEL_PHDR_CKSUM;
@@ -457,29 +477,28 @@ dpdk_lib_init (dpdk_main_t * dm)
 	    case VNET_DPDK_PMD_IXGBEVF:
 	    case VNET_DPDK_PMD_I40EVF:
 	      xd->port_type = VNET_DPDK_PORT_TYPE_ETH_VF;
-#if RTE_VERSION < RTE_VERSION_NUM(18, 8, 0, 0)
-	      xd->port_conf.rxmode.hw_strip_crc = 1;
-#else
+#if RTE_VERSION < RTE_VERSION_NUM(18, 11, 0, 0)
 	      xd->port_conf.rxmode.offloads |= DEV_RX_OFFLOAD_CRC_STRIP;
 #endif
 	      break;
 
 	    case VNET_DPDK_PMD_THUNDERX:
 	      xd->port_type = VNET_DPDK_PORT_TYPE_ETH_VF;
-#if RTE_VERSION < RTE_VERSION_NUM(18, 8, 0, 0)
-	      xd->port_conf.rxmode.hw_strip_crc = 1;
-#else
+#if RTE_VERSION < RTE_VERSION_NUM(18, 11, 0, 0)
 	      xd->port_conf.rxmode.offloads |= DEV_RX_OFFLOAD_CRC_STRIP;
 #endif
+
+	      if (dm->conf->no_tx_checksum_offload == 0)
+		{
+	          xd->port_conf.txmode.offloads |= DEV_TX_OFFLOAD_TCP_CKSUM;
+	          xd->port_conf.txmode.offloads |= DEV_TX_OFFLOAD_UDP_CKSUM;
+		  xd->flags |= DPDK_DEVICE_FLAG_TX_OFFLOAD;
+		}
 	      break;
 
 	    case VNET_DPDK_PMD_ENA:
 	      xd->port_type = VNET_DPDK_PORT_TYPE_ETH_VF;
-#if RTE_VERSION < RTE_VERSION_NUM(18, 8, 0, 0)
-	      xd->port_conf.rxmode.enable_scatter = 0;
-#else
 	      xd->port_conf.rxmode.offloads &= ~DEV_RX_OFFLOAD_SCATTER;
-#endif
 	      break;
 
 	    case VNET_DPDK_PMD_DPAA2:
@@ -497,9 +516,7 @@ dpdk_lib_init (dpdk_main_t * dm)
 	      /* Intel Red Rock Canyon */
 	    case VNET_DPDK_PMD_FM10K:
 	      xd->port_type = VNET_DPDK_PORT_TYPE_ETH_SWITCH;
-#if RTE_VERSION < RTE_VERSION_NUM(18, 8, 0, 0)
-	      xd->port_conf.rxmode.hw_strip_crc = 1;
-#else
+#if RTE_VERSION < RTE_VERSION_NUM(18, 11, 0, 0)
 	      xd->port_conf.rxmode.offloads |= DEV_RX_OFFLOAD_CRC_STRIP;
 #endif
 	      break;
@@ -514,11 +531,7 @@ dpdk_lib_init (dpdk_main_t * dm)
 	      /* vmxnet3 */
 	    case VNET_DPDK_PMD_VMXNET3:
 	      xd->port_type = VNET_DPDK_PORT_TYPE_ETH_1G;
-#if RTE_VERSION < RTE_VERSION_NUM(18, 8, 0, 0)
-	      xd->tx_conf.txq_flags |= ETH_TXQ_FLAGS_NOMULTSEGS;
-#else
 	      xd->port_conf.txmode.offloads |= DEV_TX_OFFLOAD_MULTI_SEGS;
-#endif
 	      break;
 
 	    case VNET_DPDK_PMD_AF_PACKET:
@@ -546,6 +559,10 @@ dpdk_lib_init (dpdk_main_t * dm)
 	    case VNET_DPDK_PMD_FAILSAFE:
 	      xd->port_type = VNET_DPDK_PORT_TYPE_FAILSAFE;
 	      xd->port_conf.intr_conf.lsc = 1;
+	      break;
+
+	    case VNET_DPDK_PMD_NETVSC:
+	      xd->port_type = port_type_from_link_speed (l.link_speed);
 	      break;
 
 	    default:
@@ -772,14 +789,10 @@ dpdk_lib_init (dpdk_main_t * dm)
 	  int vlan_off;
 	  vlan_off = rte_eth_dev_get_vlan_offload (xd->port_id);
 	  vlan_off |= ETH_VLAN_STRIP_OFFLOAD;
-#if RTE_VERSION < RTE_VERSION_NUM(18, 8, 0, 0)
-	  xd->port_conf.rxmode.hw_vlan_strip = vlan_off;
-#else
           if (vlan_off)
 	    xd->port_conf.rxmode.offloads |= DEV_RX_OFFLOAD_VLAN_STRIP;
 	  else
 	    xd->port_conf.rxmode.offloads &= ~DEV_RX_OFFLOAD_VLAN_STRIP;
-#endif
 	  if (rte_eth_dev_set_vlan_offload (xd->port_id, vlan_off) == 0)
 	    dpdk_log_info ("VLAN strip enabled for interface\n");
 	  else
@@ -809,6 +822,7 @@ dpdk_lib_init (dpdk_main_t * dm)
 static void
 dpdk_bind_devices_to_uio (dpdk_config_main_t * conf)
 {
+  vlib_main_t *vm = vlib_get_main ();
   clib_error_t *error;
   u8 *pci_addr = 0;
   int num_whitelisted = vec_len (conf->dev_confs);
@@ -827,7 +841,7 @@ dpdk_bind_devices_to_uio (dpdk_config_main_t * conf)
       vlib_pci_free_device_info (d);
       d = 0;
       }
-    d = vlib_pci_get_device_info (addr, &error);
+    d = vlib_pci_get_device_info (vm, addr, &error);
     if (error)
     {
       clib_error_report (error);
@@ -854,7 +868,20 @@ dpdk_bind_devices_to_uio (dpdk_config_main_t * conf)
       ;
     /* vmxnet3 */
     else if (d->vendor_id == 0x15ad && d->device_id == 0x07b0)
-      ;
+      {
+	/*
+	 * For vmxnet3 PCI, unless it is explicitly specified in the whitelist,
+	 * the default is to put it in the blacklist.
+	 */
+	if (devconf == 0)
+	  {
+	    pool_get (conf->dev_confs, devconf);
+	    hash_set (conf->device_config_index_by_pci_addr, addr->as_u32,
+		      devconf - conf->dev_confs);
+	    devconf->pci_addr.as_u32 = addr->as_u32;
+	    devconf->is_blacklisted = 1;
+	  }
+      }
     /* all Intel network devices */
     else if (d->vendor_id == 0x8086 && d->device_class == PCI_CLASS_NETWORK_ETHERNET)
       ;
@@ -895,7 +922,7 @@ dpdk_bind_devices_to_uio (dpdk_config_main_t * conf)
         continue;
       }
 
-    error = vlib_pci_bind_to_uio (addr, (char *) conf->uio_driver_name);
+    error = vlib_pci_bind_to_uio (vm, addr, (char *) conf->uio_driver_name);
 
     if (error)
       {
@@ -961,6 +988,8 @@ dpdk_device_config (dpdk_config_main_t * conf, vlib_pci_addr_t pci_addr,
       else if (unformat (input, "num-rx-desc %u", &devconf->num_rx_desc))
 	;
       else if (unformat (input, "num-tx-desc %u", &devconf->num_tx_desc))
+	;
+      else if (unformat (input, "name %s", &devconf->name))
 	;
       else if (unformat (input, "workers %U", unformat_bitmap_list,
 			 &devconf->workers))
@@ -1250,15 +1279,18 @@ dpdk_config (vlib_main_t * vm, unformat_input_t * input)
 	  /* *INDENT-ON* */
 	}
 
+      uword default_hugepage_sz = clib_mem_get_default_hugepage_size ();
       /* *INDENT-OFF* */
       clib_bitmap_foreach (c, tm->cpu_socket_bitmap, (
         {
 	  clib_error_t *e;
-
+	  uword n_pages;
 	  vec_validate(mem_by_socket, c);
+	  n_pages = round_pow2 ((uword) mem_by_socket[c]<<20,
+				default_hugepage_sz);
+	  n_pages /= default_hugepage_sz;
 
-	  e = clib_sysfs_prealloc_hugepages(c, 2 << 10, mem_by_socket[c] / 2);
-	  if (e)
+	  if ((e = clib_sysfs_prealloc_hugepages(c, 0, n_pages)))
 	    clib_error_report (e);
       }));
       /* *INDENT-ON* */
@@ -1484,7 +1516,7 @@ dpdk_update_link_state (dpdk_device_t * xd, f64 now)
     return;
 
   xd->time_last_link_update = now ? now : xd->time_last_link_update;
-  memset (&xd->link, 0, sizeof (xd->link));
+  clib_memset (&xd->link, 0, sizeof (xd->link));
   rte_eth_link_get_nowait (xd->port_id, &xd->link);
 
   if (LINK_STATE_ELOGS)
@@ -1534,54 +1566,10 @@ dpdk_update_link_state (dpdk_device_t * xd, f64 now)
 	  break;
 	}
     }
-  if (hw_flags_chg || (xd->link.link_speed != prev_link.link_speed))
-    {
-      hw_flags_chg = 1;
-      switch (xd->link.link_speed)
-	{
-	case ETH_SPEED_NUM_10M:
-	  hw_flags |= VNET_HW_INTERFACE_FLAG_SPEED_10M;
-	  break;
-	case ETH_SPEED_NUM_100M:
-	  hw_flags |= VNET_HW_INTERFACE_FLAG_SPEED_100M;
-	  break;
-	case ETH_SPEED_NUM_1G:
-	  hw_flags |= VNET_HW_INTERFACE_FLAG_SPEED_1G;
-	  break;
-	case ETH_SPEED_NUM_2_5G:
-	  hw_flags |= VNET_HW_INTERFACE_FLAG_SPEED_2_5G;
-	  break;
-	case ETH_SPEED_NUM_5G:
-	  hw_flags |= VNET_HW_INTERFACE_FLAG_SPEED_5G;
-	  break;
-	case ETH_SPEED_NUM_10G:
-	  hw_flags |= VNET_HW_INTERFACE_FLAG_SPEED_10G;
-	  break;
-	case ETH_SPEED_NUM_20G:
-	  hw_flags |= VNET_HW_INTERFACE_FLAG_SPEED_20G;
-	  break;
-	case ETH_SPEED_NUM_25G:
-	  hw_flags |= VNET_HW_INTERFACE_FLAG_SPEED_25G;
-	  break;
-	case ETH_SPEED_NUM_40G:
-	  hw_flags |= VNET_HW_INTERFACE_FLAG_SPEED_40G;
-	  break;
-	case ETH_SPEED_NUM_50G:
-	  hw_flags |= VNET_HW_INTERFACE_FLAG_SPEED_50G;
-	  break;
-	case ETH_SPEED_NUM_56G:
-	  hw_flags |= VNET_HW_INTERFACE_FLAG_SPEED_56G;
-	  break;
-	case ETH_SPEED_NUM_100G:
-	  hw_flags |= VNET_HW_INTERFACE_FLAG_SPEED_100G;
-	  break;
-	case 0:
-	  break;
-	default:
-	  dpdk_log_warn ("unknown link speed %d", xd->link.link_speed);
-	  break;
-	}
-    }
+  if (xd->link.link_speed != prev_link.link_speed)
+    vnet_hw_interface_set_link_speed (vnm, xd->hw_if_index,
+				      xd->link.link_speed * 1000);
+
   if (hw_flags_chg)
     {
       if (LINK_STATE_ELOGS)
@@ -1799,10 +1787,10 @@ dpdk_init (vlib_main_t * vm)
   vec_add1 (dm->conf->eal_init_args, (u8 *) "vnet");
 
   /* Default vlib_buffer_t flags, DISABLES tcp/udp checksumming... */
-  dm->buffer_flags_template =
-    (VLIB_BUFFER_TOTAL_LENGTH_VALID | VLIB_BUFFER_EXT_HDR_VALID
-     | VNET_BUFFER_F_L4_CHECKSUM_COMPUTED |
-     VNET_BUFFER_F_L4_CHECKSUM_CORRECT | VNET_BUFFER_F_L2_HDR_OFFSET_VALID);
+  dm->buffer_flags_template = (VLIB_BUFFER_TOTAL_LENGTH_VALID |
+			       VLIB_BUFFER_EXT_HDR_VALID |
+			       VNET_BUFFER_F_L4_CHECKSUM_COMPUTED |
+			       VNET_BUFFER_F_L4_CHECKSUM_CORRECT);
 
   dm->stat_poll_interval = DPDK_STATS_POLL_INTERVAL;
   dm->link_state_poll_interval = DPDK_LINK_POLL_INTERVAL;

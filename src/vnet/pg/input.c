@@ -40,6 +40,7 @@
 #include <vlib/vlib.h>
 #include <vnet/pg/pg.h>
 #include <vnet/vnet.h>
+#include <vnet/ethernet/ethernet.h>
 #include <vnet/feature/feature.h>
 #include <vnet/devices/devices.h>
 
@@ -1091,7 +1092,7 @@ init_replay_buffers_inline (vlib_main_t * vm,
 
       b0->current_length = n0;
 
-      clib_memcpy (b0->data, d0 + data_offset, n0);
+      clib_memcpy_fast (b0->data, d0 + data_offset, n0);
       i = i + 1 == l ? 0 : i + 1;
     }
 }
@@ -1148,8 +1149,8 @@ init_buffers_inline (vlib_main_t * vm,
 
       if (set_data)
 	{
-	  clib_memcpy (b0->data, data, n_data);
-	  clib_memcpy (b1->data, data, n_data);
+	  clib_memcpy_fast (b0->data, data, n_data);
+	  clib_memcpy_fast (b1->data, data, n_data);
 	}
       else
 	{
@@ -1173,7 +1174,7 @@ init_buffers_inline (vlib_main_t * vm,
       vnet_buffer (b0)->sw_if_index[VLIB_TX] = (u32) ~ 0;
 
       if (set_data)
-	clib_memcpy (b0->data, data, n_data);
+	clib_memcpy_fast (b0->data, data, n_data);
       else
 	ASSERT (validate_buffer_data2 (b0, s, data_offset, n_data));
     }
@@ -1424,13 +1425,15 @@ pg_input_trace (pg_main_t * pg,
       t0->sw_if_index = vnet_buffer (b0)->sw_if_index[VLIB_RX];
       t1->sw_if_index = vnet_buffer (b1)->sw_if_index[VLIB_RX];
 
-      clib_memcpy (&t0->buffer, b0, sizeof (b0[0]) - sizeof (b0->pre_data));
-      clib_memcpy (&t1->buffer, b1, sizeof (b1[0]) - sizeof (b1->pre_data));
+      clib_memcpy_fast (&t0->buffer, b0,
+			sizeof (b0[0]) - sizeof (b0->pre_data));
+      clib_memcpy_fast (&t1->buffer, b1,
+			sizeof (b1[0]) - sizeof (b1->pre_data));
 
-      clib_memcpy (t0->buffer.pre_data, b0->data,
-		   sizeof (t0->buffer.pre_data));
-      clib_memcpy (t1->buffer.pre_data, b1->data,
-		   sizeof (t1->buffer.pre_data));
+      clib_memcpy_fast (t0->buffer.pre_data, b0->data,
+			sizeof (t0->buffer.pre_data));
+      clib_memcpy_fast (t1->buffer.pre_data, b1->data,
+			sizeof (t1->buffer.pre_data));
     }
 
   while (n_left >= 1)
@@ -1451,9 +1454,10 @@ pg_input_trace (pg_main_t * pg,
       t0->stream_index = stream_index;
       t0->packet_length = vlib_buffer_length_in_chain (vm, b0);
       t0->sw_if_index = vnet_buffer (b0)->sw_if_index[VLIB_RX];
-      clib_memcpy (&t0->buffer, b0, sizeof (b0[0]) - sizeof (b0->pre_data));
-      clib_memcpy (t0->buffer.pre_data, b0->data,
-		   sizeof (t0->buffer.pre_data));
+      clib_memcpy_fast (&t0->buffer, b0,
+			sizeof (b0[0]) - sizeof (b0->pre_data));
+      clib_memcpy_fast (t0->buffer.pre_data, b0->data,
+			sizeof (t0->buffer.pre_data));
     }
 }
 
@@ -1493,7 +1497,24 @@ pg_generate_packets (vlib_node_runtime_t * node,
     {
       u32 *head, *start, *end;
 
-      vlib_get_next_frame (vm, node, next_index, to_next, n_left);
+      if (PREDICT_TRUE (next_index == VNET_DEVICE_INPUT_NEXT_ETHERNET_INPUT))
+	{
+	  vlib_next_frame_t *nf;
+	  vlib_frame_t *f;
+	  ethernet_input_frame_t *ef;
+	  pg_interface_t *pi;
+	  vlib_get_new_next_frame (vm, node, next_index, to_next, n_left);
+	  nf = vlib_node_runtime_get_next_frame (vm, node, next_index);
+	  f = vlib_get_frame (vm, nf->frame_index);
+	  f->flags = ETH_INPUT_FRAME_F_SINGLE_SW_IF_IDX;
+
+	  ef = vlib_frame_scalar_args (f);
+	  pi = pool_elt_at_index (pg->interfaces, s->pg_if_index);
+	  ef->sw_if_index = pi->sw_if_index;
+	  ef->hw_if_index = pi->hw_if_index;
+	}
+      else
+	vlib_get_next_frame (vm, node, next_index, to_next, n_left);
 
       n_this_frame = n_packets_to_generate;
       if (n_this_frame > n_left)

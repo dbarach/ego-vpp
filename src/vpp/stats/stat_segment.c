@@ -21,7 +21,7 @@
 #include <vnet/devices/devices.h>	/* vnet_get_aggregate_rx_packets */
 #undef HAVE_MEMFD_CREATE
 #include <vppinfra/linux/syscall.h>
-
+#include <vpp-api/client/stat_client.h>
 stat_segment_main_t stat_segment_main;
 
 /*
@@ -553,9 +553,11 @@ stats_segment_socket_init (void)
   clib_error_t *error;
   clib_socket_t *s = clib_mem_alloc (sizeof (clib_socket_t));
 
+  memset (s, 0, sizeof (clib_socket_t));
   s->config = (char *) sm->socket_name;
   s->flags = CLIB_SOCKET_F_IS_SERVER | CLIB_SOCKET_F_SEQPACKET |
     CLIB_SOCKET_F_ALLOW_GROUP_WRITE | CLIB_SOCKET_F_PASSCRED;
+
   if ((error = clib_socket_init (s)))
     {
       clib_error_report (error);
@@ -565,12 +567,24 @@ stats_segment_socket_init (void)
   clib_file_t template = { 0 };
   template.read_function = stats_socket_accept_ready;
   template.file_descriptor = s->fd;
-  template.description =
-    format (0, "stats segment listener %s", STAT_SEGMENT_SOCKET_FILE);
+  template.description = format (0, "stats segment listener %s", s->config);
   clib_file_add (&file_main, &template);
 
   sm->socket = s;
 }
+
+static clib_error_t *
+stats_segment_socket_exit (vlib_main_t * vm)
+{
+  /*
+   * cleanup the listener socket on exit.
+   */
+  stat_segment_main_t *sm = &stat_segment_main;
+  unlink ((char *) sm->socket_name);
+  return 0;
+}
+
+VLIB_MAIN_LOOP_EXIT_FUNCTION (stats_segment_socket_exit);
 
 static uword
 stat_segment_collector_process (vlib_main_t * vm, vlib_node_runtime_t * rt,
@@ -595,6 +609,7 @@ statseg_init (vlib_main_t * vm)
   stat_segment_main_t *sm = &stat_segment_main;
   clib_error_t *error;
 
+  /* dependent on unix_input_init */
   if ((error = vlib_call_init_function (vm, unix_input_init)))
     return error;
 
@@ -608,6 +623,9 @@ static clib_error_t *
 statseg_config (vlib_main_t * vm, unformat_input_t * input)
 {
   stat_segment_main_t *sm = &stat_segment_main;
+
+  /* set default socket file name when statseg config stanza is empty. */
+  sm->socket_name = format (0, "%s", STAT_SEGMENT_SOCKET_FILE);
 
   while (unformat_check_input (input) != UNFORMAT_END_OF_INPUT)
     {
@@ -627,7 +645,6 @@ statseg_config (vlib_main_t * vm, unformat_input_t * input)
 	return clib_error_return (0, "unknown input `%U'",
 				  format_unformat_error, input);
     }
-
   return 0;
 }
 
@@ -637,8 +654,10 @@ VLIB_EARLY_CONFIG_FUNCTION (statseg_config, "statseg");
 /* *INDENT-OFF* */
 VLIB_REGISTER_NODE (stat_segment_collector, static) =
 {
-.function = stat_segment_collector_process,.name =
-    "statseg-collector-process",.type = VLIB_NODE_TYPE_PROCESS,};
+.function = stat_segment_collector_process,
+.name = "statseg-collector-process",
+.type = VLIB_NODE_TYPE_PROCESS,
+};
 
 /* *INDENT-ON* */
 

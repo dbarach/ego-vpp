@@ -96,7 +96,7 @@ tls_listener_ctx_alloc (void)
   tls_ctx_t *ctx;
 
   pool_get (tm->listener_ctx_pool, ctx);
-  memset (ctx, 0, sizeof (*ctx));
+  clib_memset (ctx, 0, sizeof (*ctx));
   return ctx - tm->listener_ctx_pool;
 }
 
@@ -144,7 +144,7 @@ tls_ctx_half_open_alloc (void)
       ctx_index = ctx - tm->half_open_ctx_pool;
       clib_rwlock_reader_unlock (&tm->half_open_rwlock);
     }
-  memset (ctx, 0, sizeof (*ctx));
+  clib_memset (ctx, 0, sizeof (*ctx));
   return ctx_index;
 }
 
@@ -367,14 +367,14 @@ tls_session_reset_callback (stream_session_t * s)
 }
 
 int
-tls_add_segment_callback (u32 client_index, const ssvm_private_t * fs)
+tls_add_segment_callback (u32 client_index, u64 segment_handle)
 {
   /* No-op for builtin */
   return 0;
 }
 
 int
-tls_del_segment_callback (u32 client_index, const ssvm_private_t * fs)
+tls_del_segment_callback (u32 client_index, u64 segment_handle)
 {
   return 0;
 }
@@ -479,7 +479,7 @@ tls_session_connected_callback (u32 tls_app_index, u32 ho_ctx_index,
 
   ctx_handle = tls_ctx_alloc (ho_ctx->tls_ctx_engine);
   ctx = tls_ctx_get (ctx_handle);
-  clib_memcpy (ctx, ho_ctx, sizeof (*ctx));
+  clib_memcpy_fast (ctx, ho_ctx, sizeof (*ctx));
   tls_ctx_half_open_reader_unlock ();
   tls_ctx_half_open_free (ho_ctx_index);
 
@@ -511,10 +511,10 @@ static session_cb_vft_t tls_app_cb_vft = {
 /* *INDENT-ON* */
 
 int
-tls_connect (transport_endpoint_t * tep)
+tls_connect (transport_endpoint_cfg_t * tep)
 {
   vnet_connect_args_t _cargs = { {}, }, *cargs = &_cargs;
-  session_endpoint_extended_t *sep;
+  session_endpoint_cfg_t *sep;
   tls_engine_type_t engine_type;
   tls_main_t *tm = &tls_main;
   app_worker_t *app_wrk;
@@ -523,7 +523,7 @@ tls_connect (transport_endpoint_t * tep)
   tls_ctx_t *ctx;
   u32 ctx_index;
 
-  sep = (session_endpoint_extended_t *) tep;
+  sep = (session_endpoint_cfg_t *) tep;
   app_wrk = app_worker_get (sep->app_wrk_index);
   app = application_get (app_wrk->app_index);
   engine_type = tls_get_engine_type (app->tls_engine);
@@ -548,7 +548,7 @@ tls_connect (transport_endpoint_t * tep)
   app_worker_alloc_connects_segment_manager (app_wrk);
   ctx->tls_ctx_engine = engine_type;
 
-  clib_memcpy (&cargs->sep, sep, sizeof (session_endpoint_t));
+  clib_memcpy_fast (&cargs->sep, sep, sizeof (session_endpoint_t));
   cargs->sep.transport_proto = TRANSPORT_PROTO_TCP;
   cargs->app_index = tm->app_index;
   cargs->api_context = ctx_index;
@@ -579,7 +579,7 @@ tls_start_listen (u32 app_listener_index, transport_endpoint_t * tep)
   app_worker_t *app_wrk;
   tls_main_t *tm = &tls_main;
   session_handle_t tls_handle;
-  session_endpoint_extended_t *sep;
+  session_endpoint_cfg_t *sep;
   stream_session_t *tls_listener;
   stream_session_t *app_listener;
   tls_engine_type_t engine_type;
@@ -587,7 +587,7 @@ tls_start_listen (u32 app_listener_index, transport_endpoint_t * tep)
   tls_ctx_t *lctx;
   u32 lctx_index;
 
-  sep = (session_endpoint_extended_t *) tep;
+  sep = (session_endpoint_cfg_t *) tep;
   app_wrk = app_worker_get (sep->app_wrk_index);
   app = application_get (app_wrk->app_index);
   engine_type = tls_get_engine_type (app->tls_engine);
@@ -598,7 +598,7 @@ tls_start_listen (u32 app_listener_index, transport_endpoint_t * tep)
     }
 
   sep->transport_proto = TRANSPORT_PROTO_TCP;
-  memset (args, 0, sizeof (*args));
+  clib_memset (args, 0, sizeof (*args));
   args->app_index = tm->app_index;
   args->sep_ext = *sep;
   if (vnet_bind (args))
@@ -762,8 +762,8 @@ tls_init (vlib_main_t * vm)
 
   num_threads = 1 /* main thread */  + vtm->n_threads;
 
-  memset (a, 0, sizeof (*a));
-  memset (options, 0, sizeof (options));
+  clib_memset (a, 0, sizeof (*a));
+  clib_memset (options, 0, sizeof (options));
 
   a->session_cb_vft = &tls_app_cb_vft;
   a->api_client_index = APP_INVALID_INDEX;

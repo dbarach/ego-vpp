@@ -132,7 +132,7 @@ add_buffer_to_slot (vlib_main_t * vm, virtio_vring_t * vring, u32 bi,
   vlib_buffer_t *b = vlib_get_buffer (vm, bi);
   struct virtio_net_hdr_v1 *hdr = vlib_buffer_get_current (b) - hdr_sz;
 
-  memset (hdr, 0, hdr_sz);
+  clib_memset (hdr, 0, hdr_sz);
 
   if (PREDICT_TRUE ((b->flags & VLIB_BUFFER_NEXT_PRESENT) == 0))
     {
@@ -180,7 +180,7 @@ virtio_interface_tx_inline (vlib_main_t * vm, vlib_node_runtime_t * node,
   u16 used, next, avail;
   u16 sz = vring->size;
   u16 mask = sz - 1;
-  u32 *buffers = vlib_frame_args (frame);
+  u32 *buffers = vlib_frame_vector_args (frame);
 
   clib_spinlock_lock_if_init (&vif->lockp);
 
@@ -288,14 +288,12 @@ virtio_interface_admin_up_down (vnet_main_t * vnm, u32 hw_if_index, u32 flags)
   virtio_main_t *mm = &virtio_main;
   vnet_hw_interface_t *hw = vnet_get_hw_interface (vnm, hw_if_index);
   virtio_if_t *vif = pool_elt_at_index (mm->interfaces, hw->dev_instance);
-  static clib_error_t *error = 0;
 
   if (flags & VNET_SW_INTERFACE_FLAG_ADMIN_UP)
     vif->flags |= VIRTIO_IF_FLAG_ADMIN_UP;
   else
     vif->flags &= ~VIRTIO_IF_FLAG_ADMIN_UP;
 
-  return error;
   return 0;
 }
 

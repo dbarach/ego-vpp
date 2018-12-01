@@ -38,7 +38,7 @@ vmxnet3_create_command_fn (vlib_main_t * vm, unformat_input_t * input,
   if (!unformat_user (input, unformat_line_input, line_input))
     return 0;
 
-  memset (&args, 0, sizeof (args));
+  clib_memset (&args, 0, sizeof (args));
   while (unformat_check_input (line_input) != UNFORMAT_END_OF_INPUT)
     {
       if (unformat (line_input, "%U", unformat_vlib_pci_addr, &args.addr))
@@ -567,9 +567,12 @@ VLIB_CLI_COMMAND (show_vmxnet3_command, static) = {
 clib_error_t *
 vmxnet3_cli_init (vlib_main_t * vm)
 {
+  vmxnet3_main_t *vmxm = &vmxnet3_main;
+
   /* initialize binary API */
   vmxnet3_plugin_api_hookup (vm);
 
+  vmxm->log_default = vlib_log_register_class ("vmxnet3", 0);
   return 0;
 }
 

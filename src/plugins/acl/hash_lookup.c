@@ -280,7 +280,7 @@ assign_mask_type_index(acl_main_t *am, fa_5tuple_t *mask)
   if(~0 == mask_type_index) {
     pool_get_aligned (am->ace_mask_type_pool, mte, CLIB_CACHE_LINE_BYTES);
     mask_type_index = mte - am->ace_mask_type_pool;
-    clib_memcpy(&mte->mask, mask, sizeof(mte->mask));
+    clib_memcpy_fast(&mte->mask, mask, sizeof(mte->mask));
     mte->refcount = 0;
 
     /*
@@ -315,7 +315,7 @@ release_mask_type_index(acl_main_t *am, u32 mask_type_index)
   DBG0("RELEAS MTE index %d new refcount %d", mask_type_index, mte->refcount);
   if (mte->refcount == 0) {
     /* we are not using this entry anymore */
-    memset(mte, 0xae, sizeof(*mte));
+    clib_memset(mte, 0xae, sizeof(*mte));
     pool_put(am->ace_mask_type_pool, mte);
   }
 }
@@ -607,6 +607,17 @@ hash_acl_set_heap(acl_main_t *am)
         clib_error("ACL plugin failed to allocate lookup heap of %U bytes", 
                    format_memory_size, am->hash_lookup_mheap_size);
     }
+#if USE_DLMALLOC != 0
+    /*
+     * DLMALLOC is being "helpful" in that it ignores the heap size parameter
+     * by default and tries to allocate the larger amount of memory.
+     *
+     * Pin the heap so this does not happen and if we run out of memory
+     * in this heap, we will bail out with "out of memory", rather than
+     * an obscure error sometime later.
+     */
+    mspace_disable_expand(am->hash_lookup_mheap);
+#endif
   }
   void *oldheap = clib_mem_set_heap(am->hash_lookup_mheap);
   return oldheap;
@@ -736,6 +747,14 @@ hash_acl_apply(acl_main_t *am, u32 lc_index, int acl_index, u32 acl_position)
 
 
   vec_validate(am->hash_applied_mask_info_vec_by_lc_index, lc_index);
+
+  /* since we know (in case of no split) how much we expand, preallocate that space */
+  if (vec_len(ha->rules) > 0) {
+    int old_vec_len = vec_len(*applied_hash_aces);
+    vec_validate((*applied_hash_aces), old_vec_len + vec_len(ha->rules) - 1);
+    _vec_len((*applied_hash_aces)) = old_vec_len;
+  }
+
   /* add the rules from the ACL to the hash table for lookup and append to the vector*/
   for(i=0; i < vec_len(ha->rules); i++) {
     /*
@@ -1057,7 +1076,7 @@ ip4_address_mask_from_width (ip4_address_t * a, u32 width)
 {
   int i, byte, bit, bitnum;
   ASSERT (width <= 32);
-  memset (a, 0, sizeof (a[0]));
+  clib_memset (a, 0, sizeof (a[0]));
   for (i = 0; i < width; i++)
     {
       bitnum = (7 - (i & 7));
@@ -1090,8 +1109,8 @@ make_port_mask(u16 *portmask, u16 port_first, u16 port_last)
 static void
 make_mask_and_match_from_rule(fa_5tuple_t *mask, acl_rule_t *r, hash_ace_info_t *hi)
 {
-  memset(mask, 0, sizeof(*mask));
-  memset(&hi->match, 0, sizeof(hi->match));
+  clib_memset(mask, 0, sizeof(*mask));
+  clib_memset(&hi->match, 0, sizeof(hi->match));
   hi->action = r->is_permit;
 
   /* we will need to be matching based on lc_index and mask_type_index when applied */
@@ -1107,7 +1126,7 @@ make_mask_and_match_from_rule(fa_5tuple_t *mask, acl_rule_t *r, hash_ace_info_t 
     make_ip6_address_mask(&mask->ip6_addr[1], r->dst_prefixlen);
     hi->match.ip6_addr[1] = r->dst.ip6;
   } else {
-    memset(hi->match.l3_zero_pad, 0, sizeof(hi->match.l3_zero_pad));
+    clib_memset(hi->match.l3_zero_pad, 0, sizeof(hi->match.l3_zero_pad));
     make_ip4_address_mask(&mask->ip4_addr[0], r->src_prefixlen);
     hi->match.ip4_addr[0] = r->src.ip4;
     make_ip4_address_mask(&mask->ip4_addr[1], r->dst_prefixlen);
@@ -1166,15 +1185,22 @@ void hash_acl_add(acl_main_t *am, int acl_index)
   acl_list_t *a = &am->acls[acl_index];
   vec_validate(am->hash_acl_infos, acl_index);
   hash_acl_info_t *ha = vec_elt_at_index(am->hash_acl_infos, acl_index);
-  memset(ha, 0, sizeof(*ha));
+  clib_memset(ha, 0, sizeof(*ha));
   ha->hash_acl_exists = 1;
 
   /* walk the newly added ACL entries and ensure that for each of them there
      is a mask type, increment a reference count for that mask type */
+
+  /* avoid small requests by preallocating the entire vector before running the additions */
+  if (a->count > 0) {
+    vec_validate(ha->rules, a->count-1);
+    vec_reset_length(ha->rules);
+  }
+
   for(i=0; i < a->count; i++) {
     hash_ace_info_t ace_info;
     fa_5tuple_t mask;
-    memset(&ace_info, 0, sizeof(ace_info));
+    clib_memset(&ace_info, 0, sizeof(ace_info));
     ace_info.acl_index = acl_index;
     ace_info.ace_index = i;
 
@@ -1481,8 +1507,8 @@ split_partition(acl_main_t *am, u32 first_index,
 	hash_acl_info_t *ha = vec_elt_at_index(am->hash_acl_infos, pae->acl_index);
 	hash_ace_info_t *ace_info;
 	u32 coll_mask_type_index = pae->mask_type_index;
-        memset(&the_min_tuple, 0, sizeof(the_min_tuple));
-        memset(&the_max_tuple, 0, sizeof(the_max_tuple));
+        clib_memset(&the_min_tuple, 0, sizeof(the_min_tuple));
+        clib_memset(&the_max_tuple, 0, sizeof(the_max_tuple));
 
 	int i=0;
 	u64 collisions = vec_len(pae->colliding_rules);
@@ -1500,8 +1526,8 @@ split_partition(acl_main_t *am, u32 first_index,
 		if(pae->mask_type_index != coll_mask_type_index) continue;
 		/* Computing min_mask and max_mask for colliding rules */
 		if(i==0){
-			clib_memcpy(min_tuple, mask, sizeof(fa_5tuple_t));
-			clib_memcpy(max_tuple, mask, sizeof(fa_5tuple_t));
+                        clib_memcpy_fast(min_tuple, mask, sizeof(fa_5tuple_t));
+			clib_memcpy_fast(max_tuple, mask, sizeof(fa_5tuple_t));
 		}else{
 			int j;
 			for(j=0; j<2; j++){

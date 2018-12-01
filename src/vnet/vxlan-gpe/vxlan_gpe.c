@@ -509,7 +509,7 @@ int vnet_vxlan_gpe_add_del_tunnel
 	return VNET_API_ERROR_TUNNEL_EXIST;
 
       pool_get_aligned (ngm->tunnels, t, CLIB_CACHE_LINE_BYTES);
-      memset (t, 0, sizeof (*t));
+      clib_memset (t, 0, sizeof (*t));
 
       /* copy from arg structure */
 /* *INDENT-OFF* */
@@ -543,14 +543,14 @@ int vnet_vxlan_gpe_add_del_tunnel
       if (!is_ip6)
 	{
 	  key4_copy = clib_mem_alloc (sizeof (*key4_copy));
-	  clib_memcpy (key4_copy, &key4, sizeof (*key4_copy));
+	  clib_memcpy_fast (key4_copy, &key4, sizeof (*key4_copy));
 	  hash_set_mem (ngm->vxlan4_gpe_tunnel_by_key, key4_copy,
 			t - ngm->tunnels);
 	}
       else
 	{
 	  key6_copy = clib_mem_alloc (sizeof (*key6_copy));
-	  clib_memcpy (key6_copy, &key6, sizeof (*key6_copy));
+	  clib_memcpy_fast (key6_copy, &key6, sizeof (*key6_copy));
 	  hash_set_mem (ngm->vxlan6_gpe_tunnel_by_key, key6_copy,
 			t - ngm->tunnels);
 	}
@@ -914,7 +914,7 @@ vxlan_gpe_add_del_tunnel_command_fn (vlib_main_t * vm,
       goto done;
     }
 
-  memset (a, 0, sizeof (*a));
+  clib_memset (a, 0, sizeof (*a));
 
   a->is_add = is_add;
   a->is_ip6 = ipv6_set;

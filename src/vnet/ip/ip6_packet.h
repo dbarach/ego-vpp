@@ -280,7 +280,7 @@ ip6_address_mask_from_width (ip6_address_t * a, u32 width)
 {
   int i, byte, bit, bitnum;
   ASSERT (width <= 128);
-  memset (a, 0, sizeof (a[0]));
+  clib_memset (a, 0, sizeof (a[0]));
   for (i = 0; i < width; i++)
     {
       bitnum = (7 - (i & 7));
@@ -345,6 +345,18 @@ ip6_is_solicited_node_multicast_address (const ip6_address_t * a)
 	  && a->as_u32[1] == 0
 	  && a->as_u32[2] == clib_host_to_net_u32 (1)
 	  && a->as_u8[12] == 0xff);
+}
+
+always_inline u32
+ip6_address_hash_to_u32 (const ip6_address_t * a)
+{
+  return (a->as_u32[0] ^ a->as_u32[1] ^ a->as_u32[2] ^ a->as_u32[3]);
+}
+
+always_inline u64
+ip6_address_hash_to_u64 (const ip6_address_t * a)
+{
+  return (a->as_u64[0] ^ a->as_u64[1]);
 }
 
 typedef struct

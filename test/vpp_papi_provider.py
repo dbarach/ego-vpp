@@ -1,8 +1,11 @@
-import os
 import fnmatch
+import os
 import time
-from hook import Hook
 from collections import deque
+
+from six import moves
+
+from hook import Hook
 
 # Sphinx creates auto-generated documentation by importing the python source
 # files and collecting the docstrings from them. The NO_VPP_PAPI flag allows
@@ -18,6 +21,7 @@ except:
 
 if do_import:
     from vpp_papi import VPP
+    from vpp_l2 import L2_PORT_TYPE
 
 # from vnet/vnet/mpls/mpls_types.h
 MPLS_IETF_MAX_LABEL = 0xfffff
@@ -43,19 +47,15 @@ class QOS_SOURCE:
     IP = 3
 
 
-class L2_PORT_TYPE:
-    NORMAL = 0
-    BVI = 1
-    UU_FWD = 2
-
-
-class BRIDGE_FLAGS:
-    NONE = 0
-    LEARN = 1
-    FWD = 2
-    FLOOD = 4
-    UU_FLOOD = 8
-    ARP_TERM = 16
+class SYSLOG_SEVERITY:
+    EMERG = 0
+    ALERT = 1
+    CRIT = 2
+    ERR = 3
+    WARN = 4
+    NOTICE = 5
+    INFO = 6
+    DBG = 7
 
 
 class UnexpectedApiReturnValueError(Exception):
@@ -80,7 +80,7 @@ class VppPapiProvider(object):
         self._expect_stack = []
         jsonfiles = []
 
-        install_dir = os.getenv('VPP_TEST_INSTALL_PATH')
+        install_dir = os.getenv('VPP_INSTALL_PATH')
         for root, dirnames, filenames in os.walk(install_dir):
             for filename in fnmatch.filter(filenames, '*.api.json'):
                 jsonfiles.append(os.path.join(root, filename))
@@ -92,14 +92,23 @@ class VppPapiProvider(object):
     def __enter__(self):
         return self
 
-    def expect_negative_api_retval(self):
-        """ Expect API failure """
+    def assert_negative_api_retval(self):
+        """ Expect API failure - used with with, e.g.:
+            with self.vapi.assert_negative_api_retval():
+                self.vapi.<api call expected to fail>
+        """
         self._expect_stack.append(self._expect_api_retval)
         self._expect_api_retval = self._negative
         return self
 
-    def expect_zero_api_retval(self):
-        """ Expect API success """
+    def assert_zero_api_retval(self):
+        """ Expect API success - used with with, e.g.:
+            with self.vapi.assert_negative_api_retval():
+                self.vapi.<api call expected to succeed>
+
+            note: this is useful only inside another with block
+                  as success is the default expected value
+        """
         self._expect_stack.append(self._expect_api_retval)
         self._expect_api_retval = self._zero
         return self
@@ -178,14 +187,14 @@ class VppPapiProvider(object):
             if hasattr(reply, 'retval') and reply.retval >= 0:
                 msg = "API call passed unexpectedly: expected negative "\
                     "return value instead of %d in %s" % \
-                    (reply.retval, repr(reply))
+                    (reply.retval, moves.reprlib.repr(reply))
                 self.test_class.logger.info(msg)
                 raise UnexpectedApiReturnValueError(msg)
         elif self._expect_api_retval == self._zero:
             if hasattr(reply, 'retval') and reply.retval != expected_retval:
                 msg = "API call failed, expected %d return value instead "\
                     "of %d in %s" % (expected_retval, reply.retval,
-                                     repr(reply))
+                                     moves.reprlib.repr(reply))
                 self.test_class.logger.info(msg)
                 raise UnexpectedApiReturnValueError(msg)
         else:
@@ -257,6 +266,17 @@ class VppPapiProvider(object):
                         {'sw_if_index': sw_if_index, 'is_ipv6': is_ipv6,
                          'vrf_id': table_id})
 
+    def sw_interface_get_table(self, sw_if_index, is_ipv6):
+        """ Get the IPvX Table-id for the Interface
+
+        :param sw_if_index:
+        :param is_ipv6:
+        :return table_id
+
+        """
+        return self.api(self.papi.sw_interface_get_table,
+                        {'sw_if_index': sw_if_index, 'is_ipv6': is_ipv6})
+
     def sw_interface_add_del_address(self, sw_if_index, addr, addr_len,
                                      is_ipv6=0, is_add=1, del_all=0):
         """
@@ -276,6 +296,11 @@ class VppPapiProvider(object):
                          'del_all': del_all,
                          'address_length': addr_len,
                          'address': addr})
+
+    def ip_address_dump(self, sw_if_index, is_ipv6=0):
+        return self.api(self.papi.ip_address_dump,
+                        {'sw_if_index': sw_if_index,
+                         'is_ipv6': is_ipv6})
 
     def sw_interface_set_unnumbered(self, sw_if_index, ip_sw_if_index,
                                     is_add=1):
@@ -477,9 +502,12 @@ class VppPapiProvider(object):
         return self.api(self.papi.bd_ip_mac_add_del,
                         {'bd_id': bd_id,
                          'is_add': is_add,
-                         'is_ipv6': is_ipv6,
-                         'ip_address': ip,
-                         'mac_address': mac})
+                         'ip': ip,
+                         'mac': mac})
+
+    def bd_ip_mac_dump(self, bd_id):
+        return self.api(self.papi.bd_ip_mac_dump,
+                        {'bd_id': bd_id})
 
     def want_ip4_arp_events(self, enable_disable=1, address=0):
         return self.api(self.papi.want_ip4_arp_events,
@@ -646,6 +674,11 @@ class VppPapiProvider(object):
         """Flush all L2 FIB.
         """
         return self.api(self.papi.l2fib_flush_all, {})
+
+    def l2_fib_table_dump(self, bd_id):
+        """ Dump the L2 FIB """
+        return self.api(self.papi.l2_fib_table_dump,
+                        {'bd_id': bd_id})
 
     def sw_interface_set_l2_bridge(self, sw_if_index, bd_id,
                                    shg=0, port_type=L2_PORT_TYPE.NORMAL,
@@ -2668,11 +2701,8 @@ class VppPapiProvider(object):
 
     def map_add_domain(self,
                        ip6_prefix,
-                       ip6_prefix_len,
                        ip6_src,
-                       ip6_src_prefix_len,
                        ip4_prefix,
-                       ip4_prefix_len,
                        ea_bits_len=0,
                        psid_offset=0,
                        psid_length=0,
@@ -2683,11 +2713,8 @@ class VppPapiProvider(object):
             self.papi.map_add_domain,
             {
                 'ip6_prefix': ip6_prefix,
-                'ip6_prefix_len': ip6_prefix_len,
                 'ip4_prefix': ip4_prefix,
-                'ip4_prefix_len': ip4_prefix_len,
                 'ip6_src': ip6_src,
-                'ip6_src_prefix_len': ip6_src_prefix_len,
                 'ea_bits_len': ea_bits_len,
                 'psid_offset': psid_offset,
                 'psid_length': psid_length,
@@ -2771,7 +2798,6 @@ class VppPapiProvider(object):
             is_add=1,
             is_ipv6=0,
             encap_table_id=0,
-            decap_next_index=0xFFFFFFFF,
             vni=0,
             instance=0xFFFFFFFF):
         """
@@ -2794,7 +2820,6 @@ class VppPapiProvider(object):
                              'dst': dst,
                              'mcast_sw_if_index': mcast_sw_if_index,
                              'encap_table_id': encap_table_id,
-                             'decap_next_index': decap_next_index,
                              'vni': vni,
                              'instance': instance}})
 
@@ -3143,15 +3168,18 @@ class VppPapiProvider(object):
     def ip_punt_redirect(self,
                          rx_sw_if_index,
                          tx_sw_if_index,
-                         nh,
-                         is_ip6=0,
+                         address,
                          is_add=1):
         return self.api(self.papi.ip_punt_redirect,
-                        {'rx_sw_if_index': rx_sw_if_index,
-                         'tx_sw_if_index': tx_sw_if_index,
-                         'nh': nh,
-                         'is_add': is_add,
-                         'is_ip6': is_ip6})
+                        {'punt': {'rx_sw_if_index': rx_sw_if_index,
+                                  'tx_sw_if_index': tx_sw_if_index,
+                                  'nh': address},
+                         'is_add': is_add})
+
+    def ip_punt_redirect_dump(self, sw_if_index, is_ipv6=0):
+        return self.api(self.papi.ip_punt_redirect_dump,
+                        {'sw_if_index': sw_if_index,
+                         'is_ipv6': is_ipv6})
 
     def bier_table_add_del(self,
                            bti,
@@ -3435,6 +3463,13 @@ class VppPapiProvider(object):
              'show_instance': show_instance
              })
 
+    def ipsec_select_backend(self, protocol, index):
+        return self.api(self.papi.ipsec_select_backend,
+                        {'protocol': protocol, 'index': index})
+
+    def ipsec_backend_dump(self):
+        return self.api(self.papi.ipsec_backend_dump, {})
+
     def app_namespace_add(self,
                           namespace_id,
                           ip4_fib_id=0,
@@ -3482,15 +3517,22 @@ class VppPapiProvider(object):
                          'enable_ip6': 1 if enable_ip6 else 0,
                          })
 
-    def gbp_endpoint_add(self, sw_if_index, ips, mac, epg):
+    def gbp_endpoint_add(self, sw_if_index, ips, mac, epg, flags,
+                         tun_src, tun_dst):
         """ GBP endpoint Add """
         return self.api(self.papi.gbp_endpoint_add,
                         {'endpoint': {
                             'sw_if_index': sw_if_index,
+                            'flags': 0,
                             'ips': ips,
                             'n_ips': len(ips),
                             'mac': mac,
-                            'epg_id': epg}})
+                            'epg_id': epg,
+                            'flags': flags,
+                            'tun': {
+                                'src': tun_src,
+                                'dst': tun_dst,
+                            }}})
 
     def gbp_endpoint_del(self, handle):
         """ GBP endpoint Del """
@@ -3501,23 +3543,73 @@ class VppPapiProvider(object):
         """ GBP endpoint Dump """
         return self.api(self.papi.gbp_endpoint_dump, {})
 
-    def gbp_endpoint_group_add_del(self, is_add, epg, bd,
-                                   ip4_rd,
-                                   ip6_rd,
-                                   uplink_sw_if_index):
-        """ GBP endpoint group Add/Del """
-        return self.api(self.papi.gbp_endpoint_group_add_del,
-                        {'is_add': is_add,
-                         'epg': {
+    def gbp_endpoint_group_add(self, epg, bd,
+                               rd, uplink_sw_if_index):
+        """ GBP endpoint group Add """
+        return self.api(self.papi.gbp_endpoint_group_add,
+                        {'epg':
+                         {
                              'uplink_sw_if_index': uplink_sw_if_index,
                              'bd_id': bd,
-                             'ip4_table_id': ip4_rd,
-                             'ip6_table_id': ip6_rd,
-                             'epg_id': epg}})
+                             'rd_id': rd,
+                             'epg_id': epg
+                         }})
+
+    def gbp_endpoint_group_del(self, epg):
+        """ GBP endpoint group Del """
+        return self.api(self.papi.gbp_endpoint_group_del,
+                        {'epg_id': epg})
 
     def gbp_endpoint_group_dump(self):
         """ GBP endpoint group Dump """
         return self.api(self.papi.gbp_endpoint_group_dump, {})
+
+    def gbp_bridge_domain_add(self, bd_id, flags,
+                              bvi_sw_if_index,
+                              uu_fwd_sw_if_index):
+        """ GBP bridge-domain Add """
+        return self.api(self.papi.gbp_bridge_domain_add,
+                        {'bd':
+                         {
+                             'flags': flags,
+                             'bvi_sw_if_index': bvi_sw_if_index,
+                             'uu_fwd_sw_if_index': uu_fwd_sw_if_index,
+                             'bd_id': bd_id
+                         }})
+
+    def gbp_bridge_domain_del(self, bd_id):
+        """ GBP bridge-domain Del """
+        return self.api(self.papi.gbp_bridge_domain_del,
+                        {'bd_id': bd_id})
+
+    def gbp_bridge_domain_dump(self):
+        """ GBP Bridge Domain Dump """
+        return self.api(self.papi.gbp_bridge_domain_dump, {})
+
+    def gbp_route_domain_add(self, rd_id,
+                             ip4_table_id,
+                             ip6_table_id,
+                             ip4_uu_sw_if_index,
+                             ip6_uu_sw_if_index):
+        """ GBP route-domain Add """
+        return self.api(self.papi.gbp_route_domain_add,
+                        {'rd':
+                         {
+                             'ip4_table_id': ip4_table_id,
+                             'ip6_table_id': ip6_table_id,
+                             'ip4_uu_sw_if_index': ip4_uu_sw_if_index,
+                             'ip6_uu_sw_if_index': ip6_uu_sw_if_index,
+                             'rd_id': rd_id
+                         }})
+
+    def gbp_route_domain_del(self, rd_id):
+        """ GBP route-domain Del """
+        return self.api(self.papi.gbp_route_domain_del,
+                        {'rd_id': rd_id})
+
+    def gbp_route_domain_dump(self):
+        """ GBP Route Domain Dump """
+        return self.api(self.papi.gbp_route_domain_dump, {})
 
     def gbp_recirc_add_del(self, is_add, sw_if_index, epg, is_ext):
         """ GBP recirc Add/Del """
@@ -3532,39 +3624,78 @@ class VppPapiProvider(object):
         """ GBP recirc Dump """
         return self.api(self.papi.gbp_recirc_dump, {})
 
-    def gbp_subnet_add_del(self, is_add, table_id,
-                           is_internal,
-                           prefix,
+    def gbp_ext_itf_add_del(self, is_add, sw_if_index, bd_id, rd_id):
+        """ GBP recirc Add/Del """
+        return self.api(self.papi.gbp_ext_itf_add_del,
+                        {'is_add': is_add,
+                         'ext_itf': {
+                             'sw_if_index': sw_if_index,
+                             'bd_id': bd_id,
+                             'rd_id': rd_id}})
+
+    def gbp_ext_itf_dump(self):
+        """ GBP recirc Dump """
+        return self.api(self.papi.gbp_ext_itf_dump, {})
+
+    def gbp_subnet_add_del(self, is_add, rd_id,
+                           prefix, type,
                            sw_if_index=0xffffffff,
-                           epg_id=0xffff,
-                           is_ip6=False):
+                           epg_id=0xffff):
         """ GBP Subnet Add/Del """
         return self.api(self.papi.gbp_subnet_add_del,
                         {'is_add': is_add,
                          'subnet': {
-                             'is_internal': is_internal,
-                             'is_ip6': is_ip6,
+                             'type': type,
                              'sw_if_index': sw_if_index,
                              'epg_id': epg_id,
                              'prefix': prefix,
-                             'table_id': table_id}})
+                             'rd_id': rd_id}})
 
     def gbp_subnet_dump(self):
         """ GBP Subnet Dump """
         return self.api(self.papi.gbp_subnet_dump, {})
 
-    def gbp_contract_add_del(self, is_add, src_epg, dst_epg, acl_index):
+    def gbp_contract_add_del(self, is_add, src_epg, dst_epg, acl_index, rules):
         """ GBP contract Add/Del """
         return self.api(self.papi.gbp_contract_add_del,
                         {'is_add': is_add,
                          'contract': {
                              'acl_index': acl_index,
                              'src_epg': src_epg,
-                             'dst_epg': dst_epg}})
+                             'dst_epg': dst_epg,
+                             'n_rules': len(rules),
+                             'rules': rules}})
 
     def gbp_contract_dump(self):
         """ GBP contract Dump """
         return self.api(self.papi.gbp_contract_dump, {})
+
+    def gbp_endpoint_learn_set_inactive_threshold(self, threshold):
+        """ GBP set inactive threshold """
+        return self.api(self.papi.gbp_endpoint_learn_set_inactive_threshold,
+                        {'threshold': threshold})
+
+    def gbp_vxlan_tunnel_add(self, vni, bd_rd_id, mode):
+        """ GBP VXLAN tunnel add """
+        return self.api(self.papi.gbp_vxlan_tunnel_add,
+                        {
+                            'tunnel': {
+                                'vni': vni,
+                                'mode': mode,
+                                'bd_rd_id': bd_rd_id
+                            }
+                        })
+
+    def gbp_vxlan_tunnel_del(self, vni):
+        """ GBP VXLAN tunnel del """
+        return self.api(self.papi.gbp_vxlan_tunnel_del,
+                        {
+                            'vni': vni,
+                        })
+
+    def gbp_vxlan_tunnel_dump(self):
+        """ GBP VXLAN tunnel add/del """
+        return self.api(self.papi.gbp_vxlan_tunnel_dump, {})
 
     def ipip_6rd_add_tunnel(self, ip6_table_id, ip6_prefix, ip6_prefix_len,
                             ip4_table_id, ip4_prefix, ip4_prefix_len, ip4_src,
@@ -3919,3 +4050,42 @@ class VppPapiProvider(object):
 
     def svs_dump(self):
         return self.api(self.papi.svs_dump, {})
+
+    def syslog_set_sender(
+            self,
+            collector,
+            src,
+            collector_port=514,
+            vrf_id=0,
+            max_msg_size=480):
+        """Set syslog sender configuration
+
+        :param collector: colector IP address
+        :param src: source IP address
+        :param collector_port: collector UDP port (Default value = 514)
+        :param vrf_id: VRF id (Default value = 0)
+        :param max_msg_size: maximum message length (Default value = 480)
+        """
+        return self.api(self.papi.syslog_set_sender,
+                        {'collector_address': {
+                             'address': collector},
+                         'src_address': {
+                             'address': src},
+                         'collector_port': collector_port,
+                         'vrf_id': vrf_id,
+                         'max_msg_size': max_msg_size})
+
+    def syslog_get_sender(self):
+        """Return syslog sender configuration"""
+        return self.api(self.papi.syslog_get_sender, {})
+
+    def syslog_set_filter(self, severity):
+        """Set syslog filter parameters
+
+        :param severity: severity filter (specified severity and greater match)
+        """
+        return self.api(self.papi.syslog_set_filter, {'severity': severity})
+
+    def syslog_get_filter(self):
+        """Return syslog filter parameters"""
+        return self.api(self.papi.syslog_get_filter, {})

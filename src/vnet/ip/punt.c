@@ -270,7 +270,7 @@ punt_socket_register (bool is_ip4, u8 protocol, u16 port,
   punt_client_t *v = is_ip4 ? pm->clients_by_dst_port4 :
     pm->clients_by_dst_port6;
 
-  memset (&c, 0, sizeof (c));
+  clib_memset (&c, 0, sizeof (c));
   memcpy (c.caddr.sun_path, client_pathname, sizeof (c.caddr.sun_path));
   c.caddr.sun_family = AF_UNIX;
   c.port = port;
@@ -312,7 +312,7 @@ udp46_punt_socket_inline (vlib_main_t * vm,
 			  vlib_node_runtime_t * node,
 			  vlib_frame_t * frame, bool is_ip4)
 {
-  u32 *buffers = vlib_frame_args (frame);
+  u32 *buffers = vlib_frame_vector_args (frame);
   uword n_packets = frame->n_vectors;
   struct iovec *iovecs = 0;
   punt_main_t *pm = &punt_main;
@@ -368,7 +368,7 @@ udp46_punt_socket_inline (vlib_main_t * vm,
 	  c = punt_client_get (is_ip4, port);
 	  udp_punt_trace_t *t;
 	  t = vlib_add_trace (vm, node, b, sizeof (t[0]));
-	  clib_memcpy (&t->client, c, sizeof (t->client));
+	  clib_memcpy_fast (&t->client, c, sizeof (t->client));
 	}
 
       /* Re-set iovecs if present. */
@@ -401,7 +401,7 @@ udp46_punt_socket_inline (vlib_main_t * vm,
 		    }
 		  udp_punt_trace_t *t;
 		  t = vlib_add_trace (vm, node, b, sizeof (t[0]));
-		  clib_memcpy (&t->client, c, sizeof (t->client));
+		  clib_memcpy_fast (&t->client, c, sizeof (t->client));
 		  t->is_midchain = 1;
 		}
 
@@ -866,7 +866,7 @@ punt_config (vlib_main_t * vm, unformat_input_t * input)
       return clib_error_return (0, "socket error");
     }
 
-  memset (&addr, 0, sizeof (addr));
+  clib_memset (&addr, 0, sizeof (addr));
   addr.sun_family = AF_UNIX;
   if (*socket_path == '\0')
     {

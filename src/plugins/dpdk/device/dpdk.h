@@ -44,7 +44,7 @@
 #include <rte_bus_pci.h>
 #include <rte_flow.h>
 
-#include <vnet/unix/pcap.h>
+#include <vppinfra/pcap.h>
 #include <vnet/devices/devices.h>
 
 #if CLIB_DEBUG > 0
@@ -86,7 +86,8 @@ extern vlib_node_registration_t admin_up_down_process_node;
   _ ("net_ena", ENA)              \
   _ ("net_failsafe", FAILSAFE)    \
   _ ("net_liovf", LIOVF_ETHER)    \
-  _ ("net_qede", QEDE)
+  _ ("net_qede", QEDE)		  \
+  _ ("net_netvsc", NETVSC)
 
 typedef enum
 {
@@ -116,6 +117,7 @@ typedef enum
   VNET_DPDK_PORT_TYPE_VIRTIO_USER,
   VNET_DPDK_PORT_TYPE_VHOST_ETHER,
   VNET_DPDK_PORT_TYPE_FAILSAFE,
+  VNET_DPDK_PORT_TYPE_NETVSC,
   VNET_DPDK_PORT_TYPE_UNKNOWN,
 } dpdk_port_type_t;
 
@@ -167,7 +169,8 @@ typedef struct
   _( 8, BOND_SLAVE_UP, "bond-slave-up") \
   _( 9, TX_OFFLOAD, "tx-offload") \
   _(10, INTEL_PHDR_CKSUM, "intel-phdr-cksum") \
-  _(11, RX_FLOW_OFFLOAD, "rx-flow-offload")
+  _(11, RX_FLOW_OFFLOAD, "rx-flow-offload") \
+  _(12, RX_IP4_CKSUM, "rx-ip4-cksum")
 
 enum
 {
@@ -215,6 +218,7 @@ typedef struct
   u16 nb_tx_desc;
     CLIB_CACHE_LINE_ALIGN_MARK (cacheline1);
 
+  u8 *name;
   u8 *interface_name_suffix;
 
   /* number of sub-interfaces */
@@ -329,6 +333,7 @@ void dpdk_hqos_metadata_set (dpdk_device_hqos_per_worker_thread_t * hqos,
 typedef struct
 {
   vlib_pci_addr_t pci_addr;
+  u8 *name;
   u8 is_blacklisted;
   u8 vlan_strip_offload;
 #define DPDK_DEVICE_VLAN_STRIP_DEFAULT 0
@@ -525,8 +530,7 @@ clib_error_t *unformat_hqos (unformat_input_t * input,
 clib_error_t *dpdk_pool_create (vlib_main_t * vm, u8 * pool_name,
 				u32 elt_size, u32 num_elts,
 				u32 pool_priv_size, u16 cache_size, u8 numa,
-				struct rte_mempool **_mp,
-				vlib_physmem_region_index_t * pri);
+				struct rte_mempool **_mp, u32 * map_index);
 
 clib_error_t *dpdk_buffer_pool_create (vlib_main_t * vm, unsigned num_mbufs,
 				       unsigned socket_id);

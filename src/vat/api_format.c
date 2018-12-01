@@ -18,6 +18,7 @@
  */
 
 #include <vat/vat.h>
+#include <vpp/api/types.h>
 #include <vppinfra/socket.h>
 #include <vlibapi/api.h>
 #include <vlibmemory/api.h>
@@ -53,6 +54,8 @@
 #include <vnet/bonding/node.h>
 #include <vnet/qos/qos_types.h>
 #include "vat/json_format.h"
+#include <vnet/ip/ip_types_api.h>
+#include <vnet/ethernet/ethernet_types_api.h>
 
 #include <inttypes.h>
 #include <sys/stat.h>
@@ -78,6 +81,14 @@
 
 #if VPP_API_TEST_BUILTIN == 0
 #include <netdb.h>
+
+/* *INDENT-OFF* */
+const mac_address_t ZERO_MAC_ADDRESS = {
+  .bytes = {
+    0, 0, 0, 0, 0, 0,
+  },
+};
+/* *INDENT-ON* */
 
 u32
 vl (void *p)
@@ -5458,7 +5469,6 @@ _(dhcp_proxy_set_vss_reply)                             \
 _(dhcp_client_config_reply)                             \
 _(set_ip_flow_hash_reply)                               \
 _(sw_interface_ip6_enable_disable_reply)                \
-_(sw_interface_ip6_set_link_local_address_reply)        \
 _(ip6nd_proxy_add_del_reply)                            \
 _(sw_interface_ip6nd_ra_prefix_reply)                   \
 _(sw_interface_ip6nd_ra_config_reply)                   \
@@ -5684,8 +5694,6 @@ _(DHCP_CLIENT_CONFIG_REPLY, dhcp_client_config_reply)                   \
 _(SET_IP_FLOW_HASH_REPLY, set_ip_flow_hash_reply)                       \
 _(SW_INTERFACE_IP6_ENABLE_DISABLE_REPLY,                                \
   sw_interface_ip6_enable_disable_reply)                                \
-_(SW_INTERFACE_IP6_SET_LINK_LOCAL_ADDRESS_REPLY,                        \
-  sw_interface_ip6_set_link_local_address_reply)                        \
 _(IP6ND_PROXY_ADD_DEL_REPLY, ip6nd_proxy_add_del_reply)                 \
 _(IP6ND_PROXY_DETAILS, ip6nd_proxy_details)                             \
 _(SW_INTERFACE_IP6ND_RA_PREFIX_REPLY,                                   \
@@ -6360,7 +6368,7 @@ api_create_loopback (vat_main_t * vam)
   u32 user_instance = 0;
   int ret;
 
-  memset (mac_address, 0, sizeof (mac_address));
+  clib_memset (mac_address, 0, sizeof (mac_address));
 
   while (unformat_check_input (i) != UNFORMAT_END_OF_INPUT)
     {
@@ -7815,16 +7823,17 @@ api_bridge_flags (vat_main_t * vam)
 static int
 api_bd_ip_mac_add_del (vat_main_t * vam)
 {
+  vl_api_address_t ip = VL_API_ZERO_ADDRESS;
+  vl_api_mac_address_t mac = VL_API_ZERO_MAC_ADDRESS;
   unformat_input_t *i = vam->input;
   vl_api_bd_ip_mac_add_del_t *mp;
+  ip46_type_t type;
   u32 bd_id;
   u8 is_ipv6 = 0;
   u8 is_add = 1;
   u8 bd_id_set = 0;
   u8 ip_set = 0;
   u8 mac_set = 0;
-  ip4_address_t v4addr;
-  ip6_address_t v6addr;
   u8 macaddr[6];
   int ret;
 
@@ -7836,16 +7845,11 @@ api_bd_ip_mac_add_del (vat_main_t * vam)
 	{
 	  bd_id_set++;
 	}
-      else if (unformat (i, "%U", unformat_ip4_address, &v4addr))
+      else if (unformat (i, "%U", unformat_vl_api_address, &ip))
 	{
 	  ip_set++;
 	}
-      else if (unformat (i, "%U", unformat_ip6_address, &v6addr))
-	{
-	  ip_set++;
-	  is_ipv6++;
-	}
-      else if (unformat (i, "%U", unformat_ethernet_address, macaddr))
+      else if (unformat (i, "%U", unformat_vl_api_mac_address, &mac))
 	{
 	  mac_set++;
 	}
@@ -7874,13 +7878,11 @@ api_bd_ip_mac_add_del (vat_main_t * vam)
   M (BD_IP_MAC_ADD_DEL, mp);
 
   mp->bd_id = ntohl (bd_id);
-  mp->is_ipv6 = is_ipv6;
   mp->is_add = is_add;
-  if (is_ipv6)
-    clib_memcpy (mp->ip_address, &v6addr, sizeof (v6addr));
-  else
-    clib_memcpy (mp->ip_address, &v4addr, sizeof (v4addr));
-  clib_memcpy (mp->mac_address, macaddr, 6);
+
+  clib_memcpy (&mp->ip, &ip, sizeof (ip));
+  clib_memcpy (&mp->mac, &mac, sizeof (mac));
+
   S (mp);
   W (ret);
   return ret;
@@ -7998,7 +8000,7 @@ api_tap_connect (vat_main_t * vam)
   int ip6_address_set = 0;
   int ret;
 
-  memset (mac_address, 0, sizeof (mac_address));
+  clib_memset (mac_address, 0, sizeof (mac_address));
 
   /* Parse args required to build the message */
   while (unformat_check_input (i) != UNFORMAT_END_OF_INPUT)
@@ -8087,7 +8089,7 @@ api_tap_modify (vat_main_t * vam)
   u8 sw_if_index_set = 0;
   int ret;
 
-  memset (mac_address, 0, sizeof (mac_address));
+  clib_memset (mac_address, 0, sizeof (mac_address));
 
   /* Parse args required to build the message */
   while (unformat_check_input (i) != UNFORMAT_END_OF_INPUT)
@@ -8204,7 +8206,7 @@ api_tap_create_v2 (vat_main_t * vam)
   int ret;
   u32 rx_ring_sz = 0, tx_ring_sz = 0;
 
-  memset (mac_address, 0, sizeof (mac_address));
+  clib_memset (mac_address, 0, sizeof (mac_address));
 
   /* Parse args required to build the message */
   while (unformat_check_input (i) != UNFORMAT_END_OF_INPUT)
@@ -8385,7 +8387,7 @@ api_bond_create (vat_main_t * vam)
   u8 lb;
   u8 mode_is_set = 0;
 
-  memset (mac_address, 0, sizeof (mac_address));
+  clib_memset (mac_address, 0, sizeof (mac_address));
   lb = BOND_LB_L2;
 
   /* Parse args required to build the message */
@@ -8645,8 +8647,8 @@ api_ip_add_del_route (vat_main_t * vam)
   mpls_label_t next_hop_out_label = MPLS_LABEL_INVALID;
   mpls_label_t next_hop_via_label = MPLS_LABEL_INVALID;
 
-  memset (&v4_next_hop_address, 0, sizeof (ip4_address_t));
-  memset (&v6_next_hop_address, 0, sizeof (ip6_address_t));
+  clib_memset (&v4_next_hop_address, 0, sizeof (ip4_address_t));
+  clib_memset (&v6_next_hop_address, 0, sizeof (ip6_address_t));
   /* Parse args required to build the message */
   while (unformat_check_input (i) != UNFORMAT_END_OF_INPUT)
     {
@@ -8964,14 +8966,14 @@ api_ip_mroute_add_del (vat_main_t * vam)
 	}
       else if (unformat (i, "%U", unformat_ip4_address, &v4_grp_address))
 	{
-	  memset (&v4_src_address, 0, sizeof (v4_src_address));
+	  clib_memset (&v4_src_address, 0, sizeof (v4_src_address));
 	  grp_address_length = 32;
 	  address_set = 1;
 	  is_ipv6 = 0;
 	}
       else if (unformat (i, "%U", unformat_ip6_address, &v6_grp_address))
 	{
-	  memset (&v6_src_address, 0, sizeof (v6_src_address));
+	  clib_memset (&v6_src_address, 0, sizeof (v6_src_address));
 	  grp_address_length = 128;
 	  address_set = 1;
 	  is_ipv6 = 1;
@@ -9923,7 +9925,7 @@ api_ip_neighbor_add_del (vat_main_t * vam)
   ip6_address_t v6address;
   int ret;
 
-  memset (mac_address, 0, sizeof (mac_address));
+  clib_memset (mac_address, 0, sizeof (mac_address));
 
   /* Parse args required to build the message */
   while (unformat_check_input (i) != UNFORMAT_END_OF_INPUT)
@@ -9986,7 +9988,7 @@ api_ip_neighbor_add_del (vat_main_t * vam)
     }
   else
     {
-      /* mp->is_ipv6 = 0; via memset in M macro above */
+      /* mp->is_ipv6 = 0; via clib_memset in M macro above */
       clib_memcpy (mp->dst_address, &v4address, sizeof (v4address));
     }
 
@@ -10681,55 +10683,6 @@ api_sw_interface_ip6_enable_disable (vat_main_t * vam)
 }
 
 static int
-api_sw_interface_ip6_set_link_local_address (vat_main_t * vam)
-{
-  unformat_input_t *i = vam->input;
-  vl_api_sw_interface_ip6_set_link_local_address_t *mp;
-  u32 sw_if_index;
-  u8 sw_if_index_set = 0;
-  u8 v6_address_set = 0;
-  ip6_address_t v6address;
-  int ret;
-
-  /* Parse args required to build the message */
-  while (unformat_check_input (i) != UNFORMAT_END_OF_INPUT)
-    {
-      if (unformat (i, "%U", api_unformat_sw_if_index, vam, &sw_if_index))
-	sw_if_index_set = 1;
-      else if (unformat (i, "sw_if_index %d", &sw_if_index))
-	sw_if_index_set = 1;
-      else if (unformat (i, "%U", unformat_ip6_address, &v6address))
-	v6_address_set = 1;
-      else
-	break;
-    }
-
-  if (sw_if_index_set == 0)
-    {
-      errmsg ("missing interface name or sw_if_index");
-      return -99;
-    }
-  if (!v6_address_set)
-    {
-      errmsg ("no address set");
-      return -99;
-    }
-
-  /* Construct the API message */
-  M (SW_INTERFACE_IP6_SET_LINK_LOCAL_ADDRESS, mp);
-
-  mp->sw_if_index = ntohl (sw_if_index);
-  clib_memcpy (mp->address, &v6address, sizeof (v6address));
-
-  /* send it... */
-  S (mp);
-
-  /* Wait for a reply, return good/bad news  */
-  W (ret);
-  return ret;
-}
-
-static int
 api_ip6nd_proxy_add_del (vat_main_t * vam)
 {
   unformat_input_t *i = vam->input;
@@ -11147,8 +11100,8 @@ api_sr_localsid_add_del (vat_main_t * vam)
   u32 fib_table = ~(u32) 0;
   ip6_address_t nh_addr6;
   ip4_address_t nh_addr4;
-  memset (&nh_addr6, 0, sizeof (ip6_address_t));
-  memset (&nh_addr4, 0, sizeof (ip4_address_t));
+  clib_memset (&nh_addr6, 0, sizeof (ip6_address_t));
+  clib_memset (&nh_addr4, 0, sizeof (ip4_address_t));
 
   bool nexthop_set = 0;
 
@@ -11297,7 +11250,7 @@ unformat_tcp_mask (unformat_input_t * input, va_list * args)
 
   tcp = (tcp_header_t *) mask;
 
-#define _(a) if (a) memset (&tcp->a, 0xff, sizeof (tcp->a));
+#define _(a) if (a) clib_memset (&tcp->a, 0xff, sizeof (tcp->a));
   foreach_tcp_proto_field;
 #undef _
 
@@ -11338,7 +11291,7 @@ unformat_udp_mask (unformat_input_t * input, va_list * args)
 
   udp = (udp_header_t *) mask;
 
-#define _(a) if (a) memset (&udp->a, 0xff, sizeof (udp->a));
+#define _(a) if (a) clib_memset (&udp->a, 0xff, sizeof (udp->a));
   foreach_udp_proto_field;
 #undef _
 
@@ -11428,7 +11381,7 @@ unformat_ip4_mask (unformat_input_t * input, va_list * args)
 
   ip = (ip4_header_t *) mask;
 
-#define _(a) if (a) memset (&ip->a, 0xff, sizeof (ip->a));
+#define _(a) if (a) clib_memset (&ip->a, 0xff, sizeof (ip->a));
   foreach_ip4_proto_field;
 #undef _
 
@@ -11500,7 +11453,7 @@ unformat_ip6_mask (unformat_input_t * input, va_list * args)
 
   ip = (ip6_header_t *) mask;
 
-#define _(a) if (a) memset (&ip->a, 0xff, sizeof (ip->a));
+#define _(a) if (a) clib_memset (&ip->a, 0xff, sizeof (ip->a));
   foreach_ip6_proto_field;
 #undef _
 
@@ -11596,10 +11549,10 @@ unformat_l2_mask (unformat_input_t * input, va_list * args)
   vec_validate (mask, len - 1);
 
   if (dst)
-    memset (mask, 0xff, 6);
+    clib_memset (mask, 0xff, 6);
 
   if (src)
-    memset (mask + 6, 0xff, 6);
+    clib_memset (mask + 6, 0xff, 6);
 
   if (tag2 || dot1ad)
     {
@@ -13385,8 +13338,8 @@ api_vxlan_add_del_tunnel (vat_main_t * vam)
   int ret;
 
   /* Can't "universally zero init" (={0}) due to GCC bug 53119 */
-  memset (&src, 0, sizeof src);
-  memset (&dst, 0, sizeof dst);
+  clib_memset (&src, 0, sizeof src);
+  clib_memset (&dst, 0, sizeof dst);
 
   while (unformat_check_input (line_input) != UNFORMAT_END_OF_INPUT)
     {
@@ -13668,8 +13621,8 @@ api_geneve_add_del_tunnel (vat_main_t * vam)
   int ret;
 
   /* Can't "universally zero init" (={0}) due to GCC bug 53119 */
-  memset (&src, 0, sizeof src);
-  memset (&dst, 0, sizeof dst);
+  clib_memset (&src, 0, sizeof src);
+  clib_memset (&dst, 0, sizeof dst);
 
   while (unformat_check_input (line_input) != UNFORMAT_END_OF_INPUT)
     {
@@ -13928,10 +13881,10 @@ api_gre_add_del_tunnel (vat_main_t * vam)
   u32 instance = ~0;
   int ret;
 
-  memset (&src4, 0, sizeof src4);
-  memset (&dst4, 0, sizeof dst4);
-  memset (&src6, 0, sizeof src6);
-  memset (&dst6, 0, sizeof dst6);
+  clib_memset (&src4, 0, sizeof src4);
+  clib_memset (&dst4, 0, sizeof dst4);
+  clib_memset (&src6, 0, sizeof src6);
+  clib_memset (&dst6, 0, sizeof dst6);
 
   while (unformat_check_input (line_input) != UNFORMAT_END_OF_INPUT)
     {
@@ -14253,7 +14206,7 @@ api_create_vhost_user_if (vat_main_t * vam)
   int ret;
 
   /* Shut up coverity */
-  memset (hwaddr, 0, sizeof (hwaddr));
+  clib_memset (hwaddr, 0, sizeof (hwaddr));
 
   while (unformat_check_input (i) != UNFORMAT_END_OF_INPUT)
     {
@@ -14512,10 +14465,10 @@ api_vxlan_gpe_add_del_tunnel (vat_main_t * vam)
   int ret;
 
   /* Can't "universally zero init" (={0}) due to GCC bug 53119 */
-  memset (&local4, 0, sizeof local4);
-  memset (&remote4, 0, sizeof remote4);
-  memset (&local6, 0, sizeof local6);
-  memset (&remote6, 0, sizeof remote6);
+  clib_memset (&local4, 0, sizeof local4);
+  clib_memset (&remote4, 0, sizeof remote4);
+  clib_memset (&local6, 0, sizeof local6);
+  clib_memset (&remote6, 0, sizeof remote6);
 
   while (unformat_check_input (line_input) != UNFORMAT_END_OF_INPUT)
     {
@@ -16920,7 +16873,7 @@ unformat_lisp_eid_vat (unformat_input_t * input, va_list * args)
 {
   lisp_eid_vat_t *a = va_arg (*args, lisp_eid_vat_t *);
 
-  memset (a, 0, sizeof (a[0]));
+  clib_memset (a, 0, sizeof (a[0]));
 
   if (unformat (input, "%U/%d", unformat_ip4_address, a->addr, &a->len))
     {
@@ -17321,7 +17274,7 @@ api_lisp_gpe_add_del_fwd_entry (vat_main_t * vam)
   vl_api_gpe_locator_t *rmt_locs = 0, *lcl_locs = 0, rloc, *curr_rloc = 0;
   int ret;
 
-  memset (&rloc, 0, sizeof (rloc));
+  clib_memset (&rloc, 0, sizeof (rloc));
 
   /* Parse args required to build the message */
   while (unformat_check_input (input) != UNFORMAT_END_OF_INPUT)
@@ -18428,7 +18381,7 @@ api_one_use_petr (vat_main_t * vam)
   ip_address_t ip;
   int ret;
 
-  memset (&ip, 0, sizeof (ip));
+  clib_memset (&ip, 0, sizeof (ip));
 
   /* Parse args required to build the message */
   while (unformat_check_input (input) != UNFORMAT_END_OF_INPUT)
@@ -18624,7 +18577,7 @@ api_one_add_del_remote_mapping (vat_main_t * vam)
   vl_api_remote_locator_t *rlocs = 0, rloc, *curr_rloc = 0;
   int ret;
 
-  memset (&rloc, 0, sizeof (rloc));
+  clib_memset (&rloc, 0, sizeof (rloc));
 
   /* Parse args required to build the message */
   while (unformat_check_input (input) != UNFORMAT_END_OF_INPUT)
@@ -19218,7 +19171,7 @@ api_one_add_del_map_request_itr_rlocs (vat_main_t * vam)
     }
   else
     {
-      memset (mp->locator_set_name, 0, sizeof (mp->locator_set_name));
+      clib_memset (mp->locator_set_name, 0, sizeof (mp->locator_set_name));
     }
   vec_free (locator_set_name);
 
@@ -19730,8 +19683,8 @@ api_gpe_add_del_native_fwd_rpath (vat_main_t * vam)
   struct in6_addr ip6;
   u32 table_id = 0, nh_sw_if_index = ~0;
 
-  memset (&ip4, 0, sizeof (ip4));
-  memset (&ip6, 0, sizeof (ip6));
+  clib_memset (&ip4, 0, sizeof (ip4));
+  clib_memset (&ip6, 0, sizeof (ip6));
 
   while (unformat_check_input (i) != UNFORMAT_END_OF_INPUT)
     {
@@ -19973,7 +19926,7 @@ api_af_packet_create (vat_main_t * vam)
   u8 random_hw_addr = 1;
   int ret;
 
-  memset (hw_addr, 0, sizeof (hw_addr));
+  clib_memset (hw_addr, 0, sizeof (hw_addr));
 
   while (unformat_check_input (i) != UNFORMAT_END_OF_INPUT)
     {
@@ -20339,7 +20292,7 @@ api_netmap_create (vat_main_t * vam)
   u8 is_master = 0;
   int ret;
 
-  memset (hw_addr, 0, sizeof (hw_addr));
+  clib_memset (hw_addr, 0, sizeof (hw_addr));
 
   while (unformat_check_input (i) != UNFORMAT_END_OF_INPUT)
     {
@@ -21946,8 +21899,8 @@ api_l2_interface_pbb_tag_rewrite (vat_main_t * vam)
   int ret;
 
   /* Shut up coverity */
-  memset (dmac, 0, sizeof (dmac));
-  memset (smac, 0, sizeof (smac));
+  clib_memset (dmac, 0, sizeof (dmac));
+  clib_memset (smac, 0, sizeof (smac));
 
   while (unformat_check_input (i) != UNFORMAT_END_OF_INPUT)
     {
@@ -22325,7 +22278,7 @@ api_p2p_ethernet_add (vat_main_t * vam)
   u8 mac_set = 0;
   int ret;
 
-  memset (remote_mac, 0, sizeof (remote_mac));
+  clib_memset (remote_mac, 0, sizeof (remote_mac));
   while (unformat_check_input (i) != UNFORMAT_END_OF_INPUT)
     {
       if (unformat (i, "%U", api_unformat_sw_if_index, vam, &parent_if_index))
@@ -22381,7 +22334,7 @@ api_p2p_ethernet_del (vat_main_t * vam)
   u8 mac_set = 0;
   int ret;
 
-  memset (remote_mac, 0, sizeof (remote_mac));
+  clib_memset (remote_mac, 0, sizeof (remote_mac));
   while (unformat_check_input (i) != UNFORMAT_END_OF_INPUT)
     {
       if (unformat (i, "%U", api_unformat_sw_if_index, vam, &parent_if_index))
@@ -22469,8 +22422,8 @@ api_sw_interface_set_lldp (vat_main_t * vam)
   ip6_address_t ip6_addr;
   int ret;
 
-  memset (&ip4_addr, 0, sizeof (ip4_addr));
-  memset (&ip6_addr, 0, sizeof (ip6_addr));
+  clib_memset (&ip4_addr, 0, sizeof (ip4_addr));
+  clib_memset (&ip6_addr, 0, sizeof (ip6_addr));
 
   while (unformat_check_input (i) != UNFORMAT_END_OF_INPUT)
     {
@@ -23762,8 +23715,6 @@ _(set_ip_flow_hash,                                                     \
   "vrf <n> [src] [dst] [sport] [dport] [proto] [reverse] [ipv6]")       \
 _(sw_interface_ip6_enable_disable,                                      \
   "<intfc> | sw_if_index <id> enable | disable")                        \
-_(sw_interface_ip6_set_link_local_address,                              \
-  "<intfc> | sw_if_index <id> <ip6-address>/<mask-width>")              \
 _(ip6nd_proxy_add_del,                                                  \
   "<intfc> | sw_if_index <id> <ip6-address>")                           \
 _(ip6nd_proxy_dump, "")                                                 \

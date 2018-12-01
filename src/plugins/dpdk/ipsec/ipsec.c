@@ -407,7 +407,7 @@ static void __attribute__ ((unused)) clear_and_free_obj (void *obj)
 {
   struct rte_mempool *mp = rte_mempool_from_obj (obj);
 
-  memset (obj, 0, mp->elt_size);
+  clib_memset (obj, 0, mp->elt_size);
 
   rte_mempool_put (mp, obj);
 }
@@ -826,8 +826,6 @@ crypto_create_crypto_op_pool (vlib_main_t * vm, u8 numa)
   u32 pool_priv_size = sizeof (struct rte_crypto_op_pool_private);
   struct rte_crypto_op_pool_private *priv;
   struct rte_mempool *mp;
-  clib_error_t *error = NULL;
-  vlib_physmem_region_index_t pri;
 
   data = vec_elt_at_index (dcm->data, numa);
 
@@ -837,22 +835,21 @@ crypto_create_crypto_op_pool (vlib_main_t * vm, u8 numa)
 
   pool_name = format (0, "crypto_pool_numa%u%c", numa, 0);
 
-  error =
-    dpdk_pool_create (vm, pool_name, crypto_op_len (), conf->num_mbufs,
-		      pool_priv_size, 512, numa, &mp, &pri);
+  mp =
+    rte_mempool_create ((char *) pool_name,
+			conf->num_mbufs,
+			crypto_op_len (), 512, pool_priv_size, NULL, NULL,
+			crypto_op_init, NULL, numa, 0);
 
   vec_free (pool_name);
 
-  if (error)
-    return error;
+  if (!mp)
+    return clib_error_return (0, "failed to create crypto op mempool");
 
   /* Initialize mempool private data */
   priv = rte_mempool_get_priv (mp);
   priv->priv_size = pool_priv_size;
   priv->type = RTE_CRYPTO_OP_TYPE_SYMMETRIC;
-
-  /* call the object initializers */
-  rte_mempool_obj_iter (mp, crypto_op_init, 0);
 
   data->crypto_op = mp;
 
@@ -866,8 +863,6 @@ crypto_create_session_h_pool (vlib_main_t * vm, u8 numa)
   crypto_data_t *data;
   u8 *pool_name;
   struct rte_mempool *mp;
-  clib_error_t *error = NULL;
-  vlib_physmem_region_index_t pri;
   u32 elt_size;
 
   data = vec_elt_at_index (dcm->data, numa);
@@ -880,14 +875,14 @@ crypto_create_session_h_pool (vlib_main_t * vm, u8 numa)
 
   elt_size = rte_cryptodev_sym_get_header_session_size ();
 
-  error =
-    dpdk_pool_create (vm, pool_name, elt_size, DPDK_CRYPTO_NB_SESS_OBJS,
-		      0, 512, numa, &mp, &pri);
+  mp =
+    rte_mempool_create ((char *) pool_name, DPDK_CRYPTO_NB_SESS_OBJS,
+			elt_size, 512, 0, NULL, NULL, NULL, NULL, numa, 0);
 
   vec_free (pool_name);
 
-  if (error)
-    return error;
+  if (!mp)
+    return clib_error_return (0, "failed to create crypto session mempool");
 
   data->session_h = mp;
 
@@ -901,8 +896,6 @@ crypto_create_session_drv_pool (vlib_main_t * vm, crypto_dev_t * dev)
   crypto_data_t *data;
   u8 *pool_name;
   struct rte_mempool *mp;
-  clib_error_t *error = NULL;
-  vlib_physmem_region_index_t pri;
   u32 elt_size;
   u8 numa = dev->numa;
 
@@ -919,15 +912,14 @@ crypto_create_session_drv_pool (vlib_main_t * vm, crypto_dev_t * dev)
   pool_name = format (0, "session_drv%u_pool_numa%u%c", dev->drv_id, numa, 0);
 
   elt_size = rte_cryptodev_sym_get_private_session_size (dev->id);
-
-  error =
-    dpdk_pool_create (vm, pool_name, elt_size, DPDK_CRYPTO_NB_SESS_OBJS,
-		      0, 512, numa, &mp, &pri);
+  mp =
+    rte_mempool_create ((char *) pool_name, DPDK_CRYPTO_NB_SESS_OBJS,
+			elt_size, 512, 0, NULL, NULL, NULL, NULL, numa, 0);
 
   vec_free (pool_name);
 
-  if (error)
-    return error;
+  if (!mp)
+    return clib_error_return (0, "failed to create session drv mempool");
 
   data->session_drv[dev->drv_id] = mp;
   clib_spinlock_init (&data->lockp);
@@ -1031,9 +1023,9 @@ dpdk_ipsec_process (vlib_main_t * vm, vlib_node_runtime_t * rt,
     {
       vec_validate_init_empty_aligned (cwm->ops, VLIB_FRAME_SIZE - 1, 0,
 				       CLIB_CACHE_LINE_BYTES);
-      memset (cwm->cipher_resource_idx, ~0,
+      clib_memset (cwm->cipher_resource_idx, ~0,
 	      IPSEC_CRYPTO_N_ALG * sizeof(*cwm->cipher_resource_idx));
-      memset (cwm->auth_resource_idx, ~0,
+      clib_memset (cwm->auth_resource_idx, ~0,
 	      IPSEC_INTEG_N_ALG * sizeof(*cwm->auth_resource_idx));
     }
   /* *INDENT-ON* */
@@ -1048,29 +1040,15 @@ dpdk_ipsec_process (vlib_main_t * vm, vlib_node_runtime_t * rt,
       return 0;
     }
 
-  /* Add new next node and set it as default */
-  vlib_node_t *node, *next_node;
 
-  next_node = vlib_get_node_by_name (vm, (u8 *) "dpdk-esp-encrypt");
-  ASSERT (next_node);
-  node = vlib_get_node_by_name (vm, (u8 *) "ipsec-output-ip4");
-  ASSERT (node);
-  im->esp_encrypt_node_index = next_node->index;
-  im->esp_encrypt_next_index =
-    vlib_node_add_next (vm, node->index, next_node->index);
+  ipsec_register_esp_backend (vm, im, "dpdk backend",
+			      "dpdk-esp4-encrypt",
+			      "dpdk-esp4-decrypt",
+			      "dpdk-esp6-encrypt",
+			      "dpdk-esp6-decrypt",
+			      dpdk_ipsec_check_support, add_del_sa_session);
 
-  next_node = vlib_get_node_by_name (vm, (u8 *) "dpdk-esp-decrypt");
-  ASSERT (next_node);
-  node = vlib_get_node_by_name (vm, (u8 *) "ipsec-input-ip4");
-  ASSERT (node);
-  im->esp_decrypt_node_index = next_node->index;
-  im->esp_decrypt_next_index =
-    vlib_node_add_next (vm, node->index, next_node->index);
-
-  im->cb.check_support_cb = dpdk_ipsec_check_support;
-  im->cb.add_del_sa_sess_cb = add_del_sa_session;
-
-  node = vlib_get_node_by_name (vm, (u8 *) "dpdk-crypto-input");
+  vlib_node_t *node = vlib_get_node_by_name (vm, (u8 *) "dpdk-crypto-input");
   ASSERT (node);
   for (i = skip_master; i < n_mains; i++)
     vlib_node_set_state (vlib_mains[i], node->index, VLIB_NODE_STATE_POLLING);

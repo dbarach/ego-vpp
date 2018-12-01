@@ -25,7 +25,7 @@ from vpp_lo_interface import VppLoInterface
 from vpp_papi_provider import VppPapiProvider
 from vpp_papi.vpp_stats import VPPStats
 from log import RED, GREEN, YELLOW, double_line_delim, single_line_delim, \
-    getLogger, colorize
+    get_logger, colorize
 from vpp_object import VppObjectRegistry
 from util import ppp, is_core_present
 from scapy.layers.inet import IPerror, TCPerror, UDPerror, ICMPerror
@@ -151,6 +151,7 @@ class KeepAliveReporter(object):
 
     def __init__(self):
         self.__dict__ = self._shared_state
+        self._pipe = None
 
     @property
     def pipe(self):
@@ -158,7 +159,7 @@ class KeepAliveReporter(object):
 
     @pipe.setter
     def pipe(self, pipe):
-        if hasattr(self, '_pipe'):
+        if self._pipe is not None:
             raise Exception("Internal error - pipe should only be set once.")
         self._pipe = pipe
 
@@ -218,8 +219,8 @@ class VppTestCase(unittest.TestCase):
         else:
             raise Exception("Unrecognized DEBUG option: '%s'" % d)
 
-    @classmethod
-    def get_least_used_cpu(self):
+    @staticmethod
+    def get_least_used_cpu():
         cpu_usage_list = [set(range(psutil.cpu_count()))]
         vpp_processes = [p for p in psutil.process_iter(attrs=['pid', 'name'])
                          if 'vpp_main' == p.info['name']]
@@ -247,7 +248,7 @@ class VppTestCase(unittest.TestCase):
 
         return random.choice(tuple(min_usage_set))
 
-    @staticmethod
+    @classmethod
     def print_header(cls):
         if not hasattr(cls, '_header_printed'):
             print(double_line_delim)
@@ -264,8 +265,8 @@ class VppTestCase(unittest.TestCase):
         c = os.getenv("CACHE_OUTPUT", "1")
         cls.cache_vpp_output = False if c.lower() in ("n", "no", "0") else True
         cls.set_debug_flags(d)
-        cls.vpp_bin = os.getenv('VPP_TEST_BIN', "vpp")
-        cls.plugin_path = os.getenv('VPP_TEST_PLUGIN_PATH')
+        cls.vpp_bin = os.getenv('VPP_BIN', "vpp")
+        cls.plugin_path = os.getenv('VPP_PLUGIN_PATH')
         cls.extern_plugin_path = os.getenv('EXTERN_PLUGINS')
         plugin_path = None
         if cls.plugin_path is not None:
@@ -300,7 +301,8 @@ class VppTestCase(unittest.TestCase):
                            "}", "}", ]
         if plugin_path is not None:
             cls.vpp_cmdline.extend(["plugin_path", plugin_path])
-        cls.logger.info("vpp_cmdline: %s" % cls.vpp_cmdline)
+        cls.logger.info("vpp_cmdline args: %s" % cls.vpp_cmdline)
+        cls.logger.info("vpp_cmdline: %s" % " ".join(cls.vpp_cmdline))
 
     @classmethod
     def wait_for_enter(cls):
@@ -346,7 +348,7 @@ class VppTestCase(unittest.TestCase):
                                        stdout=subprocess.PIPE,
                                        stderr=subprocess.PIPE,
                                        bufsize=1)
-        except Exception as e:
+        except subprocess.CalledProcessError as e:
             cls.logger.critical("Couldn't start vpp: %s" % e)
             raise
 
@@ -355,9 +357,15 @@ class VppTestCase(unittest.TestCase):
     @classmethod
     def wait_for_stats_socket(cls):
         deadline = time.time() + 3
-        while time.time() < deadline or cls.debug_gdb or cls.debug_gdbserver:
+        ok = False
+        while time.time() < deadline or \
+                cls.debug_gdb or cls.debug_gdbserver:
             if os.path.exists(cls.stats_sock):
+                ok = True
                 break
+            time.sleep(0.8)
+        if not ok:
+            cls.logger.critical("Couldn't stat : {}".format(cls.stats_sock))
 
     @classmethod
     def setUpClass(cls):
@@ -367,11 +375,11 @@ class VppTestCase(unittest.TestCase):
         """
         gc.collect()  # run garbage collection first
         random.seed()
-        cls.print_header(cls)
-        if not hasattr(cls, 'logger'):
-            cls.logger = getLogger(cls.__name__)
-        else:
-            cls.logger.name = cls.__name__
+        cls.print_header()
+        cls.logger = get_logger(cls.__name__)
+        if hasattr(cls, 'parallel_handler'):
+            cls.logger.addHandler(cls.parallel_handler)
+            cls.logger.propagate = False
         cls.tempdir = tempfile.mkdtemp(
             prefix='vpp-unittest-%s-' % cls.__name__)
         cls.stats_sock = "%s/stats.sock" % cls.tempdir
@@ -896,6 +904,17 @@ class VppTestCase(unittest.TestCase):
         if pkt.haslayer(ICMPv6EchoReply):
             self.assert_checksum_valid(pkt, 'ICMPv6EchoReply', 'cksum')
 
+    def assert_packet_counter_equal(self, counter, expected_value):
+        counters = self.vapi.cli("sh errors").split('\n')
+        counter_value = -1
+        for i in range(1, len(counters)-1):
+            results = counters[i].split()
+            if results[1] == counter:
+                counter_value = int(results[0])
+                break
+        self.assert_equal(counter_value, expected_value,
+                          "packet counter `%s'" % counter)
+
     @classmethod
     def sleep(cls, timeout, remark=None):
         if hasattr(cls, 'logger'):
@@ -929,7 +948,35 @@ class VppTestCase(unittest.TestCase):
         input.add_stream(pkts)
         self.pg_enable_capture(self.pg_interfaces)
         self.pg_start()
-        rx = output.get_capture(len(pkts))
+        if isinstance(object, (list,)):
+            rx = []
+            for o in output:
+                rx.append(output.get_capture(len(pkts)))
+        else:
+            rx = output.get_capture(len(pkts))
+        return rx
+
+    def send_and_expect_only(self, input, pkts, output, timeout=None):
+        self.vapi.cli("clear trace")
+        input.add_stream(pkts)
+        self.pg_enable_capture(self.pg_interfaces)
+        self.pg_start()
+        if isinstance(object, (list,)):
+            outputs = output
+            rx = []
+            for o in outputs:
+                rx.append(output.get_capture(len(pkts)))
+        else:
+            rx = output.get_capture(len(pkts))
+            outputs = [output]
+        if not timeout:
+            timeout = 1
+        for i in self.pg_interfaces:
+            if i not in outputs:
+                i.get_capture(0, timeout=timeout)
+                i.assert_nothing_captured()
+                timeout = 0.1
+
         return rx
 
 
@@ -973,7 +1020,7 @@ class VppTestResult(unittest.TestResult):
     core_crash_test_cases_info = set()
     current_test_case_info = None
 
-    def __init__(self, stream, descriptions, verbosity):
+    def __init__(self, stream, descriptions, verbosity, runner):
         """
         :param stream File descriptor to store where to report test results.
             Set to the standard error stream by default.
@@ -986,6 +1033,7 @@ class VppTestResult(unittest.TestResult):
         self.descriptions = descriptions
         self.verbosity = verbosity
         self.result_string = None
+        self.runner = runner
 
     def addSuccess(self, test):
         """
@@ -1025,7 +1073,7 @@ class VppTestResult(unittest.TestResult):
     def symlink_failed(self):
         if self.current_test_case_info:
             try:
-                failed_dir = os.getenv('VPP_TEST_FAILED_DIR')
+                failed_dir = os.getenv('FAILED_DIR')
                 link_path = os.path.join(
                     failed_dir,
                     '%s-FAILED' %
@@ -1138,7 +1186,7 @@ class VppTestResult(unittest.TestResult):
         :param test:
 
         """
-        test.print_header(test.__class__)
+        test.print_header()
 
         unittest.TestResult.startTest(self, test)
         if self.verbosity > 0:
@@ -1169,9 +1217,16 @@ class VppTestResult(unittest.TestResult):
         """
         Print errors from running the test case
         """
-        self.stream.writeln()
-        self.printErrorList('ERROR', self.errors)
-        self.printErrorList('FAIL', self.failures)
+        if len(self.errors) > 0 or len(self.failures) > 0:
+            self.stream.writeln()
+            self.printErrorList('ERROR', self.errors)
+            self.printErrorList('FAIL', self.failures)
+
+        # ^^ that is the last output from unittest before summary
+        if not self.runner.print_summary:
+            devnull = unittest.runner._WritelnDecorator(open(os.devnull, 'w'))
+            self.stream = devnull
+            self.runner.stream = devnull
 
     def printErrorList(self, flavour, errors):
         """
@@ -1201,17 +1256,25 @@ class VppTestRunner(unittest.TextTestRunner):
 
     def __init__(self, keep_alive_pipe=None, descriptions=True, verbosity=1,
                  result_pipe=None, failfast=False, buffer=False,
-                 resultclass=None):
+                 resultclass=None, print_summary=True):
 
         # ignore stream setting here, use hard-coded stdout to be in sync
         # with prints from VppTestCase methods ...
         super(VppTestRunner, self).__init__(sys.stdout, descriptions,
                                             verbosity, failfast, buffer,
                                             resultclass)
-        reporter = KeepAliveReporter()
-        reporter.pipe = keep_alive_pipe
+        KeepAliveReporter.pipe = keep_alive_pipe
 
-        VppTestResult.test_framework_result_pipe = result_pipe
+        self.orig_stream = self.stream
+        self.resultclass.test_framework_result_pipe = result_pipe
+
+        self.print_summary = print_summary
+
+    def _makeResult(self):
+        return self.resultclass(self.stream,
+                                self.descriptions,
+                                self.verbosity,
+                                self)
 
     def run(self, test):
         """
@@ -1223,6 +1286,9 @@ class VppTestRunner(unittest.TextTestRunner):
         faulthandler.enable()  # emit stack trace to stderr if killed by signal
 
         result = super(VppTestRunner, self).run(test)
+        if not self.print_summary:
+            self.stream = self.orig_stream
+            result.stream = self.orig_stream
         return result
 
 

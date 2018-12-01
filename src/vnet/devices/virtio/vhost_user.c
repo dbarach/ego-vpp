@@ -307,7 +307,7 @@ static_always_inline void
 vhost_user_vring_init (vhost_user_intf_t * vui, u32 qid)
 {
   vhost_user_vring_t *vring = &vui->vrings[qid];
-  memset (vring, 0, sizeof (*vring));
+  clib_memset (vring, 0, sizeof (*vring));
   vring->kickfd_idx = ~0;
   vring->callfd_idx = ~0;
   vring->errfd = -1;
@@ -394,8 +394,8 @@ vhost_user_socket_read (clib_file_t * uf)
 
   char control[CMSG_SPACE (VHOST_MEMORY_MAX_NREGIONS * sizeof (int))];
 
-  memset (&mh, 0, sizeof (mh));
-  memset (control, 0, sizeof (control));
+  clib_memset (&mh, 0, sizeof (mh));
+  clib_memset (control, 0, sizeof (control));
 
   for (i = 0; i < VHOST_MEMORY_MAX_NREGIONS; i++)
     fds[i] = -1;
@@ -443,7 +443,7 @@ vhost_user_socket_read (clib_file_t * uf)
        VHOST_MEMORY_MAX_NREGIONS * sizeof (int)))
     {
       number_of_fds = (cmsg->cmsg_len - CMSG_LEN (0)) / sizeof (int);
-      clib_memcpy (fds, CMSG_DATA (cmsg), number_of_fds * sizeof (int));
+      clib_memcpy_fast (fds, CMSG_DATA (cmsg), number_of_fds * sizeof (int));
     }
 
   /* version 1, no reply bit set */
@@ -537,8 +537,8 @@ vhost_user_socket_read (clib_file_t * uf)
       unmap_all_mem_regions (vui);
       for (i = 0; i < msg.memory.nregions; i++)
 	{
-	  clib_memcpy (&(vui->regions[i]), &msg.memory.regions[i],
-		       sizeof (vhost_user_memory_region_t));
+	  clib_memcpy_fast (&(vui->regions[i]), &msg.memory.regions[i],
+			    sizeof (vhost_user_memory_region_t));
 
 	  long page_sz = get_huge_page_size (fds[i]);
 
@@ -1419,7 +1419,7 @@ vhost_user_vui_init (vnet_main_t * vnm,
     {
       vui->vring_locks[q] = clib_mem_alloc_aligned (CLIB_CACHE_LINE_BYTES,
 						    CLIB_CACHE_LINE_BYTES);
-      memset ((void *) vui->vring_locks[q], 0, CLIB_CACHE_LINE_BYTES);
+      clib_memset ((void *) vui->vring_locks[q], 0, CLIB_CACHE_LINE_BYTES);
     }
 
   vec_validate (vui->per_cpu_tx_qid,

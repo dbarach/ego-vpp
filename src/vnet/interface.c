@@ -44,18 +44,25 @@
 #include <vnet/adj/adj_mcast.h>
 #include <vnet/l2/l2_input.h>
 
-#define VNET_INTERFACE_SET_FLAGS_HELPER_IS_CREATE (1 << 0)
-#define VNET_INTERFACE_SET_FLAGS_HELPER_WANT_REDISTRIBUTE (1 << 1)
+typedef enum vnet_interface_helper_flags_t_
+{
+  VNET_INTERFACE_SET_FLAGS_HELPER_IS_CREATE = (1 << 0),
+  VNET_INTERFACE_SET_FLAGS_HELPER_WANT_REDISTRIBUTE = (1 << 1),
+} vnet_interface_helper_flags_t;
 
 static clib_error_t *vnet_hw_interface_set_flags_helper (vnet_main_t * vnm,
 							 u32 hw_if_index,
-							 u32 flags,
-							 u32 helper_flags);
+							 vnet_hw_interface_flags_t
+							 flags,
+							 vnet_interface_helper_flags_t
+							 helper_flags);
 
 static clib_error_t *vnet_sw_interface_set_flags_helper (vnet_main_t * vnm,
 							 u32 sw_if_index,
-							 u32 flags,
-							 u32 helper_flags);
+							 vnet_sw_interface_flags_t
+							 flags,
+							 vnet_interface_helper_flags_t
+							 helper_flags);
 
 static clib_error_t *vnet_hw_interface_set_class_helper (vnet_main_t * vnm,
 							 u32 hw_if_index,
@@ -102,6 +109,17 @@ unserialize_vec_vnet_sw_hw_interface_state (serialize_main_t * m,
     }
 }
 
+static vnet_sw_interface_flags_t
+vnet_hw_interface_flags_to_sw (vnet_hw_interface_flags_t hwf)
+{
+  vnet_sw_interface_flags_t swf = VNET_SW_INTERFACE_FLAG_NONE;
+
+  if (hwf & VNET_HW_INTERFACE_FLAG_LINK_UP)
+    swf |= VNET_SW_INTERFACE_FLAG_ADMIN_UP;
+
+  return (swf);
+}
+
 void
 serialize_vnet_interface_state (serialize_main_t * m, va_list * va)
 {
@@ -143,7 +161,7 @@ serialize_vnet_interface_state (serialize_main_t * m, va_list * va)
       {
 	vec_add2 (sts, st, 1);
 	st->sw_hw_if_index = hif->hw_if_index;
-	st->flags = hif->flags;
+	st->flags = vnet_hw_interface_flags_to_sw(hif->flags);
       }
   }));
   /* *INDENT-ON* */
@@ -151,6 +169,17 @@ serialize_vnet_interface_state (serialize_main_t * m, va_list * va)
   vec_serialize (m, sts, serialize_vec_vnet_sw_hw_interface_state);
 
   vec_free (sts);
+}
+
+static vnet_hw_interface_flags_t
+vnet_sw_interface_flags_to_hw (vnet_sw_interface_flags_t swf)
+{
+  vnet_hw_interface_flags_t hwf = VNET_HW_INTERFACE_FLAG_NONE;
+
+  if (swf & VNET_SW_INTERFACE_FLAG_ADMIN_UP)
+    hwf |= VNET_HW_INTERFACE_FLAG_LINK_UP;
+
+  return (hwf);
 }
 
 void
@@ -188,8 +217,11 @@ unserialize_vnet_interface_state (serialize_main_t * m, va_list * va)
 
   vec_unserialize (m, &sts, unserialize_vec_vnet_sw_hw_interface_state);
   vec_foreach (st, sts)
-    vnet_hw_interface_set_flags_helper (vnm, st->sw_hw_if_index, st->flags,
-					/* no distribute */ 0);
+  {
+    vnet_hw_interface_set_flags_helper
+      (vnm, st->sw_hw_if_index, vnet_sw_interface_flags_to_hw (st->flags),
+       /* no distribute */ 0);
+  }
   vec_free (sts);
 }
 
@@ -260,7 +292,9 @@ call_sw_interface_add_del_callbacks (vnet_main_t * vnm, u32 sw_if_index,
 
 static clib_error_t *
 vnet_hw_interface_set_flags_helper (vnet_main_t * vnm, u32 hw_if_index,
-				    u32 flags, u32 helper_flags)
+				    vnet_hw_interface_flags_t flags,
+				    vnet_interface_helper_flags_t
+				    helper_flags)
 {
   vnet_hw_interface_t *hi = vnet_get_hw_interface (vnm, hw_if_index);
   vnet_hw_interface_class_t *hw_class =
@@ -271,8 +305,7 @@ vnet_hw_interface_set_flags_helper (vnet_main_t * vnm, u32 hw_if_index,
     (helper_flags & VNET_INTERFACE_SET_FLAGS_HELPER_IS_CREATE) != 0;
 
   mask =
-    (VNET_HW_INTERFACE_FLAG_LINK_UP | VNET_HW_INTERFACE_FLAG_DUPLEX_MASK |
-     VNET_HW_INTERFACE_FLAG_SPEED_MASK);
+    (VNET_HW_INTERFACE_FLAG_LINK_UP | VNET_HW_INTERFACE_FLAG_DUPLEX_MASK);
   flags &= mask;
 
   /* Call hardware interface add/del callbacks. */
@@ -308,7 +341,9 @@ done:
 
 static clib_error_t *
 vnet_sw_interface_set_flags_helper (vnet_main_t * vnm, u32 sw_if_index,
-				    u32 flags, u32 helper_flags)
+				    vnet_sw_interface_flags_t flags,
+				    vnet_interface_helper_flags_t
+				    helper_flags)
 {
   vnet_sw_interface_t *si = vnet_get_sw_interface (vnm, sw_if_index);
   u32 mask;
@@ -466,7 +501,8 @@ done:
 }
 
 clib_error_t *
-vnet_hw_interface_set_flags (vnet_main_t * vnm, u32 hw_if_index, u32 flags)
+vnet_hw_interface_set_flags (vnet_main_t * vnm, u32 hw_if_index,
+			     vnet_hw_interface_flags_t flags)
 {
   return vnet_hw_interface_set_flags_helper
     (vnm, hw_if_index, flags,
@@ -474,7 +510,8 @@ vnet_hw_interface_set_flags (vnet_main_t * vnm, u32 hw_if_index, u32 flags)
 }
 
 clib_error_t *
-vnet_sw_interface_set_flags (vnet_main_t * vnm, u32 sw_if_index, u32 flags)
+vnet_sw_interface_set_flags (vnet_main_t * vnm, u32 sw_if_index,
+			     vnet_sw_interface_flags_t flags)
 {
   return vnet_sw_interface_set_flags_helper
     (vnm, sw_if_index, flags,
@@ -718,7 +755,7 @@ vnet_register_interface (vnet_main_t * vnm,
   char *tx_node_name = NULL, *output_node_name = NULL;
 
   pool_get (im->hw_interfaces, hw);
-  memset (hw, 0, sizeof (*hw));
+  clib_memset (hw, 0, sizeof (*hw));
 
   hw_index = hw - im->hw_interfaces;
   hw->hw_if_index = hw_index;
@@ -831,7 +868,7 @@ vnet_register_interface (vnet_main_t * vnm,
 	.is_deleted = 0,
       };
 
-      memset (&r, 0, sizeof (r));
+      clib_memset (&r, 0, sizeof (r));
       r.type = VLIB_NODE_TYPE_INTERNAL;
       r.runtime_data = &rt;
       r.runtime_data_bytes = sizeof (rt);
@@ -1375,7 +1412,7 @@ vnet_rename_interface (vnet_main_t * vnm, u32 hw_if_index, char *new_name)
 static clib_error_t *
 vnet_hw_interface_change_mac_address_helper (vnet_main_t * vnm,
 					     u32 hw_if_index,
-					     u8 * mac_address)
+					     const u8 * mac_address)
 {
   clib_error_t *error = 0;
   vnet_hw_interface_t *hi = vnet_get_hw_interface (vnm, hw_if_index);
@@ -1420,7 +1457,7 @@ vnet_hw_interface_change_mac_address_helper (vnet_main_t * vnm,
 
 clib_error_t *
 vnet_hw_interface_change_mac_address (vnet_main_t * vnm, u32 hw_if_index,
-				      u8 * mac_address)
+				      const u8 * mac_address)
 {
   return vnet_hw_interface_change_mac_address_helper
     (vnm, hw_if_index, mac_address);

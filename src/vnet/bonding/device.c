@@ -104,6 +104,17 @@ bond_set_l2_mode_function (vnet_main_t * vnm,
 	ethernet_set_rx_redirect (vnm, sif_hw, 1);
       }
     }
+  else if ((bif_hw->l2_if_count == 0) && (l2_if_adjust == -1))
+    {
+      /* Just removed last L2 subinterface on this port */
+      vec_foreach (sw_if_index, bif->slaves)
+      {
+	sif_hw = vnet_get_sup_hw_interface (vnm, *sw_if_index);
+
+	/* Allow ip packets to go directly to ip4-input etc */
+	ethernet_set_rx_redirect (vnm, sif_hw, 0);
+      }
+    }
 
   return 0;
 }
@@ -647,7 +658,7 @@ VNET_DEVICE_CLASS_TX_FN (bond_dev_class) (vlib_main_t * vm,
 
   if (PREDICT_FALSE (bif->admin_up == 0))
     {
-      vlib_buffer_free (vm, vlib_frame_args (frame), frame->n_vectors);
+      vlib_buffer_free (vm, vlib_frame_vector_args (frame), frame->n_vectors);
       vlib_increment_simple_counter (vnet_main.interface_main.sw_if_counters +
 				     VNET_INTERFACE_COUNTER_DROP,
 				     thread_index, bif->sw_if_index,
@@ -660,7 +671,7 @@ VNET_DEVICE_CLASS_TX_FN (bond_dev_class) (vlib_main_t * vm,
   n_slaves = vec_len (bif->active_slaves);
   if (PREDICT_FALSE (n_slaves == 0))
     {
-      vlib_buffer_free (vm, vlib_frame_args (frame), frame->n_vectors);
+      vlib_buffer_free (vm, vlib_frame_vector_args (frame), frame->n_vectors);
       vlib_increment_simple_counter (vnet_main.interface_main.sw_if_counters +
 				     VNET_INTERFACE_COUNTER_DROP,
 				     thread_index, bif->sw_if_index,
@@ -734,8 +745,8 @@ done:
 	  f = vnet_get_frame_to_sw_interface (vnm, sw_if_index);
 	  f->n_vectors = ptd->per_port_queue[p].n_buffers;
 	  to_next = vlib_frame_vector_args (f);
-	  clib_memcpy (to_next, ptd->per_port_queue[p].buffers,
-		       f->n_vectors * sizeof (u32));
+	  clib_memcpy_fast (to_next, ptd->per_port_queue[p].buffers,
+			    f->n_vectors * sizeof (u32));
 	  vnet_put_frame_to_sw_interface (vnm, sw_if_index, f);
 	  ptd->per_port_queue[p].n_buffers = 0;
 	}

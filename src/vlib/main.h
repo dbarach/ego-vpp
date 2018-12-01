@@ -46,6 +46,8 @@
 #include <vppinfra/pool.h>
 #include <vppinfra/random_buffer.h>
 #include <vppinfra/time.h>
+#include <vppinfra/pmc.h>
+#include <vppinfra/pcap.h>
 
 #include <pthread.h>
 
@@ -81,6 +83,11 @@ typedef struct vlib_main_t
   u32 vector_counts_per_main_loop[2];
   u32 node_counts_per_main_loop[2];
 
+  /* Main loop hw / sw performance counters */
+    u64 (*vlib_node_runtime_perf_counter_cb) (struct vlib_main_t *);
+  int perf_counter_id;
+  int perf_counter_fd;
+
   /* Every so often we switch to the next counter. */
 #define VLIB_LOG2_MAIN_LOOPS_PER_STATS_UPDATE 7
 
@@ -112,23 +119,8 @@ typedef struct vlib_main_t
   /* Pool of buffer free lists. */
   vlib_buffer_free_list_t *buffer_free_list_pool;
 
-  /* Allocate/free buffer memory for DMA transfers, descriptor rings, etc.
-     buffer memory is guaranteed to be cache-aligned. */
-
-  clib_error_t *(*os_physmem_region_alloc) (struct vlib_main_t * vm,
-					    char *name, u32 size,
-					    u8 numa_node, u32 flags,
-					    vlib_physmem_region_index_t *
-					    idx);
-
-  void (*os_physmem_region_free) (struct vlib_main_t * vm,
-				  vlib_physmem_region_index_t idx);
-
-  void *(*os_physmem_alloc_aligned) (struct vlib_main_t * vm,
-				     vlib_physmem_region_index_t idx,
-				     uword n_bytes, uword alignment);
-  void (*os_physmem_free) (struct vlib_main_t * vm,
-			   vlib_physmem_region_index_t idx, void *x);
+  /* physical memory main structure. */
+  vlib_physmem_main_t physmem_main;
 
   /* Node graph main structure. */
   vlib_node_main_t node_main;
@@ -138,6 +130,11 @@ typedef struct vlib_main_t
 
   /* Packet trace buffer. */
   vlib_trace_main_t trace_main;
+
+  /* Pcap dispatch trace main */
+  pcap_main_t dispatch_pcap_main;
+  uword dispatch_pcap_enable;
+  u8 *pcap_buffer;
 
   /* Error handling. */
   vlib_error_main_t error_main;
@@ -192,6 +189,9 @@ typedef struct vlib_main_t
   void (*queue_signal_callback) (struct vlib_main_t *);
   u8 **argv;
 
+  /* Top of (worker) dispatch loop callback */
+  volatile void (*worker_thread_main_loop_callback) (struct vlib_main_t *);
+
   /* debugging */
   volatile int parked_at_barrier;
 
@@ -213,8 +213,10 @@ typedef struct vlib_main_t
   /* Earliest barrier can be closed again */
   f64 barrier_no_close_before;
 
-  /* Vector of pending RPC requests */
+  /* RPC requests, main thread only */
   uword *pending_rpc_requests;
+  uword *processing_rpc_requests;
+  clib_spinlock_t pending_rpc_lock;
 
 } vlib_main_t;
 
@@ -369,6 +371,9 @@ extern u8 **vlib_thread_stacks;
 u32 vlib_app_num_thread_stacks_needed (void) __attribute__ ((weak));
 
 extern void vlib_node_sync_stats (vlib_main_t * vm, vlib_node_t * n);
+
+#define VLIB_PCAP_MAJOR_VERSION 1
+#define VLIB_PCAP_MINOR_VERSION 0
 
 #endif /* included_vlib_main_h */
 

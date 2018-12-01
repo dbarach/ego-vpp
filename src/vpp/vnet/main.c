@@ -31,7 +31,7 @@
 /*
  * Load plugins from /usr/lib/vpp_plugins by default
  */
-char *vlib_plugin_path = "/usr/lib/vpp_plugins";
+char *vlib_plugin_path = NULL;
 char *vlib_plugin_app_version = VPP_BUILD_VER;
 
 static void
@@ -86,7 +86,8 @@ vpe_main_init (vlib_main_t * vm)
    */
   vat_plugin_hash_create ();
 
-  vpp_find_plugin_path ();
+  if (!vlib_plugin_path)
+    vpp_find_plugin_path ();
 }
 
 /*
@@ -157,10 +158,17 @@ main (int argc, char *argv[])
 	}
       argv_ = calloc (1, sizeof (char *));
       if (argv_ == NULL)
-	return 1;
+	{
+	  fclose (fp);
+	  return 1;
+	}
       arg = strndup (argv[0], 1024);
       if (arg == NULL)
-	return 1;
+	{
+	  fclose (fp);
+	  free (argv_);
+	  return 1;
+	}
       argv_[0] = arg;
 
       while (1)

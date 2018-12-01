@@ -27,6 +27,8 @@
 #include <vnet/l2/l2_vtr.h>
 #include <vnet/l2/l2_learn.h>
 #include <vnet/l2/l2_bd.h>
+#include <vnet/ip/ip_types_api.h>
+#include <vnet/ethernet/ethernet_types_api.h>
 
 #include <vnet/vnet_msg_enum.h>
 
@@ -80,7 +82,7 @@ send_l2_xconnect_details (vl_api_registration_t * reg, u32 context,
   vl_api_l2_xconnect_details_t *mp;
 
   mp = vl_msg_api_alloc (sizeof (*mp));
-  memset (mp, 0, sizeof (*mp));
+  clib_memset (mp, 0, sizeof (*mp));
   mp->_vl_msg_id = ntohs (VL_API_L2_XCONNECT_DETAILS);
   mp->context = context;
   mp->rx_sw_if_index = htonl (rx_sw_if_index);
@@ -135,7 +137,7 @@ send_l2fib_table_entry (vpe_api_main_t * am,
   vl_api_l2_fib_table_details_t *mp;
 
   mp = vl_msg_api_alloc (sizeof (*mp));
-  memset (mp, 0, sizeof (*mp));
+  clib_memset (mp, 0, sizeof (*mp));
   mp->_vl_msg_id = ntohs (VL_API_L2_FIB_TABLE_DETAILS);
 
   mp->bd_id =
@@ -456,7 +458,7 @@ send_bridge_domain_details (l2input_main_t * l2im,
 
   mp = vl_msg_api_alloc (sizeof (*mp) +
 			 (n_sw_ifs * sizeof (vl_api_bridge_domain_sw_if_t)));
-  memset (mp, 0, sizeof (*mp));
+  clib_memset (mp, 0, sizeof (*mp));
   mp->_vl_msg_id = ntohs (VL_API_BRIDGE_DOMAIN_DETAILS);
   mp->bd_id = ntohl (bd_config->bd_id);
   mp->flood = bd_feature_flood (bd_config);
@@ -781,7 +783,7 @@ send_bd_ip_mac_entry (vpe_api_main_t * am,
   vl_api_bd_ip_mac_details_t *mp;
 
   mp = vl_msg_api_alloc (sizeof (*mp));
-  memset (mp, 0, sizeof (*mp));
+  clib_memset (mp, 0, sizeof (*mp));
   mp->_vl_msg_id = ntohs (VL_API_BD_IP_MAC_DETAILS);
 
   mp->bd_id = ntohl (bd_id);
@@ -855,12 +857,16 @@ vl_api_bd_ip_mac_dump_t_handler (vl_api_bd_ip_mac_dump_t * mp)
 static void
 vl_api_bd_ip_mac_add_del_t_handler (vl_api_bd_ip_mac_add_del_t * mp)
 {
-  bd_main_t *bdm = &bd_main;
+  ip46_address_t ip_addr = ip46_address_initializer;
   vl_api_bd_ip_mac_add_del_reply_t *rmp;
+  bd_main_t *bdm = &bd_main;
+  u32 bd_index, bd_id;
+  mac_address_t mac;
+  ip46_type_t type;
   int rv = 0;
-  u32 bd_id = ntohl (mp->bd_id);
-  u32 bd_index;
   uword *p;
+
+  bd_id = ntohl (mp->bd_id);
 
   if (bd_id == 0)
     {
@@ -874,10 +880,12 @@ vl_api_bd_ip_mac_add_del_t_handler (vl_api_bd_ip_mac_add_del_t * mp)
       rv = VNET_API_ERROR_NO_SUCH_ENTRY;
       goto out;
     }
-
   bd_index = p[0];
-  if (bd_add_del_ip_mac (bd_index, mp->ip_address,
-			 mp->mac_address, mp->is_ipv6, mp->is_add))
+
+  type = ip_address_decode (&mp->ip, &ip_addr);
+  mac_address_decode (&mp->mac, &mac);
+
+  if (bd_add_del_ip_mac (bd_index, type, &ip_addr, &mac, mp->is_add))
     rv = VNET_API_ERROR_UNSPECIFIED;
 
 out:

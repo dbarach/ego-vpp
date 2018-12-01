@@ -86,10 +86,12 @@ send_data_chunk (echo_client_main_t * ecm, eclient_session_t * s)
 
 	  hdr.data_length = rv;
 	  hdr.data_offset = 0;
-	  clib_memcpy (&hdr.rmt_ip, &at->rmt_ip, sizeof (ip46_address_t));
+	  clib_memcpy_fast (&hdr.rmt_ip, &at->rmt_ip,
+			    sizeof (ip46_address_t));
 	  hdr.is_ip4 = at->is_ip4;
 	  hdr.rmt_port = at->rmt_port;
-	  clib_memcpy (&hdr.lcl_ip, &at->lcl_ip, sizeof (ip46_address_t));
+	  clib_memcpy_fast (&hdr.lcl_ip, &at->lcl_ip,
+			    sizeof (ip46_address_t));
 	  hdr.lcl_port = at->lcl_port;
 	  svm_fifo_enqueue_nowait (f, sizeof (hdr), (u8 *) & hdr);
 	  svm_fifo_enqueue_nocopy (f, rv);
@@ -221,10 +223,10 @@ echo_client_node_fn (vlib_main_t * vm, vlib_node_runtime_t * node,
 
       ASSERT (nconnections_this_batch > 0);
       vec_validate (connections_this_batch, nconnections_this_batch - 1);
-      clib_memcpy (connections_this_batch,
-		   connection_indices + vec_len (connection_indices)
-		   - nconnections_this_batch,
-		   nconnections_this_batch * sizeof (u32));
+      clib_memcpy_fast (connections_this_batch,
+			connection_indices + vec_len (connection_indices)
+			- nconnections_this_batch,
+			nconnections_this_batch * sizeof (u32));
       _vec_len (connection_indices) -= nconnections_this_batch;
     }
 
@@ -387,7 +389,7 @@ echo_clients_session_connected_callback (u32 app_index, u32 api_context,
   pool_get (ecm->sessions, session);
   clib_spinlock_unlock_if_init (&ecm->sessions_lock);
 
-  memset (session, 0, sizeof (*session));
+  clib_memset (session, 0, sizeof (*session));
   session_index = session - ecm->sessions;
   session->bytes_to_send = ecm->bytes_to_send;
   session->bytes_to_receive = ecm->no_return ? 0ULL : ecm->bytes_to_send;
@@ -402,8 +404,8 @@ echo_clients_session_connected_callback (u32 app_index, u32 api_context,
     {
       transport_connection_t *tc;
       tc = session_get_transport (s);
-      clib_memcpy (&session->data.transport, tc,
-		   sizeof (session->data.transport));
+      clib_memcpy_fast (&session->data.transport, tc,
+			sizeof (session->data.transport));
       session->data.is_dgram = 1;
     }
 
@@ -481,7 +483,7 @@ echo_clients_rx_callback (stream_session_t * s)
 }
 
 int
-echo_client_add_segment_callback (u32 client_index, const ssvm_private_t * sp)
+echo_client_add_segment_callback (u32 client_index, u64 segment_handle)
 {
   /* New heaps may be added */
   return 0;
@@ -507,8 +509,8 @@ echo_clients_attach (u8 * appns_id, u64 appns_flags, u64 appns_secret)
   u64 options[16];
   clib_error_t *error = 0;
 
-  memset (a, 0, sizeof (*a));
-  memset (options, 0, sizeof (options));
+  clib_memset (a, 0, sizeof (*a));
+  clib_memset (options, 0, sizeof (options));
 
   a->api_client_index = ecm->my_client_index;
   a->session_cb_vft = &echo_clients;
@@ -588,7 +590,7 @@ echo_clients_connect (vlib_main_t * vm, u32 n_clients)
   clib_error_t *error = 0;
   int i;
 
-  memset (a, 0, sizeof (*a));
+  clib_memset (a, 0, sizeof (*a));
   for (i = 0; i < n_clients; i++)
     {
       a->uri = (char *) ecm->connect_uri;

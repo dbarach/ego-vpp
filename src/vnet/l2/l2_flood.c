@@ -223,9 +223,7 @@ l2flood_node_fn (vlib_main_t * vm,
 	      n_cloned = vlib_buffer_clone (vm, bi0,
 					    msm->clones[thread_index],
 					    n_clones,
-					    (vnet_buffer (b0)->l2.l2_len +
-					     sizeof (udp_header_t) +
-					     2 * sizeof (ip6_header_t)));
+					    VLIB_BUFFER_CLONE_HEAD_SIZE);
 
 	      if (PREDICT_FALSE (n_cloned != n_clones))
 		{
@@ -258,8 +256,8 @@ l2flood_node_fn (vlib_main_t * vm,
 		      h0 = vlib_buffer_get_current (c0);
 		      t->sw_if_index = sw_if_index0;
 		      t->bd_index = vnet_buffer (c0)->l2.bd_index;
-		      clib_memcpy (t->src, h0->src_address, 6);
-		      clib_memcpy (t->dst, h0->dst_address, 6);
+		      clib_memcpy_fast (t->src, h0->src_address, 6);
+		      clib_memcpy_fast (t->dst, h0->dst_address, 6);
 		    }
 
 		  /* Do normal L2 forwarding */
@@ -309,8 +307,8 @@ l2flood_node_fn (vlib_main_t * vm,
 	      h0 = vlib_buffer_get_current (c0);
 	      t->sw_if_index = sw_if_index0;
 	      t->bd_index = vnet_buffer (c0)->l2.bd_index;
-	      clib_memcpy (t->src, h0->src_address, 6);
-	      clib_memcpy (t->dst, h0->dst_address, 6);
+	      clib_memcpy_fast (t->src, h0->src_address, 6);
+	      clib_memcpy_fast (t->dst, h0->dst_address, 6);
 	    }
 
 

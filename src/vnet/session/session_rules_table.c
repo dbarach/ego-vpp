@@ -270,8 +270,10 @@ session_rules_table_init_rule_40 (mma_rule_40_t * rule,
   fib_pref_normalize (lcl);
   fib_pref_normalize (rmt);
   match = (session_mask_or_match_6_t *) & rule->match;
-  clib_memcpy (&match->lcl_ip, &lcl->fp_addr.ip6, sizeof (match->lcl_ip));
-  clib_memcpy (&match->rmt_ip, &rmt->fp_addr.ip6, sizeof (match->rmt_ip));
+  clib_memcpy_fast (&match->lcl_ip, &lcl->fp_addr.ip6,
+		    sizeof (match->lcl_ip));
+  clib_memcpy_fast (&match->rmt_ip, &rmt->fp_addr.ip6,
+		    sizeof (match->rmt_ip));
   match->lcl_port = lcl_port;
   match->rmt_port = rmt_port;
   mask = (session_mask_or_match_6_t *) & rule->mask;
@@ -355,8 +357,8 @@ session_rules_table_lookup_rule6 (session_rules_table_t * srt,
     .lcl_port = lcl_port,
     .rmt_port = rmt_port,
   };
-  clib_memcpy (&key.lcl_ip, lcl_ip, sizeof (*lcl_ip));
-  clib_memcpy (&key.rmt_ip, rmt_ip, sizeof (*rmt_ip));
+  clib_memcpy_fast (&key.lcl_ip, lcl_ip, sizeof (*lcl_ip));
+  clib_memcpy_fast (&key.rmt_ip, rmt_ip, sizeof (*rmt_ip));
   return mma_rules_table_lookup_rule_40 (srt6,
 					 (mma_mask_or_match_40_t *) & key,
 					 srt6->root_index);
@@ -372,8 +374,8 @@ session_rules_table_lookup6 (session_rules_table_t * srt,
     .lcl_port = lcl_port,
     .rmt_port = rmt_port,
   };
-  clib_memcpy (&key.lcl_ip, lcl_ip, sizeof (*lcl_ip));
-  clib_memcpy (&key.rmt_ip, rmt_ip, sizeof (*rmt_ip));
+  clib_memcpy_fast (&key.lcl_ip, lcl_ip, sizeof (*lcl_ip));
+  clib_memcpy_fast (&key.rmt_ip, rmt_ip, sizeof (*rmt_ip));
   return mma_rules_table_lookup_40 (srt6, (mma_mask_or_match_40_t *) & key,
 				    srt6->root_index);
 }
@@ -445,7 +447,7 @@ session_rules_table_add_del (session_rules_table_t * srt,
 	    {
 	      mma_rule_16_t _rule;
 	      rule = &_rule;
-	      memset (rule, 0, sizeof (*rule));
+	      clib_memset (rule, 0, sizeof (*rule));
 	      session_rules_table_init_rule_16 (rule, &args->lcl,
 						args->lcl_port, &args->rmt,
 						args->rmt_port);
@@ -499,7 +501,7 @@ session_rules_table_add_del (session_rules_table_t * srt,
 	    {
 	      mma_rule_40_t _rule;
 	      rule = &_rule;
-	      memset (rule, 0, sizeof (*rule));
+	      clib_memset (rule, 0, sizeof (*rule));
 	      session_rules_table_init_rule_40 (rule, &args->lcl,
 						args->lcl_port, &args->rmt,
 						args->rmt_port);
@@ -522,7 +524,7 @@ session_rules_table_init (session_rules_table_t * srt)
   mma_rule_40_t *rule6;
   fib_prefix_t null_prefix;
 
-  memset (&null_prefix, 0, sizeof (null_prefix));
+  clib_memset (&null_prefix, 0, sizeof (null_prefix));
 
   srt4 = &srt->session_rules_tables_16;
   rule4 = session_rules_table_alloc_rule_16 (srt4, &null_prefix, 0,
@@ -577,8 +579,8 @@ session_rules_table_show_rule (vlib_main_t * vm, session_rules_table_t * srt,
 	.lcl_port = lcl_port,
 	.rmt_port = rmt_port,
       };
-      clib_memcpy (&key.lcl_ip, &lcl_ip->ip6, sizeof (lcl_ip->ip6));
-      clib_memcpy (&key.rmt_ip, &rmt_ip->ip6, sizeof (rmt_ip->ip6));
+      clib_memcpy_fast (&key.lcl_ip, &lcl_ip->ip6, sizeof (lcl_ip->ip6));
+      clib_memcpy_fast (&key.rmt_ip, &rmt_ip->ip6, sizeof (rmt_ip->ip6));
       ri = mma_rules_table_lookup_rule_40 (srt6,
 					   (mma_mask_or_match_40_t *) & key,
 					   srt6->root_index);

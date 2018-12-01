@@ -201,12 +201,43 @@ ip6_add_del_interface_address (vlib_main_t * vm,
   clib_error_t *error;
   u32 if_address_index;
   ip6_address_fib_t ip6_af, *addr_fib = 0;
+  ip6_address_t ll_addr;
 
   /* local0 interface doesn't support IP addressing */
   if (sw_if_index == 0)
     {
       return
 	clib_error_create ("local0 interface doesn't support IP addressing");
+    }
+
+  if (ip6_address_is_link_local_unicast (address))
+    {
+      if (address_length != 128)
+	{
+	  vnm->api_errno = VNET_API_ERROR_ADDRESS_LENGTH_MISMATCH;
+	  return
+	    clib_error_create
+	    ("prefix length of link-local address must be 128");
+	}
+      if (!is_del)
+	{
+	  return ip6_neighbor_set_link_local_address (vm, sw_if_index,
+						      address);
+	}
+      else
+	{
+	  ll_addr = ip6_neighbor_get_link_local_address (sw_if_index);
+	  if (ip6_address_is_equal (&ll_addr, address))
+	    {
+	      vnm->api_errno = VNET_API_ERROR_ADDRESS_NOT_DELETABLE;
+	      return clib_error_create ("address not deletable");
+	    }
+	  else
+	    {
+	      vnm->api_errno = VNET_API_ERROR_ADDRESS_NOT_FOUND_FOR_INTERFACE;
+	      return clib_error_create ("address not found");
+	    }
+	}
     }
 
   vec_validate (im->fib_index_by_sw_if_index, sw_if_index);
@@ -340,6 +371,7 @@ VNET_FEATURE_ARC_INIT (ip6_unicast, static) =
 {
   .arc_name  = "ip6-unicast",
   .start_nodes = VNET_FEATURES ("ip6-input"),
+  .last_in_arc = "ip6-lookup",
   .arc_index_ptr = &ip6_main.lookup_main.ucast_feature_arc_index,
 };
 
@@ -361,13 +393,13 @@ VNET_FEATURE_INIT (ip6_policer_classify, static) =
 {
   .arc_name = "ip6-unicast",
   .node_name = "ip6-policer-classify",
-  .runs_before = VNET_FEATURES ("ipsec-input-ip6"),
+  .runs_before = VNET_FEATURES ("ipsec6-input"),
 };
 
 VNET_FEATURE_INIT (ip6_ipsec, static) =
 {
   .arc_name = "ip6-unicast",
-  .node_name = "ipsec-input-ip6",
+  .node_name = "ipsec6-input",
   .runs_before = VNET_FEATURES ("l2tp-decap"),
 };
 
@@ -411,6 +443,7 @@ VNET_FEATURE_ARC_INIT (ip6_multicast, static) =
 {
   .arc_name  = "ip6-multicast",
   .start_nodes = VNET_FEATURES ("ip6-input"),
+  .last_in_arc = "ip6-mfib-forward-lookup",
   .arc_index_ptr = &ip6_main.lookup_main.mcast_feature_arc_index,
 };
 
@@ -437,18 +470,19 @@ VNET_FEATURE_ARC_INIT (ip6_output, static) =
 {
   .arc_name  = "ip6-output",
   .start_nodes = VNET_FEATURES ("ip6-rewrite", "ip6-midchain", "ip6-dvr-dpo"),
+  .last_in_arc = "interface-output",
   .arc_index_ptr = &ip6_main.lookup_main.output_feature_arc_index,
 };
 
 VNET_FEATURE_INIT (ip6_outacl, static) = {
   .arc_name = "ip6-output",
   .node_name = "ip6-outacl",
-  .runs_before = VNET_FEATURES ("ipsec-output-ip6"),
+  .runs_before = VNET_FEATURES ("ipsec6-output"),
 };
 
 VNET_FEATURE_INIT (ip6_ipsec_output, static) = {
   .arc_name = "ip6-output",
-  .node_name = "ipsec-output-ip6",
+  .node_name = "ipsec6-output",
   .runs_before = VNET_FEATURES ("interface-output"),
 };
 
@@ -535,9 +569,6 @@ ip6_load_balance (vlib_main_t * vm,
   from = vlib_frame_vector_args (frame);
   n_left_from = frame->n_vectors;
   next = node->cached_next_index;
-
-  if (node->flags & VLIB_NODE_FLAG_TRACE)
-    ip6_forward_next_trace (vm, node, frame, VLIB_TX);
 
   while (n_left_from > 0)
     {
@@ -736,6 +767,9 @@ ip6_load_balance (vlib_main_t * vm,
       vlib_put_next_frame (vm, node, next, n_left_to_next);
     }
 
+  if (node->flags & VLIB_NODE_FLAG_TRACE)
+    ip6_forward_next_trace (vm, node, frame, VLIB_TX);
+
   return frame->n_vectors;
 }
 
@@ -852,9 +886,9 @@ ip6_forward_next_trace (vlib_main_t * vm,
 	    vec_elt (im->fib_index_by_sw_if_index,
 		     vnet_buffer (b0)->sw_if_index[VLIB_RX]);
 
-	  clib_memcpy (t0->packet_data,
-		       vlib_buffer_get_current (b0),
-		       sizeof (t0->packet_data));
+	  clib_memcpy_fast (t0->packet_data,
+			    vlib_buffer_get_current (b0),
+			    sizeof (t0->packet_data));
 	}
       if (b1->flags & VLIB_BUFFER_IS_TRACED)
 	{
@@ -867,9 +901,9 @@ ip6_forward_next_trace (vlib_main_t * vm,
 	    vec_elt (im->fib_index_by_sw_if_index,
 		     vnet_buffer (b1)->sw_if_index[VLIB_RX]);
 
-	  clib_memcpy (t1->packet_data,
-		       vlib_buffer_get_current (b1),
-		       sizeof (t1->packet_data));
+	  clib_memcpy_fast (t1->packet_data,
+			    vlib_buffer_get_current (b1),
+			    sizeof (t1->packet_data));
 	}
       from += 2;
       n_left -= 2;
@@ -896,9 +930,9 @@ ip6_forward_next_trace (vlib_main_t * vm,
 	    vec_elt (im->fib_index_by_sw_if_index,
 		     vnet_buffer (b0)->sw_if_index[VLIB_RX]);
 
-	  clib_memcpy (t0->packet_data,
-		       vlib_buffer_get_current (b0),
-		       sizeof (t0->packet_data));
+	  clib_memcpy_fast (t0->packet_data,
+			    vlib_buffer_get_current (b0),
+			    sizeof (t0->packet_data));
 	}
       from += 1;
       n_left -= 1;
@@ -1499,8 +1533,8 @@ ip6_probe_neighbor (vlib_main_t * vm, ip6_address_t * dst, u32 sw_if_index,
 				sw_if_index);
     }
 
-  clib_memcpy (h->link_layer_option.ethernet_address, hi->hw_address,
-	       vec_len (hi->hw_address));
+  clib_memcpy_fast (h->link_layer_option.ethernet_address, hi->hw_address,
+		    vec_len (hi->hw_address));
 
   h->neighbor.icmp.checksum =
     ip6_tcp_udp_icmp_compute_checksum (vm, 0, &h->ip, &bogus_length);
@@ -2384,7 +2418,7 @@ ip6_hop_by_hop (vlib_main_t * vm,
 		    ARRAY_LEN (t->option_data) ? trace_len :
 		    ARRAY_LEN (t->option_data);
 		  t->trace_len = trace_len;
-		  clib_memcpy (t->option_data, hbh0, trace_len);
+		  clib_memcpy_fast (t->option_data, hbh0, trace_len);
 		}
 	      if (b1->flags & VLIB_BUFFER_IS_TRACED)
 		{
@@ -2398,7 +2432,7 @@ ip6_hop_by_hop (vlib_main_t * vm,
 		    ARRAY_LEN (t->option_data) ? trace_len :
 		    ARRAY_LEN (t->option_data);
 		  t->trace_len = trace_len;
-		  clib_memcpy (t->option_data, hbh1, trace_len);
+		  clib_memcpy_fast (t->option_data, hbh1, trace_len);
 		}
 
 	    }
@@ -2479,7 +2513,7 @@ ip6_hop_by_hop (vlib_main_t * vm,
 		ARRAY_LEN (t->option_data) ? trace_len :
 		ARRAY_LEN (t->option_data);
 	      t->trace_len = trace_len;
-	      clib_memcpy (t->option_data, hbh0, trace_len);
+	      clib_memcpy_fast (t->option_data, hbh0, trace_len);
 	    }
 
 	  b0->error = error_node->errors[error0];
@@ -2514,8 +2548,8 @@ static clib_error_t *
 ip6_hop_by_hop_init (vlib_main_t * vm)
 {
   ip6_hop_by_hop_main_t *hm = &ip6_hop_by_hop_main;
-  memset (hm->options, 0, sizeof (hm->options));
-  memset (hm->trace, 0, sizeof (hm->trace));
+  clib_memset (hm->options, 0, sizeof (hm->options));
+  clib_memset (hm->trace, 0, sizeof (hm->trace));
   hm->next_override = IP6_LOOKUP_NEXT_POP_HOP_BY_HOP;
   return (0);
 }
@@ -2649,7 +2683,7 @@ ip6_lookup_init (vlib_main_t * vm)
   {
     icmp6_neighbor_solicitation_header_t p;
 
-    memset (&p, 0, sizeof (p));
+    clib_memset (&p, 0, sizeof (p));
 
     p.ip.ip_version_traffic_class_and_flow_label =
       clib_host_to_net_u32 (0x6 << 28);

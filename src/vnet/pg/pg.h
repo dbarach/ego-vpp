@@ -43,7 +43,7 @@
 #include <vlib/vlib.h>		/* for VLIB_N_RX_TX */
 #include <vnet/pg/edit.h>
 #include <vppinfra/fifo.h>	/* for buffer_fifo */
-#include <vnet/unix/pcap.h>
+#include <vppinfra/pcap.h>
 #include <vnet/interface.h>
 
 extern vnet_device_class_t pg_dev_class;
@@ -287,7 +287,7 @@ pg_free_edit_group (pg_stream_t * s)
   pg_edit_group_t *g = pg_stream_get_group (s, i);
 
   pg_edit_group_free (g);
-  memset (g, 0, sizeof (g[0]));
+  clib_memset (g, 0, sizeof (g[0]));
   _vec_len (s->edit_groups) = i;
 }
 

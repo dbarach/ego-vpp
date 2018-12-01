@@ -81,7 +81,8 @@ extern vlib_node_registration_t l2output_node;
 #define foreach_l2output_feat \
  _(OUTPUT,            "interface-output")           \
  _(SPAN,              "span-l2-output")             \
- _(GBP_POLICY,        "gbp-policy")                 \
+ _(GBP_POLICY_PORT,   "gbp-policy-port")            \
+ _(GBP_POLICY_MAC,    "gbp-policy-mac")             \
  _(CFM,               "feature-bitmap-drop")        \
  _(QOS,               "feature-bitmap-drop")        \
  _(ACL,               "l2-output-acl")              \
@@ -108,6 +109,7 @@ STATIC_ASSERT (L2OUTPUT_N_FEAT <= 32, "too many l2 output features");
 /* Feature bit masks */
 typedef enum
 {
+  L2OUTPUT_FEAT_NONE = 0,
 #define _(sym,str) L2OUTPUT_FEAT_##sym = (1<<L2OUTPUT_FEAT_##sym##_BIT),
   foreach_l2output_feat
 #undef _
@@ -139,7 +141,7 @@ typedef enum
 /* Return an array of strings containing graph node names of each feature */
 char **l2output_get_feat_names (void);
 
-/* arg0 - u32 feature_bitmap */
+/* arg0 - u32 feature_bitmap, arg1 - u32 verbose */
 u8 *format_l2_output_features (u8 * s, va_list * args);
 
 /**
@@ -159,7 +161,8 @@ l2_output_config_t *l2output_intf_config (u32 sw_if_index);
 
 /** Enable (or disable) the feature in the bitmap for the given interface */
 void l2output_intf_bitmap_enable (u32 sw_if_index,
-				  u32 feature_bitmap, u32 enable);
+				  l2output_feat_masks_t feature_bitmap,
+				  u32 enable);
 
 #endif
 

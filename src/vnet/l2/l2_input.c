@@ -71,6 +71,7 @@ format_l2_input_features (u8 * s, va_list * args)
 #undef _
   };
   u32 feature_bitmap = va_arg (*args, u32);
+  u32 verbose = va_arg (*args, u32);
 
   if (feature_bitmap == 0)
     {
@@ -81,8 +82,16 @@ format_l2_input_features (u8 * s, va_list * args)
   feature_bitmap &= ~L2INPUT_FEAT_DROP;	/* Not a feature */
   int i;
   for (i = L2INPUT_N_FEAT; i >= 0; i--)
-    if (feature_bitmap & (1 << i))
-      s = format (s, "%17s (%s)\n", display_names[i], l2input_feat_names[i]);
+    {
+      if (feature_bitmap & (1 << i))
+	{
+	  if (verbose)
+	    s = format (s, "%17s (%s)\n",
+			display_names[i], l2input_feat_names[i]);
+	  else
+	    s = format (s, "%s ", l2input_feat_names[i]);
+	}
+    }
   return s;
 }
 
@@ -357,8 +366,8 @@ l2input_node_inline (vlib_main_t * vm,
 		  l2input_trace_t *t =
 		    vlib_add_trace (vm, node, b0, sizeof (*t));
 		  t->sw_if_index = sw_if_index0;
-		  clib_memcpy (t->src, h0->src_address, 6);
-		  clib_memcpy (t->dst, h0->dst_address, 6);
+		  clib_memcpy_fast (t->src, h0->src_address, 6);
+		  clib_memcpy_fast (t->dst, h0->dst_address, 6);
 		}
 	      if (b1->flags & VLIB_BUFFER_IS_TRACED)
 		{
@@ -366,8 +375,8 @@ l2input_node_inline (vlib_main_t * vm,
 		  l2input_trace_t *t =
 		    vlib_add_trace (vm, node, b1, sizeof (*t));
 		  t->sw_if_index = sw_if_index1;
-		  clib_memcpy (t->src, h1->src_address, 6);
-		  clib_memcpy (t->dst, h1->dst_address, 6);
+		  clib_memcpy_fast (t->src, h1->src_address, 6);
+		  clib_memcpy_fast (t->dst, h1->dst_address, 6);
 		}
 	      if (b2->flags & VLIB_BUFFER_IS_TRACED)
 		{
@@ -375,8 +384,8 @@ l2input_node_inline (vlib_main_t * vm,
 		  l2input_trace_t *t =
 		    vlib_add_trace (vm, node, b2, sizeof (*t));
 		  t->sw_if_index = sw_if_index2;
-		  clib_memcpy (t->src, h2->src_address, 6);
-		  clib_memcpy (t->dst, h2->dst_address, 6);
+		  clib_memcpy_fast (t->src, h2->src_address, 6);
+		  clib_memcpy_fast (t->dst, h2->dst_address, 6);
 		}
 	      if (b3->flags & VLIB_BUFFER_IS_TRACED)
 		{
@@ -384,8 +393,8 @@ l2input_node_inline (vlib_main_t * vm,
 		  l2input_trace_t *t =
 		    vlib_add_trace (vm, node, b3, sizeof (*t));
 		  t->sw_if_index = sw_if_index3;
-		  clib_memcpy (t->src, h3->src_address, 6);
-		  clib_memcpy (t->dst, h3->dst_address, 6);
+		  clib_memcpy_fast (t->src, h3->src_address, 6);
+		  clib_memcpy_fast (t->dst, h3->dst_address, 6);
 		}
 	    }
 
@@ -425,8 +434,8 @@ l2input_node_inline (vlib_main_t * vm,
 	      l2input_trace_t *t = vlib_add_trace (vm, node, b0, sizeof (*t));
 	      sw_if_index0 = vnet_buffer (b0)->sw_if_index[VLIB_RX];
 	      t->sw_if_index = sw_if_index0;
-	      clib_memcpy (t->src, h0->src_address, 6);
-	      clib_memcpy (t->dst, h0->dst_address, 6);
+	      clib_memcpy_fast (t->src, h0->src_address, 6);
+	      clib_memcpy_fast (t->dst, h0->dst_address, 6);
 	    }
 
 	  classify_and_dispatch (msm, b0, &next0);
@@ -518,7 +527,8 @@ l2input_intf_config (u32 sw_if_index)
 
 /** Enable (or disable) the feature in the bitmap for the given interface. */
 u32
-l2input_intf_bitmap_enable (u32 sw_if_index, u32 feature_bitmap, u32 enable)
+l2input_intf_bitmap_enable (u32 sw_if_index,
+			    l2input_feat_masks_t feature_bitmap, u32 enable)
 {
   l2_input_config_t *config = l2input_intf_config (sw_if_index);
 
@@ -649,7 +659,7 @@ set_int_l2_mode (vlib_main_t * vm, vnet_main_t * vnet_main,	/*           */
 
       /* Clear L2 output config */
       out_config = l2output_intf_config (sw_if_index);
-      memset (out_config, 0, sizeof (l2_output_config_t));
+      clib_memset (out_config, 0, sizeof (l2_output_config_t));
 
       /* Make sure any L2-output packet to this interface now in L3 mode is
        * dropped. This may happen if L2 FIB MAC entry is stale */

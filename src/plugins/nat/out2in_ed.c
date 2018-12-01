@@ -29,6 +29,7 @@
 #include <nat/nat_ipfix_logging.h>
 #include <nat/nat_reass.h>
 #include <nat/nat_inlines.h>
+#include <nat/nat_syslog.h>
 
 #define foreach_nat_out2in_ed_error                     \
 _(UNSUPPORTED_PROTOCOL, "Unsupported protocol")         \
@@ -39,7 +40,8 @@ _(NO_TRANSLATION, "No translation")                     \
 _(MAX_SESSIONS_EXCEEDED, "Maximum sessions exceeded")   \
 _(DROP_FRAGMENT, "Drop fragment")                       \
 _(MAX_REASS, "Maximum reassemblies exceeded")           \
-_(MAX_FRAG, "Maximum fragments per reassembly exceeded")
+_(MAX_FRAG, "Maximum fragments per reassembly exceeded")\
+_(NON_SYN, "non-SYN packet try to create session")
 
 typedef enum
 {
@@ -172,6 +174,13 @@ nat44_o2i_ed_is_idle_session_cb (clib_bihash_kv_16_8_t * kv, void *arg)
 					   s->out2in.port,
 					   s->in2out.fib_index);
 
+      nat_syslog_nat44_sdel (s->user_index, s->in2out.fib_index,
+			     &s->in2out.addr, s->in2out.port,
+			     &s->ext_host_nat_addr, s->ext_host_nat_port,
+			     &s->out2in.addr, s->out2in.port,
+			     &s->ext_host_addr, s->ext_host_port,
+			     s->in2out.protocol, is_twice_nat_session (s));
+
       if (is_twice_nat_session (s))
 	{
 	  for (i = 0; i < vec_len (sm->twice_nat_addresses); i++)
@@ -301,6 +310,19 @@ create_session_for_static_mapping_ed (snat_main_t * sm,
 					       nat44_i2o_ed_is_idle_session_cb,
 					       &ctx))
     nat_log_notice ("in2out-ed key add failed");
+
+  snat_ipfix_logging_nat44_ses_create (s->in2out.addr.as_u32,
+				       s->out2in.addr.as_u32,
+				       s->in2out.protocol,
+				       s->in2out.port,
+				       s->out2in.port, s->in2out.fib_index);
+
+  nat_syslog_nat44_sdel (s->user_index, s->in2out.fib_index,
+			 &s->in2out.addr, s->in2out.port,
+			 &s->ext_host_nat_addr, s->ext_host_nat_port,
+			 &s->out2in.addr, s->out2in.port,
+			 &s->ext_host_addr, s->ext_host_port,
+			 s->in2out.protocol, is_twice_nat_session (s));
 
   return s;
 }
@@ -875,6 +897,13 @@ nat44_ed_out2in_node_fn_inline (vlib_main_t * vm,
 		  if (PREDICT_FALSE (identity_nat0))
 		    goto trace00;
 
+		  if ((proto0 == SNAT_PROTOCOL_TCP) && !tcp_is_init (tcp0))
+		    {
+		      b0->error = node->errors[NAT_OUT2IN_ED_ERROR_NON_SYN];
+		      next0 = NAT44_ED_OUT2IN_NEXT_DROP;
+		      goto trace00;
+		    }
+
 		  /* Create session initiated by host from external network */
 		  s0 = create_session_for_static_mapping_ed (sm, b0, l_key0,
 							     e_key0, node,
@@ -1096,6 +1125,13 @@ nat44_ed_out2in_node_fn_inline (vlib_main_t * vm,
 
 		  if (PREDICT_FALSE (identity_nat1))
 		    goto trace01;
+
+		  if ((proto1 == SNAT_PROTOCOL_TCP) && !tcp_is_init (tcp1))
+		    {
+		      b1->error = node->errors[NAT_OUT2IN_ED_ERROR_NON_SYN];
+		      next1 = NAT44_ED_OUT2IN_NEXT_DROP;
+		      goto trace01;
+		    }
 
 		  /* Create session initiated by host from external network */
 		  s1 = create_session_for_static_mapping_ed (sm, b1, l_key1,
@@ -1352,6 +1388,13 @@ nat44_ed_out2in_node_fn_inline (vlib_main_t * vm,
 
 		  if (PREDICT_FALSE (identity_nat0))
 		    goto trace0;
+
+		  if ((proto0 == SNAT_PROTOCOL_TCP) && !tcp_is_init (tcp0))
+		    {
+		      b0->error = node->errors[NAT_OUT2IN_ED_ERROR_NON_SYN];
+		      next0 = NAT44_ED_OUT2IN_NEXT_DROP;
+		      goto trace0;
+		    }
 
 		  /* Create session initiated by host from external network */
 		  s0 = create_session_for_static_mapping_ed (sm, b0, l_key0,
@@ -1702,6 +1745,13 @@ nat44_ed_out2in_reass_node_fn (vlib_main_t * vm,
 		      goto trace0;
 		    }
 
+		  if ((proto0 == SNAT_PROTOCOL_TCP) && !tcp_is_init (tcp0))
+		    {
+		      b0->error = node->errors[NAT_OUT2IN_ED_ERROR_NON_SYN];
+		      next0 = NAT44_ED_OUT2IN_NEXT_DROP;
+		      goto trace0;
+		    }
+
 		  /* Create session initiated by host from external network */
 		  s0 = create_session_for_static_mapping_ed (sm, b0, l_key0,
 							     e_key0, node,
@@ -1844,17 +1894,16 @@ nat44_ed_out2in_reass_node_fn (vlib_main_t * vm,
 	      u32 len = vec_len (fragments_to_loopback);
 	      if (len <= VLIB_FRAME_SIZE)
 		{
-		  clib_memcpy (from, fragments_to_loopback,
-			       sizeof (u32) * len);
+		  clib_memcpy_fast (from, fragments_to_loopback,
+				    sizeof (u32) * len);
 		  n_left_from = len;
 		  vec_reset_length (fragments_to_loopback);
 		}
 	      else
 		{
-		  clib_memcpy (from,
-			       fragments_to_loopback + (len -
-							VLIB_FRAME_SIZE),
-			       sizeof (u32) * VLIB_FRAME_SIZE);
+		  clib_memcpy_fast (from, fragments_to_loopback +
+				    (len - VLIB_FRAME_SIZE),
+				    sizeof (u32) * VLIB_FRAME_SIZE);
 		  n_left_from = VLIB_FRAME_SIZE;
 		  _vec_len (fragments_to_loopback) = len - VLIB_FRAME_SIZE;
 		}

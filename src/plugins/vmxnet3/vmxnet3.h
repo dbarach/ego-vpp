@@ -166,7 +166,7 @@ enum
   _(7, GET_DEV_EXTRA_INFO, "get dev extra info") \
   _(8, GET_CONF_INTR, "get conf intr") \
   _(9, GET_ADAPTIVE_RING_INFO, "get adaptive ring info") \
-  _(10, GET_TXDATA_DESC_SIZE, "gte txdata desc size") \
+  _(10, GET_TXDATA_DESC_SIZE, "get txdata desc size") \
   _(11, RESERVED5, "reserved5")
 
 enum
@@ -493,9 +493,8 @@ typedef struct
 typedef struct
 {
   vmxnet3_device_t *devices;
-  vlib_physmem_region_index_t physmem_region;
-  u32 physmem_region_alloc;
   u16 msg_id_base;
+  vlib_log_class_t log_default;
 } vmxnet3_main_t;
 
 extern vmxnet3_main_t vmxnet3_main;
@@ -531,25 +530,46 @@ format_function_t format_vmxnet3_device;
 format_function_t format_vmxnet3_device_name;
 format_function_t format_vmxnet3_input_trace;
 
+#define vmxnet3_log_debug(dev, f, ...)			      \
+  vlib_log (VLIB_LOG_LEVEL_DEBUG, vmxnet3_main.log_default, "%U: " f, \
+	    format_vlib_pci_addr, &dev->pci_addr, \
+	    ## __VA_ARGS__)
+
+#define vmxnet3_log_error(dev, f, ...)			    \
+  vlib_log (VLIB_LOG_LEVEL_ERR, vmxnet3_main.log_default, "%U: " f, \
+	    format_vlib_pci_addr, &dev->pci_addr, \
+	    ## __VA_ARGS__)
+
+/* no log version, called by data plane */
+static_always_inline void
+vmxnet3_reg_write_inline (vmxnet3_device_t * vd, u8 bar, u32 addr, u32 val)
+{
+  *(volatile u32 *) ((u8 *) vd->bar[bar] + addr) = val;
+}
+
 static_always_inline void
 vmxnet3_reg_write (vmxnet3_device_t * vd, u8 bar, u32 addr, u32 val)
 {
-  *(volatile u32 *) ((u8 *) vd->bar[bar] + addr) = val;
+  vmxnet3_log_debug (vd, "reg wr bar %u addr 0x%x val 0x%x", bar, addr, val);
+  vmxnet3_reg_write_inline (vd, bar, addr, val);
 }
 
 static_always_inline u32
 vmxnet3_reg_read (vmxnet3_device_t * vd, u8 bar, u32 addr)
 {
-  return *(volatile u32 *) (vd->bar[bar] + addr);
+  u32 val;
+
+  val = *(volatile u32 *) (vd->bar[bar] + addr);
+  vmxnet3_log_debug (vd, "reg rd bar %u addr 0x%x val 0x%x", bar, addr, val);
+
+  return val;
 }
 
 static_always_inline uword
 vmxnet3_dma_addr (vlib_main_t * vm, vmxnet3_device_t * vd, void *p)
 {
-  vmxnet3_main_t *vmxm = &vmxnet3_main;
-
   return (vd->flags & VMXNET3_DEVICE_F_IOVA) ? pointer_to_uword (p) :
-    vlib_physmem_virtual_to_physical (vm, vmxm->physmem_region, p);
+    vlib_physmem_get_pa (vm, p);
 }
 
 static_always_inline void
@@ -570,6 +590,7 @@ vmxnet3_rxq_refill_ring0 (vlib_main_t * vm, vmxnet3_device_t * vd,
   vmxnet3_rx_desc *rxd;
   u16 n_refill, n_alloc;
   vmxnet3_rx_ring *ring;
+  vmxnet3_queues *q;
 
   ring = &rxq->rx_ring[0];
   n_refill = rxq->size - ring->fill;
@@ -590,9 +611,9 @@ vmxnet3_rxq_refill_ring0 (vlib_main_t * vm, vmxnet3_device_t * vd,
 
   while (n_alloc)
     {
+      vlib_buffer_t *b = vlib_get_buffer (vm, ring->bufs[ring->produce]);
       rxd = &rxq->rx_desc[0][ring->produce];
-      rxd->address =
-	vlib_get_buffer_data_physical_address (vm, ring->bufs[ring->produce]);
+      rxd->address = vlib_buffer_get_pa (vm, b);
       rxd->flags = ring->gen | VLIB_BUFFER_DATA_SIZE;
 
       vmxnet3_rx_ring_advance_produce (rxq, ring);
@@ -600,7 +621,9 @@ vmxnet3_rxq_refill_ring0 (vlib_main_t * vm, vmxnet3_device_t * vd,
       n_alloc--;
     }
 
-  vmxnet3_reg_write (vd, 0, VMXNET3_REG_RXPROD, ring->produce);
+  q = &vd->dma->queues;
+  if (PREDICT_FALSE (q->rx.ctrl.update_prod))
+    vmxnet3_reg_write_inline (vd, 0, VMXNET3_REG_RXPROD, ring->produce);
 
   return 0;
 }
@@ -612,6 +635,7 @@ vmxnet3_rxq_refill_ring1 (vlib_main_t * vm, vmxnet3_device_t * vd,
   vmxnet3_rx_desc *rxd;
   u16 n_refill, n_alloc;
   vmxnet3_rx_ring *ring;
+  vmxnet3_queues *q;
 
   ring = &rxq->rx_ring[1];
   n_refill = rxq->size - ring->fill;
@@ -632,9 +656,9 @@ vmxnet3_rxq_refill_ring1 (vlib_main_t * vm, vmxnet3_device_t * vd,
 
   while (n_alloc)
     {
+      vlib_buffer_t *b = vlib_get_buffer (vm, ring->bufs[ring->produce]);
       rxd = &rxq->rx_desc[1][ring->produce];
-      rxd->address =
-	vlib_get_buffer_data_physical_address (vm, ring->bufs[ring->produce]);
+      rxd->address = vlib_buffer_get_pa (vm, b);
       rxd->flags = ring->gen | VLIB_BUFFER_DATA_SIZE | VMXNET3_RXF_BTYPE;
 
       vmxnet3_rx_ring_advance_produce (rxq, ring);
@@ -642,7 +666,9 @@ vmxnet3_rxq_refill_ring1 (vlib_main_t * vm, vmxnet3_device_t * vd,
       n_alloc--;
     }
 
-  vmxnet3_reg_write (vd, 0, VMXNET3_REG_RXPROD2, ring->produce);
+  q = &vd->dma->queues;
+  if (PREDICT_FALSE (q->rx.ctrl.update_prod))
+    vmxnet3_reg_write_inline (vd, 0, VMXNET3_REG_RXPROD2, ring->produce);
 
   return 0;
 }

@@ -243,9 +243,10 @@ ip6_neighbor_get_link_local_address (u32 sw_if_index)
   static ip6_address_t empty_address = { {0} };
   ip6_neighbor_main_t *nm = &ip6_neighbor_main;
   ip6_radv_t *radv_info;
-  u32 ri;
+  u32 ri = ~0;
 
-  ri = nm->if_radv_pool_index_by_sw_if_index[sw_if_index];
+  if (vec_len (nm->if_radv_pool_index_by_sw_if_index) > sw_if_index)
+    ri = nm->if_radv_pool_index_by_sw_if_index[sw_if_index];
   if (ri == ~0)
     {
       clib_warning ("IPv6 is not enabled for sw_if_index %d", sw_if_index);
@@ -2653,7 +2654,7 @@ ip6_neighbor_sw_interface_add_del (vnet_main_t * vnm,
 	  nm->if_radv_pool_index_by_sw_if_index[sw_if_index] = ri;
 
 	  /* initialize default values (most of which are zero) */
-	  memset (a, 0, sizeof (a[0]));
+	  clib_memset (a, 0, sizeof (a[0]));
 
 	  a->sw_if_index = sw_if_index;
 	  a->max_radv_interval = DEF_MAX_RADV_INTERVAL;
@@ -2780,7 +2781,7 @@ ip6_neighbor_send_mldpv2_report (u32 sw_if_index)
   ip0 = (ip6_header_t *) & rp0->ip;
   rh0 = (icmp6_multicast_listener_report_header_t *) & rp0->report_hdr;
 
-  memset (rp0, 0x0, sizeof (icmp6_multicast_listener_report_packet_t));
+  clib_memset (rp0, 0x0, sizeof (icmp6_multicast_listener_report_packet_t));
 
   ip0->ip_version_traffic_class_and_flow_label =
     clib_host_to_net_u32 (0x6 << 28);
@@ -2968,7 +2969,7 @@ ip6_neighbor_process_timer_event (vlib_main_t * vm,
 
         h0 =  vlib_buffer_get_current (b0);
 
-        memset (h0, 0, sizeof (icmp6_router_solicitation_header_t));
+        clib_memset (h0, 0, sizeof (icmp6_router_solicitation_header_t));
 
         h0->ip.ip_version_traffic_class_and_flow_label = clib_host_to_net_u32 (0x6 << 28);
         h0->ip.payload_length = clib_host_to_net_u16 (sizeof (icmp6_router_solicitation_header_t)
@@ -3163,7 +3164,6 @@ ip6_discover_neighbor_inline (vlib_main_t * vm,
   ip_lookup_main_t *lm = &im->lookup_main;
   u32 *from, *to_next_drop;
   uword n_left_from, n_left_to_next_drop;
-  f64 time_now;
   u64 seed;
   u32 thread_index = vm->thread_index;
   int bogus_length;
@@ -3172,16 +3172,7 @@ ip6_discover_neighbor_inline (vlib_main_t * vm,
   if (node->flags & VLIB_NODE_FLAG_TRACE)
     ip6_forward_next_trace (vm, node, frame, VLIB_TX);
 
-  time_now = vlib_time_now (vm);
-  if (time_now - im->nd_throttle_last_seed_change_time[thread_index] > 1e-3)
-    {
-      (void) random_u64 (&im->nd_throttle_seeds[thread_index]);
-      memset (im->nd_throttle_bitmaps[thread_index], 0,
-	      ND_THROTTLE_BITS / BITS (u8));
-
-      im->nd_throttle_last_seed_change_time[thread_index] = time_now;
-    }
-  seed = im->nd_throttle_seeds[thread_index];
+  seed = throttle_seed (&im->nd_throttle, thread_index, vlib_time_now (vm));
 
   from = vlib_frame_vector_args (frame);
   n_left_from = frame->n_vectors;
@@ -3193,15 +3184,12 @@ ip6_discover_neighbor_inline (vlib_main_t * vm,
 
       while (n_left_from > 0 && n_left_to_next_drop > 0)
 	{
-	  vlib_buffer_t *p0;
-	  ip6_header_t *ip0;
-	  u32 pi0, adj_index0, w0, sw_if_index0, drop0;
-	  u64 r0;
-	  uword m0;
-	  ip_adjacency_t *adj0;
+	  u32 pi0, adj_index0, sw_if_index0, drop0, r0, next0;
 	  vnet_hw_interface_t *hw_if0;
 	  ip6_radv_t *radv_info;
-	  u32 next0;
+	  ip_adjacency_t *adj0;
+	  vlib_buffer_t *p0;
+	  ip6_header_t *ip0;
 
 	  pi0 = from[0];
 
@@ -3224,18 +3212,10 @@ ip6_discover_neighbor_inline (vlib_main_t * vm,
 	  sw_if_index0 = adj0->rewrite_header.sw_if_index;
 	  vnet_buffer (p0)->sw_if_index[VLIB_TX] = sw_if_index0;
 
-	  /* Compute the ND throttle bitmap hash */
-	  r0 = ip0->dst_address.as_u64[0] ^ ip0->dst_address.as_u64[1] ^ seed;
+	  /* combine the address and interface for a hash */
+	  r0 = ip6_address_hash_to_u64 (&ip0->dst_address) ^ sw_if_index0;
 
-	  /* Find the word and bit */
-	  r0 &= ND_THROTTLE_BITS - 1;
-	  w0 = r0 / BITS (uword);
-	  m0 = (uword) 1 << (r0 % BITS (uword));
-
-	  /* If the bit is set, drop the ND request */
-	  drop0 = (im->nd_throttle_bitmaps[thread_index][w0] & m0) != 0;
-	  /* (unconditionally) mark the bit "inuse" */
-	  im->nd_throttle_bitmaps[thread_index][w0] |= m0;
+	  drop0 = throttle_check (&im->nd_throttle, thread_index, r0, seed);
 
 	  from += 1;
 	  n_left_from -= 1;
@@ -3571,7 +3551,7 @@ ip6_neighbor_ra_prefix (vlib_main_t * vm, u32 sw_if_index,
 	  mhash_set (&radv_info->address_to_prefix_index, prefix_addr, pi,
 		     /* old_value */ 0);
 
-	  memset (prefix, 0x0, sizeof (ip6_radv_prefix_t));
+	  clib_memset (prefix, 0x0, sizeof (ip6_radv_prefix_t));
 
 	  prefix->prefix_len = prefix_len;
 	  clib_memcpy (&prefix->prefix, prefix_addr, sizeof (ip6_address_t));
@@ -4445,21 +4425,19 @@ VLIB_CLI_COMMAND (ip6_nd_command, static) =
 /* *INDENT-ON* */
 
 clib_error_t *
-set_ip6_link_local_address (vlib_main_t * vm,
-			    u32 sw_if_index, ip6_address_t * address)
+ip6_neighbor_set_link_local_address (vlib_main_t * vm, u32 sw_if_index,
+				     ip6_address_t * address)
 {
   clib_error_t *error = 0;
   ip6_neighbor_main_t *nm = &ip6_neighbor_main;
   u32 ri;
   ip6_radv_t *radv_info;
   vnet_main_t *vnm = vnet_get_main ();
+  ip6_ll_prefix_t pfx = { 0, };
 
   if (!ip6_address_is_link_local_unicast (address))
-    {
-      vnm->api_errno = VNET_API_ERROR_ADDRESS_NOT_LINK_LOCAL;
-      return (error = clib_error_return (0, "address not link-local",
-					 format_unformat_error));
-    }
+    return (error = clib_error_return (0, "address not link-local",
+				       format_unformat_error));
 
   /* call enable ipv6  */
   enable_ip6_interface (vm, sw_if_index);
@@ -4470,25 +4448,16 @@ set_ip6_link_local_address (vlib_main_t * vm,
     {
       radv_info = pool_elt_at_index (nm->if_radv_pool, ri);
 
-      /* save if link local address (overwrite default) */
+      pfx.ilp_sw_if_index = sw_if_index;
 
-      /* delete the old one */
-      error = ip6_add_del_interface_address (vm, sw_if_index,
-					     &radv_info->link_local_address,
-					     128, 1 /* is_del */ );
+      pfx.ilp_addr = radv_info->link_local_address;
+      ip6_ll_table_entry_delete (&pfx);
 
-      if (!error)
-	{
-	  /* add the new one */
-	  error = ip6_add_del_interface_address (vm, sw_if_index,
-						 address, 128,
-						 0 /* is_del */ );
+      pfx.ilp_addr = *address;
+      ip6_ll_table_entry_update (&pfx, FIB_ROUTE_PATH_LOCAL);
 
-	  if (!error)
-	    {
-	      radv_info->link_local_address = *address;
-	    }
-	}
+      radv_info = pool_elt_at_index (nm->if_radv_pool, ri);
+      radv_info->link_local_address = *address;
     }
   else
     {
@@ -4498,50 +4467,6 @@ set_ip6_link_local_address (vlib_main_t * vm,
     }
   return error;
 }
-
-clib_error_t *
-set_ip6_link_local_address_cmd (vlib_main_t * vm,
-				unformat_input_t * input,
-				vlib_cli_command_t * cmd)
-{
-  vnet_main_t *vnm = vnet_get_main ();
-  clib_error_t *error = 0;
-  u32 sw_if_index;
-  ip6_address_t ip6_addr;
-
-  if (unformat_user (input, unformat_vnet_sw_interface, vnm, &sw_if_index))
-    {
-      /* get the rest of the command */
-      while (unformat_check_input (input) != UNFORMAT_END_OF_INPUT)
-	{
-	  if (unformat (input, "%U", unformat_ip6_address, &ip6_addr))
-	    break;
-	  else
-	    return (unformat_parse_error (input));
-	}
-    }
-  error = set_ip6_link_local_address (vm, sw_if_index, &ip6_addr);
-  return error;
-}
-
-/*?
- * This command is used to assign an IPv6 Link-local address to an
- * interface. This command will enable IPv6 on an interface if it
- * is not already enabled. Use the '<em>show ip6 interface</em>' command
- * to display the assigned Link-local address.
- *
- * @cliexpar
- * Example of how to assign an IPv6 Link-local address to an interface:
- * @cliexcmd{set ip6 link-local address GigabitEthernet2/0/0 FE80::AB8}
-?*/
-/* *INDENT-OFF* */
-VLIB_CLI_COMMAND (set_ip6_link_local_address_command, static) =
-{
-  .path = "set ip6 link-local address",
-  .short_help = "set ip6 link-local address <interface> <ip6-address>",
-  .function = set_ip6_link_local_address_cmd,
-};
-/* *INDENT-ON* */
 
 /**
  * @brief callback when an interface address is added or deleted
@@ -4677,7 +4602,7 @@ ip6_neighbor_init (vlib_main_t * vm)
 
   /* add call backs */
   ip6_add_del_interface_address_callback_t cb;
-  memset (&cb, 0x0, sizeof (ip6_add_del_interface_address_callback_t));
+  clib_memset (&cb, 0x0, sizeof (ip6_add_del_interface_address_callback_t));
 
   /* when an interface address changes... */
   cb.function = ip6_neighbor_add_del_interface_address;

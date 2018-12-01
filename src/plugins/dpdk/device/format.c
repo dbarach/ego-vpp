@@ -152,16 +152,20 @@ format_dpdk_device_name (u8 * s, va_list * args)
   char *devname_format;
   char *device_name;
   u32 i = va_arg (*args, u32);
+  dpdk_device_t *xd = vec_elt_at_index (dm->devices, i);
   struct rte_eth_dev_info dev_info;
   struct rte_pci_device *pci_dev;
   u8 *ret;
+
+  if (xd->name)
+    return format (s, "%s", xd->name);
 
   if (dm->conf->interface_name_format_decimal)
     devname_format = "%s%d/%d/%d";
   else
     devname_format = "%s%x/%x/%x";
 
-  switch (dm->devices[i].port_type)
+  switch (xd->port_type)
     {
     case VNET_DPDK_PORT_TYPE_ETH_1G:
       device_name = "GigabitEthernet";
@@ -204,7 +208,7 @@ format_dpdk_device_name (u8 * s, va_list * args)
       break;
 
     case VNET_DPDK_PORT_TYPE_ETH_BOND:
-      return format (s, "BondEthernet%d", dm->devices[i].bond_instance_num);
+      return format (s, "BondEthernet%d", xd->bond_instance_num);
 
     case VNET_DPDK_PORT_TYPE_ETH_SWITCH:
       device_name = "EthernetSwitch";
@@ -215,8 +219,7 @@ format_dpdk_device_name (u8 * s, va_list * args)
       break;
 
     case VNET_DPDK_PORT_TYPE_AF_PACKET:
-      rte_eth_dev_info_get (i, &dev_info);
-      return format (s, "af_packet%d", dm->devices[i].af_packet_instance_num);
+      return format (s, "af_packet%d", xd->af_packet_instance_num);
 
     case VNET_DPDK_PORT_TYPE_VIRTIO_USER:
       device_name = "VirtioUser";
@@ -236,17 +239,17 @@ format_dpdk_device_name (u8 * s, va_list * args)
       break;
     }
 
-  rte_eth_dev_info_get (i, &dev_info);
+  rte_eth_dev_info_get (xd->port_id, &dev_info);
   pci_dev = dpdk_get_pci_device (&dev_info);
 
-  if (pci_dev)
+  if (pci_dev && xd->port_type != VNET_DPDK_PORT_TYPE_FAILSAFE)
     ret = format (s, devname_format, device_name, pci_dev->addr.bus,
 		  pci_dev->addr.devid, pci_dev->addr.function);
   else
-    ret = format (s, "%s%d", device_name, dm->devices[i].port_id);
+    ret = format (s, "%s%d", device_name, xd->port_id);
 
-  if (dm->devices[i].interface_name_suffix)
-    return format (ret, "/%s", dm->devices[i].interface_name_suffix);
+  if (xd->interface_name_suffix)
+    return format (ret, "/%s", xd->interface_name_suffix);
   return ret;
 }
 
@@ -370,6 +373,10 @@ format_dpdk_device_type (u8 * s, va_list * args)
       dev_type = "Cavium QLogic FastLinQ QL4xxxx";
       break;
 
+    case VNET_DPDK_PMD_NETVSC:
+      dev_type = "Microsoft Hyper-V Netvsc";
+      break;
+
     default:
     case VNET_DPDK_PMD_UNKNOWN:
       dev_type = "### UNKNOWN ###";
@@ -394,8 +401,8 @@ format_dpdk_link_status (u8 * s, va_list * args)
 
       s = format (s, "%s duplex ", (l->link_duplex == ETH_LINK_FULL_DUPLEX) ?
 		  "full" : "half");
-      s = format (s, "speed %u mtu %d %s\n", l->link_speed,
-		  hi->max_packet_bytes, promisc ? " promisc" : "");
+      s = format (s, "mtu %d %s\n", hi->max_packet_bytes, promisc ?
+		  " promisc" : "");
     }
   else
     s = format (s, "\n");
@@ -564,7 +571,7 @@ format_dpdk_device (u8 * s, va_list * args)
   rte_eth_dev_info_get (xd->port_id, &di);
 
   s = format (s, "%U\n%Ucarrier %U",
-	      format_dpdk_device_type, xd->port_id,
+	      format_dpdk_device_type, dev_instance,
 	      format_white_space, indent + 2, format_dpdk_link_status, xd);
   s = format (s, "%Uflags: %U\n",
 	      format_white_space, indent + 2, format_dpdk_device_flags, xd);

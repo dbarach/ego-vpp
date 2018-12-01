@@ -34,6 +34,7 @@ proxy_cb_fn (void *data, u32 data_len)
   proxy_connect_args_t *pa = (proxy_connect_args_t *) data;
   vnet_connect_args_t a;
 
+  memset (&a, 0, sizeof (a));
   a.api_context = pa->api_context;
   a.app_index = pa->app_index;
   a.uri = pa->uri;
@@ -116,7 +117,7 @@ delete_proxy_session (stream_session_t * s, int is_active_open)
   if (ps)
     {
       if (CLIB_DEBUG > 0)
-	memset (ps, 0xFE, sizeof (*ps));
+	clib_memset (ps, 0xFE, sizeof (*ps));
       pool_put (pm->sessions, ps);
     }
 
@@ -175,7 +176,7 @@ proxy_connected_callback (u32 app_index, u32 api_context,
 }
 
 static int
-proxy_add_segment_callback (u32 client_index, const ssvm_private_t * sp)
+proxy_add_segment_callback (u32 client_index, u64 segment_handle)
 {
   clib_warning ("called...");
   return -1;
@@ -235,11 +236,11 @@ proxy_rx_callback (stream_session_t * s)
 
       /* $$$ your message in this space: parse url, etc. */
 
-      memset (a, 0, sizeof (*a));
+      clib_memset (a, 0, sizeof (*a));
 
       clib_spinlock_lock_if_init (&pm->sessions_lock);
       pool_get (pm->sessions, ps);
-      memset (ps, 0, sizeof (*ps));
+      clib_memset (ps, 0, sizeof (*ps));
       ps->server_rx_fifo = rx_fifo;
       ps->server_tx_fifo = tx_fifo;
       ps->vpp_server_handle = session_handle (s);
@@ -397,8 +398,8 @@ proxy_server_attach ()
   vnet_app_attach_args_t _a, *a = &_a;
   u32 segment_size = 512 << 20;
 
-  memset (a, 0, sizeof (*a));
-  memset (options, 0, sizeof (options));
+  clib_memset (a, 0, sizeof (*a));
+  clib_memset (options, 0, sizeof (options));
 
   if (pm->private_segment_size)
     segment_size = pm->private_segment_size;
@@ -431,8 +432,8 @@ active_open_attach (void)
   vnet_app_attach_args_t _a, *a = &_a;
   u64 options[16];
 
-  memset (a, 0, sizeof (*a));
-  memset (options, 0, sizeof (options));
+  clib_memset (a, 0, sizeof (*a));
+  clib_memset (options, 0, sizeof (options));
 
   a->api_client_index = pm->active_open_client_index;
   a->session_cb_vft = &active_open_clients;
@@ -463,7 +464,7 @@ proxy_server_listen ()
 {
   proxy_main_t *pm = &proxy_main;
   vnet_bind_args_t _a, *a = &_a;
-  memset (a, 0, sizeof (*a));
+  clib_memset (a, 0, sizeof (*a));
   a->app_index = pm->server_app_index;
   a->uri = (char *) pm->server_uri;
   return vnet_bind_uri (a);

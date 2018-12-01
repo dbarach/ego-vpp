@@ -125,6 +125,7 @@ list(APPEND VNET_MULTIARCH_SOURCES ethernet/node.c)
 list(APPEND VNET_HEADERS
   ethernet/error.def
   ethernet/ethernet.h
+  ethernet/mac_address.h
   ethernet/packet.h
   ethernet/types.def
   ethernet/sfp.h
@@ -164,6 +165,7 @@ list(APPEND VNET_MULTIARCH_SOURCES
   l2/l2_fwd.c
   l2/l2_learn.c
   l2/l2_output.c
+  l2/l2_patch.c
 )
 
 list(APPEND VNET_HEADERS
@@ -491,6 +493,13 @@ list(APPEND VNET_SOURCES
   ipsec/ipsec_api.c
 )
 
+list(APPEND VNET_MULTIARCH_SOURCES
+  ipsec/esp_encrypt.c
+  ipsec/esp_decrypt.c
+  ipsec/ah_decrypt.c
+  ipsec/ah_encrypt.c
+)
+
 list(APPEND VNET_API_FILES ipsec/ipsec.api)
 
 list(APPEND VNET_SOURCES
@@ -529,6 +538,7 @@ list(APPEND VNET_SOURCES
   tcp/tcp_output.c
   tcp/tcp_input.c
   tcp/tcp_newreno.c
+  tcp/tcp_cubic.c
   tcp/tcp.c
 )
 
@@ -672,6 +682,7 @@ list(APPEND VNET_SOURCES
   vxlan-gbp/encap.c
   vxlan-gbp/vxlan_gbp_api.c
   vxlan-gbp/vxlan_gbp.c
+  vxlan-gbp/vxlan_gbp_packet.c
 )
 
 list(APPEND VNET_HEADERS
@@ -1021,7 +1032,6 @@ list(APPEND VNET_SOURCES
   session/application_interface.c
   session/application_namespace.c
   session/segment_manager.c
-  session/session_test.c
   session/session_api.c
 )
 
@@ -1134,14 +1144,12 @@ list(APPEND VNET_API_FILES feature/feature.api)
 
 list(APPEND VNET_SOURCES
   unix/gdb_funcs.c
-  unix/pcap.c
   unix/tap_api.c
   unix/tapcli.c
   unix/tuntap.c
 )
 
 list(APPEND VNET_HEADERS
-  unix/pcap.h
   unix/tuntap.h
   unix/tapcli.h
 )
@@ -1346,6 +1354,23 @@ list(APPEND VNET_HEADERS
 )
 
 list(APPEND VNET_API_FILES bier/bier.api)
+
+##############################################################################
+# SYSLOG
+##############################################################################
+
+list (APPEND VNET_SOURCES
+  syslog/syslog_api.c
+  syslog/syslog_udp.c
+  syslog/syslog.c
+)
+
+list(APPEND VNET_HEADERS
+  syslog/syslog_udp.h
+  syslog/syslog.h
+)
+
+list(APPEND VNET_API_FILES syslog/syslog.api)
 
 ##############################################################################
 # VNET Library

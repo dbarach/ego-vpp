@@ -1,4 +1,5 @@
 #!/usr/bin/env python
+import binascii
 import random
 import socket
 import unittest
@@ -7,7 +8,7 @@ from framework import VppTestCase, VppTestRunner
 from vpp_sub_interface import VppSubInterface, VppDot1QSubint, VppDot1ADSubint
 from vpp_ip_route import VppIpRoute, VppRoutePath, VppIpMRoute, \
     VppMRoutePath, MRouteItfFlags, MRouteEntryFlags, VppMplsIpBind, \
-    VppMplsTable, VppIpTable
+    VppMplsTable, VppIpTable, VppIpAddress
 
 from scapy.packet import Raw
 from scapy.layers.l2 import Ether, Dot1Q, ARP
@@ -302,9 +303,8 @@ class TestIPv4FibCrud(VppTestCase):
         :return list: added ips with 32 prefix
         """
         added_ips = []
-        dest_addr = int(socket.inet_pton(socket.AF_INET,
-                                         start_dest_addr).encode('hex'),
-                        16)
+        dest_addr = int(binascii.hexlify(socket.inet_pton(socket.AF_INET,
+                                         start_dest_addr)), 16)
         dest_addr_len = 32
         n_next_hop_addr = socket.inet_pton(socket.AF_INET, next_hop_addr)
         for _ in range(count):
@@ -318,9 +318,8 @@ class TestIPv4FibCrud(VppTestCase):
     def unconfig_fib_many_to_one(self, start_dest_addr, next_hop_addr, count):
 
         removed_ips = []
-        dest_addr = int(socket.inet_pton(socket.AF_INET,
-                                         start_dest_addr).encode('hex'),
-                        16)
+        dest_addr = int(binascii.hexlify(socket.inet_pton(socket.AF_INET,
+                                         start_dest_addr)), 16)
         dest_addr_len = 32
         n_next_hop_addr = socket.inet_pton(socket.AF_INET, next_hop_addr)
         for _ in range(count):
@@ -1095,7 +1094,7 @@ class TestIPPunt(VppTestCase):
     def setUp(self):
         super(TestIPPunt, self).setUp()
 
-        self.create_pg_interfaces(range(2))
+        self.create_pg_interfaces(range(4))
 
         for i in self.pg_interfaces:
             i.admin_up()
@@ -1122,8 +1121,7 @@ class TestIPPunt(VppTestCase):
         #
         # Configure a punt redirect via pg1.
         #
-        nh_addr = socket.inet_pton(socket.AF_INET,
-                                   self.pg1.remote_ip4)
+        nh_addr = VppIpAddress(self.pg1.remote_ip4).encode()
         self.vapi.ip_punt_redirect(self.pg0.sw_if_index,
                                    self.pg1.sw_if_index,
                                    nh_addr)
@@ -1147,8 +1145,8 @@ class TestIPPunt(VppTestCase):
         # but not equal to the number sent, since some were policed
         #
         rx = self.pg1._get_capture(1)
-        self.assertTrue(len(rx) > 0)
-        self.assertTrue(len(rx) < len(pkts))
+        self.assertGreater(len(rx), 0)
+        self.assertLess(len(rx), len(pkts))
 
         #
         # remove the poilcer. back to full rx
@@ -1180,6 +1178,40 @@ class TestIPPunt(VppTestCase):
                                    self.pg1.sw_if_index,
                                    nh_addr,
                                    is_add=0)
+
+    def test_ip_punt_dump(self):
+        """ IP4 punt redirect dump"""
+
+        #
+        # Configure a punt redirects
+        #
+        nh_address = VppIpAddress(self.pg3.remote_ip4).encode()
+        self.vapi.ip_punt_redirect(self.pg0.sw_if_index,
+                                   self.pg3.sw_if_index,
+                                   nh_address)
+        self.vapi.ip_punt_redirect(self.pg1.sw_if_index,
+                                   self.pg3.sw_if_index,
+                                   nh_address)
+        self.vapi.ip_punt_redirect(self.pg2.sw_if_index,
+                                   self.pg3.sw_if_index,
+                                   VppIpAddress('0.0.0.0').encode())
+
+        #
+        # Dump pg0 punt redirects
+        #
+        punts = self.vapi.ip_punt_redirect_dump(self.pg0.sw_if_index)
+        for p in punts:
+            self.assertEqual(p.punt.rx_sw_if_index, self.pg0.sw_if_index)
+
+        #
+        # Dump punt redirects for all interfaces
+        #
+        punts = self.vapi.ip_punt_redirect_dump(0xffffffff)
+        self.assertEqual(len(punts), 3)
+        for p in punts:
+            self.assertEqual(p.punt.tx_sw_if_index, self.pg3.sw_if_index)
+        self.assertNotEqual(punts[1].punt.nh.un.ip4, self.pg3.remote_ip4)
+        self.assertEqual(punts[2].punt.nh.un.ip4.address, '\x00'*4)
 
 
 class TestIPDeag(VppTestCase):
@@ -1552,6 +1584,56 @@ class TestIPLPM(VppTestCase):
         self.logger.info(self.vapi.cli("sh ip fib mtrie"))
         rx = self.send_and_expect(self.pg0, p_8 * 65, self.pg2)
         rx = self.send_and_expect(self.pg0, p_24 * 65, self.pg1)
+
+
+class TestIPv4Frag(VppTestCase):
+    """ IPv4 fragmentation """
+
+    @classmethod
+    def setUpClass(cls):
+        super(TestIPv4Frag, cls).setUpClass()
+
+        cls.create_pg_interfaces([0, 1])
+        cls.src_if = cls.pg0
+        cls.dst_if = cls.pg1
+
+        # setup all interfaces
+        for i in cls.pg_interfaces:
+            i.admin_up()
+            i.config_ip4()
+            i.resolve_arp()
+
+    def test_frag_large_packets(self):
+        """ Fragmentation of large packets """
+
+        p = (Ether(dst=self.src_if.local_mac, src=self.src_if.remote_mac) /
+             IP(src=self.src_if.remote_ip4, dst=self.dst_if.remote_ip4) /
+             UDP(sport=1234, dport=5678) / Raw())
+        self.extend_packet(p, 6000, "abcde")
+        saved_payload = p[Raw].load
+
+        # Force fragmentation by setting MTU of output interface
+        # lower than packet size
+        self.vapi.sw_interface_set_mtu(self.dst_if.sw_if_index,
+                                       [5000, 0, 0, 0])
+
+        self.pg_enable_capture()
+        self.src_if.add_stream(p)
+        self.pg_start()
+
+        # Expecting 3 fragments because size of created fragments currently
+        # cannot be larger then VPP buffer size (which is 2048)
+        packets = self.dst_if.get_capture(3)
+
+        # Assume VPP sends the fragments in order
+        payload = ''
+        for p in packets:
+            payload_offset = p.frag * 8
+            if payload_offset > 0:
+                payload_offset -= 8  # UDP header is not in payload
+            self.assert_equal(payload_offset, len(payload))
+            payload += p[Raw].load
+        self.assert_equal(payload, saved_payload, "payload")
 
 
 if __name__ == '__main__':

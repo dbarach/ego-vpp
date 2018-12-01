@@ -56,6 +56,8 @@ set(VPPINFRA_SRCS
   macros.c
   maplog.c
   mhash.c
+  pcap.c
+  pmalloc.c
   pool.c
   ptclosure.c
   random.c
@@ -134,8 +136,12 @@ set(VPPINFRA_HEADERS
   mheap_bootstrap.h
   mheap.h
   os.h
+  pcap.h
+  pcap_funcs.h
   pipeline.h
+  pmalloc.h
   pool.h
+  pmc.h
   ptclosure.h
   random_buffer.h
   random.h
@@ -226,6 +232,7 @@ if(VPP_BUILD_VPPINFRA_TESTS)
     longjmp
     macros
     maplog
+    pmalloc
     pool_iterate
     ptclosure
     random

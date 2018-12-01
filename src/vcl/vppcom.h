@@ -137,6 +137,7 @@ typedef enum
   VPPCOM_ATTR_SET_TCP_KEEPINTVL,
   VPPCOM_ATTR_GET_TCP_USER_MSS,
   VPPCOM_ATTR_SET_TCP_USER_MSS,
+  VPPCOM_ATTR_GET_REFCNT,
 } vppcom_attr_op_t;
 
 typedef struct _vcl_poll
@@ -144,7 +145,7 @@ typedef struct _vcl_poll
   uint32_t fds_ndx;
   uint32_t sid;
   short events;
-  short *revents;
+  short revents;
 } vcl_poll_t;
 
 typedef struct vppcom_data_segment_
@@ -262,6 +263,7 @@ extern int vppcom_poll (vcl_poll_t * vp, uint32_t n_sids,
 			double wait_for_time);
 extern int vppcom_mq_epoll_fd (void);
 extern int vppcom_session_index (uint32_t session_handle);
+extern int vppcom_session_handle (uint32_t session_index);
 
 extern int vppcom_session_read_segments (uint32_t session_handle,
 					 vppcom_data_segments_t ds);
@@ -277,6 +279,11 @@ extern int vppcom_data_segment_copy (void *buf, vppcom_data_segments_t ds,
  * is spawned.
  */
 extern int vppcom_worker_register (void);
+
+/**
+ * Retrieve current worker index
+ */
+extern int vppcom_worker_index (void);
 
 /* *INDENT-OFF* */
 #ifdef __cplusplus

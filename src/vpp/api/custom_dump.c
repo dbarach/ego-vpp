@@ -46,6 +46,7 @@
 #include <vnet/l2/l2_vtr.h>
 
 #include <vpp/api/vpe_msg_enum.h>
+#include <vpp/api/types.h>
 
 #include <vnet/bonding/node.h>
 
@@ -506,14 +507,8 @@ static void *vl_api_bd_ip_mac_add_del_t_print
   s = format (0, "SCRIPT: bd_ip_mac_add_del ");
   s = format (s, "bd_id %d ", ntohl (mp->bd_id));
 
-  if (mp->is_ipv6)
-    s = format (s, "%U ", format_ip6_address,
-		(ip6_address_t *) mp->ip_address);
-  else
-    s = format (s, "%U ", format_ip4_address,
-		(ip4_address_t *) mp->ip_address);
-
-  s = format (s, "%U ", format_ethernet_address, mp->mac_address);
+  s = format (s, "%U ", format_vl_api_address, &mp->ip);
+  s = format (s, "%U ", format_vl_api_mac_address, &mp->mac);
   if (mp->is_add == 0)
     s = format (s, "del ");
 
@@ -536,7 +531,7 @@ static void *vl_api_tap_connect_t_print
   u8 *s;
   u8 null_mac[6];
 
-  memset (null_mac, 0, sizeof (null_mac));
+  clib_memset (null_mac, 0, sizeof (null_mac));
 
   s = format (0, "SCRIPT: tap_connect ");
   s = format (s, "tapname %s ", mp->tap_name);
@@ -561,7 +556,7 @@ static void *vl_api_tap_modify_t_print
   u8 *s;
   u8 null_mac[6];
 
-  memset (null_mac, 0, sizeof (null_mac));
+  clib_memset (null_mac, 0, sizeof (null_mac));
 
   s = format (0, "SCRIPT: tap_modify ");
   s = format (s, "sw_if_index %d ", ntohl (mp->sw_if_index));
@@ -602,7 +597,7 @@ static void *vl_api_tap_create_v2_t_print
   u8 *s;
   u8 null_mac[6];
 
-  memset (null_mac, 0, sizeof (null_mac));
+  clib_memset (null_mac, 0, sizeof (null_mac));
 
   s = format (0, "SCRIPT: tap_create_v2 ");
   s = format (s, "id %u ", ntohl (mp->id));
@@ -662,7 +657,7 @@ static void *vl_api_bond_create_t_print
   u8 *s;
   u8 null_mac[6];
 
-  memset (null_mac, 0, sizeof (null_mac));
+  clib_memset (null_mac, 0, sizeof (null_mac));
 
   s = format (0, "SCRIPT: bond_create ");
   if (memcmp (mp->mac_address, null_mac, 6))
@@ -1036,7 +1031,7 @@ static void *vl_api_ip_neighbor_add_del_t_print
   u8 *s;
   u8 null_mac[6];
 
-  memset (null_mac, 0, sizeof (null_mac));
+  clib_memset (null_mac, 0, sizeof (null_mac));
 
   s = format (0, "SCRIPT: ip_neighbor_add_del ");
 
@@ -1270,20 +1265,6 @@ static void *vl_api_set_ip_flow_hash_t_print
 
   if (mp->is_ipv6 != 0)
     s = format (s, "ipv6 ");
-
-  FINISH;
-}
-
-static void *vl_api_sw_interface_ip6_set_link_local_address_t_print
-  (vl_api_sw_interface_ip6_set_link_local_address_t * mp, void *handle)
-{
-  u8 *s;
-
-  s = format (0, "SCRIPT: sw_interface_ip6_set_link_local_address ");
-
-  s = format (s, "sw_if_index %d ", ntohl (mp->sw_if_index));
-
-  s = format (s, "%U ", format_ip6_address, mp->address);
 
   FINISH;
 }
@@ -3601,7 +3582,7 @@ static void *vl_api_sw_interface_set_lldp_t_print
   u8 *s;
   u8 null_data[256];
 
-  memset (null_data, 0, sizeof (null_data));
+  clib_memset (null_data, 0, sizeof (null_data));
 
   s = format (0, "SCRIPT: sw_interface_set_lldp ");
   s = format (s, "sw_if_index %d ", ntohl (mp->sw_if_index));
@@ -3779,8 +3760,6 @@ _(RESET_FIB, reset_fib)                                                 \
 _(DHCP_PROXY_CONFIG, dhcp_proxy_config)                                 \
 _(DHCP_PROXY_SET_VSS, dhcp_proxy_set_vss)                               \
 _(SET_IP_FLOW_HASH, set_ip_flow_hash)                                   \
-_(SW_INTERFACE_IP6_SET_LINK_LOCAL_ADDRESS,                              \
-  sw_interface_ip6_set_link_local_address)                              \
 _(SW_INTERFACE_IP6ND_RA_PREFIX, sw_interface_ip6nd_ra_prefix)           \
 _(SW_INTERFACE_IP6ND_RA_CONFIG, sw_interface_ip6nd_ra_config)           \
 _(SET_ARP_NEIGHBOR_LIMIT, set_arp_neighbor_limit)                       \

@@ -25,7 +25,7 @@ sctp_connection_bind (u32 session_index, transport_endpoint_t * tep)
   void *iface_ip;
 
   pool_get (tm->listener_pool, listener);
-  memset (listener, 0, sizeof (*listener));
+  clib_memset (listener, 0, sizeof (*listener));
 
   listener->sub_conn[SCTP_PRIMARY_PATH_IDX].subconn_idx =
     SCTP_PRIMARY_PATH_IDX;
@@ -78,7 +78,7 @@ sctp_connection_unbind (u32 listener_index)
 
   /* Poison the entry */
   if (CLIB_DEBUG > 0)
-    memset (sctp_conn, 0xFA, sizeof (*sctp_conn));
+    clib_memset (sctp_conn, 0xFA, sizeof (*sctp_conn));
 
   pool_put_index (tm->listener_pool, listener_index);
 }
@@ -424,7 +424,7 @@ sctp_connection_new (u8 thread_index)
   sctp_connection_t *sctp_conn;
 
   pool_get (sctp_main->connections[thread_index], sctp_conn);
-  memset (sctp_conn, 0, sizeof (*sctp_conn));
+  clib_memset (sctp_conn, 0, sizeof (*sctp_conn));
   sctp_conn->sub_conn[SCTP_PRIMARY_PATH_IDX].subconn_idx =
     SCTP_PRIMARY_PATH_IDX;
   sctp_conn->sub_conn[SCTP_PRIMARY_PATH_IDX].c_c_index =
@@ -442,7 +442,7 @@ sctp_half_open_connection_new (u8 thread_index)
   sctp_connection_t *sctp_conn = 0;
   ASSERT (vlib_get_thread_index () == 0);
   pool_get (tm->half_open_connections, sctp_conn);
-  memset (sctp_conn, 0, sizeof (*sctp_conn));
+  clib_memset (sctp_conn, 0, sizeof (*sctp_conn));
   sctp_conn->sub_conn[SCTP_PRIMARY_PATH_IDX].c_c_index =
     sctp_conn - tm->half_open_connections;
   sctp_conn->sub_conn[SCTP_PRIMARY_PATH_IDX].subconn_idx =
@@ -451,7 +451,7 @@ sctp_half_open_connection_new (u8 thread_index)
 }
 
 static inline int
-sctp_connection_open (transport_endpoint_t * rmt)
+sctp_connection_open (transport_endpoint_cfg_t * rmt)
 {
   sctp_main_t *tm = vnet_get_sctp_main ();
   sctp_connection_t *sctp_conn;
@@ -485,9 +485,9 @@ sctp_connection_open (transport_endpoint_t * rmt)
   clib_spinlock_lock_if_init (&tm->half_open_lock);
   sctp_conn = sctp_half_open_connection_new (thread_id);
   u32 mtu = rmt->is_ip4 ? vnet_sw_interface_get_mtu (vnet_get_main (),
-						     rmt->sw_if_index,
+						     rmt->peer.sw_if_index,
 						     VNET_MTU_IP4) :
-    vnet_sw_interface_get_mtu (vnet_get_main (), rmt->sw_if_index,
+    vnet_sw_interface_get_mtu (vnet_get_main (), rmt->peer.sw_if_index,
 			       VNET_MTU_IP6);
   sctp_conn->sub_conn[idx].PMTU = mtu;
 
@@ -537,12 +537,12 @@ sctp_connection_cleanup (sctp_connection_t * sctp_conn)
 
   /* Poison the entry */
   if (CLIB_DEBUG > 0)
-    memset (sctp_conn, 0xFA, sizeof (*sctp_conn));
+    clib_memset (sctp_conn, 0xFA, sizeof (*sctp_conn));
   pool_put (tm->connections[thread_index], sctp_conn);
 }
 
 int
-sctp_session_open (transport_endpoint_t * tep)
+sctp_session_open (transport_endpoint_cfg_t * tep)
 {
   return sctp_connection_open (tep);
 }
@@ -624,7 +624,6 @@ sctp_session_send_mss (transport_connection_t * trans_conn)
   update_smallest_pmtu_idx (sctp_conn);
 
   u8 idx = sctp_data_subconn_select (sctp_conn);
-
   return sctp_conn->sub_conn[idx].cwnd;
 }
 

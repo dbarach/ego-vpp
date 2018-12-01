@@ -26,6 +26,7 @@
 #include <vnet/ip/ip.h>
 #include <vnet/ip/ip_neighbor.h>
 #include <vnet/ip/ip6_neighbor.h>
+#include <vnet/ip/ip_punt_drop.h>
 #include <vnet/fib/fib_table.h>
 #include <vnet/fib/fib_api.h>
 #include <vnet/dpo/drop_dpo.h>
@@ -100,8 +101,6 @@ _(IP6ND_PROXY_ADD_DEL, ip6nd_proxy_add_del)                             \
 _(IP6ND_PROXY_DUMP, ip6nd_proxy_dump)                                   \
 _(IP6ND_SEND_ROUTER_SOLICITATION, ip6nd_send_router_solicitation)       \
 _(SW_INTERFACE_IP6_ENABLE_DISABLE, sw_interface_ip6_enable_disable )    \
-_(SW_INTERFACE_IP6_SET_LINK_LOCAL_ADDRESS, 				\
-  sw_interface_ip6_set_link_local_address)				\
 _(IP_CONTAINER_PROXY_ADD_DEL, ip_container_proxy_add_del)               \
 _(IP_CONTAINER_PROXY_DUMP, ip_container_proxy_dump)                     \
 _(IOAM_ENABLE, ioam_enable)                                             \
@@ -110,9 +109,13 @@ _(IP_SOURCE_AND_PORT_RANGE_CHECK_ADD_DEL,                               \
   ip_source_and_port_range_check_add_del)                               \
 _(IP_SOURCE_AND_PORT_RANGE_CHECK_INTERFACE_ADD_DEL,                     \
   ip_source_and_port_range_check_interface_add_del)                     \
+_(IP_SOURCE_CHECK_INTERFACE_ADD_DEL,                                    \
+  ip_source_check_interface_add_del)                                    \
 _(IP_REASSEMBLY_SET, ip_reassembly_set)                                 \
 _(IP_REASSEMBLY_GET, ip_reassembly_get)                                 \
-_(IP_REASSEMBLY_ENABLE_DISABLE, ip_reassembly_enable_disable)
+_(IP_REASSEMBLY_ENABLE_DISABLE, ip_reassembly_enable_disable)           \
+_(IP_PUNT_REDIRECT_DUMP, ip_punt_redirect_dump)
+
 
 extern void stats_dslock_with_hint (int hint, int tag);
 extern void stats_dsunlock (void);
@@ -128,7 +131,7 @@ send_ip_neighbor_details (u32 sw_if_index,
   vl_api_ip_neighbor_details_t *mp;
 
   mp = vl_msg_api_alloc (sizeof (*mp));
-  memset (mp, 0, sizeof (*mp));
+  clib_memset (mp, 0, sizeof (*mp));
   mp->_vl_msg_id = ntohs (VL_API_IP_NEIGHBOR_DETAILS);
   mp->context = context;
   mp->sw_if_index = htonl (sw_if_index);
@@ -204,7 +207,7 @@ send_ip_fib_details (vpe_api_main_t * am,
   mp = vl_msg_api_alloc (sizeof (*mp) + path_count * sizeof (*fp));
   if (!mp)
     return;
-  memset (mp, 0, sizeof (*mp));
+  clib_memset (mp, 0, sizeof (*mp));
   mp->_vl_msg_id = ntohs (VL_API_IP_FIB_DETAILS);
   mp->context = context;
 
@@ -303,7 +306,7 @@ send_ip6_fib_details (vpe_api_main_t * am,
   mp = vl_msg_api_alloc (sizeof (*mp) + path_count * sizeof (*fp));
   if (!mp)
     return;
-  memset (mp, 0, sizeof (*mp));
+  clib_memset (mp, 0, sizeof (*mp));
   mp->_vl_msg_id = ntohs (VL_API_IP6_FIB_DETAILS);
   mp->context = context;
 
@@ -418,7 +421,7 @@ send_ip_mfib_details (vl_api_registration_t * reg,
   mp = vl_msg_api_alloc (sizeof (*mp) + path_count * sizeof (*fp));
   if (!mp)
     return;
-  memset (mp, 0, sizeof (*mp));
+  clib_memset (mp, 0, sizeof (*mp));
   mp->_vl_msg_id = ntohs (VL_API_IP_MFIB_DETAILS);
   mp->context = context;
 
@@ -512,7 +515,7 @@ send_ip6_mfib_details (vpe_api_main_t * am,
   mp = vl_msg_api_alloc (sizeof (*mp) + path_count * sizeof (*fp));
   if (!mp)
     return;
-  memset (mp, 0, sizeof (*mp));
+  clib_memset (mp, 0, sizeof (*mp));
   mp->_vl_msg_id = ntohs (VL_API_IP6_MFIB_DETAILS);
   mp->context = context;
 
@@ -617,39 +620,39 @@ vl_api_ip_punt_redirect_t_handler (vl_api_ip_punt_redirect_t * mp,
 {
   vl_api_ip_punt_redirect_reply_t *rmp;
   int rv = 0;
+  ip46_type_t ipv;
+  ip46_address_t nh;
 
+  if (!vnet_sw_if_index_is_api_valid (ntohl (mp->punt.tx_sw_if_index)))
+    goto bad_sw_if_index;
+
+  ipv = ip_address_decode (&mp->punt.nh, &nh);
   if (mp->is_add)
     {
-      ip46_address_t nh;
-
-      memset (&nh, 0, sizeof (nh));
-
-      if (mp->is_ip6)
+      if (ipv == IP46_TYPE_IP6)
 	{
-	  memcpy (&nh.ip6, mp->nh, sizeof (nh.ip6));
-
-	  ip6_punt_redirect_add (ntohl (mp->rx_sw_if_index),
-				 ntohl (mp->tx_sw_if_index), &nh);
+	  ip6_punt_redirect_add (ntohl (mp->punt.rx_sw_if_index),
+				 ntohl (mp->punt.tx_sw_if_index), &nh);
 	}
-      else
+      else if (ipv == IP46_TYPE_IP4)
 	{
-	  memcpy (&nh.ip4, mp->nh, sizeof (nh.ip4));
-
-	  ip4_punt_redirect_add (ntohl (mp->rx_sw_if_index),
-				 ntohl (mp->tx_sw_if_index), &nh);
+	  ip4_punt_redirect_add (ntohl (mp->punt.rx_sw_if_index),
+				 ntohl (mp->punt.tx_sw_if_index), &nh);
 	}
     }
   else
     {
-      if (mp->is_ip6)
+      if (ipv == IP46_TYPE_IP6)
 	{
-	  ip6_punt_redirect_del (ntohl (mp->rx_sw_if_index));
+	  ip6_punt_redirect_del (ntohl (mp->punt.rx_sw_if_index));
 	}
-      else
+      else if (ipv == IP46_TYPE_IP4)
 	{
-	  ip4_punt_redirect_del (ntohl (mp->rx_sw_if_index));
+	  ip4_punt_redirect_del (ntohl (mp->punt.rx_sw_if_index));
 	}
     }
+
+  BAD_SW_IF_INDEX_LABEL;
 
   REPLY_MACRO (VL_API_IP_PUNT_REDIRECT_REPLY);
 }
@@ -998,7 +1001,7 @@ ip4_add_del_route_t_handler (vl_api_ip_add_del_route_t * mp,
   clib_memcpy (&pfx.fp_addr.ip4, mp->dst_address, sizeof (pfx.fp_addr.ip4));
 
   ip46_address_t nh;
-  memset (&nh, 0, sizeof (nh));
+  clib_memset (&nh, 0, sizeof (nh));
   memcpy (&nh.ip4, mp->next_hop_address, sizeof (nh.ip4));
 
   n_labels = mp->next_hop_n_out_labels;
@@ -1072,7 +1075,7 @@ ip6_add_del_route_t_handler (vl_api_ip_add_del_route_t * mp,
   clib_memcpy (&pfx.fp_addr.ip6, mp->dst_address, sizeof (pfx.fp_addr.ip6));
 
   ip46_address_t nh;
-  memset (&nh, 0, sizeof (nh));
+  clib_memset (&nh, 0, sizeof (nh));
   memcpy (&nh.ip6, mp->next_hop_address, sizeof (nh.ip6));
 
   n_labels = mp->next_hop_n_out_labels;
@@ -1298,7 +1301,7 @@ api_mroute_add_del_t_handler (vl_api_ip_mroute_add_del_t * mp,
 		   sizeof (pfx.fp_grp_addr.ip4));
       clib_memcpy (&pfx.fp_src_addr.ip4, mp->src_address,
 		   sizeof (pfx.fp_src_addr.ip4));
-      memset (&nh.ip6, 0, sizeof (nh.ip6));
+      clib_memset (&nh.ip6, 0, sizeof (nh.ip6));
       clib_memcpy (&nh.ip4, mp->nh_address, sizeof (nh.ip4));
       if (!ip46_address_is_zero (&pfx.fp_src_addr))
 	pfx.fp_len = 64;
@@ -1361,7 +1364,7 @@ send_ip_details (vpe_api_main_t * am,
   vl_api_ip_details_t *mp;
 
   mp = vl_msg_api_alloc (sizeof (*mp));
-  memset (mp, 0, sizeof (*mp));
+  clib_memset (mp, 0, sizeof (*mp));
   mp->_vl_msg_id = ntohs (VL_API_IP_DETAILS);
 
   mp->sw_if_index = ntohl (sw_if_index);
@@ -1380,7 +1383,7 @@ send_ip_address_details (vpe_api_main_t * am,
   vl_api_ip_address_details_t *mp;
 
   mp = vl_msg_api_alloc (sizeof (*mp));
-  memset (mp, 0, sizeof (*mp));
+  clib_memset (mp, 0, sizeof (*mp));
   mp->_vl_msg_id = ntohs (VL_API_IP_ADDRESS_DETAILS);
 
   if (is_ipv6)
@@ -1463,7 +1466,7 @@ send_ip_unnumbered_details (vpe_api_main_t * am,
   vl_api_ip_unnumbered_details_t *mp;
 
   mp = vl_msg_api_alloc (sizeof (*mp));
-  memset (mp, 0, sizeof (*mp));
+  clib_memset (mp, 0, sizeof (*mp));
   mp->_vl_msg_id = ntohs (VL_API_IP_UNNUMBERED_DETAILS);
 
   mp->context = context;
@@ -1682,7 +1685,7 @@ send_ip6nd_proxy_details (vl_api_registration_t * reg,
   vl_api_ip6nd_proxy_details_t *mp;
 
   mp = vl_msg_api_alloc (sizeof (*mp));
-  memset (mp, 0, sizeof (*mp));
+  clib_memset (mp, 0, sizeof (*mp));
   mp->_vl_msg_id = ntohs (VL_API_IP6ND_PROXY_DETAILS);
   mp->context = context;
   mp->sw_if_index = htonl (sw_if_index);
@@ -1825,38 +1828,6 @@ static void
   REPLY_MACRO (VL_API_SW_INTERFACE_IP6_ENABLE_DISABLE_REPLY);
 }
 
-static void
-  vl_api_sw_interface_ip6_set_link_local_address_t_handler
-  (vl_api_sw_interface_ip6_set_link_local_address_t * mp)
-{
-  vlib_main_t *vm = vlib_get_main ();
-  vl_api_sw_interface_ip6_set_link_local_address_reply_t *rmp;
-  int rv = 0;
-  clib_error_t *error;
-  vnet_main_t *vnm = vnet_get_main ();
-
-  vnm->api_errno = 0;
-
-  VALIDATE_SW_IF_INDEX (mp);
-
-  error = set_ip6_link_local_address (vm,
-				      ntohl (mp->sw_if_index),
-				      (ip6_address_t *) mp->address);
-  if (error)
-    {
-      clib_error_report (error);
-      rv = VNET_API_ERROR_UNSPECIFIED;
-    }
-  else
-    {
-      rv = vnm->api_errno;
-    }
-
-  BAD_SW_IF_INDEX_LABEL;
-
-  REPLY_MACRO (VL_API_SW_INTERFACE_IP6_SET_LINK_LOCAL_ADDRESS_REPLY);
-}
-
 void
 vl_mfib_signal_send_one (vl_api_registration_t * reg,
 			 u32 context, const mfib_signal_t * mfs)
@@ -1868,7 +1839,7 @@ vl_mfib_signal_send_one (vl_api_registration_t * reg,
 
   mp = vl_msg_api_alloc (sizeof (*mp));
 
-  memset (mp, 0, sizeof (*mp));
+  clib_memset (mp, 0, sizeof (*mp));
   mp->_vl_msg_id = ntohs (VL_API_MFIB_SIGNAL_DETAILS);
   mp->context = context;
 
@@ -1932,7 +1903,7 @@ static void
   int rv = 0;
   clib_error_t *error;
 
-  memset (&args, 0, sizeof (args));
+  clib_memset (&args, 0, sizeof (args));
   ip_set (&args.prefix.fp_addr, mp->ip, mp->is_ip4);
   args.prefix.fp_len = mp->plen ? mp->plen : (mp->is_ip4 ? 32 : 128);
   args.sw_if_index = clib_net_to_host_u32 (mp->sw_if_index);
@@ -1963,7 +1934,7 @@ ip_container_proxy_send_details (const fib_prefix_t * pfx, u32 sw_if_index,
   if (!mp)
     return 1;
 
-  memset (mp, 0, sizeof (*mp));
+  clib_memset (mp, 0, sizeof (*mp));
   mp->_vl_msg_id = ntohs (VL_API_IP_CONTAINER_PROXY_DETAILS);
   mp->context = ctx->context;
 
@@ -2169,6 +2140,36 @@ static void
 reply:
 
   REPLY_MACRO (VL_API_IP_SOURCE_AND_PORT_RANGE_CHECK_INTERFACE_ADD_DEL_REPLY);
+}
+
+typedef union
+{
+  u32 fib_index;
+} ip4_source_check_config_t;
+
+static void
+  vl_api_ip_source_check_interface_add_del_t_handler
+  (vl_api_ip_source_check_interface_add_del_t * mp)
+{
+  vl_api_ip_source_check_interface_add_del_reply_t *rmp;
+  int rv;
+  u32 sw_if_index = ntohl (mp->sw_if_index);
+  u8 is_add = mp->is_add;
+  char *feature_name =
+    mp->loose ? "ip4-source-check-via-any" : "ip4-source-check-via-rx";
+
+  ip4_source_check_config_t config;
+
+  VALIDATE_SW_IF_INDEX (mp);
+
+  config.fib_index =
+    fib_table_get_index_for_sw_if_index (FIB_PROTOCOL_IP4, sw_if_index);
+  rv =
+    vnet_feature_enable_disable ("ip4-unicast", feature_name, sw_if_index,
+				 is_add, &config, sizeof (config));
+  BAD_SW_IF_INDEX_LABEL;
+
+  REPLY_MACRO (VL_API_IP_SOURCE_CHECK_INTERFACE_ADD_DEL_REPLY);
 }
 
 #define IP4_ARP_EVENT 3
@@ -2416,7 +2417,7 @@ wc_arp_process (vlib_main_t * vm, vlib_node_runtime_t * rt, vlib_frame_t * f)
 	      if (reg && vl_api_can_send_msg (vl_reg))
 	        {
 	          vl_api_ip4_arp_event_t * event = vl_msg_api_alloc (sizeof *event);
-	          memset (event, 0, sizeof *event);
+	          clib_memset (event, 0, sizeof *event);
 	          event->_vl_msg_id = htons (VL_API_IP4_ARP_EVENT);
 	          event->client_index = reg->client_index;
 	          event->pid = reg->client_pid;
@@ -2455,7 +2456,7 @@ wc_arp_process (vlib_main_t * vm, vlib_node_runtime_t * rt, vlib_frame_t * f)
 	        if (vl_reg && vl_api_can_send_msg (vl_reg))
 	          {
 	            vl_api_ip6_nd_event_t * event = vl_msg_api_alloc (sizeof *event);
-	            memset (event, 0, sizeof *event);
+	            clib_memset (event, 0, sizeof *event);
 	            event->_vl_msg_id = htons (VL_API_IP6_ND_EVENT);
 	            event->client_index = reg->client_index;
 	            event->pid = reg->client_pid;
@@ -2493,7 +2494,7 @@ wc_arp_process (vlib_main_t * vm, vlib_node_runtime_t * rt, vlib_frame_t * f)
 		      sizeof (vl_api_ip6_ra_prefix_info_t);
 		    vl_api_ip6_ra_event_t *event =
 		      vl_msg_api_alloc (event_size);
-		    memset (event, 0, event_size);
+		    clib_memset (event, 0, event_size);
 		    event->_vl_msg_id = htons (VL_API_IP6_RA_EVENT);
 		    event->client_index = reg->client_index;
 		    event->pid = reg->client_pid;
@@ -2641,7 +2642,7 @@ vl_api_want_ip4_arp_events_t_handler (vl_api_want_ip4_arp_events_t * mp)
 	  pool_put (am->arp_events, event);
 	  goto reply;
 	}
-      memset (event, 0, sizeof (*event));
+      clib_memset (event, 0, sizeof (*event));
 
       /* Python API expects events to have no context */
       event->_vl_msg_id = htons (VL_API_IP4_ARP_EVENT);
@@ -2779,7 +2780,7 @@ vl_api_want_ip6_nd_events_t_handler (vl_api_want_ip6_nd_events_t * mp)
 	  pool_put (am->nd_events, event);
 	  goto reply;
 	}
-      memset (event, 0, sizeof (*event));
+      clib_memset (event, 0, sizeof (*event));
 
       event->_vl_msg_id = ntohs (VL_API_IP6_ND_EVENT);
       event->client_index = mp->client_index;
@@ -2959,7 +2960,7 @@ send_proxy_arp_details (const ip4_address_t * lo_addr,
   ctx = data;
 
   mp = vl_msg_api_alloc (sizeof (*mp));
-  memset (mp, 0, sizeof (*mp));
+  clib_memset (mp, 0, sizeof (*mp));
   mp->_vl_msg_id = ntohs (VL_API_PROXY_ARP_DETAILS);
   mp->context = ctx->context;
   mp->proxy.vrf_id = htonl (fib_index);
@@ -3002,7 +3003,7 @@ send_proxy_arp_intfc_details (vnet_main_t * vnm,
   ctx = data;
 
   mp = vl_msg_api_alloc (sizeof (*mp));
-  memset (mp, 0, sizeof (*mp));
+  clib_memset (mp, 0, sizeof (*mp));
   mp->_vl_msg_id = ntohs (VL_API_PROXY_ARP_INTFC_DETAILS);
   mp->context = ctx->context;
   mp->sw_if_index = htonl (si->sw_if_index);
@@ -3303,7 +3304,7 @@ vl_api_ip_reassembly_get_t_handler (vl_api_ip_reassembly_get_t * mp)
     return;
 
   vl_api_ip_reassembly_get_reply_t *rmp = vl_msg_api_alloc (sizeof (*rmp));
-  memset (rmp, 0, sizeof (*rmp));
+  clib_memset (rmp, 0, sizeof (*rmp));
   rmp->_vl_msg_id = ntohs (VL_API_IP_REASSEMBLY_GET_REPLY);
   rmp->context = mp->context;
   rmp->retval = 0;
@@ -3340,7 +3341,77 @@ void
 				     mp->enable_ip6);
     }
 
-  REPLY_MACRO (VL_API_IP_REASSEMBLY_SET_REPLY);
+  REPLY_MACRO (VL_API_IP_REASSEMBLY_ENABLE_DISABLE_REPLY);
+}
+
+void
+send_ip_punt_redirect_details (vl_api_registration_t * reg,
+			       u32 context, u32 sw_if_index,
+			       ip_punt_redirect_rx_t * pr, u8 is_ipv6)
+{
+  vl_api_ip_punt_redirect_details_t *mp;
+
+  mp = vl_msg_api_alloc (sizeof (*mp));
+  if (!mp)
+    return;
+
+  clib_memset (mp, 0, sizeof (*mp));
+  mp->_vl_msg_id = ntohs (VL_API_IP_PUNT_REDIRECT_DETAILS);
+  mp->context = context;
+  mp->punt.rx_sw_if_index = htonl (sw_if_index);
+  mp->punt.tx_sw_if_index = htonl (pr->tx_sw_if_index);
+  if (is_ipv6)
+    {
+      ip_address_encode (&pr->nh, IP46_TYPE_IP6, &mp->punt.nh);
+    }
+  else
+    {
+      ip_address_encode (&pr->nh, IP46_TYPE_IP4, &mp->punt.nh);
+    }
+
+  vl_api_send_msg (reg, (u8 *) mp);
+}
+
+static void
+vl_api_ip_punt_redirect_dump_t_handler (vl_api_ip_punt_redirect_dump_t * mp)
+{
+  vl_api_registration_t *reg;
+  u32 sw_if_index;
+  int rv __attribute__ ((unused)) = 0;
+
+  sw_if_index = ntohl (mp->sw_if_index);
+  reg = vl_api_client_index_to_registration (mp->client_index);
+  if (!reg)
+    return;
+
+  if (~0 != sw_if_index)
+    VALIDATE_SW_IF_INDEX (mp);
+
+  ip_punt_redirect_detail_t *pr, *prs;
+  if (mp->is_ipv6)
+    {
+      prs = ip6_punt_redirect_entries (sw_if_index);
+      /* *INDENT-OFF* */
+      vec_foreach (pr, prs)
+      {
+        send_ip_punt_redirect_details (reg, mp->context, pr->rx_sw_if_index, &pr->punt_redirect, 1);
+      }
+      /* *INDENT-ON* */
+      vec_free (prs);
+    }
+  else
+    {
+      prs = ip4_punt_redirect_entries (sw_if_index);
+      /* *INDENT-OFF* */
+      vec_foreach (pr, prs)
+      {
+        send_ip_punt_redirect_details (reg, mp->context, pr->rx_sw_if_index, &pr->punt_redirect, 0);
+      }
+      /* *INDENT-ON* */
+      vec_free (prs);
+    }
+
+  BAD_SW_IF_INDEX_LABEL;
 }
 
 #define vl_msg_name_crc_list

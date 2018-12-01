@@ -229,7 +229,6 @@ mfib_test_entry (fib_node_index_t fei,
     va_list ap;
     int res;
 
-    va_start(ap, n_buckets);
 
     res = 0;
     mfe = mfib_entry_get(fei);
@@ -263,12 +262,13 @@ mfib_test_entry (fib_node_index_t fei,
                       format_mfib_prefix, &pfx,
                       format_dpo_type, tmp.dpoi_type);
 
+        va_start(ap, n_buckets);
         res = mfib_test_validate_rep_v(rep, n_buckets, &ap);
+        va_end(ap);
 
         dpo_reset(&tmp);
     }
 
-    va_end(ap);
 
     return (res);
 }
@@ -342,7 +342,7 @@ mfib_test_i (fib_protocol_t PROTO,
     int res;
 
     mfib_prefix_t all_1s;
-    memset(&all_1s, 0xfd, sizeof(all_1s));
+    clib_memset(&all_1s, 0xfd, sizeof(all_1s));
 
     res = 0;
     n_entries = pool_elts(mfib_entry_pool);

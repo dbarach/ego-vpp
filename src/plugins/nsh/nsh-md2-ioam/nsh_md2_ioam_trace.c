@@ -308,7 +308,8 @@ nsh_md2_ioam_trace_swap_handler (vlib_buffer_t * b,
 				 nsh_tlv_header_t * new_opt)
 {
 
-  clib_memcpy (new_opt, old_opt, new_opt->length + sizeof (nsh_tlv_header_t));
+  clib_memcpy_fast (new_opt, old_opt,
+		    new_opt->length + sizeof (nsh_tlv_header_t));
   return nsh_md2_ioam_trace_data_list_handler (b, new_opt);
 }
 
@@ -366,7 +367,7 @@ nsh_md2_ioam_trace_init (vlib_main_t * vm)
   gm->unix_time_0 = (u32) time (0);	/* Store starting time */
   gm->vlib_time_0 = vlib_time_now (vm);
 
-  memset (hm->counters, 0, sizeof (hm->counters));
+  clib_memset (hm->counters, 0, sizeof (hm->counters));
 
   if (nsh_md2_register_option
       (clib_host_to_net_u16 (0x9),

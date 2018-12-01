@@ -518,7 +518,7 @@ vl_map_shmem (const char *region_name, int is_vlib)
   struct timespec ts, tsrem;
   char *vpe_api_region_suffix = "-vpe-api";
 
-  memset (a, 0, sizeof (*a));
+  clib_memset (a, 0, sizeof (*a));
 
   if (strstr (region_name, vpe_api_region_suffix))
     {
@@ -590,7 +590,7 @@ vl_map_shmem (const char *region_name, int is_vlib)
 		ts = tsrem;
 	    }
 	  /* Mutex buggered, "fix" it */
-	  memset (&q->mutex, 0, sizeof (q->mutex));
+	  clib_memset (&q->mutex, 0, sizeof (q->mutex));
 	  clib_warning ("forcibly release main input queue mutex");
 
 	mutex_ok:
@@ -709,6 +709,14 @@ vl_msg_api_send_shmem (svm_queue_t * q, u8 * elem)
   if (am->tx_trace && am->tx_trace->enabled)
     vl_msg_api_trace (am, am->tx_trace, (void *) trace[0]);
 
+  /*
+   * Announce a probable binary API client bug:
+   * some client's input queue is stuffed.
+   * The situation may be recoverable, or not.
+   */
+  if (PREDICT_FALSE
+      (am->vl_clients /* vpp side */  && (q->cursize == q->maxsize)))
+    clib_warning ("WARNING: client input queue at %llx is stuffed...", q);
   (void) svm_queue_add (q, elem, 0 /* nowait */ );
 }
 

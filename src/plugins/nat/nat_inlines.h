@@ -200,6 +200,10 @@ always_inline int
 nat44_set_tcp_session_state_i2o (snat_main_t * sm, snat_session_t * ses,
 				 tcp_header_t * tcp, u32 thread_index)
 {
+  if ((ses->state == 0) && (tcp->flags & TCP_FLAG_RST))
+    ses->state = NAT44_SES_RST;
+  if ((ses->state == NAT44_SES_RST) && !(tcp->flags & TCP_FLAG_RST))
+    ses->state = 0;
   if ((tcp->flags & TCP_FLAG_ACK) && (ses->state & NAT44_SES_I2O_SYN) &&
       (ses->state & NAT44_SES_O2I_SYN))
     ses->state = 0;
@@ -215,7 +219,8 @@ nat44_set_tcp_session_state_i2o (snat_main_t * sm, snat_session_t * ses,
       if (clib_net_to_host_u32 (tcp->ack_number) > ses->o2i_fin_seq)
 	ses->state |= NAT44_SES_O2I_FIN_ACK;
     }
-  if (nat44_is_ses_closed (ses))
+  if (nat44_is_ses_closed (ses)
+      && !(ses->flags & SNAT_SESSION_FLAG_OUTPUT_FEATURE))
     {
       nat_log_debug ("TCP close connection %U", format_snat_session,
 		     &sm->per_thread_data[thread_index], ses);
@@ -230,6 +235,10 @@ always_inline int
 nat44_set_tcp_session_state_o2i (snat_main_t * sm, snat_session_t * ses,
 				 tcp_header_t * tcp, u32 thread_index)
 {
+  if ((ses->state == 0) && (tcp->flags & TCP_FLAG_RST))
+    ses->state = NAT44_SES_RST;
+  if ((ses->state == NAT44_SES_RST) && !(tcp->flags & TCP_FLAG_RST))
+    ses->state = 0;
   if ((tcp->flags & TCP_FLAG_ACK) && (ses->state & NAT44_SES_I2O_SYN) &&
       (ses->state & NAT44_SES_O2I_SYN))
     ses->state = 0;
@@ -371,7 +380,7 @@ mss_clamping (snat_main_t * sm, tcp_header_t * tcp, ip_csum_t * sum)
 	      *sum =
 		ip_csum_update (*sum, mss, sm->mss_value_net, ip4_header_t,
 				length);
-	      clib_memcpy (data + 2, &sm->mss_value_net, 2);
+	      clib_memcpy_fast (data + 2, &sm->mss_value_net, 2);
 	    }
 	  return;
 	}

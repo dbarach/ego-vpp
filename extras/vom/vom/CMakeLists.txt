@@ -16,6 +16,7 @@ unset (ACL_FILE)
 unset (NAT_FILE)
 unset (L2E_FILE)
 unset (GBP_FILE)
+unset (IGMP_FILE)
 unset (VOM_SOURCES)
 unset (VOM_HEADERS)
 
@@ -33,6 +34,7 @@ find_file(ACL_FILE NAMES acl.api.vapi.hpp PATH_SUFFIXES vapi)
 find_file(NAT_FILE NAMES nat.api.vapi.hpp PATH_SUFFIXES vapi)
 find_file(L2E_FILE NAMES l2e.api.vapi.hpp PATH_SUFFIXES vapi)
 find_file(GBP_FILE NAMES gbp.api.vapi.hpp PATH_SUFFIXES vapi)
+find_file(IGMP_FILE NAMES igmp.api.vapi.hpp PATH_SUFFIXES vapi)
 
 if(ACL_FILE)
   list(APPEND VOM_SOURCES
@@ -66,16 +68,34 @@ endif()
 
 if(GBP_FILE)
   list(APPEND VOM_SOURCES
-    gbp_recirc_cmds.cpp
-    gbp_recirc.cpp
-    gbp_subnet_cmds.cpp
-    gbp_subnet.cpp
+    gbp_contract_cmds.cpp
+    gbp_contract.cpp
+    gbp_bridge_domain_cmds.cpp
+    gbp_bridge_domain.cpp
     gbp_endpoint_cmds.cpp
     gbp_endpoint.cpp
     gbp_endpoint_group_cmds.cpp
     gbp_endpoint_group.cpp
-    gbp_contract_cmds.cpp
-    gbp_contract.cpp
+    gbp_ext_itf.cpp
+    gbp_ext_itf_cmds.cpp
+    gbp_recirc_cmds.cpp
+    gbp_recirc.cpp
+    gbp_route_domain_cmds.cpp
+    gbp_route_domain.cpp
+    gbp_rule.cpp
+    gbp_subnet_cmds.cpp
+    gbp_subnet.cpp
+    gbp_vxlan.cpp
+    gbp_vxlan_cmds.cpp
+  )
+endif()
+
+if (IGMP_FILE)
+  list(APPEND VOM_SOURCES
+    igmp_binding_cmds.cpp
+    igmp_binding.cpp
+    igmp_listen_cmds.cpp
+    igmp_listen.cpp
   )
 endif()
 
@@ -174,11 +194,23 @@ endif()
 
 if(GBP_FILE)
   list(APPEND VOM_HEADERS
+    gbp_contract.hpp
+    gbp_bridge_domain.hpp
     gbp_endpoint.hpp
     gbp_endpoint_group.hpp
-    gbp_subnet.hpp
+    gbp_ext_itf.hpp
     gbp_recirc.hpp
-    gbp_contract.hpp
+    gbp_route_domain.hpp
+    gbp_rule.hpp
+    gbp_subnet.hpp
+    gbp_vxlan.hpp
+  )
+endif()
+
+if(IGMP_FILE)
+  list(APPEND VOM_HEADERS
+    igmp_binding.hpp
+    igmp_listen.hpp
   )
 endif()
 

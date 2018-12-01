@@ -96,7 +96,7 @@ echo_server_session_connected_callback (u32 app_index, u32 api_context,
 }
 
 int
-echo_server_add_segment_callback (u32 client_index, const ssvm_private_t * sp)
+echo_server_add_segment_callback (u32 client_index, u64 segment_handle)
 {
   /* New heaps may be added */
   return 0;
@@ -287,8 +287,8 @@ echo_server_attach (u8 * appns_id, u64 appns_flags, u64 appns_secret)
   u64 options[APP_OPTIONS_N_OPTIONS];
   u32 segment_size = 512 << 20;
 
-  memset (a, 0, sizeof (*a));
-  memset (options, 0, sizeof (options));
+  clib_memset (a, 0, sizeof (*a));
+  clib_memset (options, 0, sizeof (options));
 
   if (esm->no_echo)
     echo_server_session_cb_vft.builtin_app_rx_callback =
@@ -327,16 +327,16 @@ echo_server_attach (u8 * appns_id, u64 appns_flags, u64 appns_secret)
     }
   esm->app_index = a->app_index;
 
-  memset (a_cert, 0, sizeof (*a_cert));
+  clib_memset (a_cert, 0, sizeof (*a_cert));
   a_cert->app_index = a->app_index;
   vec_validate (a_cert->cert, test_srv_crt_rsa_len);
-  clib_memcpy (a_cert->cert, test_srv_crt_rsa, test_srv_crt_rsa_len);
+  clib_memcpy_fast (a_cert->cert, test_srv_crt_rsa, test_srv_crt_rsa_len);
   vnet_app_add_tls_cert (a_cert);
 
-  memset (a_key, 0, sizeof (*a_key));
+  clib_memset (a_key, 0, sizeof (*a_key));
   a_key->app_index = a->app_index;
   vec_validate (a_key->key, test_srv_key_rsa_len);
-  clib_memcpy (a_key->key, test_srv_key_rsa, test_srv_key_rsa_len);
+  clib_memcpy_fast (a_key->key, test_srv_key_rsa, test_srv_key_rsa_len);
   vnet_app_add_tls_key (a_key);
   return 0;
 }
@@ -359,7 +359,7 @@ echo_server_listen ()
 {
   echo_server_main_t *esm = &echo_server_main;
   vnet_bind_args_t _a, *a = &_a;
-  memset (a, 0, sizeof (*a));
+  clib_memset (a, 0, sizeof (*a));
   a->app_index = esm->app_index;
   a->uri = esm->server_uri;
   return vnet_bind_uri (a);
@@ -389,7 +389,7 @@ echo_server_create (vlib_main_t * vm, u8 * appns_id, u64 appns_flags,
   vec_validate (esm->rx_retries, num_threads - 1);
   for (i = 0; i < vec_len (esm->rx_retries); i++)
     vec_validate (esm->rx_retries[i],
-		  pool_elts (session_manager_main.sessions[i]));
+		  pool_elts (session_manager_main.wrk[i].sessions));
   esm->rcv_buffer_size = clib_max (esm->rcv_buffer_size, esm->fifo_size);
   for (i = 0; i < num_threads; i++)
     vec_validate (esm->rx_buf[i], esm->rcv_buffer_size);

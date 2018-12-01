@@ -584,8 +584,8 @@ sctp_prepare_cookie_echo_chunk (sctp_connection_t * sctp_conn, u8 idx,
   cookie_echo_chunk->sctp_hdr.verification_tag = sctp_conn->remote_tag;
   vnet_sctp_set_chunk_type (&cookie_echo_chunk->chunk_hdr, COOKIE_ECHO);
   vnet_sctp_set_chunk_length (&cookie_echo_chunk->chunk_hdr, chunk_len);
-  clib_memcpy (&(cookie_echo_chunk->cookie), &sctp_conn->cookie_param,
-	       sizeof (sctp_state_cookie_param_t));
+  clib_memcpy_fast (&(cookie_echo_chunk->cookie), &sctp_conn->cookie_param,
+		    sizeof (sctp_state_cookie_param_t));
 
   vnet_buffer (b)->sctp.connection_index =
     sctp_conn->sub_conn[idx].connection.c_index;
@@ -1367,6 +1367,7 @@ sctp_push_hdr_i (sctp_connection_t * sctp_conn, vlib_buffer_t * b,
 {
   u16 data_len =
     b->current_length + b->total_length_not_including_first_buffer;
+
   ASSERT (!b->total_length_not_including_first_buffer
 	  || (b->flags & VLIB_BUFFER_NEXT_PRESENT));
 
@@ -1374,6 +1375,13 @@ sctp_push_hdr_i (sctp_connection_t * sctp_conn, vlib_buffer_t * b,
 		       "b->current_data = %p "
 		       "data_len = %u",
 		       b->current_length, b->current_data, data_len);
+
+  u16 data_padding = vnet_sctp_calculate_padding (b->current_length);
+  if (data_padding > 0)
+    {
+      u8 *p_tail = vlib_buffer_put_uninit (b, data_padding);
+      clib_memset_u8 (p_tail, 0, data_padding);
+    }
 
   u16 bytes_to_add = sizeof (sctp_payload_data_chunk_t);
   u16 chunk_length = data_len + bytes_to_add - sizeof (sctp_header_t);
@@ -1842,15 +1850,15 @@ sctp46_output_inline (vlib_main_t * vm,
 	      t0 = vlib_add_trace (vm, node, b0, sizeof (*t0));
 	      if (th0)
 		{
-		  clib_memcpy (&t0->sctp_header, th0,
-			       sizeof (t0->sctp_header));
+		  clib_memcpy_fast (&t0->sctp_header, th0,
+				    sizeof (t0->sctp_header));
 		}
 	      else
 		{
-		  memset (&t0->sctp_header, 0, sizeof (t0->sctp_header));
+		  clib_memset (&t0->sctp_header, 0, sizeof (t0->sctp_header));
 		}
-	      clib_memcpy (&t0->sctp_connection, sctp_conn,
-			   sizeof (t0->sctp_connection));
+	      clib_memcpy_fast (&t0->sctp_connection, sctp_conn,
+				sizeof (t0->sctp_connection));
 	    }
 
 	  vlib_validate_buffer_enqueue_x1 (vm, node, next_index, to_next,
