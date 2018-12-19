@@ -1,30 +1,31 @@
 #!/usr/bin/env python
 
-import unittest
 import socket
+import unittest
+
+from parameterized import parameterized
+import scapy.layers.inet6 as inet6
+from scapy.contrib.mpls import MPLS
+from scapy.layers.inet6 import IPv6, ICMPv6ND_NS, ICMPv6ND_RS, \
+    ICMPv6ND_RA, ICMPv6NDOptMTU, ICMPv6NDOptSrcLLAddr, ICMPv6NDOptPrefixInfo, \
+    ICMPv6ND_NA, ICMPv6NDOptDstLLAddr, ICMPv6DestUnreach, icmp6types, \
+    ICMPv6TimeExceeded, ICMPv6EchoRequest, ICMPv6EchoReply
+from scapy.layers.l2 import Ether, Dot1Q
+from scapy.packet import Raw
+from scapy.utils import inet_pton, inet_ntop
+from scapy.utils6 import in6_getnsma, in6_getnsmac, in6_ptop, in6_islladdr, \
+    in6_mactoifaceid
+from six import moves
 
 from framework import VppTestCase, VppTestRunner
 from util import ppp, ip6_normalize
-from vpp_sub_interface import VppSubInterface, VppDot1QSubint
-from vpp_pg_interface import is_ipv6_misc
 from vpp_ip import DpoProto
 from vpp_ip_route import VppIpRoute, VppRoutePath, find_route, VppIpMRoute, \
     VppMRoutePath, MRouteItfFlags, MRouteEntryFlags, VppMplsIpBind, \
-    VppMplsRoute, VppMplsTable, VppIpTable, VppIpAddress
+    VppMplsRoute, VppMplsTable, VppIpTable
 from vpp_neighbor import find_nbr, VppNeighbor
-
-from scapy.packet import Raw
-from scapy.layers.l2 import Ether, Dot1Q
-import scapy.layers.inet6 as inet6
-from scapy.layers.inet6 import IPv6, ICMPv6ND_NS, ICMPv6ND_RS, \
-    ICMPv6ND_RA, getmacbyip6, ICMPv6MRD_Solicitation, \
-    ICMPv6NDOptMTU, ICMPv6NDOptSrcLLAddr, ICMPv6NDOptPrefixInfo, \
-    ICMPv6ND_NA, ICMPv6NDOptDstLLAddr, ICMPv6DestUnreach, icmp6types, \
-    ICMPv6TimeExceeded, ICMPv6EchoRequest, ICMPv6EchoReply
-from scapy.utils6 import in6_getnsma, in6_getnsmac, in6_ptop, in6_islladdr, \
-    in6_mactoifaceid, in6_ismaddr
-from scapy.utils import inet_pton, inet_ntop
-from scapy.contrib.mpls import MPLS
+from vpp_pg_interface import is_ipv6_misc
+from vpp_sub_interface import VppSubInterface, VppDot1QSubint
 
 AF_INET6 = socket.AF_INET6
 
@@ -284,11 +285,12 @@ class TestIPv6(TestIPv6ND):
                     inet6.UDP(sport=1234, dport=1234))
 
         pkts = [self.modify_packet(src_if, i, pkt_tmpl)
-                for i in xrange(self.pg_if_packet_sizes[0],
-                                self.pg_if_packet_sizes[1], 10)]
+                for i in moves.range(self.pg_if_packet_sizes[0],
+                                     self.pg_if_packet_sizes[1], 10)]
         pkts_b = [self.modify_packet(src_if, i, pkt_tmpl)
-                  for i in xrange(self.pg_if_packet_sizes[1] + hdr_ext,
-                                  self.pg_if_packet_sizes[2] + hdr_ext, 50)]
+                  for i in moves.range(self.pg_if_packet_sizes[1] + hdr_ext,
+                                       self.pg_if_packet_sizes[2] + hdr_ext,
+                                       50)]
         pkts.extend(pkts_b)
 
         return pkts
@@ -1948,7 +1950,7 @@ class TestIP6Punt(VppTestCase):
         #
         # Configure a punt redirect via pg1.
         #
-        nh_addr = VppIpAddress(self.pg1.remote_ip6).encode()
+        nh_addr = self.pg1.remote_ip6
         self.vapi.ip_punt_redirect(self.pg0.sw_if_index,
                                    self.pg1.sw_if_index,
                                    nh_addr)
@@ -2012,7 +2014,7 @@ class TestIP6Punt(VppTestCase):
         #
         # Configure a punt redirects
         #
-        nh_addr = VppIpAddress(self.pg3.remote_ip6).encode()
+        nh_addr = self.pg3.remote_ip6
         self.vapi.ip_punt_redirect(self.pg0.sw_if_index,
                                    self.pg3.sw_if_index,
                                    nh_addr)
@@ -2021,7 +2023,7 @@ class TestIP6Punt(VppTestCase):
                                    nh_addr)
         self.vapi.ip_punt_redirect(self.pg2.sw_if_index,
                                    self.pg3.sw_if_index,
-                                   VppIpAddress('0::0').encode())
+                                   '0::0')
 
         #
         # Dump pg0 punt redirects
@@ -2038,8 +2040,8 @@ class TestIP6Punt(VppTestCase):
         self.assertEqual(len(punts), 3)
         for p in punts:
             self.assertEqual(p.punt.tx_sw_if_index, self.pg3.sw_if_index)
-        self.assertNotEqual(punts[1].punt.nh.un.ip6, self.pg3.remote_ip6)
-        self.assertEqual(punts[2].punt.nh.un.ip6.address, '\x00'*16)
+        self.assertNotEqual(punts[1].punt.nh, self.pg3.remote_ip6)
+        self.assertEqual(str(punts[2].punt.nh), '::')
 
 
 class TestIPDeag(VppTestCase):
@@ -2162,7 +2164,7 @@ class TestIPDeag(VppTestCase):
 
 
 class TestIP6Input(VppTestCase):
-    """ IPv6 Input Exceptions """
+    """ IPv6 Input Exception Test Cases """
 
     def setUp(self):
         super(TestIP6Input, self).setUp()
@@ -2180,25 +2182,10 @@ class TestIP6Input(VppTestCase):
             i.unconfig_ip6()
             i.admin_down()
 
-    def test_ip_input(self):
-        """ IP6 Input Exceptions """
-
+    def test_ip_input_icmp_reply(self):
+        """ IP6 Input Exception - Return ICMP (3,0) """
         #
-        # bad version - this is dropped
-        #
-        p_version = (Ether(src=self.pg0.remote_mac,
-                           dst=self.pg0.local_mac) /
-                     IPv6(src=self.pg0.remote_ip6,
-                          dst=self.pg1.remote_ip6,
-                          version=3) /
-                     inet6.UDP(sport=1234, dport=1234) /
-                     Raw('\xa5' * 100))
-
-        self.send_and_assert_no_replies(self.pg0, p_version * 65,
-                                        "funky version")
-
-        #
-        # hop limit - IMCP replies
+        # hop limit - ICMP replies
         #
         p_version = (Ether(src=self.pg0.remote_mac,
                            dst=self.pg0.local_mac) /
@@ -2211,9 +2198,45 @@ class TestIP6Input(VppTestCase):
         rx = self.send_and_expect(self.pg0, p_version * 65, self.pg0)
         rx = rx[0]
         icmp = rx[ICMPv6TimeExceeded]
-        self.assertEqual(icmp.type, 3)
+
         # 0: "hop limit exceeded in transit",
-        self.assertEqual(icmp.code, 0)
+        self.assertEqual((icmp.type, icmp.code), (3, 0))
+
+    icmpv6_data = '\x0a' * 18
+    all_0s = "::"
+    all_1s = "FFFF:FFFF:FFFF:FFFF:FFFF:FFFF:FFFF:FFFF"
+
+    @parameterized.expand([
+        # Name, src, dst, l4proto, msg, timeout
+        ("src='iface',   dst='iface'", None, None,
+         inet6.UDP(sport=1234, dport=1234), "funky version", None),
+        ("src='All 0's', dst='iface'", all_0s, None,
+         ICMPv6EchoRequest(id=0xb, seq=5, data=icmpv6_data), None, 0.1),
+        ("src='iface',   dst='All 0's'", None, all_0s,
+         ICMPv6EchoRequest(id=0xb, seq=5, data=icmpv6_data), None, 0.1),
+        ("src='All 1's', dst='iface'", all_1s, None,
+         ICMPv6EchoRequest(id=0xb, seq=5, data=icmpv6_data), None, 0.1),
+        ("src='iface',   dst='All 1's'", None, all_1s,
+         ICMPv6EchoRequest(id=0xb, seq=5, data=icmpv6_data), None, 0.1),
+        ("src='All 1's', dst='All 1's'", all_1s, all_1s,
+         ICMPv6EchoRequest(id=0xb, seq=5, data=icmpv6_data), None, 0.1),
+
+    ])
+    def test_ip_input_no_replies(self, name, src, dst, l4, msg, timeout):
+
+        self._testMethodDoc = 'IPv6 Input Exception - %s' % name
+
+        p_version = (Ether(src=self.pg0.remote_mac,
+                           dst=self.pg0.local_mac) /
+                     IPv6(src=src or self.pg0.remote_ip6,
+                          dst=dst or self.pg1.remote_ip6,
+                          version=3) /
+                     l4 /
+                     Raw('\xa5' * 100))
+
+        self.send_and_assert_no_replies(self.pg0, p_version * 65,
+                                        remark=msg or "",
+                                        timeout=timeout)
 
 
 if __name__ == '__main__':

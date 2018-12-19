@@ -36,6 +36,7 @@ typedef enum
   SESSION_IO_EVT_CT_RX,
   FIFO_EVENT_APP_TX,
   SESSION_IO_EVT_CT_TX,
+  SESSION_IO_EVT_TX_FLUSH,
   FIFO_EVENT_DISCONNECT,
   FIFO_EVENT_BUILTIN_RX,
   FIFO_EVENT_BUILTIN_TX,
@@ -519,6 +520,13 @@ transport_max_rx_enqueue (transport_connection_t * tc)
 }
 
 always_inline u32
+transport_max_tx_dequeue (transport_connection_t * tc)
+{
+  stream_session_t *s = session_get (tc->s_index, tc->thread_index);
+  return svm_fifo_max_dequeue (s->server_tx_fifo);
+}
+
+always_inline u32
 transport_rx_fifo_size (transport_connection_t * tc)
 {
   stream_session_t *s = session_get (tc->s_index, tc->thread_index);
@@ -602,7 +610,7 @@ int session_dequeue_notify (stream_session_t * s);
 void stream_session_init_fifos_pointers (transport_connection_t * tc,
 					 u32 rx_pointer, u32 tx_pointer);
 
-void stream_session_accept_notify (transport_connection_t * tc);
+int stream_session_accept_notify (transport_connection_t * tc);
 void stream_session_disconnect_notify (transport_connection_t * tc);
 void stream_session_delete_notify (transport_connection_t * tc);
 void stream_session_reset_notify (transport_connection_t * tc);

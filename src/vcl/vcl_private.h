@@ -67,13 +67,13 @@ typedef enum
   STATE_CONNECT = 0x02,
   STATE_LISTEN = 0x04,
   STATE_ACCEPT = 0x08,
-  STATE_CLOSE_ON_EMPTY = 0x10,
+  STATE_VPP_CLOSING = 0x10,
   STATE_DISCONNECT = 0x20,
   STATE_FAILED = 0x40
 } session_state_t;
 
-#define SERVER_STATE_OPEN  (STATE_ACCEPT|STATE_CLOSE_ON_EMPTY)
-#define CLIENT_STATE_OPEN  (STATE_CONNECT|STATE_CLOSE_ON_EMPTY)
+#define SERVER_STATE_OPEN  (STATE_ACCEPT|STATE_VPP_CLOSING)
+#define CLIENT_STATE_OPEN  (STATE_CONNECT|STATE_VPP_CLOSING)
 #define STATE_OPEN (SERVER_STATE_OPEN | CLIENT_STATE_OPEN)
 
 typedef struct epoll_event vppcom_epoll_event_t;
@@ -95,6 +95,9 @@ typedef struct
   ip46_address_t ip46;
 } vppcom_ip46_t;
 
+#define VCL_ACCEPTED_F_CLOSED 	(1 << 0)
+#define VCL_ACCEPTED_F_RESET 	(1 << 1)
+
 typedef struct vcl_session_msg
 {
   u32 next;
@@ -102,6 +105,7 @@ typedef struct vcl_session_msg
   {
     session_accepted_msg_t accepted_msg;
   };
+  u32 flags;
 } vcl_session_msg_t;
 
 enum
@@ -155,6 +159,7 @@ typedef struct
   u32 sm_seg_index;
   u32 client_context;
   u64 vpp_handle;
+  u32 vpp_thread_index;
 
   /* Socket configuration state */
   u8 is_vep;
@@ -287,6 +292,9 @@ typedef struct vcl_worker_
 
   /** Current pid, may be different from main_pid if forked child */
   pid_t current_pid;
+
+  u32 forked_child;
+
 } vcl_worker_t;
 
 typedef struct vppcom_main_t_
@@ -504,10 +512,10 @@ int vcl_mq_epoll_add_evfd (vcl_worker_t * wrk, svm_msg_q_t * mq);
 int vcl_mq_epoll_del_evfd (vcl_worker_t * wrk, u32 mqc_index);
 
 vcl_worker_t *vcl_worker_alloc_and_init (void);
-void vcl_worker_cleanup (void);
+void vcl_worker_cleanup (vcl_worker_t * wrk, u8 notify_vpp);
 int vcl_worker_register_with_vpp (void);
 int vcl_worker_set_bapi (void);
-void vcl_worker_share_sessions (u32 parent_wrk_index);
+void vcl_worker_share_sessions (vcl_worker_t * parent_wrk);
 int vcl_worker_unshare_session (vcl_worker_t * wrk, vcl_session_t * s);
 int vcl_session_get_refcnt (vcl_session_t * s);
 
@@ -518,6 +526,14 @@ void vcl_segment_table_del (u64 segment_handle);
 static inline vcl_worker_t *
 vcl_worker_get (u32 wrk_index)
 {
+  return pool_elt_at_index (vcm->workers, wrk_index);
+}
+
+static inline vcl_worker_t *
+vcl_worker_get_if_valid (u32 wrk_index)
+{
+  if (pool_is_free_index (vcm->workers, wrk_index))
+    return 0;
   return pool_elt_at_index (vcm->workers, wrk_index);
 }
 
@@ -542,6 +558,7 @@ void vppcom_send_unbind_sock (u64 vpp_handle);
 void vppcom_api_hookup (void);
 void vppcom_send_accept_session_reply (u64 vpp_handle, u32 context, int rv);
 void vcl_send_app_worker_add_del (u8 is_add);
+void vcl_send_child_worker_del (vcl_worker_t * wrk);
 
 u32 vcl_max_nsid_len (void);
 

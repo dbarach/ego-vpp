@@ -408,7 +408,9 @@ mq_try_lock_and_alloc_msg (svm_msg_q_t * app_mq, svm_msg_q_msg_t * msg)
       if (!rv)
 	return 0;
       try++;
+      usleep (1);
     }
+  clib_warning ("failed to alloc msg");
   return -1;
 }
 
@@ -588,15 +590,17 @@ mq_send_session_connected_cb (u32 app_wrk_index, u32 api_context,
 
   if (mq_try_lock_and_alloc_msg (app_mq, msg))
     return -1;
+
   evt = svm_msg_q_msg_data (app_mq, msg);
   clib_memset (evt, 0, sizeof (*evt));
   evt->event_type = SESSION_CTRL_EVT_CONNECTED;
   mp = (session_connected_msg_t *) evt->data;
   mp->context = api_context;
-  mp->segment_handle = session_segment_handle (s);
 
   if (is_fail)
     goto done;
+
+  mp->segment_handle = session_segment_handle (s);
 
   if (session_has_transport (s))
     {
@@ -1060,6 +1064,7 @@ vl_api_disconnect_session_reply_t_handler (vl_api_disconnect_session_reply_t *
 static void
 vl_api_reset_session_reply_t_handler (vl_api_reset_session_reply_t * mp)
 {
+  vnet_disconnect_args_t _a = { 0 }, *a = &_a;
   app_worker_t *app_wrk;
   application_t *app;
   stream_session_t *s;
@@ -1094,7 +1099,9 @@ vl_api_reset_session_reply_t_handler (vl_api_reset_session_reply_t * mp)
 
   /* This comes as a response to a reset, transport only waiting for
    * confirmation to remove connection state, no need to disconnect */
-  stream_session_cleanup (s);
+  a->handle = mp->handle;
+  a->app_index = app->app_index;
+  vnet_disconnect_session (a);
 }
 
 static void

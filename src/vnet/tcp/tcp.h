@@ -102,7 +102,8 @@ extern timer_expiration_handler tcp_timer_retransmit_syn_handler;
 #define TCP_2MSL_TIME           300	/* 30s */
 #define TCP_CLOSEWAIT_TIME	20	/* 2s */
 #define TCP_TIMEWAIT_TIME	100	/* 10s */
-#define TCP_CLEANUP_TIME	10	/* 1s Time to wait before cleanup */
+#define TCP_FINWAIT1_TIME	600	/* 60s */
+#define TCP_CLEANUP_TIME	1	/* 0.1s */
 #define TCP_TIMER_PERSIST_MIN	2	/* 0.2s */
 
 #define TCP_RTO_MAX 60 * THZ	/* Min max RTO (60s) as per RFC6298 */
@@ -124,6 +125,7 @@ extern timer_expiration_handler tcp_timer_retransmit_syn_handler;
   _(FRXT_PENDING, "Fast-retransmit pending")	\
   _(FRXT_FIRST, "Fast-retransmit first again")	\
   _(DEQ_PENDING, "Pending dequeue acked")	\
+  _(PSH_PENDING, "PSH pending")			\
 
 typedef enum _tcp_connection_flag_bits
 {
@@ -334,6 +336,8 @@ typedef struct _tcp_connection
   u32 last_fib_check;	/**< Last time we checked fib route for peer */
   u32 sw_if_index;	/**< Interface for the connection */
   u32 tx_fifo_size;	/**< Tx fifo size. Used to constrain cwnd */
+
+  u32 psh_seq;		/**< Add psh header for seg that includes this */
 } tcp_connection_t;
 
 /* *INDENT-OFF* */
@@ -562,7 +566,8 @@ void tcp_connection_close (tcp_connection_t * tc);
 void tcp_connection_cleanup (tcp_connection_t * tc);
 void tcp_connection_del (tcp_connection_t * tc);
 int tcp_half_open_connection_cleanup (tcp_connection_t * tc);
-tcp_connection_t *tcp_connection_new (u8 thread_index);
+tcp_connection_t *tcp_connection_alloc (u8 thread_index);
+void tcp_connection_free (tcp_connection_t * tc);
 void tcp_connection_reset (tcp_connection_t * tc);
 int tcp_configure_v4_source_address_range (vlib_main_t * vm,
 					   ip4_address_t * start,

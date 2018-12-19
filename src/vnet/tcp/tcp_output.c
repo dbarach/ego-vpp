@@ -126,7 +126,10 @@ tcp_initial_window_to_advertise (tcp_connection_t * tc)
    * scale to be computed in the same way */
   max_fifo = tm->max_rx_fifo ? tm->max_rx_fifo : TCP_MAX_RX_FIFO_SIZE;
 
-  tc->rcv_wscale = tcp_window_compute_scale (max_fifo);
+  /* Compute rcv wscale only if peer advertised support for it */
+  if (tc->state != TCP_STATE_SYN_RCVD || tcp_opts_wscale (&tc->rcv_opts))
+    tc->rcv_wscale = tcp_window_compute_scale (max_fifo);
+
   tc->rcv_wnd = tcp_initial_wnd_unscaled (tc);
 
   return clib_min (tc->rcv_wnd, TCP_WND_MAX);
@@ -444,7 +447,6 @@ tcp_init_mss (tcp_connection_t * tc)
 
   if (tc->snd_mss < 45)
     {
-      clib_warning ("snd mss is 0");
       /* Assume that at least the min default mss works */
       tc->snd_mss = default_min_mss;
       tc->rcv_opts.mss = default_min_mss;
@@ -1021,6 +1023,7 @@ tcp_send_synack (tcp_connection_t * tc)
   if (PREDICT_FALSE (tcp_get_free_buffer_index (wrk, &bi)))
     return;
 
+  tc->rtt_ts = tcp_time_now_us (tc->c_thread_index);
   b = vlib_get_buffer (vm, bi);
   tcp_make_synack (tc, b);
   tcp_enqueue_to_output (wrk, b, bi, tc->c_is_ip4);
@@ -1168,7 +1171,12 @@ tcp_push_hdr_i (tcp_connection_t * tc, vlib_buffer_t * b,
     advertise_wnd = tcp_window_to_advertise (tc, next_state);
 
   flags = tcp_make_state_flags (tc, next_state);
-
+  if (PREDICT_FALSE (tc->flags & TCP_CONN_PSH_PENDING))
+    {
+      if (seq_geq (tc->psh_seq, tc->snd_nxt)
+	  && seq_lt (tc->psh_seq, tc->snd_nxt + data_len))
+	flags |= TCP_FLAG_PSH;
+    }
   th = vlib_buffer_push_tcp (b, tc->c_lcl_port, tc->c_rmt_port, tc->snd_nxt,
 			     tc->rcv_nxt, tcp_hdr_opts_len, flags,
 			     advertise_wnd);
@@ -1515,7 +1523,7 @@ tcp_timer_retransmit_handler_i (u32 index, u8 is_syn)
     {
       tc = tcp_half_open_connection_get (index);
       /* Note: the connection may have transitioned to ESTABLISHED... */
-      if (PREDICT_FALSE (tc == 0))
+      if (PREDICT_FALSE (tc == 0 || tc->state != TCP_STATE_SYN_SENT))
 	return;
       tc->timers[TCP_TIMER_RETRANSMIT_SYN] = TCP_TIMER_HANDLE_INVALID;
     }
@@ -1523,7 +1531,7 @@ tcp_timer_retransmit_handler_i (u32 index, u8 is_syn)
     {
       tc = tcp_connection_get (index, thread_index);
       /* Note: the connection may have been closed and pool_put */
-      if (PREDICT_FALSE (tc == 0))
+      if (PREDICT_FALSE (tc == 0 || tc->state < TCP_STATE_SYN_RCVD))
 	return;
       tc->timers[TCP_TIMER_RETRANSMIT] = TCP_TIMER_HANDLE_INVALID;
     }

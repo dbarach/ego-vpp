@@ -3,7 +3,8 @@ import datetime
 import os
 import time
 
-datestring = datetime.datetime.utcfromtimestamp(int(os.environ.get('SOURCE_DATE_EPOCH', time.time())))
+datestring = datetime.datetime.utcfromtimestamp(
+    int(os.environ.get('SOURCE_DATE_EPOCH', time.time())))
 input_filename = 'inputfil'
 top_boilerplate = '''\
 /*
@@ -85,13 +86,20 @@ def msg_name_crc_list(s, suffix):
 
 
 def duplicate_wrapper_head(name):
-    s = "#ifndef defined_%s\n" % name
-    s += "#define defined_%s\n" % name
+    s = "#ifndef _vl_api_defined_%s\n" % name
+    s += "#define _vl_api_defined_%s\n" % name
     return s
 
 
 def duplicate_wrapper_tail():
     return '#endif\n\n'
+
+
+def api2c(fieldtype):
+    mappingtable = {'string': 'vl_api_string_t', }
+    if fieldtype in mappingtable:
+        return mappingtable[fieldtype]
+    return fieldtype
 
 
 def typedefs(objs, aliases, filename):
@@ -130,12 +138,12 @@ def typedefs(objs, aliases, filename):
                 output += "typedef VL_API_PACKED(struct _vl_api_%s {\n" % o.name
             for b in o.block:
                 if b.type == 'Field':
-                    output += "    %s %s;\n" % (b.fieldtype, b.fieldname)
+                    output += "    %s %s;\n" % (api2c(b.fieldtype), b.fieldname)
                 elif b.type == 'Array':
                     if b.lengthfield:
-                        output += "    %s %s[0];\n" % (b.fieldtype, b.fieldname)
+                        output += "    %s %s[0];\n" % (api2c(b.fieldtype), b.fieldname)
                     else:
-                        output += "    %s %s[%s];\n" % (b.fieldtype, b.fieldname,
+                        output += "    %s %s[%s];\n" % (api2c(b.fieldtype), b.fieldname,
                                                         b.length)
                 else:
                     raise ValueError("Error in processing array type %s" % b)

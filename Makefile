@@ -66,7 +66,7 @@ DEB_DEPENDS += libconfuse-dev git-review exuberant-ctags cscope pkg-config
 DEB_DEPENDS += lcov chrpath autoconf indent clang-format libnuma-dev
 DEB_DEPENDS += python-all python-dev python-virtualenv python-pip libffi6 check
 DEB_DEPENDS += libboost-all-dev libffi-dev python-ply libmbedtls-dev
-DEB_DEPENDS += cmake ninja-build
+DEB_DEPENDS += cmake ninja-build uuid-dev
 ifeq ($(OS_VERSION_ID),14.04)
 	DEB_DEPENDS += openjdk-8-jdk-headless
 	DEB_DEPENDS += libssl-dev
@@ -82,33 +82,31 @@ else
 	DEB_DEPENDS += libssl-dev
 endif
 
-RPM_DEPENDS  = redhat-lsb glibc-static java-1.8.0-openjdk-devel yum-utils
+RPM_DEPENDS  = redhat-lsb glibc-static java-1.8.0-openjdk-devel
 RPM_DEPENDS += apr-devel
 RPM_DEPENDS += numactl-devel
 RPM_DEPENDS += check check-devel
 RPM_DEPENDS += boost boost-devel
 RPM_DEPENDS += selinux-policy selinux-policy-devel
-RPM_DEPENDS += cmake3 ninja-build
+RPM_DEPENDS += ninja-build
+RPM_DEPENDS += libuuid-devel
 
-ifeq ($(OS_ID)-$(OS_VERSION_ID),fedora-25)
-	RPM_DEPENDS += subunit subunit-devel
-	RPM_DEPENDS += openssl-devel
-	RPM_DEPENDS += python-devel python2-ply
-	RPM_DEPENDS += python2-virtualenv
-	RPM_DEPENDS += mbedtls-devel
-	RPM_DEPENDS_GROUPS = 'C Development Tools and Libraries'
-else ifeq ($(shell if [ "$(OS_ID)" = "fedora" ]; then test $(OS_VERSION_ID) -gt 25; echo $$?; fi),0)
+ifeq ($(OS_ID),fedora)
+	RPM_DEPENDS += dnf-utils
 	RPM_DEPENDS += subunit subunit-devel
 	RPM_DEPENDS += compat-openssl10-devel
 	RPM_DEPENDS += python2-devel python2-ply
 	RPM_DEPENDS += python2-virtualenv
 	RPM_DEPENDS += mbedtls-devel
+	RPM_DEPENDS += cmake
 	RPM_DEPENDS_GROUPS = 'C Development Tools and Libraries'
 else
+	RPM_DEPENDS += yum-utils
 	RPM_DEPENDS += openssl-devel
 	RPM_DEPENDS += python-devel python-ply
 	RPM_DEPENDS += python-virtualenv
 	RPM_DEPENDS += devtoolset-7
+	RPM_DEPENDS += cmake3
 	RPM_DEPENDS_GROUPS = 'Development Tools'
 endif
 
@@ -122,7 +120,7 @@ RPM_SUSE_BUILDTOOLS_DEPS = autoconf automake ccache check-devel chrpath
 RPM_SUSE_BUILDTOOLS_DEPS += clang cmake indent libtool make ninja python-ply
 
 RPM_SUSE_DEVEL_DEPS = glibc-devel-static java-1_8_0-openjdk-devel libnuma-devel
-RPM_SUSE_DEVEL_DEPS += libopenssl-devel openssl-devel mbedtls-devel
+RPM_SUSE_DEVEL_DEPS += libopenssl-devel openssl-devel mbedtls-devel libuuid-devel
 
 RPM_SUSE_PYTHON_DEPS = python-devel python3-devel python-pip python3-pip
 RPM_SUSE_PYTHON_DEPS += python-rpm-macros python3-rpm-macros
@@ -299,10 +297,14 @@ ifeq ($(OS_ID),rhel)
 	@sudo -E yum-config-manager --enable rhel-server-rhscl-7-rpms
 else ifeq ($(OS_ID),centos)
 	@sudo -E yum install $(CONFIRM) centos-release-scl-rh
-endif
 	@sudo -E yum groupinstall $(CONFIRM) $(RPM_DEPENDS_GROUPS)
 	@sudo -E yum install $(CONFIRM) $(RPM_DEPENDS)
 	@sudo -E debuginfo-install $(CONFIRM) glibc openssl-libs mbedtls-devel zlib
+else ifeq ($(OS_ID),fedora)
+	@sudo -E dnf groupinstall $(CONFIRM) $(RPM_DEPENDS_GROUPS)
+	@sudo -E dnf install $(CONFIRM) $(RPM_DEPENDS)
+	@sudo -E debuginfo-install $(CONFIRM) glibc openssl-libs mbedtls-devel zlib
+endif
 else ifeq ($(filter opensuse-tumbleweed,$(OS_ID)),$(OS_ID))
 	@sudo -E zypper refresh
 	@sudo -E zypper install -y $(RPM_SUSE_DEPENDS)
@@ -359,6 +361,7 @@ wipedist:
 
 wipe: wipedist test-wipe $(BR)/.deps.ok
 	$(call make,$(PLATFORM)_debug,$(addsuffix -wipe,$(TARGETS)))
+	@find . -type f -name "*.api.json" ! -path "./test/*" -exec rm {} \;
 
 rebuild: wipe build
 

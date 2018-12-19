@@ -754,13 +754,13 @@ VNET_FEATURE_INIT (ip4_policer_classify, static) =
 {
   .arc_name = "ip4-unicast",
   .node_name = "ip4-policer-classify",
-  .runs_before = VNET_FEATURES ("ipsec4-input"),
+  .runs_before = VNET_FEATURES ("ipsec4-input-feature"),
 };
 
 VNET_FEATURE_INIT (ip4_ipsec, static) =
 {
   .arc_name = "ip4-unicast",
-  .node_name = "ipsec4-input",
+  .node_name = "ipsec4-input-feature",
   .runs_before = VNET_FEATURES ("vpath-input-ip4"),
 };
 
@@ -842,13 +842,13 @@ VNET_FEATURE_INIT (ip4_outacl, static) =
 {
   .arc_name = "ip4-output",
   .node_name = "ip4-outacl",
-  .runs_before = VNET_FEATURES ("ipsec4-output"),
+  .runs_before = VNET_FEATURES ("ipsec4-output-feature"),
 };
 
 VNET_FEATURE_INIT (ip4_ipsec_output, static) =
 {
   .arc_name = "ip4-output",
-  .node_name = "ipsec4-output",
+  .node_name = "ipsec4-output-feature",
   .runs_before = VNET_FEATURES ("interface-output"),
 };
 
@@ -1334,6 +1334,7 @@ typedef struct
   ip4_address_t src;
   u32 lbi;
   u8 error;
+  u8 first;
 } ip4_local_last_check_t;
 
 static inline void
@@ -1350,7 +1351,8 @@ ip4_local_check_src (vlib_buffer_t * b, ip4_header_t * ip0,
     vnet_buffer (b)->sw_if_index[VLIB_TX] != ~0 ?
     vnet_buffer (b)->sw_if_index[VLIB_TX] : vnet_buffer (b)->ip.fib_index;
 
-  if (PREDICT_FALSE (last_check->src.as_u32 != ip0->src_address.as_u32))
+  if (PREDICT_FALSE (last_check->first ||
+		     (last_check->src.as_u32 != ip0->src_address.as_u32)))
     {
       mtrie0 = &ip4_fib_get (vnet_buffer (b)->ip.fib_index)->mtrie;
       leaf0 = ip4_fib_mtrie_lookup_step_one (mtrie0, &ip0->src_address);
@@ -1392,6 +1394,7 @@ ip4_local_check_src (vlib_buffer_t * b, ip4_header_t * ip0,
       vnet_buffer (b)->ip.adj_index[VLIB_TX] = last_check->lbi;
       vnet_buffer (b)->ip.adj_index[VLIB_RX] = last_check->lbi;
       *error0 = last_check->error;
+      last_check->first = 0;
     }
 }
 
@@ -1403,9 +1406,10 @@ ip4_local_check_src_x2 (vlib_buffer_t ** b, ip4_header_t ** ip,
   ip4_fib_mtrie_t *mtrie[2];
   const dpo_id_t *dpo[2];
   load_balance_t *lb[2];
-  u32 not_last_hit = 0;
+  u32 not_last_hit;
   u32 lbi[2];
 
+  not_last_hit = last_check->first;
   not_last_hit |= ip[0]->src_address.as_u32 ^ last_check->src.as_u32;
   not_last_hit |= ip[1]->src_address.as_u32 ^ last_check->src.as_u32;
 
@@ -1482,6 +1486,7 @@ ip4_local_check_src_x2 (vlib_buffer_t ** b, ip4_header_t ** ip,
 
       error[0] = last_check->error;
       error[1] = last_check->error;
+      last_check->first = 0;
     }
 }
 
@@ -1532,9 +1537,16 @@ ip4_local_inline (vlib_main_t * vm,
   u8 error[2], pt[2];
 
   ip4_local_last_check_t last_check = {
+    /*
+     * 0.0.0.0 can appear as the source address of an IP packet,
+     * as can any other address, hence the need to use the 'first'
+     * member to make sure the .lbi is initialised for the first
+     * packet.
+     */
     .src = {.as_u32 = 0},
     .lbi = ~0,
-    .error = IP4_ERROR_UNKNOWN_PROTOCOL
+    .error = IP4_ERROR_UNKNOWN_PROTOCOL,
+    .first = 1,
   };
 
   from = vlib_frame_vector_args (frame);
@@ -2336,7 +2348,7 @@ ip4_rewrite_inline (vlib_main_t * vm,
 	  adj0->sub_type.midchain.fixup_func
 	    (vm, adj0, b[0], adj0->sub_type.midchain.fixup_data);
 	  adj1->sub_type.midchain.fixup_func
-	    (vm, adj1, b[1], adj0->sub_type.midchain.fixup_data);
+	    (vm, adj1, b[1], adj1->sub_type.midchain.fixup_data);
 	}
 
       if (is_mcast)
@@ -2348,7 +2360,7 @@ ip4_rewrite_inline (vlib_main_t * vm,
 				      adj0->rewrite_header.dst_mcast_offset,
 				      &ip0->dst_address.as_u32, (u8 *) ip0);
 	  vnet_ip_mcast_fixup_header (IP4_MCAST_ADDR_MASK,
-				      adj0->rewrite_header.dst_mcast_offset,
+				      adj1->rewrite_header.dst_mcast_offset,
 				      &ip1->dst_address.as_u32, (u8 *) ip1);
 	}
 

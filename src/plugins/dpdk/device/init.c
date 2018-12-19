@@ -24,6 +24,7 @@
 #include <vnet/ethernet/ethernet.h>
 #include <dpdk/device/dpdk.h>
 #include <vlib/pci/pci.h>
+#include <vlib/vmbus/vmbus.h>
 
 #include <rte_ring.h>
 
@@ -828,6 +829,7 @@ dpdk_bind_devices_to_uio (dpdk_config_main_t * conf)
   int num_whitelisted = vec_len (conf->dev_confs);
   vlib_pci_device_info_t *d = 0;
   vlib_pci_addr_t *addr = 0, *addrs;
+  int i;
 
   addrs = vlib_pci_get_all_dev_addrs ();
   /* *INDENT-OFF* */
@@ -856,9 +858,39 @@ dpdk_bind_devices_to_uio (dpdk_config_main_t * conf)
 	uword * p = hash_get (conf->device_config_index_by_pci_addr, addr->as_u32);
 
 	if (!p)
-	  continue;
+          {
+          skipped:
+            continue;
+          }
 
 	devconf = pool_elt_at_index (conf->dev_confs, p[0]);
+      }
+
+    /* Enforce Device blacklist by vendor and device */
+    for (i = 0; i < vec_len (conf->blacklist_by_pci_vendor_and_device); i++)
+      {
+        u16 vendor, device;
+        vendor = (u16)(conf->blacklist_by_pci_vendor_and_device[i] >> 16);
+        device = (u16)(conf->blacklist_by_pci_vendor_and_device[i] & 0xFFFF);
+        if (d->vendor_id == vendor && d->device_id == device)
+          {
+            /*
+             * Expected case: device isn't whitelisted,
+             * so blacklist it...
+             */
+            if (devconf == 0)
+              {
+                /* Device is blacklisted */
+                pool_get (conf->dev_confs, devconf);
+                hash_set (conf->device_config_index_by_pci_addr, addr->as_u32,
+                          devconf - conf->dev_confs);
+                devconf->pci_addr.as_u32 = addr->as_u32;
+                devconf->is_blacklisted = 1;
+                goto skipped;
+              }
+            else /* explicitly whitelisted, ignore the device blacklist  */
+              break;
+          }
       }
 
     /* virtio */
@@ -940,6 +972,27 @@ dpdk_bind_devices_to_uio (dpdk_config_main_t * conf)
   /* *INDENT-ON* */
   vec_free (pci_addr);
   vlib_pci_free_device_info (d);
+}
+
+static void
+dpdk_bind_vmbus_devices_to_uio (dpdk_config_main_t * conf)
+{
+  clib_error_t *error;
+  vlib_vmbus_addr_t *addrs, *addr = 0;
+
+  addrs = vlib_vmbus_get_all_dev_addrs ();
+
+  /* *INDENT-OFF* */
+  vec_foreach (addr, addrs)
+    {
+      error = vlib_vmbus_bind_to_uio (addr);
+
+      if (error)
+	{
+	  clib_error_report (error);
+	}
+    }
+  /* *INDENT-ON* */
 }
 
 static clib_error_t *
@@ -1090,11 +1143,13 @@ dpdk_config (vlib_main_t * vm, unformat_input_t * input)
   int ret, i;
   int num_whitelisted = 0;
   u8 no_pci = 0;
+  u8 no_vmbus = 0;
   u8 no_huge = 0;
   u8 huge_dir = 0;
   u8 file_prefix = 0;
   u8 *socket_mem = 0;
   u8 *huge_dir_path = 0;
+  u32 vendor, device;
 
   huge_dir_path =
     format (0, "%s/hugepages%c", vlib_unix_get_runtime_dir (), 0);
@@ -1169,6 +1224,23 @@ dpdk_config (vlib_main_t * vm, unformat_input_t * input)
 	{
 	  no_pci = 1;
 	  tmp = format (0, "--no-pci%c", 0);
+	  vec_add1 (conf->eal_init_args, tmp);
+	}
+      else if (unformat (input, "blacklist %x:%x", &vendor, &device))
+	{
+	  u32 blacklist_entry;
+	  if (vendor > 0xFFFF)
+	    return clib_error_return (0, "blacklist PCI vendor out of range");
+	  if (device > 0xFFFF)
+	    return clib_error_return (0, "blacklist PCI device out of range");
+	  blacklist_entry = (vendor << 16) | (device & 0xffff);
+	  vec_add1 (conf->blacklist_by_pci_vendor_and_device,
+		    blacklist_entry);
+	}
+      else if (unformat (input, "no-vmbus"))
+	{
+	  no_vmbus = 1;
+	  tmp = format (0, "--no-vmbus%c", 0);
 	  vec_add1 (conf->eal_init_args, tmp);
 	}
 
@@ -1373,6 +1445,9 @@ dpdk_config (vlib_main_t * vm, unformat_input_t * input)
 
   if (no_pci == 0 && geteuid () == 0)
     dpdk_bind_devices_to_uio (conf);
+
+  if (no_vmbus == 0 && geteuid () == 0)
+    dpdk_bind_vmbus_devices_to_uio (conf);
 
 #define _(x) \
     if (devconf->x == 0 && conf->default_devconf.x > 0) \

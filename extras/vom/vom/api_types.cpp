@@ -17,48 +17,21 @@
 
 namespace VOM {
 
-static vapi_type_ip4_address
-to_api(const boost::asio::ip::address_v4& a)
-{
-  vapi_type_ip4_address v;
-
-  std::copy_n(a.to_bytes().data(), 4, v.address);
-
-  return v;
-}
-
-static vapi_type_ip6_address
-to_api(const boost::asio::ip::address_v6& a)
-{
-  vapi_type_ip6_address v;
-
-  std::copy_n(a.to_bytes().data(), 16, v.address);
-
-  return v;
-}
-
-vapi_type_address
-to_api(const ip_address_t& a)
+void
+to_api(const ip_address_t& a, vapi_type_address& v)
 {
   if (a.is_v4()) {
-    vapi_type_address v = {
-      .af = ADDRESS_IP4,
-      .un =
-        {
-          .ip4 = to_api(a.to_v4()),
-        },
-    };
-    return (v);
+    v.af = ADDRESS_IP4;
+    memcpy(v.un.ip4, a.to_v4().to_bytes().data(), 4);
   } else {
-    vapi_type_address v = {
-      .af = ADDRESS_IP6,
-      .un =
-        {
-          .ip6 = to_api(a.to_v6()),
-        },
-    };
-    return (v);
+    v.af = ADDRESS_IP6;
+    memcpy(v.un.ip6, a.to_v6().to_bytes().data(), 16);
   }
+}
+void
+to_api(const boost::asio::ip::address& a, vapi_type_ip4_address& v)
+{
+  memcpy(v, a.to_v4().to_bytes().data(), 4);
 }
 
 ip_address_t
@@ -68,12 +41,12 @@ from_api(const vapi_type_address& v)
 
   if (ADDRESS_IP6 == v.af) {
     std::array<uint8_t, 16> a;
-    std::copy(v.un.ip6.address, v.un.ip6.address + 16, std::begin(a));
+    std::copy(v.un.ip6, v.un.ip6 + 16, std::begin(a));
     boost::asio::ip::address_v6 v6(a);
     addr = v6;
   } else {
     std::array<uint8_t, 4> a;
-    std::copy(v.un.ip6.address, v.un.ip6.address + 4, std::begin(a));
+    std::copy(v.un.ip6, v.un.ip6 + 4, std::begin(a));
     boost::asio::ip::address_v4 v4(a);
     addr = v4;
   }
@@ -81,20 +54,16 @@ from_api(const vapi_type_address& v)
   return addr;
 }
 
-vapi_type_mac_address
-to_api(const mac_address_t& a)
+void
+to_api(const mac_address_t& a, vapi_type_mac_address& v)
 {
-  vapi_type_mac_address v;
-
-  std::copy(std::begin(a.bytes), std::end(a.bytes), v.bytes);
-
-  return (v);
+  std::copy(std::begin(a.bytes), std::end(a.bytes), v);
 }
 
 mac_address_t
 from_api(const vapi_type_mac_address& v)
 {
-  return mac_address_t(v.bytes);
+  return mac_address_t(v);
 }
 
 route::prefix_t
@@ -106,10 +75,9 @@ from_api(const vapi_type_prefix& v)
 vapi_type_prefix
 to_api(const route::prefix_t& p)
 {
-  vapi_type_prefix v = {
-    .address = to_api(p.address()), .address_length = p.mask_width(),
-  };
-
+  vapi_type_prefix v;
+  to_api(p.address(), v.address);
+  v.address_length = p.mask_width();
   return v;
 }
 };

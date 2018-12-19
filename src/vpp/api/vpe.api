@@ -50,7 +50,6 @@ option version = "1.1.0";
  * DHCP APIs: see ... /src/vnet/dhcp/{dhcp.api, dhcp_api.c}
  * COP APIs: see ... /src/vnet/cop/{cop.api, cop_api.c}
  * POLICER APIs: see ... /src/vnet/policer/{policer.api, policer_api.c}
- * STATS APIs: see .../src/vpp/stats/{stats.api, stats.c}
  * BIER APIs: see ... /src/vnet/policer/{bier.api, bier_api.c}
  */
 
@@ -93,8 +92,7 @@ define cli_inband
 {
   u32 client_index;
   u32 context;
-  u32 length;
-  u8 cmd[length];
+  string cmd;
 };
 
 /** \brief vpe parser cli string response
@@ -112,8 +110,7 @@ define cli_inband_reply
 {
   u32 context;
   i32 retval;
-  u32 length;
-  u8 reply[length];
+  string reply;
 };
 
 /** \brief Get node index using name request
@@ -187,10 +184,10 @@ define show_version_reply
 {
   u32 context;
   i32 retval;
-  u8 program[32];
-  u8 version[32];
-  u8 build_date[32];
-  u8 build_directory[256];
+  string program;
+  string version;
+  string build_date;
+  string build_directory;
 };
 
 

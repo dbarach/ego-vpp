@@ -95,10 +95,10 @@ public:
 class MockListener : public interface::event_listener,
                      public interface::stat_listener
 {
-    void handle_interface_stat(interface_cmds::stats_enable_cmd *cmd)
+    void handle_interface_stat(const interface& itf)
     {
     }
-    void handle_interface_event(interface_cmds::events_cmd *cmd)
+    void handle_interface_event(std::vector<VOM::interface::event> events)
     {
     }
 };
@@ -1156,7 +1156,8 @@ BOOST_AUTO_TEST_CASE(test_vxlan) {
     vxlan_tunnel vxt(ep.src, ep.dst, ep.vni);
 
     HW::item<handle_t> hw_vxt(3, rc_t::OK);
-    ADD_EXPECT(vxlan_tunnel_cmds::create_cmd(hw_vxt, "don't-care", ep));
+    ADD_EXPECT(vxlan_tunnel_cmds::create_cmd(hw_vxt, "don't-care", ep,
+                                             handle_t::INVALID));
 
     TRY_CHECK_RC(OM::write(franz, vxt));
 
@@ -1347,9 +1348,9 @@ BOOST_AUTO_TEST_CASE(test_igmp) {
     const std::string Isaiah = "IsaiahBerlin";
     rc_t rc = rc_t::OK;
 
-    boost::asio::ip::address gaddr = boost::asio::ip::address::from_string("232.0.0.1");
-    boost::asio::ip::address saddr1 = boost::asio::ip::address::from_string("192.168.0.20");
-    boost::asio::ip::address saddr2 = boost::asio::ip::address::from_string("192.168.0.30");
+    boost::asio::ip::address_v4 gaddr = boost::asio::ip::address_v4::from_string("232.0.0.1");
+    boost::asio::ip::address_v4 saddr1 = boost::asio::ip::address_v4::from_string("192.168.0.20");
+    boost::asio::ip::address_v4 saddr2 = boost::asio::ip::address_v4::from_string("192.168.0.30");
 
     std::string itf3_name = "host3";
     interface itf3(itf3_name,

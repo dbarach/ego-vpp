@@ -137,14 +137,8 @@ esp_encrypt_inline (vlib_main_t * vm,
 
   if (PREDICT_FALSE (vec_len (empty_buffers) < n_left_from))
     {
-      if (is_ip6)
-	vlib_node_increment_counter (vm, esp6_encrypt_node.index,
-				     ESP_ENCRYPT_ERROR_NO_BUFFER,
-				     n_left_from);
-      else
-	vlib_node_increment_counter (vm, esp4_encrypt_node.index,
-				     ESP_ENCRYPT_ERROR_NO_BUFFER,
-				     n_left_from);
+      vlib_node_increment_counter (vm, node->node_index,
+				   ESP_ENCRYPT_ERROR_NO_BUFFER, n_left_from);
       clib_warning ("not enough empty buffers. discarding frame");
       goto free_buffers_and_exit;
     }
@@ -189,12 +183,8 @@ esp_encrypt_inline (vlib_main_t * vm,
 	    {
 	      clib_warning ("sequence number counter has cycled SPI %u",
 			    sa0->spi);
-	      if (is_ip6)
-		vlib_node_increment_counter (vm, esp6_encrypt_node.index,
-					     ESP_ENCRYPT_ERROR_SEQ_CYCLED, 1);
-	      else
-		vlib_node_increment_counter (vm, esp4_encrypt_node.index,
-					     ESP_ENCRYPT_ERROR_SEQ_CYCLED, 1);
+	      vlib_node_increment_counter (vm, node->node_index,
+					   ESP_ENCRYPT_ERROR_SEQ_CYCLED, 1);
 	      //TODO: rekey SA
 	      o_bi0 = i_bi0;
 	      to_next[0] = o_bi0;
@@ -289,7 +279,7 @@ esp_encrypt_inline (vlib_main_t * vm,
 	      oh0->ip4.src_address.as_u32 = sa0->tunnel_src_addr.ip4.as_u32;
 	      oh0->ip4.dst_address.as_u32 = sa0->tunnel_dst_addr.ip4.as_u32;
 
-	      vnet_buffer (o_b0)->sw_if_index[VLIB_TX] = (u32) ~ 0;
+	      vnet_buffer (o_b0)->sw_if_index[VLIB_TX] = sa0->tx_fib_index;
 	    }
 	  else if (is_ip6 && sa0->is_tunnel && sa0->is_tunnel_ip6)
 	    {
@@ -302,7 +292,7 @@ esp_encrypt_inline (vlib_main_t * vm,
 	      oh6_0->ip6.dst_address.as_u64[1] =
 		sa0->tunnel_dst_addr.ip6.as_u64[1];
 
-	      vnet_buffer (o_b0)->sw_if_index[VLIB_TX] = (u32) ~ 0;
+	      vnet_buffer (o_b0)->sw_if_index[VLIB_TX] = sa0->tx_fib_index;
 	    }
 	  else
 	    {
@@ -321,7 +311,15 @@ esp_encrypt_inline (vlib_main_t * vm,
 		  vnet_buffer (o_b0)->sw_if_index[VLIB_TX] =
 		    vnet_buffer (i_b0)->sw_if_index[VLIB_TX];
 		}
-	      vlib_buffer_advance (i_b0, ip_udp_hdr_size);
+
+	      if (is_ip6)
+		{
+		  vlib_buffer_advance (i_b0, sizeof (ip6_header_t));
+		}
+	      else
+		{
+		  vlib_buffer_advance (i_b0, sizeof (ip4_header_t));
+		}
 	    }
 
 	  ASSERT (sa0->crypto_alg < IPSEC_CRYPTO_N_ALG);
@@ -428,14 +426,9 @@ esp_encrypt_inline (vlib_main_t * vm,
 	}
       vlib_put_next_frame (vm, node, next_index, n_left_to_next);
     }
-  if (is_ip6)
-    vlib_node_increment_counter (vm, esp6_encrypt_node.index,
-				 ESP_ENCRYPT_ERROR_RX_PKTS,
-				 from_frame->n_vectors);
-  else
-    vlib_node_increment_counter (vm, esp4_encrypt_node.index,
-				 ESP_ENCRYPT_ERROR_RX_PKTS,
-				 from_frame->n_vectors);
+  vlib_node_increment_counter (vm, node->node_index,
+			       ESP_ENCRYPT_ERROR_RX_PKTS,
+			       from_frame->n_vectors);
 
 free_buffers_and_exit:
   if (recycle)

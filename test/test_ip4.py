@@ -4,17 +4,18 @@ import random
 import socket
 import unittest
 
+from scapy.contrib.mpls import MPLS
+from scapy.layers.inet import IP, UDP, TCP, ICMP, icmptypes, icmpcodes
+from scapy.layers.l2 import Ether, Dot1Q, ARP
+from scapy.packet import Raw
+from six import moves
+
 from framework import VppTestCase, VppTestRunner
-from vpp_sub_interface import VppSubInterface, VppDot1QSubint, VppDot1ADSubint
+from util import ppp
 from vpp_ip_route import VppIpRoute, VppRoutePath, VppIpMRoute, \
     VppMRoutePath, MRouteItfFlags, MRouteEntryFlags, VppMplsIpBind, \
-    VppMplsTable, VppIpTable, VppIpAddress
-
-from scapy.packet import Raw
-from scapy.layers.l2 import Ether, Dot1Q, ARP
-from scapy.layers.inet import IP, UDP, TCP, ICMP, icmptypes, icmpcodes
-from util import ppp
-from scapy.contrib.mpls import MPLS
+    VppMplsTable, VppIpTable
+from vpp_sub_interface import VppSubInterface, VppDot1QSubint, VppDot1ADSubint
 
 
 class TestIPv4(VppTestCase):
@@ -134,11 +135,12 @@ class TestIPv4(VppTestCase):
                     UDP(sport=1234, dport=1234))
 
         pkts = [self.modify_packet(src_if, i, pkt_tmpl)
-                for i in xrange(self.pg_if_packet_sizes[0],
-                                self.pg_if_packet_sizes[1], 10)]
+                for i in moves.range(self.pg_if_packet_sizes[0],
+                                     self.pg_if_packet_sizes[1], 10)]
         pkts_b = [self.modify_packet(src_if, i, pkt_tmpl)
-                  for i in xrange(self.pg_if_packet_sizes[1] + hdr_ext,
-                                  self.pg_if_packet_sizes[2] + hdr_ext, 50)]
+                  for i in moves.range(self.pg_if_packet_sizes[1] + hdr_ext,
+                                       self.pg_if_packet_sizes[2] + hdr_ext,
+                                       50)]
         pkts.extend(pkts_b)
 
         return pkts
@@ -439,6 +441,9 @@ class TestIPv4FibCrud(VppTestCase):
         super(TestIPv4FibCrud, self).setUp()
         self.reset_packet_infos()
 
+        self.configured_routes = []
+        self.deleted_routes = []
+
     def test_1_add_routes(self):
         """ Add 1k routes
 
@@ -469,6 +474,9 @@ class TestIPv4FibCrud(VppTestCase):
 
         - delete 10 routes check with traffic script.
         """
+        # config 1M FIB entries
+        self.configured_routes.extend(self.config_fib_many_to_one(
+            "10.0.0.0", self.pg0.remote_ip4, 100))
         self.deleted_routes.extend(self.unconfig_fib_many_to_one(
             "10.0.0.10", self.pg0.remote_ip4, 10))
         for x in self.deleted_routes:
@@ -499,6 +507,14 @@ class TestIPv4FibCrud(VppTestCase):
         - re-add 5 routes check with traffic script.
         - add 100 routes check with traffic script.
         """
+        # config 1M FIB entries
+        self.configured_routes.extend(self.config_fib_many_to_one(
+            "10.0.0.0", self.pg0.remote_ip4, 100))
+        self.deleted_routes.extend(self.unconfig_fib_many_to_one(
+            "10.0.0.10", self.pg0.remote_ip4, 10))
+        for x in self.deleted_routes:
+            self.configured_routes.remove(x)
+
         tmp = self.config_fib_many_to_one(
             "10.0.0.10", self.pg0.remote_ip4, 5)
         self.configured_routes.extend(tmp)
@@ -1121,7 +1137,7 @@ class TestIPPunt(VppTestCase):
         #
         # Configure a punt redirect via pg1.
         #
-        nh_addr = VppIpAddress(self.pg1.remote_ip4).encode()
+        nh_addr = self.pg1.remote_ip4
         self.vapi.ip_punt_redirect(self.pg0.sw_if_index,
                                    self.pg1.sw_if_index,
                                    nh_addr)
@@ -1185,7 +1201,7 @@ class TestIPPunt(VppTestCase):
         #
         # Configure a punt redirects
         #
-        nh_address = VppIpAddress(self.pg3.remote_ip4).encode()
+        nh_address = self.pg3.remote_ip4
         self.vapi.ip_punt_redirect(self.pg0.sw_if_index,
                                    self.pg3.sw_if_index,
                                    nh_address)
@@ -1194,7 +1210,7 @@ class TestIPPunt(VppTestCase):
                                    nh_address)
         self.vapi.ip_punt_redirect(self.pg2.sw_if_index,
                                    self.pg3.sw_if_index,
-                                   VppIpAddress('0.0.0.0').encode())
+                                   '0.0.0.0')
 
         #
         # Dump pg0 punt redirects
@@ -1210,8 +1226,8 @@ class TestIPPunt(VppTestCase):
         self.assertEqual(len(punts), 3)
         for p in punts:
             self.assertEqual(p.punt.tx_sw_if_index, self.pg3.sw_if_index)
-        self.assertNotEqual(punts[1].punt.nh.un.ip4, self.pg3.remote_ip4)
-        self.assertEqual(punts[2].punt.nh.un.ip4.address, '\x00'*4)
+        self.assertNotEqual(punts[1].punt.nh, self.pg3.remote_ip4)
+        self.assertEqual(str(punts[2].punt.nh), '0.0.0.0')
 
 
 class TestIPDeag(VppTestCase):
@@ -1467,6 +1483,25 @@ class TestIPInput(VppTestCase):
 
         # Reset MTU for subsequent tests
         self.vapi.sw_interface_set_mtu(self.pg1.sw_if_index, [9000, 0, 0, 0])
+
+        #
+        # source address 0.0.0.0 and 25.255.255.255 and for-us
+        #
+        p_s0 = (Ether(src=self.pg0.remote_mac,
+                      dst=self.pg0.local_mac) /
+                IP(src="0.0.0.0",
+                   dst=self.pg0.local_ip4) /
+                ICMP(id=4, seq=4) /
+                Raw(load='\x0a' * 18))
+        rx = self.send_and_assert_no_replies(self.pg0, p_s0 * 17)
+
+        p_s0 = (Ether(src=self.pg0.remote_mac,
+                      dst=self.pg0.local_mac) /
+                IP(src="255.255.255.255",
+                   dst=self.pg0.local_ip4) /
+                ICMP(id=4, seq=4) /
+                Raw(load='\x0a' * 18))
+        rx = self.send_and_assert_no_replies(self.pg0, p_s0 * 17)
 
 
 class TestIPDirectedBroadcast(VppTestCase):

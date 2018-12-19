@@ -4,24 +4,21 @@ import time
 from collections import deque
 
 from six import moves
-
+from vpp_papi import mac_pton
 from hook import Hook
+from vpp_l2 import L2_PORT_TYPE
 
 # Sphinx creates auto-generated documentation by importing the python source
 # files and collecting the docstrings from them. The NO_VPP_PAPI flag allows
 # the vpp_papi_provider.py file to be importable without having to build
 # the whole vpp api if the user only wishes to generate the test documentation.
-do_import = True
-try:
-    no_vpp_papi = os.getenv("NO_VPP_PAPI")
-    if no_vpp_papi == "1":
-        do_import = False
-except:
-    pass
 
-if do_import:
+try:
     from vpp_papi import VPP
-    from vpp_l2 import L2_PORT_TYPE
+except ImportError:
+    if not os.getenv("NO_VPP_PAPI") == 1:
+        raise
+    pass
 
 # from vnet/vnet/mpls/mpls_types.h
 MPLS_IETF_MAX_LABEL = 0xfffff
@@ -213,10 +210,10 @@ class VppPapiProvider(object):
         """
         self.hook.before_cli(cli)
         cli += '\n'
-        r = self.papi.cli_inband(length=len(cli), cmd=cli)
+        r = self.papi.cli_inband(cmd=cli)
         self.hook.after_cli(cli)
         if hasattr(r, 'reply'):
-            return r.reply.decode().rstrip('\x00')
+            return r.reply
 
     def ppcli(self, cli):
         """ Helper method to print CLI command in case of info logging level.
@@ -225,9 +222,6 @@ class VppPapiProvider(object):
         :returns: CLI output
         """
         return cli + "\n" + str(self.cli(cli))
-
-    def _convert_mac(self, mac):
-        return mac.replace(':', '').decode('hex')
 
     def show_version(self):
         """ """
@@ -646,7 +640,7 @@ class VppPapiProvider(object):
             interface. (Default value = 0)
         """
         return self.api(self.papi.l2fib_add_del,
-                        {'mac': self._convert_mac(mac),
+                        {'mac': mac,
                          'bd_id': bd_id,
                          'sw_if_index': sw_if_index,
                          'is_add': is_add,
@@ -1040,7 +1034,6 @@ class VppPapiProvider(object):
         :param is_static:  (Default value = 0)
         :param is_no_adj_fib:  (Default value = 0)
         """
-
         return self.api(
             self.papi.ip_neighbor_add_del,
             {'sw_if_index': sw_if_index,
@@ -1674,6 +1667,39 @@ class VppPapiProvider(object):
              'affinity': affinity,
              'local_num': local_num,
              'locals': locals})
+
+    def nat44_lb_static_mapping_add_del_local(
+           self,
+           external_addr,
+           external_port,
+           local_addr,
+           local_port,
+           protocol,
+           probability,
+           vrf_id=0,
+           is_add=1):
+        """Add/delete NAT44 load-balancing static mapping rule backend
+
+        :param external_addr: external IPv4 address of the servic
+        :param external_port: external L4 port number of the service
+        :param local_addr: IPv4 address of the internal node
+        :param local_port: L4 port number of the internal node
+        :param protocol: IP protocol number
+        :param probability: probability of the internal node
+        :param vrf_id: VRF id of the internal node
+        :param is_add: 1 if add, 0 if delete
+        """
+        return self.api(
+            self.papi.nat44_lb_static_mapping_add_del_local,
+            {'is_add': is_add,
+             'external_addr': external_addr,
+             'external_port': external_port,
+             'local': {
+                 'addr': local_addr,
+                 'port': local_port,
+                 'probability': probability,
+                 'vrf_id': vrf_id},
+             'protocol': protocol})
 
     def nat44_lb_static_mapping_dump(self):
         """Dump NAT44 load balancing static mappings
@@ -2825,7 +2851,8 @@ class VppPapiProvider(object):
 
     def vxlan_gbp_tunnel_dump(self, sw_if_index=0xffffffff):
         return self.api(self.papi.vxlan_gbp_tunnel_dump,
-                        {'sw_if_index': sw_if_index})
+                        {'sw_if_index': sw_if_index,
+                         '_no_type_conversion': True})
 
     def pppoe_add_del_session(
             self,
@@ -3489,15 +3516,27 @@ class VppPapiProvider(object):
              'namespace_id': namespace_id,
              'namespace_id_len': len(namespace_id)})
 
-    def punt_socket_register(self, l4_port, pathname, header_version=1,
-                             is_ip4=1, l4_protocol=0x11):
-        """ Punt to socket """
+    def punt_socket_register(self, port, pathname, protocol=0x11,
+                             header_version=1, is_ip4=1):
+        """ Register punt socket """
         return self.api(self.papi.punt_socket_register,
-                        {'is_ip4': is_ip4,
-                         'l4_protocol': l4_protocol,
-                         'l4_port': l4_port,
-                         'pathname': pathname,
-                         'header_version': header_version})
+                        {'header_version': header_version,
+                         'punt': {'ipv': is_ip4,
+                                  'l4_protocol': protocol,
+                                  'l4_port': port},
+                         'pathname': pathname})
+
+    def punt_socket_deregister(self, port, protocol=0x11, is_ip4=1):
+        """ Unregister punt socket """
+        return self.api(self.papi.punt_socket_deregister,
+                        {'punt': {'ipv': is_ip4,
+                                  'l4_protocol': protocol,
+                                  'l4_port': port}})
+
+    def punt_socket_dump(self, is_ip6=1):
+        """ Dump punt socket"""
+        return self.api(self.papi.punt_socket_dump,
+                        {'is_ipv6': is_ip6})
 
     def ip_reassembly_set(self, timeout_ms, max_reassemblies,
                           expire_walk_interval_ms, is_ip6=0):
@@ -3545,7 +3584,8 @@ class VppPapiProvider(object):
 
     def gbp_endpoint_dump(self):
         """ GBP endpoint Dump """
-        return self.api(self.papi.gbp_endpoint_dump, {})
+        return self.api(self.papi.gbp_endpoint_dump,
+                        {'_no_type_conversion': True})
 
     def gbp_endpoint_group_add(self, epg, bd,
                                rd, uplink_sw_if_index):
@@ -3657,7 +3697,8 @@ class VppPapiProvider(object):
 
     def gbp_subnet_dump(self):
         """ GBP Subnet Dump """
-        return self.api(self.papi.gbp_subnet_dump, {})
+        return self.api(self.papi.gbp_subnet_dump,
+                        {'_no_type_conversion': True})
 
     def gbp_contract_add_del(self, is_add, src_epg, dst_epg, acl_index, rules):
         """ GBP contract Add/Del """
@@ -3800,10 +3841,7 @@ class VppPapiProvider(object):
                                 'sw_if_index': sw_if_index,
                                 'n_srcs': len(saddrs),
                                 'saddrs': saddrs,
-                                'gaddr':
-                                {
-                                    'address': gaddr
-                                }
+                                'gaddr':  gaddr
                             }
                         })
 
@@ -4071,10 +4109,8 @@ class VppPapiProvider(object):
         :param max_msg_size: maximum message length (Default value = 480)
         """
         return self.api(self.papi.syslog_set_sender,
-                        {'collector_address': {
-                             'address': collector},
-                         'src_address': {
-                             'address': src},
+                        {'collector_address': collector,
+                         'src_address': src,
                          'collector_port': collector_port,
                          'vrf_id': vrf_id,
                          'max_msg_size': max_msg_size})

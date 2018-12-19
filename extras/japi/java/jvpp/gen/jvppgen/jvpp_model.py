@@ -17,6 +17,8 @@ import json
 import pprint
 from collections import OrderedDict
 
+import binascii
+
 BASE_PACKAGE = "io.fd.vpp.jvpp"
 
 
@@ -90,9 +92,11 @@ class SimpleType(Type):
 
 # TODO(VPP-1187): add array host to net functions to reduce number of members and simplify JNI generation
 class Array(Type):
-    def __init__(self, base_type):
+    def __init__(self, base_type, name=None):
+        if name is None:
+            name = base_type.name + _ARRAY_SUFFIX
         super(Array, self).__init__(
-            name=base_type.name + _ARRAY_SUFFIX,
+            name=name,
             java_name=base_type.java_name + _ARRAY_SUFFIX,
             java_name_fqn=base_type.java_name_fqn + _ARRAY_SUFFIX,
             jni_signature="[%s" % base_type.jni_signature,
@@ -303,6 +307,11 @@ def is_control_ping_reply(msg):
     return msg.name == u'control_ping_reply'
 
 
+def crc(block):
+    s = str(block).encode()
+    return binascii.crc32(s) & 0xffffffff
+
+
 class JVppModel(object):
     def __init__(self, logger, json_api_files, plugin_name):
         self.logger = logger
@@ -333,8 +342,45 @@ class JVppModel(object):
 
         self._parse_types(types)
 
+    def _parse_aliases(self, types):
+
+        # model aliases
+        for alias_name in self._aliases:
+            alias = self._aliases[alias_name]
+            alias_type = {"type": "type"}
+            java_name_lower = _underscore_to_camelcase_lower(alias_name)
+            vpp_type = alias["type"]
+            crc_value = '0x%08x' % crc(alias_name)
+            if "length" in alias:
+                length = alias["length"]
+                alias_type["data"] = [
+                    alias_name,
+                    [
+                        vpp_type,
+                        java_name_lower,
+                        length
+                    ],
+                    {
+                        "crc": crc_value
+                    }
+                ]
+            else:
+                alias_type["data"] = [
+                    alias_name,
+                    [
+                        vpp_type,
+                        java_name_lower
+                    ],
+                    {
+                        "crc": crc_value
+                    }
+                ]
+
+            types[alias_name] = alias_type
+
     def _parse_types(self, types):
         self._parse_simple_types()
+        self._parse_aliases(types)
         i = 0
         while True:
             unresolved = {}
@@ -400,7 +446,10 @@ class JVppModel(object):
             'i64': SimpleType('i64', 'long', 'J', 'jlong', 'Long',
                               host_to_net_function='clib_host_to_net_i64',
                               net_to_host_function='clib_net_to_host_i64'),
-            'f64': SimpleType('f64', 'double', 'D', 'jdouble', 'Double')
+            'f64': SimpleType('f64', 'double', 'D', 'jdouble', 'Double'),
+            'string': SimpleType('string', 'String', 'l', 'jstring', 'Object',
+                                 host_to_net_function='_host_to_net_string',
+                                 net_to_host_function='_net_to_host_string')
         })
 
         for n, t in self._types_by_name.items():
@@ -484,9 +533,6 @@ class JVppModel(object):
 
     def _parse_field(self, field, fields):
         type_name = _extract_type_name(field[0])
-        if type_name in self._aliases and type_name not in self._types_by_name:
-            aliased_type = self._types_by_name.get(self._aliases.get(type_name).get("type"))
-            self._types_by_name[type_name] = aliased_type
 
         if type_name in self._types_by_name:
             if len(field) > 2:
@@ -523,6 +569,7 @@ class JVppModel(object):
             del messages[name]
 
         self.messages = self._messages_by_name.values()
+
 
 _ARRAY_SUFFIX = '[]'
 

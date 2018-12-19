@@ -246,7 +246,7 @@ tcp_connection_del (tcp_connection_t * tc)
 }
 
 tcp_connection_t *
-tcp_connection_new (u8 thread_index)
+tcp_connection_alloc (u8 thread_index)
 {
   tcp_main_t *tm = vnet_get_tcp_main ();
   tcp_connection_t *tc;
@@ -256,6 +256,15 @@ tcp_connection_new (u8 thread_index)
   tc->c_c_index = tc - tm->connections[thread_index];
   tc->c_thread_index = thread_index;
   return tc;
+}
+
+void
+tcp_connection_free (tcp_connection_t * tc)
+{
+  tcp_main_t *tm = &tcp_main;
+  pool_put (tm->connections[tc->c_thread_index], tc);
+  if (CLIB_DEBUG > 0)
+    clib_memset (tc, 0xFA, sizeof (*tc));
 }
 
 /** Notify session that connection has been reset.
@@ -281,7 +290,7 @@ tcp_connection_reset (tcp_connection_t * tc)
       tcp_connection_timers_reset (tc);
       /* Set the cleanup timer, in case the session layer/app don't
        * cleanly close the connection */
-      tcp_timer_update (tc, TCP_TIMER_WAITCLOSE, TCP_CLEANUP_TIME);
+      tcp_timer_update (tc, TCP_TIMER_WAITCLOSE, TCP_CLOSEWAIT_TIME);
       stream_session_reset_notify (&tc->connection);
       break;
     case TCP_STATE_CLOSE_WAIT:
@@ -291,11 +300,12 @@ tcp_connection_reset (tcp_connection_t * tc)
       tc->state = TCP_STATE_CLOSED;
       TCP_EVT_DBG (TCP_EVT_STATE_CHANGE, tc);
       tcp_connection_timers_reset (tc);
-      tcp_timer_update (tc, TCP_TIMER_WAITCLOSE, TCP_CLEANUP_TIME);
+      tcp_timer_update (tc, TCP_TIMER_WAITCLOSE, TCP_CLOSEWAIT_TIME);
       break;
     case TCP_STATE_CLOSED:
       return;
     }
+  tc->state = TCP_STATE_CLOSED;
 }
 
 /**
@@ -326,7 +336,7 @@ tcp_connection_close (tcp_connection_t * tc)
       tcp_connection_timers_reset (tc);
       tcp_send_fin (tc);
       tc->state = TCP_STATE_FIN_WAIT_1;
-      tcp_timer_update (tc, TCP_TIMER_WAITCLOSE, TCP_CLEANUP_TIME);
+      tcp_timer_update (tc, TCP_TIMER_WAITCLOSE, TCP_FINWAIT1_TIME);
       break;
     case TCP_STATE_ESTABLISHED:
       if (!session_tx_fifo_max_dequeue (&tc->connection))
@@ -334,6 +344,9 @@ tcp_connection_close (tcp_connection_t * tc)
       else
 	tc->flags |= TCP_CONN_FINPNDG;
       tc->state = TCP_STATE_FIN_WAIT_1;
+      /* Set a timer in case the peer stops responding. Otherwise the
+       * connection will be stuck here forever. */
+      tcp_timer_update (tc, TCP_TIMER_WAITCLOSE, TCP_FINWAIT1_TIME);
       break;
     case TCP_STATE_CLOSE_WAIT:
       if (!session_tx_fifo_max_dequeue (&tc->connection))
@@ -349,16 +362,21 @@ tcp_connection_close (tcp_connection_t * tc)
     case TCP_STATE_FIN_WAIT_1:
       tcp_timer_update (tc, TCP_TIMER_WAITCLOSE, TCP_2MSL_TIME);
       break;
+    case TCP_STATE_CLOSED:
+      tcp_connection_timers_reset (tc);
+      break;
     default:
       TCP_DBG ("state: %u", tc->state);
     }
 
   TCP_EVT_DBG (TCP_EVT_STATE_CHANGE, tc);
 
-  /* If in CLOSED and WAITCLOSE timer is not set, delete connection now */
+  /* If in CLOSED and WAITCLOSE timer is not set, delete connection.
+   * But instead of doing it now wait until next dispatch cycle to give
+   * the session layer a chance to clear unhandled events */
   if (!tcp_timer_is_active (tc, TCP_TIMER_WAITCLOSE)
       && tc->state == TCP_STATE_CLOSED)
-    tcp_connection_del (tc);
+    tcp_timer_update (tc, TCP_TIMER_WAITCLOSE, TCP_CLEANUP_TIME);
 }
 
 static void
@@ -553,6 +571,7 @@ tcp_init_snd_vars (tcp_connection_t * tc)
   tc->snd_una = tc->iss;
   tc->snd_nxt = tc->iss + 1;
   tc->snd_una_max = tc->snd_nxt;
+  tc->srtt = 0;
 }
 
 void
@@ -1052,7 +1071,8 @@ tcp_snd_space_inline (tcp_connection_t * tc)
 {
   int snd_space, snt_limited;
 
-  if (PREDICT_FALSE (tcp_in_fastrecovery (tc)))
+  if (PREDICT_FALSE (tcp_in_fastrecovery (tc)
+		     || tc->state == TCP_STATE_CLOSED))
     return 0;
 
   snd_space = tcp_available_output_snd_space (tc);
@@ -1117,6 +1137,16 @@ tcp_session_push_header (transport_connection_t * tconn, vlib_buffer_t * b)
   return tcp_push_header (tc, b);
 }
 
+static void
+tcp_session_flush_data (transport_connection_t * tconn)
+{
+  tcp_connection_t *tc = (tcp_connection_t *) tconn;
+  if (tc->flags & TCP_CONN_PSH_PENDING)
+    return;
+  tc->flags |= TCP_CONN_PSH_PENDING;
+  tc->psh_seq = tc->snd_una_max + transport_max_tx_dequeue (tconn) - 1;
+}
+
 /* *INDENT-OFF* */
 const static transport_proto_vft_t tcp_proto = {
   .enable = vnet_tcp_enable_disable,
@@ -1133,6 +1163,7 @@ const static transport_proto_vft_t tcp_proto = {
   .send_space = tcp_session_send_space,
   .update_time = tcp_update_time,
   .tx_fifo_offset = tcp_session_tx_fifo_offset,
+  .flush_data = tcp_session_flush_data,
   .format_connection = format_tcp_session,
   .format_listener = format_tcp_listener_session,
   .format_half_open = format_tcp_half_open_session,
@@ -1223,11 +1254,6 @@ tcp_timer_waitclose_handler (u32 conn_index)
    * and switch to LAST_ACK. */
   if (tc->state == TCP_STATE_CLOSE_WAIT)
     {
-      if (tc->flags & TCP_CONN_FINSNT)
-	{
-	  clib_warning ("FIN was sent and still in CLOSE WAIT. Weird!");
-	}
-
       /* Make sure we don't try to send unsent data */
       tcp_connection_timers_reset (tc);
       tcp_cong_recovery_off (tc);
@@ -1239,6 +1265,13 @@ tcp_timer_waitclose_handler (u32 conn_index)
       tcp_timer_set (tc, TCP_TIMER_WAITCLOSE, TCP_2MSL_TIME);
 
       /* Don't delete the connection yet */
+      return;
+    }
+  else if (tc->state == TCP_STATE_FIN_WAIT_1)
+    {
+      /* Wait for session layer to clean up tx events */
+      tc->state = TCP_STATE_CLOSED;
+      tcp_timer_set (tc, TCP_TIMER_WAITCLOSE, TCP_CLEANUP_TIME);
       return;
     }
 

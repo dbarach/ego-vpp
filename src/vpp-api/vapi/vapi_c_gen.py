@@ -10,7 +10,7 @@ from vapi_json_parser import Field, Struct, Enum, Union, Message, JsonParser,\
 
 class CField(Field):
     def get_c_name(self):
-        return self.name
+        return "vapi_type_%s" % self.name
 
     def get_c_def(self):
         if self.len is not None:
@@ -100,16 +100,15 @@ class CField(Field):
 
 class CAlias(CField):
     def get_c_name(self):
-        return self.name
+        return "vapi_type_%s" % self.name
 
     def get_c_def(self):
-        return "typedef %s" % super(CAlias, self).get_c_def()
-        # if self.len is not None:
-        #     return "typedef %s %s[%d];" % (self.type.get_c_name(), self.name, self.len)
-        # else:
-        #     return "typedef %s %s;" % (self.type.get_c_name(), self.name)
-
-    # def needs_byte_swap
+        if self.len is not None:
+            return "typedef %s vapi_type_%s[%d];" % (
+                self.type.get_c_name(), self.name, self.len)
+        else:
+            return "typedef %s vapi_type_%s;" % (
+                self.type.get_c_name(), self.name)
 
 
 class CStruct(Struct):

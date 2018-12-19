@@ -64,11 +64,9 @@ session_mq_accepted_reply_handler (void *data)
   else
     {
       s = session_get_from_handle_if_valid (mp->handle);
-      if (!s)
-	{
-	  clib_warning ("session doesn't exist");
-	  return;
-	}
+      /* Closed while waiting for app to reply */
+      if (!s || s->session_state > SESSION_STATE_READY)
+	return;
       app_wrk = app_worker_get (s->app_wrk_index);
       if (app_wrk->app_index != mp->context)
 	{
@@ -84,6 +82,7 @@ session_mq_accepted_reply_handler (void *data)
 static void
 session_mq_reset_reply_handler (void *data)
 {
+  vnet_disconnect_args_t _a = { 0 }, *a = &_a;
   session_reset_reply_msg_t *mp;
   app_worker_t *app_wrk;
   stream_session_t *s;
@@ -91,17 +90,17 @@ session_mq_reset_reply_handler (void *data)
   u32 index, thread_index;
 
   mp = (session_reset_reply_msg_t *) data;
-  app = application_lookup (mp->client_index);
+  app = application_lookup (mp->context);
   if (!app)
     return;
 
   session_parse_handle (mp->handle, &index, &thread_index);
   s = session_get_if_valid (index, thread_index);
-  if (!s)
-    {
-      SESSION_DBG ("Invalid session!");
-      return;
-    }
+
+  /* Session was already closed or already cleaned up */
+  if (!s || s->session_state != SESSION_STATE_TRANSPORT_CLOSING)
+    return;
+
   app_wrk = app_worker_get (s->app_wrk_index);
   if (!app_wrk || app_wrk->app_index != app->app_index)
     {
@@ -119,7 +118,9 @@ session_mq_reset_reply_handler (void *data)
 
   /* This comes as a response to a reset, transport only waiting for
    * confirmation to remove connection state, no need to disconnect */
-  stream_session_cleanup (s);
+  a->handle = mp->handle;
+  a->app_index = app->app_index;
+  vnet_disconnect_session (a);
 }
 
 static void
@@ -569,9 +570,17 @@ session_tx_fifo_read_and_snd_i (vlib_main_t * vm, vlib_node_runtime_t * node,
   ctx->transport_vft = transport_protocol_get_vft (tp);
   ctx->tc = session_tx_get_transport (ctx, peek_data);
   ctx->snd_mss = ctx->transport_vft->send_mss (ctx->tc);
-  ctx->snd_space =
-    transport_connection_snd_space (ctx->tc, vm->clib_time.last_cpu_time,
-				    ctx->snd_mss);
+
+  if (PREDICT_FALSE (e->event_type == SESSION_IO_EVT_TX_FLUSH))
+    {
+      if (ctx->transport_vft->flush_data)
+	ctx->transport_vft->flush_data (ctx->tc);
+    }
+
+  ctx->snd_space = transport_connection_snd_space (ctx->tc,
+						   vm->
+						   clib_time.last_cpu_time,
+						   ctx->snd_mss);
   if (ctx->snd_space == 0 || ctx->snd_mss == 0)
     {
       vec_add1 (wrk->pending_event_vector, *e);
@@ -800,6 +809,9 @@ session_queue_node_fn (vlib_main_t * vm, vlib_node_runtime_t * node,
 	{
 	  vec_add2 (fifo_events, e, 1);
 	  svm_msg_q_sub_w_lock (mq, msg);
+	  /* Works because reply messages are smaller than a session evt.
+	   * If we ever need to support bigger messages this needs to be
+	   * fixed */
 	  clib_memcpy_fast (e, svm_msg_q_msg_data (mq, msg), sizeof (*e));
 	  svm_msg_q_free_msg (mq, msg);
 	}
@@ -825,6 +837,7 @@ session_queue_node_fn (vlib_main_t * vm, vlib_node_runtime_t * node,
       e = &fifo_events[i];
       switch (e->event_type)
 	{
+	case SESSION_IO_EVT_TX_FLUSH:
 	case FIFO_EVENT_APP_TX:
 	  /* Don't try to send more that one frame per dispatch cycle */
 	  if (n_tx_packets == VLIB_FRAME_SIZE)
@@ -861,18 +874,19 @@ session_queue_node_fn (vlib_main_t * vm, vlib_node_runtime_t * node,
 	    }
 	  break;
 	case FIFO_EVENT_DISCONNECT:
-	  /* Make sure stream disconnects run after the pending list is
-	   * drained */
-	  s = session_get_from_handle (e->session_handle);
-	  if (!e->postponed)
+	  s = session_get_from_handle_if_valid (e->session_handle);
+	  if (PREDICT_FALSE (!s))
+	    break;
+
+	  /* Make sure session disconnects run after the pending list is
+	   * drained, i.e., postpone if the first time. If not the first
+	   * and the tx queue is still not empty, try to wait for some
+	   * dispatch cycles */
+	  if (!e->postponed
+	      || (e->postponed < 200
+		  && svm_fifo_max_dequeue (s->server_tx_fifo)))
 	    {
-	      e->postponed = 1;
-	      vec_add1 (wrk->pending_disconnects, *e);
-	      continue;
-	    }
-	  /* If tx queue is still not empty, wait */
-	  if (svm_fifo_max_dequeue (s->server_tx_fifo))
-	    {
+	      e->postponed += 1;
 	      vec_add1 (wrk->pending_disconnects, *e);
 	      continue;
 	    }

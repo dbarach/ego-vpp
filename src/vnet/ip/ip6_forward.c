@@ -393,13 +393,13 @@ VNET_FEATURE_INIT (ip6_policer_classify, static) =
 {
   .arc_name = "ip6-unicast",
   .node_name = "ip6-policer-classify",
-  .runs_before = VNET_FEATURES ("ipsec6-input"),
+  .runs_before = VNET_FEATURES ("ipsec6-input-feature"),
 };
 
 VNET_FEATURE_INIT (ip6_ipsec, static) =
 {
   .arc_name = "ip6-unicast",
-  .node_name = "ipsec6-input",
+  .node_name = "ipsec6-input-feature",
   .runs_before = VNET_FEATURES ("l2tp-decap"),
 };
 
@@ -477,12 +477,12 @@ VNET_FEATURE_ARC_INIT (ip6_output, static) =
 VNET_FEATURE_INIT (ip6_outacl, static) = {
   .arc_name = "ip6-output",
   .node_name = "ip6-outacl",
-  .runs_before = VNET_FEATURES ("ipsec6-output"),
+  .runs_before = VNET_FEATURES ("ipsec6-output-feature"),
 };
 
 VNET_FEATURE_INIT (ip6_ipsec_output, static) = {
   .arc_name = "ip6-output",
-  .node_name = "ipsec6-output",
+  .node_name = "ipsec6-output-feature",
   .runs_before = VNET_FEATURES ("interface-output"),
 };
 
@@ -2658,11 +2658,14 @@ ip6_lookup_init (vlib_main_t * vm)
   if (im->lookup_table_size == 0)
     im->lookup_table_size = IP6_FIB_DEFAULT_HASH_MEMORY_SIZE;
 
-  BV (clib_bihash_init) (&(im->ip6_table[IP6_FIB_TABLE_FWDING].ip6_hash),
+  clib_bihash_init_24_8 (&(im->ip6_table[IP6_FIB_TABLE_FWDING].ip6_hash),
 			 "ip6 FIB fwding table",
 			 im->lookup_table_nbuckets, im->lookup_table_size);
-  BV (clib_bihash_init) (&im->ip6_table[IP6_FIB_TABLE_NON_FWDING].ip6_hash,
+  clib_bihash_init_24_8 (&im->ip6_table[IP6_FIB_TABLE_NON_FWDING].ip6_hash,
 			 "ip6 FIB non-fwding table",
+			 im->lookup_table_nbuckets, im->lookup_table_size);
+  clib_bihash_init_40_8 (&im->ip6_mtable.ip6_mhash,
+			 "ip6 mFIB table",
 			 im->lookup_table_nbuckets, im->lookup_table_size);
 
   /* Create FIB with index 0 and table id of 0. */

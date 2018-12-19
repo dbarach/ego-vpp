@@ -12,6 +12,7 @@ import faulthandler
 import random
 import copy
 import psutil
+import platform
 from collections import deque
 from threading import Thread, Event
 from inspect import getdoc, isclass
@@ -31,6 +32,7 @@ from util import ppp, is_core_present
 from scapy.layers.inet import IPerror, TCPerror, UDPerror, ICMPerror
 from scapy.layers.inet6 import ICMPv6DestUnreach, ICMPv6EchoRequest
 from scapy.layers.inet6 import ICMPv6EchoReply
+
 if os.name == 'posix' and sys.version_info[0] < 3:
     # using subprocess32 is recommended by python official documentation
     # @ https://docs.python.org/2/library/subprocess.html
@@ -38,19 +40,16 @@ if os.name == 'posix' and sys.version_info[0] < 3:
 else:
     import subprocess
 
-
 PASS = 0
 FAIL = 1
 ERROR = 2
 SKIP = 3
 TEST_RUN = 4
 
-
 debug_framework = False
 if os.getenv('TEST_DEBUG', "0") == "1":
     debug_framework = True
     import debug_internal
-
 
 """
   Test framework module.
@@ -119,7 +118,7 @@ def pump_output(testclass):
                 split = read.splitlines(True)
                 if len(stderr_fragment) > 0:
                     split[0] = "%s%s" % (stderr_fragment, split[0])
-                if len(split) > 0 and split[-1].endswith("\n"):
+                if len(split) > 0 and split[-1].endswith(b"\n"):
                     limit = None
                 else:
                     limit = -1
@@ -129,8 +128,16 @@ def pump_output(testclass):
                     for line in split[:limit]:
                         testclass.logger.debug(
                             "VPP STDERR: %s" % line.rstrip("\n"))
-        # ignoring the dummy pipe here intentionally - the flag will take care
-        # of properly terminating the loop
+                        # ignoring the dummy pipe here intentionally - the
+                        # flag will take care of properly terminating the loop
+
+
+def is_skip_aarch64_set():
+    return os.getenv('SKIP_AARCH64', 'n').lower() in ('yes', 'y', '1')
+
+
+def is_platform_aarch64():
+    return platform.machine() == 'aarch64'
 
 
 def running_extended_tests():
@@ -183,6 +190,9 @@ class VppTestCase(unittest.TestCase):
     """This subclass is a base class for VPP test cases that are implemented as
     classes. It provides methods to create and run test case.
     """
+
+    extra_vpp_punt_config = []
+    extra_vpp_plugin_config = []
 
     @property
     def packet_infos(self):
@@ -298,7 +308,9 @@ class VppTestCase(unittest.TestCase):
                            "{", "socket-name", cls.stats_sock, "}", "plugins",
                            "{", "plugin", "dpdk_plugin.so", "{", "disable",
                            "}", "plugin", "unittest_plugin.so", "{", "enable",
-                           "}", "}", ]
+                           "}"] + cls.extra_vpp_plugin_config + ["}", ]
+        if cls.extra_vpp_punt_config is not None:
+            cls.vpp_cmdline.extend(cls.extra_vpp_punt_config)
         if plugin_path is not None:
             cls.vpp_cmdline.extend(["plugin_path", plugin_path])
         cls.logger.info("vpp_cmdline args: %s" % cls.vpp_cmdline)
@@ -474,7 +486,7 @@ class VppTestCase(unittest.TestCase):
         if hasattr(cls, 'pump_thread_stop_flag'):
             cls.pump_thread_stop_flag.set()
         if hasattr(cls, 'pump_thread_wakeup_pipe'):
-            os.write(cls.pump_thread_wakeup_pipe[1], 'ding dong wake up')
+            os.write(cls.pump_thread_wakeup_pipe[1], b'ding dong wake up')
         if hasattr(cls, 'pump_thread'):
             cls.logger.debug("Waiting for pump thread to stop")
             cls.pump_thread.join()
@@ -515,7 +527,7 @@ class VppTestCase(unittest.TestCase):
             stderr_log(single_line_delim)
             stderr_log('VPP output to stderr while running %s:', cls.__name__)
             stderr_log(single_line_delim)
-            vpp_output = "".join(cls.vpp_stderr_deque)
+            vpp_output = "".join(str(cls.vpp_stderr_deque))
             with open(cls.tempdir + '/vpp_stderr.txt', 'w') as f:
                 f.write(vpp_output)
             stderr_log('\n%s', vpp_output)
@@ -831,8 +843,8 @@ class VppTestCase(unittest.TestCase):
                 for cf in checksum_fields:
                     if hasattr(layer, cf):
                         if ignore_zero_udp_checksums and \
-                                0 == getattr(layer, cf) and \
-                                layer.name in udp_layers:
+                                        0 == getattr(layer, cf) and \
+                                        layer.name in udp_layers:
                             continue
                         delattr(layer, cf)
                         checksums.append((counter, cf))
@@ -905,31 +917,34 @@ class VppTestCase(unittest.TestCase):
             self.assert_checksum_valid(pkt, 'ICMPv6EchoReply', 'cksum')
 
     def assert_packet_counter_equal(self, counter, expected_value):
-        counters = self.vapi.cli("sh errors").split('\n')
-        counter_value = -1
-        for i in range(1, len(counters)-1):
-            results = counters[i].split()
-            if results[1] == counter:
-                counter_value = int(results[0])
-                break
-        self.assert_equal(counter_value, expected_value,
-                          "packet counter `%s'" % counter)
+        if counter.startswith("/"):
+            counter_value = self.statistics.get_counter(counter)
+            self.assert_equal(counter_value, expected_value,
+                              "packet counter `%s'" % counter)
+        else:
+            counters = self.vapi.cli("sh errors").split('\n')
+            counter_value = -1
+            for i in range(1, len(counters) - 1):
+                results = counters[i].split()
+                if results[1] == counter:
+                    counter_value = int(results[0])
+                    break
 
     @classmethod
     def sleep(cls, timeout, remark=None):
         if hasattr(cls, 'logger'):
-            cls.logger.debug("Starting sleep for %ss (%s)" % (timeout, remark))
+            cls.logger.debug("Starting sleep for %es (%s)", timeout, remark)
         before = time.time()
         time.sleep(timeout)
         after = time.time()
-        if after - before > 2 * timeout:
+        if hasattr(cls, 'logger') and after - before > 2 * timeout:
             cls.logger.error("unexpected time.sleep() result - "
-                             "slept for %ss instead of ~%ss!" % (
-                                 after - before, timeout))
+                             "slept for %es instead of ~%es!",
+                             after - before, timeout)
         if hasattr(cls, 'logger'):
             cls.logger.debug(
-                "Finished sleep (%s) - slept %ss (wanted %ss)" % (
-                    remark, after - before, timeout))
+                "Finished sleep (%s) - slept %es (wanted %es)",
+                remark, after - before, timeout)
 
     def send_and_assert_no_replies(self, intf, pkts, remark="", timeout=None):
         self.vapi.cli("clear trace")
@@ -1249,6 +1264,7 @@ class VppTestRunner(unittest.TextTestRunner):
     """
     A basic test runner implementation which prints results to standard error.
     """
+
     @property
     def resultclass(self):
         """Class maintaining the results of the tests"""
@@ -1257,7 +1273,6 @@ class VppTestRunner(unittest.TextTestRunner):
     def __init__(self, keep_alive_pipe=None, descriptions=True, verbosity=1,
                  result_pipe=None, failfast=False, buffer=False,
                  resultclass=None, print_summary=True):
-
         # ignore stream setting here, use hard-coded stdout to be in sync
         # with prints from VppTestCase methods ...
         super(VppTestRunner, self).__init__(sys.stdout, descriptions,
