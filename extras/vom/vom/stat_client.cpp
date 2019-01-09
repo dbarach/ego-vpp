@@ -17,29 +17,22 @@
 
 namespace VOM {
 
-stat_client::stat_data_t::stat_data_t()
-  : m_name("")
-  , m_type(STAT_DIR_TYPE_ILLEGAL)
-{
-}
-
-stat_client::stat_data_t::stat_data_t(stat_segment_data_t* stat_seg_data)
-  : m_name(stat_seg_data->name)
-  , m_type(stat_seg_data->type)
+stat_client::stat_data_t::stat_data_t(const stat_segment_data_t& stat_seg_data)
+  : m_name(stat_seg_data.name)
+  , m_type(stat_seg_data.type)
 {
   switch (m_type) {
     case STAT_DIR_TYPE_SCALAR_INDEX:
-      m_scalar_value = stat_seg_data->scalar_value;
+      m_scalar_value = stat_seg_data.scalar_value;
       break;
     case STAT_DIR_TYPE_COUNTER_VECTOR_SIMPLE:
-      m_simple_counter_vec = stat_seg_data->simple_counter_vec;
+      m_simple_counter_vec = stat_seg_data.simple_counter_vec;
       break;
     case STAT_DIR_TYPE_COUNTER_VECTOR_COMBINED:
-      m_combined_counter_vec =
-        reinterpret_cast<counter_t**>(stat_seg_data->combined_counter_vec);
+      m_combined_counter_vec = stat_seg_data.combined_counter_vec;
       break;
     case STAT_DIR_TYPE_ERROR_INDEX:
-      m_error_Value = stat_seg_data->error_value;
+      m_error_value = stat_seg_data.error_value;
       break;
     case STAT_DIR_TYPE_ILLEGAL:
       break;
@@ -59,22 +52,25 @@ stat_client::stat_data_t::type() const
 }
 
 double
-stat_client::stat_data_t::get_stat_segment_scalar_data()
+stat_client::stat_data_t::get_stat_segment_scalar_data() const
 {
   return m_scalar_value;
 }
+
 uint64_t
-stat_client::stat_data_t::get_stat_segment_error_data()
+stat_client::stat_data_t::get_stat_segment_error_data() const
 {
-  return m_error_Value;
+  return m_error_value;
 }
+
 uint64_t**
-stat_client::stat_data_t::get_stat_segment_simple_counter_data()
+stat_client::stat_data_t::get_stat_segment_simple_counter_data() const
 {
   return m_simple_counter_vec;
 }
-counter_t**
-stat_client::stat_data_t::get_stat_segment_combined_counter_data()
+
+vlib_counter_t**
+stat_client::stat_data_t::get_stat_segment_combined_counter_data() const
 {
   return m_combined_counter_vec;
 }
@@ -82,7 +78,10 @@ stat_client::stat_data_t::get_stat_segment_combined_counter_data()
 stat_client::stat_client(std::string& socket_name)
   : m_socket_name(socket_name)
   , m_patterns()
-  , m_stat_connect(0)
+  , m_stat_connect(false)
+  , m_counter_vec()
+  , m_stat_seg_data(nullptr)
+  , m_stat_data()
 {
   m_patterns.push_back("/if");
 }
@@ -90,7 +89,10 @@ stat_client::stat_client(std::string& socket_name)
 stat_client::stat_client(std::vector<std::string>& pattern)
   : m_socket_name("/run/vpp/stats.sock")
   , m_patterns(pattern)
-  , m_stat_connect(0)
+  , m_stat_connect(false)
+  , m_counter_vec()
+  , m_stat_seg_data(nullptr)
+  , m_stat_data()
 {
 }
 
@@ -98,14 +100,20 @@ stat_client::stat_client(std::string socket_name,
                          std::vector<std::string> patterns)
   : m_socket_name(socket_name)
   , m_patterns(patterns)
-  , m_stat_connect(0)
+  , m_stat_connect(false)
+  , m_counter_vec()
+  , m_stat_seg_data(nullptr)
+  , m_stat_data()
 {
 }
 
 stat_client::stat_client()
   : m_socket_name("/run/vpp/stats.sock")
   , m_patterns()
-  , m_stat_connect(0)
+  , m_stat_connect(false)
+  , m_counter_vec()
+  , m_stat_seg_data(nullptr)
+  , m_stat_data()
 {
   m_patterns.push_back("/if");
 }
@@ -127,8 +135,10 @@ stat_client::stat_client(const stat_client& o)
 int
 stat_client::connect()
 {
-  if (stat_segment_connect(m_socket_name.c_str()) == 0)
-    m_stat_connect = 1;
+  if (stat_segment_connect(m_socket_name.c_str()) == 0) {
+    m_stat_connect = true;
+    ls();
+  }
   return m_stat_connect;
 }
 
@@ -137,6 +147,7 @@ stat_client::disconnect()
 {
   if (m_stat_connect)
     stat_segment_disconnect();
+  m_stat_connect = false;
 }
 
 int
@@ -165,20 +176,21 @@ stat_client::ls()
 const stat_client::stat_data_vec_t&
 stat_client::dump()
 {
-  stat_segment_data_t* ssd;
   stat_segment_data_free(m_stat_seg_data);
+  m_stat_seg_data = NULL;
   if (m_stat_data.size()) {
     m_stat_data.clear();
   }
-  ssd = stat_segment_dump(m_counter_vec);
-  if (!ssd) {
-    ls();
-    return m_stat_data;
-  }
-  m_stat_seg_data = ssd;
-  for (int i = 0; i < stat_segment_vec_len(ssd); i++) {
-    stat_data_t sd(&ssd[i]);
-    m_stat_data.push_back(sd);
+  if (m_stat_connect) {
+    m_stat_seg_data = stat_segment_dump(m_counter_vec);
+    if (!m_stat_seg_data) {
+      ls();
+      return m_stat_data;
+    }
+    for (int i = 0; i < stat_segment_vec_len(m_stat_seg_data); i++) {
+      stat_data_t sd(m_stat_seg_data[i]);
+      m_stat_data.push_back(sd);
+    }
   }
   return m_stat_data;
 }
@@ -186,20 +198,21 @@ stat_client::dump()
 const stat_client::stat_data_vec_t&
 stat_client::dump_entry(uint32_t index)
 {
-  stat_segment_data_t* ssd;
   stat_segment_data_free(m_stat_seg_data);
+  m_stat_seg_data = NULL;
   if (m_stat_data.size()) {
     m_stat_data.clear();
   }
-  ssd = stat_segment_dump_entry(index);
-  if (!ssd) {
-    ls();
-    return m_stat_data;
-  }
-  m_stat_seg_data = ssd;
-  for (int i = 0; i < stat_segment_vec_len(ssd); i++) {
-    stat_data_t sd(&ssd[i]);
-    m_stat_data.push_back(sd);
+  if (m_stat_connect) {
+    m_stat_seg_data = stat_segment_dump_entry(index);
+    if (!m_stat_seg_data) {
+      ls();
+      return m_stat_data;
+    }
+    for (int i = 0; i < stat_segment_vec_len(m_stat_seg_data); i++) {
+      stat_data_t sd(m_stat_seg_data[i]);
+      m_stat_data.push_back(sd);
+    }
   }
   return m_stat_data;
 }

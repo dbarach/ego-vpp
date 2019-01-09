@@ -49,7 +49,10 @@ typedef enum
   SESSION_CTRL_EVT_DISCONNECTED,
   SESSION_CTRL_EVT_DISCONNECTED_REPLY,
   SESSION_CTRL_EVT_RESET,
-  SESSION_CTRL_EVT_RESET_REPLY
+  SESSION_CTRL_EVT_RESET_REPLY,
+  SESSION_CTRL_EVT_REQ_WORKER_UPDATE,
+  SESSION_CTRL_EVT_WORKER_UPDATE,
+  SESSION_CTRL_EVT_WORKER_UPDATE_REPLY,
 } session_evt_type_t;
 
 static inline const char *
@@ -611,17 +614,18 @@ void stream_session_init_fifos_pointers (transport_connection_t * tc,
 					 u32 rx_pointer, u32 tx_pointer);
 
 int stream_session_accept_notify (transport_connection_t * tc);
-void stream_session_disconnect_notify (transport_connection_t * tc);
-void stream_session_delete_notify (transport_connection_t * tc);
-void stream_session_reset_notify (transport_connection_t * tc);
+void session_transport_closing_notify (transport_connection_t * tc);
+void session_transport_delete_notify (transport_connection_t * tc);
+void session_transport_closed_notify (transport_connection_t * tc);
+void session_transport_reset_notify (transport_connection_t * tc);
 int stream_session_accept (transport_connection_t * tc, u32 listener_index,
 			   u8 notify);
 int session_open (u32 app_index, session_endpoint_t * tep, u32 opaque);
 int session_listen (stream_session_t * s, session_endpoint_cfg_t * sep);
 int session_stop_listen (stream_session_t * s);
-void stream_session_disconnect (stream_session_t * s);
-void stream_session_disconnect_transport (stream_session_t * s);
-void stream_session_cleanup (stream_session_t * s);
+void session_close (stream_session_t * s);
+void session_transport_close (stream_session_t * s);
+void session_transport_cleanup (stream_session_t * s);
 int session_send_io_evt_to_thread (svm_fifo_t * f,
 				   session_evt_type_t evt_type);
 int session_send_io_evt_to_thread_custom (void *data, u32 thread_index,

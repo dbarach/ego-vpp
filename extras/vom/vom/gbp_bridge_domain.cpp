@@ -136,12 +136,9 @@ void
 gbp_bridge_domain::replay()
 {
   if (rc_t::OK == m_id.rc()) {
-    if (m_bvi && m_uu_fwd)
-      HW::enqueue(new gbp_bridge_domain_cmds::create_cmd(m_id, m_bvi->handle(),
-                                                         m_uu_fwd->handle()));
-    else
-      HW::enqueue(new gbp_bridge_domain_cmds::create_cmd(
-        m_id, handle_t::INVALID, handle_t::INVALID));
+    HW::enqueue(new gbp_bridge_domain_cmds::create_cmd(
+      m_id, (m_bvi ? m_bvi->handle() : handle_t::INVALID),
+      (m_uu_fwd ? m_uu_fwd->handle() : handle_t::INVALID)));
   }
 }
 
@@ -182,12 +179,9 @@ gbp_bridge_domain::update(const gbp_bridge_domain& desired)
    * the desired state is always that the interface should be created
    */
   if (rc_t::OK != m_id.rc()) {
-    if (m_bvi && m_uu_fwd)
-      HW::enqueue(new gbp_bridge_domain_cmds::create_cmd(m_id, m_bvi->handle(),
-                                                         m_uu_fwd->handle()));
-    else
-      HW::enqueue(new gbp_bridge_domain_cmds::create_cmd(
-        m_id, handle_t::INVALID, handle_t::INVALID));
+    HW::enqueue(new gbp_bridge_domain_cmds::create_cmd(
+      m_id, (m_bvi ? m_bvi->handle() : handle_t::INVALID),
+      (m_uu_fwd ? m_uu_fwd->handle() : handle_t::INVALID)));
   }
 }
 
@@ -213,7 +207,7 @@ void
 gbp_bridge_domain::event_handler::handle_populate(const client_db::key_t& key)
 {
   /*
-   * dump VPP Bridge domains
+   * dump GBP Bridge domains
    */
   std::shared_ptr<gbp_bridge_domain_cmds::dump_cmd> cmd =
     std::make_shared<gbp_bridge_domain_cmds::dump_cmd>();
@@ -237,6 +231,10 @@ gbp_bridge_domain::event_handler::handle_populate(const client_db::key_t& key)
       gbp_bridge_domain bd(payload.bd.bd_id, *bvi);
       OM::commit(key, bd);
       VOM_LOG(log_level_t::DEBUG) << "dump: " << bd.to_string();
+    } else {
+      VOM_LOG(log_level_t::ERROR)
+        << "no BVI:" << payload.bd.bvi_sw_if_index
+        << " nor uu-fwd:" << payload.bd.uu_fwd_sw_if_index;
     }
   }
 }
@@ -256,7 +254,7 @@ gbp_bridge_domain::event_handler::handle_replay()
 dependency_t
 gbp_bridge_domain::event_handler::order() const
 {
-  return (dependency_t::TABLE);
+  return (dependency_t::VIRTUAL_TABLE);
 }
 
 void

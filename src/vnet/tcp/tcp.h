@@ -74,7 +74,8 @@ format_function_t format_tcp_rcv_sacks;
   _(KEEP, "KEEP")                       \
   _(WAITCLOSE, "WAIT CLOSE")            \
   _(RETRANSMIT_SYN, "RETRANSMIT SYN")   \
-  _(ESTABLISH, "ESTABLISH")
+  _(ESTABLISH, "ESTABLISH")		\
+  _(ESTABLISH_AO, "ESTABLISH_AO")	\
 
 typedef enum _tcp_timers
 {
@@ -436,6 +437,12 @@ typedef struct tcp_worker_ctx_
 
 } tcp_worker_ctx_t;
 
+typedef struct tcp_iss_seed_
+{
+  u64 first;
+  u64 second;
+} tcp_iss_seed_t;
+
 typedef struct _tcp_main
 {
   /* Per-worker thread tcp connection pools */
@@ -462,6 +469,9 @@ typedef struct _tcp_main
 
   /** vlib buffer size */
   u32 bytes_per_buffer;
+
+  /* Seed used to generate random iss */
+  tcp_iss_seed_t iss_seed;
 
   /*
    * Configuration
@@ -560,6 +570,13 @@ always_inline tcp_connection_t *
 tcp_get_connection_from_transport (transport_connection_t * tconn)
 {
   return (tcp_connection_t *) tconn;
+}
+
+always_inline void
+tcp_connection_set_state (tcp_connection_t * tc, tcp_state_t state)
+{
+  tc->state = state;
+  TCP_EVT_DBG (TCP_EVT_STATE_CHANGE, tc);
 }
 
 void tcp_connection_close (tcp_connection_t * tc);

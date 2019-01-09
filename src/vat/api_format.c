@@ -91,9 +91,15 @@ vl (void *p)
 int
 vat_socket_connect (vat_main_t * vam)
 {
+  int rv;
   vam->socket_client_main = &socket_client_main;
-  return vl_socket_client_connect ((char *) vam->socket_name, "vpp_api_test",
-				   0 /* default socket rx, tx buffer */ );
+  if ((rv = vl_socket_client_connect ((char *) vam->socket_name,
+				      "vpp_api_test",
+				      0 /* default socket rx, tx buffer */ )))
+    return rv;
+  /* vpp expects the client index in network order */
+  vam->my_client_index = htonl (socket_client_main.client_index);
+  return 0;
 }
 #else /* vpp built-in case, we don't do sockets... */
 int
@@ -5253,6 +5259,7 @@ _(ikev2_initiate_del_child_sa_reply)                    \
 _(ikev2_initiate_rekey_child_sa_reply)                  \
 _(delete_loopback_reply)                                \
 _(bd_ip_mac_add_del_reply)                              \
+_(bd_ip_mac_flush_reply)                                \
 _(want_interface_events_reply)                          \
 _(cop_interface_enable_disable_reply)			\
 _(cop_whitelist_enable_disable_reply)                   \
@@ -5509,6 +5516,7 @@ _(IKEV2_INITIATE_DEL_CHILD_SA_REPLY, ikev2_initiate_del_child_sa_reply) \
 _(IKEV2_INITIATE_REKEY_CHILD_SA_REPLY, ikev2_initiate_rekey_child_sa_reply) \
 _(DELETE_LOOPBACK_REPLY, delete_loopback_reply)                         \
 _(BD_IP_MAC_ADD_DEL_REPLY, bd_ip_mac_add_del_reply)                     \
+_(BD_IP_MAC_FLUSH_REPLY, bd_ip_mac_flush_reply)                         \
 _(BD_IP_MAC_DETAILS, bd_ip_mac_details)                                 \
 _(DHCP_COMPL_EVENT, dhcp_compl_event)                                   \
 _(WANT_INTERFACE_EVENTS_REPLY, want_interface_events_reply)             \
@@ -7373,6 +7381,40 @@ api_bd_ip_mac_add_del (vat_main_t * vam)
 
   clib_memcpy (&mp->ip, &ip, sizeof (ip));
   clib_memcpy (&mp->mac, &mac, sizeof (mac));
+
+  S (mp);
+  W (ret);
+  return ret;
+}
+
+static int
+api_bd_ip_mac_flush (vat_main_t * vam)
+{
+  unformat_input_t *i = vam->input;
+  vl_api_bd_ip_mac_flush_t *mp;
+  u32 bd_id;
+  u8 bd_id_set = 0;
+  int ret;
+
+  while (unformat_check_input (i) != UNFORMAT_END_OF_INPUT)
+    {
+      if (unformat (i, "bd_id %d", &bd_id))
+	{
+	  bd_id_set++;
+	}
+      else
+	break;
+    }
+
+  if (bd_id_set == 0)
+    {
+      errmsg ("missing bridge domain");
+      return -99;
+    }
+
+  M (BD_IP_MAC_FLUSH, mp);
+
+  mp->bd_id = ntohl (bd_id);
 
   S (mp);
   W (ret);
@@ -12671,11 +12713,11 @@ static void vl_api_sw_interface_tap_v2_details_t_handler
 		    mp->host_ip6_prefix_len);
 
   print (vam->ofp,
-	 "\n%-16s %-12d %-5d %-12d %-12d %-14U %-30s %-20s %-20s %-30s",
+	 "\n%-16s %-12d %-5d %-12d %-12d %-14U %-30s %-20s %-20s %-30s 0x%-08x",
 	 mp->dev_name, ntohl (mp->sw_if_index), ntohl (mp->id),
 	 ntohs (mp->rx_ring_sz), ntohs (mp->tx_ring_sz),
 	 format_ethernet_address, mp->host_mac_addr, mp->host_namespace,
-	 mp->host_bridge, ip4, ip6);
+	 mp->host_bridge, ip4, ip6, ntohl (mp->tap_flags));
 
   vec_free (ip4);
   vec_free (ip6);
@@ -12697,6 +12739,7 @@ static void vl_api_sw_interface_tap_v2_details_t_handler_json
   vat_json_init_object (node);
   vat_json_object_add_uint (node, "id", ntohl (mp->id));
   vat_json_object_add_uint (node, "sw_if_index", ntohl (mp->sw_if_index));
+  vat_json_object_add_uint (node, "tap_flags", ntohl (mp->tap_flags));
   vat_json_object_add_string_copy (node, "dev_name", mp->dev_name);
   vat_json_object_add_uint (node, "rx_ring_sz", ntohs (mp->rx_ring_sz));
   vat_json_object_add_uint (node, "tx_ring_sz", ntohs (mp->tx_ring_sz));
@@ -23346,7 +23389,8 @@ _(ikev2_initiate_del_child_sa, "<ispi>")                                \
 _(ikev2_initiate_rekey_child_sa, "<ispi>")                              \
 _(delete_loopback,"sw_if_index <nn>")                                   \
 _(bd_ip_mac_add_del, "bd_id <bridge-domain-id> <ip4/6-addr> <mac-addr> [del]") \
-_(bd_ip_mac_dump, "[bd_id] <id>")                                       \
+_(bd_ip_mac_flush, "bd_id <bridge-domain-id>")                          \
+_(bd_ip_mac_dump, "[bd_id] <bridge-domain-id>")                         \
 _(want_interface_events,  "enable|disable")                             \
 _(get_first_msg_id, "client <name>")					\
 _(cop_interface_enable_disable, "<intfc> | sw_if_index <nn> [disable]") \

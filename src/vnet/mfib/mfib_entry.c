@@ -633,16 +633,25 @@ mfib_entry_stack (mfib_entry_t *mfib_entry,
         {
             /*
              * for exclusive routes the source provided a replicate DPO
-             * we we stashed inthe special path list with one path
+             * which we stashed in the special path list with one path,
              * so we can stack directly on that.
              */
             ASSERT(1 == vec_len(ctx.next_hops));
 
-            dpo_stack(DPO_MFIB_ENTRY, dp,
-                      &mfib_entry->mfe_rep,
-                      &ctx.next_hops[0].path_dpo);
-            dpo_reset(&ctx.next_hops[0].path_dpo);
-            vec_free(ctx.next_hops);
+            if (NULL != ctx.next_hops)
+            {
+                dpo_stack(DPO_MFIB_ENTRY, dp,
+                          &mfib_entry->mfe_rep,
+                          &ctx.next_hops[0].path_dpo);
+                dpo_reset(&ctx.next_hops[0].path_dpo);
+                vec_free(ctx.next_hops);
+            }
+            else
+            {
+                dpo_stack(DPO_MFIB_ENTRY, dp,
+                          &mfib_entry->mfe_rep,
+                          drop_dpo_get(dp));
+            }
         }
     }
     else
@@ -1316,6 +1325,7 @@ void
 mfib_entry_encode (fib_node_index_t mfib_entry_index,
                   fib_route_path_encode_t **api_rpaths)
 {
+    fib_route_path_encode_t *api_rpath;
     mfib_entry_t *mfib_entry;
     mfib_entry_src_t *bsrc;
 
@@ -1324,9 +1334,22 @@ mfib_entry_encode (fib_node_index_t mfib_entry_index,
 
     if (FIB_NODE_INDEX_INVALID != bsrc->mfes_pl)
     {
-        fib_path_list_walk(bsrc->mfes_pl,
-                           fib_path_encode,
-                           api_rpaths);
+        fib_path_list_walk_w_ext(bsrc->mfes_pl,
+                                 NULL,
+                                 fib_path_encode,
+                                 api_rpaths);
+    }
+
+    vec_foreach(api_rpath, *api_rpaths)
+    {
+        mfib_itf_t *mfib_itf;
+
+        mfib_itf = mfib_entry_itf_find(bsrc->mfes_itfs,
+                                       api_rpath->rpath.frp_sw_if_index);
+        if (mfib_itf)
+        {
+            api_rpath->rpath.frp_mitf_flags = mfib_itf->mfi_flags;
+        }
     }
 }
 

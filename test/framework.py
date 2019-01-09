@@ -40,6 +40,12 @@ if os.name == 'posix' and sys.version_info[0] < 3:
 else:
     import subprocess
 
+#  Python2/3 compatible
+try:
+    input = raw_input
+except NameError:
+    pass
+
 PASS = 0
 FAIL = 1
 ERROR = 2
@@ -132,22 +138,30 @@ def pump_output(testclass):
                         # flag will take care of properly terminating the loop
 
 
-def is_skip_aarch64_set():
+def _is_skip_aarch64_set():
     return os.getenv('SKIP_AARCH64', 'n').lower() in ('yes', 'y', '1')
 
+is_skip_aarch64_set = _is_skip_aarch64_set()
 
-def is_platform_aarch64():
+
+def _is_platform_aarch64():
     return platform.machine() == 'aarch64'
 
+is_platform_aarch64 = _is_platform_aarch64()
 
-def running_extended_tests():
+
+def _running_extended_tests():
     s = os.getenv("EXTENDED_TESTS", "n")
     return True if s.lower() in ("y", "yes", "1") else False
 
+running_extended_tests = _running_extended_tests()
 
-def running_on_centos():
+
+def _running_on_centos():
     os_id = os.getenv("OS_ID", "")
     return True if "centos" in os_id.lower() else False
+
+running_on_centos = _running_on_centos
 
 
 class KeepAliveReporter(object):
@@ -339,7 +353,7 @@ class VppTestCase(unittest.TestCase):
             print("Now is the time to attach a gdb by running the above "
                   "command and set up breakpoints etc.")
         print(single_line_delim)
-        raw_input("Press ENTER to continue running the testcase...")
+        input("Press ENTER to continue running the testcase...")
 
     @classmethod
     def run_vpp(cls):
@@ -479,8 +493,8 @@ class VppTestCase(unittest.TestCase):
                 print(double_line_delim)
                 print("VPP or GDB server is still running")
                 print(single_line_delim)
-                raw_input("When done debugging, press ENTER to kill the "
-                          "process and finish running the testcase...")
+                input("When done debugging, press ENTER to kill the "
+                      "process and finish running the testcase...")
 
         # first signal that we want to stop the pump thread, then wake it up
         if hasattr(cls, 'pump_thread_stop_flag'):
@@ -963,12 +977,7 @@ class VppTestCase(unittest.TestCase):
         input.add_stream(pkts)
         self.pg_enable_capture(self.pg_interfaces)
         self.pg_start()
-        if isinstance(object, (list,)):
-            rx = []
-            for o in output:
-                rx.append(output.get_capture(len(pkts)))
-        else:
-            rx = output.get_capture(len(pkts))
+        rx = output.get_capture(len(pkts))
         return rx
 
     def send_and_expect_only(self, input, pkts, output, timeout=None):
@@ -976,14 +985,8 @@ class VppTestCase(unittest.TestCase):
         input.add_stream(pkts)
         self.pg_enable_capture(self.pg_interfaces)
         self.pg_start()
-        if isinstance(object, (list,)):
-            outputs = output
-            rx = []
-            for o in outputs:
-                rx.append(output.get_capture(len(pkts)))
-        else:
-            rx = output.get_capture(len(pkts))
-            outputs = [output]
+        rx = output.get_capture(len(pkts))
+        outputs = [output]
         if not timeout:
             timeout = 1
         for i in self.pg_interfaces:
@@ -993,6 +996,11 @@ class VppTestCase(unittest.TestCase):
                 timeout = 0.1
 
         return rx
+
+    def runTest(self):
+        """ unittest calls runTest when TestCase is instantiated without a
+        test case.  Use case: Writing unittests against VppTestCase"""
+        pass
 
 
 def get_testcase_doc_name(test):

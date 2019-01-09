@@ -392,9 +392,13 @@ tcp_make_options (tcp_connection_t * tc, tcp_options_t * opts,
   switch (state)
     {
     case TCP_STATE_ESTABLISHED:
-    case TCP_STATE_FIN_WAIT_1:
-    case TCP_STATE_CLOSED:
     case TCP_STATE_CLOSE_WAIT:
+    case TCP_STATE_FIN_WAIT_1:
+    case TCP_STATE_LAST_ACK:
+    case TCP_STATE_CLOSING:
+    case TCP_STATE_FIN_WAIT_2:
+    case TCP_STATE_TIME_WAIT:
+    case TCP_STATE_CLOSED:
       return tcp_make_established_options (tc, opts);
     case TCP_STATE_SYN_RCVD:
       return tcp_make_synack_options (tc, opts);
@@ -990,7 +994,7 @@ tcp_send_syn (tcp_connection_t * tc)
    * Setup retransmit and establish timers before requesting buffer
    * such that we can return if we've ran out.
    */
-  tcp_timer_set (tc, TCP_TIMER_ESTABLISH, TCP_ESTABLISH_TIME);
+  tcp_timer_set (tc, TCP_TIMER_ESTABLISH_AO, TCP_ESTABLISH_TIME);
   tcp_timer_update (tc, TCP_TIMER_RETRANSMIT_SYN,
 		    tc->rto * TCP_TO_TIMER_TICK);
 
@@ -1092,7 +1096,9 @@ tcp_send_fin (tcp_connection_t * tc)
     {
       /* Out of buffers so program fin retransmit ASAP */
       tcp_timer_update (tc, TCP_TIMER_RETRANSMIT, 1);
-      goto post_enqueue;
+      if (fin_snt)
+	tc->snd_nxt = tc->snd_una_max;
+      return;
     }
 
   tcp_retransmit_timer_force_update (tc);
@@ -1102,7 +1108,6 @@ tcp_send_fin (tcp_connection_t * tc)
   tcp_enqueue_to_output_now (wrk, b, bi, tc->c_is_ip4);
   TCP_EVT_DBG (TCP_EVT_FIN_SENT, tc);
 
-post_enqueue:
   if (!fin_snt)
     {
       tc->flags |= TCP_CONN_FINSNT;
@@ -1124,6 +1129,8 @@ tcp_make_state_flags (tcp_connection_t * tc, tcp_state_t next_state)
     {
     case TCP_STATE_ESTABLISHED:
     case TCP_STATE_CLOSE_WAIT:
+    case TCP_STATE_TIME_WAIT:
+    case TCP_STATE_FIN_WAIT_2:
       return TCP_FLAG_ACK;
     case TCP_STATE_SYN_RCVD:
       return TCP_FLAG_SYN | TCP_FLAG_ACK;
@@ -1131,6 +1138,7 @@ tcp_make_state_flags (tcp_connection_t * tc, tcp_state_t next_state)
       return TCP_FLAG_SYN;
     case TCP_STATE_LAST_ACK:
     case TCP_STATE_FIN_WAIT_1:
+    case TCP_STATE_CLOSING:
       if (tc->snd_nxt + 1 < tc->snd_una_max)
 	return TCP_FLAG_ACK;
       else
@@ -1531,9 +1539,12 @@ tcp_timer_retransmit_handler_i (u32 index, u8 is_syn)
     {
       tc = tcp_connection_get (index, thread_index);
       /* Note: the connection may have been closed and pool_put */
-      if (PREDICT_FALSE (tc == 0 || tc->state < TCP_STATE_SYN_RCVD))
+      if (PREDICT_FALSE (tc == 0 || tc->state == TCP_STATE_SYN_SENT))
 	return;
       tc->timers[TCP_TIMER_RETRANSMIT] = TCP_TIMER_HANDLE_INVALID;
+      /* Wait-close and retransmit could pop at the same time */
+      if (tc->state == TCP_STATE_CLOSED)
+	return;
     }
 
   if (tc->state >= TCP_STATE_ESTABLISHED)
@@ -1588,8 +1599,7 @@ tcp_timer_retransmit_handler_i (u32 index, u8 is_syn)
       /* Send one segment. Note that n_bytes may be zero due to buffer
        * shortfall */
       n_bytes = tcp_prepare_retransmit_segment (wrk, tc, 0, tc->snd_mss, &b);
-
-      if (n_bytes == 0)
+      if (!n_bytes)
 	{
 	  tcp_retransmit_timer_force_update (tc);
 	  return;
@@ -1613,10 +1623,7 @@ tcp_timer_retransmit_handler_i (u32 index, u8 is_syn)
       if (tc->flags & TCP_CONN_HALF_OPEN_DONE)
 	{
 	  if (tcp_half_open_connection_cleanup (tc))
-	    {
-	      clib_warning ("could not remove half-open connection");
-	      ASSERT (0);
-	    }
+	    TCP_DBG ("could not remove half-open connection");
 	  return;
 	}
 

@@ -15,52 +15,12 @@
 
 #include <sstream>
 
-#include "vom/route_cmds.hpp"
+#include <vom/route_api_types.hpp>
+#include <vom/route_cmds.hpp>
 
 namespace VOM {
 namespace route {
 namespace ip_route_cmds {
-
-static void
-to_vpp(const route::path& p, vapi_payload_ip_add_del_route& payload)
-{
-  payload.is_drop = 0;
-  payload.is_unreach = 0;
-  payload.is_prohibit = 0;
-  payload.is_local = 0;
-  payload.is_classify = 0;
-  payload.is_multipath = 0;
-  payload.is_resolve_host = 0;
-  payload.is_resolve_attached = 0;
-
-  if (route::path::flags_t::DVR & p.flags()) {
-    payload.is_dvr = 1;
-  }
-
-  if (route::path::special_t::STANDARD == p.type()) {
-    uint8_t path_v6;
-    to_bytes(p.nh(), &path_v6, payload.next_hop_address);
-
-    if (p.rd()) {
-      payload.next_hop_table_id = p.rd()->table_id();
-    }
-    if (p.itf()) {
-      payload.next_hop_sw_if_index = p.itf()->handle().value();
-    }
-  } else if (route::path::special_t::DROP == p.type()) {
-    payload.is_drop = 1;
-  } else if (route::path::special_t::UNREACH == p.type()) {
-    payload.is_unreach = 1;
-  } else if (route::path::special_t::PROHIBIT == p.type()) {
-    payload.is_prohibit = 1;
-  } else if (route::path::special_t::LOCAL == p.type()) {
-    payload.is_local = 1;
-  }
-  payload.next_hop_weight = p.weight();
-  payload.next_hop_preference = p.preference();
-  payload.next_hop_via_label = 0;
-  payload.classify_table_index = 0;
-}
 
 update_cmd::update_cmd(HW::item<bool>& item,
                        table_id_t id,

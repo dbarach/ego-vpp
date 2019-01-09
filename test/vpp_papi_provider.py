@@ -2732,9 +2732,8 @@ class VppPapiProvider(object):
                        ea_bits_len=0,
                        psid_offset=0,
                        psid_length=0,
-                       is_translation=0,
-                       is_rfc6052=0,
                        mtu=1280):
+
         return self.api(
             self.papi.map_add_domain,
             {
@@ -2744,9 +2743,23 @@ class VppPapiProvider(object):
                 'ea_bits_len': ea_bits_len,
                 'psid_offset': psid_offset,
                 'psid_length': psid_length,
-                'is_translation': is_translation,
-                'is_rfc6052': is_rfc6052,
                 'mtu': mtu
+            })
+
+    def map_if_enable_disable(self, is_enable, sw_if_index, is_translation):
+        return self.api(
+            self.papi.map_if_enable_disable,
+            {
+                'is_enable': is_enable,
+                'sw_if_index': sw_if_index,
+                'is_translation': is_translation,
+            })
+
+    def map_param_set_tcp(self, tcp_mss):
+        return self.api(
+            self.papi.map_param_set_tcp,
+            {
+                'tcp_mss': tcp_mss,
             })
 
     def gtpu_add_del_tunnel(
@@ -3566,7 +3579,6 @@ class VppPapiProvider(object):
         return self.api(self.papi.gbp_endpoint_add,
                         {'endpoint': {
                             'sw_if_index': sw_if_index,
-                            'flags': 0,
                             'ips': ips,
                             'n_ips': len(ips),
                             'mac': mac,
@@ -3700,7 +3712,8 @@ class VppPapiProvider(object):
         return self.api(self.papi.gbp_subnet_dump,
                         {'_no_type_conversion': True})
 
-    def gbp_contract_add_del(self, is_add, src_epg, dst_epg, acl_index, rules):
+    def gbp_contract_add_del(self, is_add, src_epg, dst_epg, acl_index,
+                             rules, allowed_ethertypes):
         """ GBP contract Add/Del """
         return self.api(self.papi.gbp_contract_add_del,
                         {'is_add': is_add,
@@ -3709,7 +3722,9 @@ class VppPapiProvider(object):
                              'src_epg': src_epg,
                              'dst_epg': dst_epg,
                              'n_rules': len(rules),
-                             'rules': rules}})
+                             'rules': rules,
+                             'n_ether_types': len(allowed_ethertypes),
+                             'allowed_ethertypes': allowed_ethertypes}})
 
     def gbp_contract_dump(self):
         """ GBP contract Dump """

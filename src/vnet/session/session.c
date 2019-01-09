@@ -66,6 +66,7 @@ session_send_evt_to_thread (void *data, void *args, u32 thread_index,
       evt->rpc_args.arg = args;
       break;
     case FIFO_EVENT_APP_TX:
+    case SESSION_IO_EVT_TX_FLUSH:
     case FIFO_EVENT_BUILTIN_RX:
       evt->fifo = data;
       break;
@@ -118,6 +119,27 @@ session_send_rpc_evt_to_thread (u32 thread_index, void *fp, void *rpc_args)
     }
 }
 
+static void
+session_program_transport_close (stream_session_t * s)
+{
+  u32 thread_index = vlib_get_thread_index ();
+  session_manager_worker_t *wrk;
+  session_event_t *evt;
+
+  /* If we are in the handler thread, or being called with the worker barrier
+   * held, just append a new event to pending disconnects vector. */
+  if (vlib_thread_is_main_w_barrier () || thread_index == s->thread_index)
+    {
+      wrk = session_manager_get_worker (s->thread_index);
+      vec_add2 (wrk->pending_disconnects, evt, 1);
+      clib_memset (evt, 0, sizeof (*evt));
+      evt->session_handle = session_handle (s);
+      evt->event_type = FIFO_EVENT_DISCONNECT;
+    }
+  else
+    session_send_ctrl_evt_to_thread (s, FIFO_EVENT_DISCONNECT);
+}
+
 stream_session_t *
 session_alloc (u32 thread_index)
 {
@@ -159,6 +181,23 @@ session_free_w_fifos (stream_session_t * s)
   session_free (s);
 }
 
+/**
+ * Cleans up session and lookup table.
+ *
+ * Transport connection must still be valid.
+ */
+static void
+session_delete (stream_session_t * s)
+{
+  int rv;
+
+  /* Delete from the main lookup table. */
+  if ((rv = session_lookup_del_session (s)))
+    clib_warning ("hash delete error, rv %d", rv);
+
+  session_free_w_fifos (s);
+}
+
 int
 session_alloc_fifos (segment_manager_t * sm, stream_session_t * s)
 {
@@ -195,6 +234,7 @@ session_alloc_for_connection (transport_connection_t * tc)
   s = session_alloc (thread_index);
   s->session_type = session_type_from_proto_and_ip (tc->proto, tc->is_ip4);
   s->enqueue_epoch = (u64) ~ 0;
+  s->session_state = SESSION_STATE_CLOSED;
 
   /* Attach transport to session and vice versa */
   s->connection_index = tc->c_index;
@@ -645,7 +685,7 @@ session_stream_connect_notify (transport_connection_t * tc, u8 is_fail)
       if (!is_fail)
 	{
 	  new_s = session_get (new_si, new_ti);
-	  stream_session_disconnect_transport (new_s);
+	  session_transport_close (new_s);
 	}
     }
   else
@@ -734,6 +774,7 @@ stream_session_accept_notify (transport_connection_t * tc)
   app_wrk = app_worker_get_if_valid (s->app_wrk_index);
   if (!app_wrk)
     return -1;
+  s->session_state = SESSION_STATE_ACCEPTING;
   app = application_get (app_wrk->app_index);
   return app->cb_fns.session_accept_callback (s);
 }
@@ -746,7 +787,7 @@ stream_session_accept_notify (transport_connection_t * tc)
  * Ultimately this leads to close being called on transport (passive close).
  */
 void
-stream_session_disconnect_notify (transport_connection_t * tc)
+session_transport_closing_notify (transport_connection_t * tc)
 {
   app_worker_t *app_wrk;
   application_t *app;
@@ -764,23 +805,6 @@ stream_session_disconnect_notify (transport_connection_t * tc)
 }
 
 /**
- * Cleans up session and lookup table.
- *
- * Transport connection must still be valid.
- */
-void
-stream_session_delete (stream_session_t * s)
-{
-  int rv;
-
-  /* Delete from the main lookup table. */
-  if ((rv = session_lookup_del_session (s)))
-    clib_warning ("hash delete error, rv %d", rv);
-
-  session_free_w_fifos (s);
-}
-
-/**
  * Notification from transport that connection is being deleted
  *
  * This removes the session if it is still valid. It should be called only on
@@ -789,7 +813,7 @@ stream_session_delete (stream_session_t * s)
  * failed.
  */
 void
-stream_session_delete_notify (transport_connection_t * tc)
+session_transport_delete_notify (transport_connection_t * tc)
 {
   stream_session_t *s;
 
@@ -802,36 +826,71 @@ stream_session_delete_notify (transport_connection_t * tc)
 
   switch (s->session_state)
     {
+    case SESSION_STATE_ACCEPTING:
     case SESSION_STATE_TRANSPORT_CLOSING:
       /* If transport finishes or times out before we get a reply
-       * from the app, do the whole disconnect since we might still
-       * have lingering events. Cleanup session table in advance
+       * from the app, mark transport as closed and wait for reply
+       * before removing the session. Cleanup session table in advance
        * because transport will soon be closed and closed sessions
        * are assumed to have been removed from the lookup table */
       session_lookup_del_session (s);
-      stream_session_disconnect (s);
-      s->session_state = SESSION_STATE_CLOSED;
+      s->session_state = SESSION_STATE_TRANSPORT_CLOSED;
       break;
     case SESSION_STATE_CLOSING:
-      /* Cleanup lookup table. Transport needs to still be valid */
+    case SESSION_STATE_CLOSED_WAITING:
+      /* Cleanup lookup table as transport needs to still be valid.
+       * Program transport close to ensure that all session events
+       * have been cleaned up. Once transport close is called, the
+       * session is just removed because both transport and app have
+       * confirmed the close*/
       session_lookup_del_session (s);
-      s->session_state = SESSION_STATE_CLOSED;
+      s->session_state = SESSION_STATE_TRANSPORT_CLOSED;
+      session_program_transport_close (s);
+      break;
+    case SESSION_STATE_TRANSPORT_CLOSED:
       break;
     case SESSION_STATE_CLOSED:
-    case SESSION_STATE_ACCEPTING:
-      stream_session_delete (s);
+      session_delete (s);
       break;
     default:
-      stream_session_delete (s);
+      clib_warning ("session state %u", s->session_state);
+      session_delete (s);
       break;
     }
+}
+
+/**
+ * Notification from transport that session can be closed
+ *
+ * Should be called by transport only if it was closed with non-empty
+ * tx fifo and once it decides to begin the closing procedure prior to
+ * issuing a delete notify. This gives the chance to the session layer
+ * to cleanup any outstanding events.
+ */
+void
+session_transport_closed_notify (transport_connection_t * tc)
+{
+  stream_session_t *s;
+
+  if (!(s = session_get_if_valid (tc->s_index, tc->thread_index)))
+    return;
+
+  /* If app close has not been received or has not yet resulted in
+   * a transport close, only mark the session transport as closed */
+  if (s->session_state <= SESSION_STATE_CLOSING)
+    {
+      session_lookup_del_session (s);
+      s->session_state = SESSION_STATE_TRANSPORT_CLOSED;
+    }
+  else
+    s->session_state = SESSION_STATE_CLOSED;
 }
 
 /**
  * Notify application that connection has been reset.
  */
 void
-stream_session_reset_notify (transport_connection_t * tc)
+session_transport_reset_notify (transport_connection_t * tc)
 {
   stream_session_t *s;
   app_worker_t *app_wrk;
@@ -868,7 +927,6 @@ stream_session_accept (transport_connection_t * tc, u32 listener_index,
 
   s->app_wrk_index = app_wrk->wrk_index;
   s->listener_index = listener_index;
-  s->session_state = SESSION_STATE_ACCEPTING;
 
   /* Shoulder-tap the server */
   if (notify)
@@ -1057,23 +1115,24 @@ session_stop_listen (stream_session_t * s)
 }
 
 /**
- * Initialize session disconnect.
+ * Initialize session closing procedure.
  *
  * Request is always sent to session node to ensure that all outstanding
  * requests are served before transport is notified.
  */
 void
-stream_session_disconnect (stream_session_t * s)
+session_close (stream_session_t * s)
 {
-  u32 thread_index = vlib_get_thread_index ();
-  session_manager_worker_t *wrk;
-  session_event_t *evt;
-
   if (!s)
     return;
 
   if (s->session_state >= SESSION_STATE_CLOSING)
     {
+      /* Session will only be removed once both app and transport
+       * acknowledge the close */
+      if (s->session_state == SESSION_STATE_TRANSPORT_CLOSED)
+	session_program_transport_close (s);
+
       /* Session already closed. Clear the tx fifo */
       if (s->session_state == SESSION_STATE_CLOSED)
 	svm_fifo_dequeue_drop_all (s->server_tx_fifo);
@@ -1081,19 +1140,7 @@ stream_session_disconnect (stream_session_t * s)
     }
 
   s->session_state = SESSION_STATE_CLOSING;
-
-  /* If we are in the handler thread, or being called with the worker barrier
-   * held, just append a new event to pending disconnects vector. */
-  if (vlib_thread_is_main_w_barrier () || thread_index == s->thread_index)
-    {
-      wrk = session_manager_get_worker (s->thread_index);
-      vec_add2 (wrk->pending_disconnects, evt, 1);
-      clib_memset (evt, 0, sizeof (*evt));
-      evt->session_handle = session_handle (s);
-      evt->event_type = FIFO_EVENT_DISCONNECT;
-    }
-  else
-    session_send_ctrl_evt_to_thread (s, FIFO_EVENT_DISCONNECT);
+  session_program_transport_close (s);
 }
 
 /**
@@ -1104,15 +1151,26 @@ stream_session_disconnect (stream_session_t * s)
  * Must be called from the session's thread.
  */
 void
-stream_session_disconnect_transport (stream_session_t * s)
+session_transport_close (stream_session_t * s)
 {
   /* If transport is already closed, just free the session */
-  if (s->session_state == SESSION_STATE_CLOSED)
+  if (s->session_state >= SESSION_STATE_TRANSPORT_CLOSED)
     {
       session_free_w_fifos (s);
       return;
     }
-  s->session_state = SESSION_STATE_CLOSED;
+
+  /* If tx queue wasn't drained, change state to closed waiting for transport.
+   * This way, the transport, if it so wishes, can continue to try sending the
+   * outstanding data (in closed state it cannot). It MUST however at one
+   * point, either after sending everything or after a timeout, call delete
+   * notify. This will finally lead to the complete cleanup of the session.
+   */
+  if (svm_fifo_max_dequeue (s->server_tx_fifo))
+    s->session_state = SESSION_STATE_CLOSED_WAITING;
+  else
+    s->session_state = SESSION_STATE_CLOSED;
+
   tp_vfts[session_get_transport_proto (s)].close (s->connection_index,
 						  s->thread_index);
 }
@@ -1125,7 +1183,7 @@ stream_session_disconnect_transport (stream_session_t * s)
  * closed.
  */
 void
-stream_session_cleanup (stream_session_t * s)
+session_transport_cleanup (stream_session_t * s)
 {
   s->session_state = SESSION_STATE_CLOSED;
 
@@ -1481,9 +1539,14 @@ clib_error_t *
 session_manager_main_init (vlib_main_t * vm)
 {
   session_manager_main_t *smm = &session_manager_main;
-  smm->session_baseva = 0x200000000ULL;
-  smm->session_va_space_size = (u64) 128 << 30;
+  smm->session_baseva = HIGH_SEGMENT_BASEVA;
+#if (HIGH_SEGMENT_BASEVA > (4ULL << 30))
+  smm->session_va_space_size = 128ULL << 30;
   smm->evt_qs_segment_size = 64 << 20;
+#else
+  smm->session_va_space_size = 128 << 20;
+  smm->evt_qs_segment_size = 1 << 20;
+#endif
   smm->is_enabled = 0;
   return 0;
 }

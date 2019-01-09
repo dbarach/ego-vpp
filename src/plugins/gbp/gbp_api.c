@@ -524,7 +524,7 @@ gbp_endpoint_group_send_details (gbp_endpoint_group_t * gg, void *args)
   mp->epg.uplink_sw_if_index = ntohl (gg->gg_uplink_sw_if_index);
   mp->epg.epg_id = ntohs (gg->gg_id);
   mp->epg.bd_id = ntohl (gbp_endpoint_group_get_bd_id (gg));
-  mp->epg.rd_id = ntohl (gg->gg_rd);
+  mp->epg.rd_id = ntohl (gbp_route_domain_get_rd_id (gg->gg_rd));
 
   vl_api_send_msg (ctx->reg, (u8 *) mp);
 
@@ -645,10 +645,10 @@ vl_api_gbp_recirc_add_del_t_handler (vl_api_gbp_recirc_add_del_t * mp)
     goto bad_sw_if_index;
 
   if (mp->is_add)
-    gbp_recirc_add (sw_if_index,
-		    ntohs (mp->recirc.epg_id), mp->recirc.is_ext);
+    rv = gbp_recirc_add (sw_if_index,
+			 ntohs (mp->recirc.epg_id), mp->recirc.is_ext);
   else
-    gbp_recirc_delete (sw_if_index);
+    rv = gbp_recirc_delete (sw_if_index);
 
   BAD_SW_IF_INDEX_LABEL;
 
@@ -672,7 +672,7 @@ gbp_recirc_send_details (gbp_recirc_t * gr, void *args)
 
   mp->recirc.epg_id = ntohs (gr->gr_epg);
   mp->recirc.sw_if_index = ntohl (gr->gr_sw_if_index);
-  mp->recirc.is_ext = ntohl (gr->gr_is_ext);
+  mp->recirc.is_ext = gr->gr_is_ext;
 
   vl_api_send_msg (ctx->reg, (u8 *) mp);
 
@@ -700,17 +700,20 @@ static void
 vl_api_gbp_ext_itf_add_del_t_handler (vl_api_gbp_ext_itf_add_del_t * mp)
 {
   vl_api_gbp_ext_itf_add_del_reply_t *rmp;
-  u32 sw_if_index;
+  u32 sw_if_index = ~0;
+  vl_api_gbp_ext_itf_t *ext_itf;
   int rv = 0;
 
-  sw_if_index = ntohl (mp->ext_itf.sw_if_index);
+  ext_itf = &mp->ext_itf;
+  if (ext_itf)
+    sw_if_index = ntohl (ext_itf->sw_if_index);
+
   if (!vnet_sw_if_index_is_api_valid (sw_if_index))
     goto bad_sw_if_index;
 
   if (mp->is_add)
     rv = gbp_ext_itf_add (sw_if_index,
-			  ntohl (mp->ext_itf.bd_id),
-			  ntohl (mp->ext_itf.rd_id));
+			  ntohl (ext_itf->bd_id), ntohl (ext_itf->rd_id));
   else
     rv = gbp_ext_itf_delete (sw_if_index);
 
@@ -924,8 +927,11 @@ static void
 vl_api_gbp_contract_add_del_t_handler (vl_api_gbp_contract_add_del_t * mp)
 {
   vl_api_gbp_contract_add_del_reply_t *rmp;
+  u16 *allowed_ethertypes;
   index_t *rules;
-  int rv = 0;
+  int ii, rv = 0;
+  u8 *data, n_et;
+  u16 *et;
 
   if (mp->is_add)
     {
@@ -934,9 +940,28 @@ vl_api_gbp_contract_add_del_t_handler (vl_api_gbp_contract_add_del_t * mp)
       if (0 != rv)
 	goto out;
 
+      allowed_ethertypes = NULL;
+
+      /*
+       * move past the variable legnth array of rules to get to the
+       * allowed ether types
+       */
+      data = (((u8 *) & mp->contract.n_ether_types) +
+	      (sizeof (mp->contract.rules[0]) * mp->contract.n_rules));
+      n_et = *data;
+      et = (u16 *) (++data);
+      vec_validate (allowed_ethertypes, n_et - 1);
+
+      for (ii = 0; ii < n_et; ii++)
+	{
+	  /* leave the ether types in network order */
+	  allowed_ethertypes[ii] = et[ii];
+	}
+
       rv = gbp_contract_update (ntohs (mp->contract.src_epg),
 				ntohs (mp->contract.dst_epg),
-				ntohl (mp->contract.acl_index), rules);
+				ntohl (mp->contract.acl_index),
+				rules, allowed_ethertypes);
     }
   else
     rv = gbp_contract_delete (ntohs (mp->contract.src_epg),

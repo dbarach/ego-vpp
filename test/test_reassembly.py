@@ -17,7 +17,8 @@ from vpp_gre_interface import VppGreInterface, VppGre6Interface
 from vpp_ip import DpoProto
 from vpp_ip_route import VppIpRoute, VppRoutePath
 
-test_packet_count = 257
+# 35 is enough to have >257 400-byte fragments
+test_packet_count = 35
 
 
 class TestIPv4Reassembly(VppTestCase):
@@ -60,7 +61,7 @@ class TestIPv4Reassembly(VppTestCase):
 
     @classmethod
     def create_stream(cls, packet_sizes, packet_count=test_packet_count):
-        """Create input packet stream for defined interface.
+        """Create input packet stream
 
         :param list packet_sizes: Required packet sizes.
         """
@@ -274,7 +275,7 @@ class TestIPv4Reassembly(VppTestCase):
         # self.assert_packet_counter_equal(
         #     "/err/ip4-reassembly-feature/malformed packets", 1)
 
-    @unittest.skipIf(is_skip_aarch64_set() and is_platform_aarch64(),
+    @unittest.skipIf(is_skip_aarch64_set and is_platform_aarch64,
                      "test doesn't work on aarch64")
     def test_random(self):
         """ random order reassembly """

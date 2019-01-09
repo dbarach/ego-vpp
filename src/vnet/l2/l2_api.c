@@ -66,6 +66,7 @@ _(SW_INTERFACE_SET_L2_BRIDGE, sw_interface_set_l2_bridge)       \
 _(L2_PATCH_ADD_DEL, l2_patch_add_del)				\
 _(L2_INTERFACE_EFP_FILTER, l2_interface_efp_filter)             \
 _(BD_IP_MAC_ADD_DEL, bd_ip_mac_add_del)                         \
+_(BD_IP_MAC_FLUSH, bd_ip_mac_flush)                             \
 _(BD_IP_MAC_DUMP, bd_ip_mac_dump)				\
 _(BRIDGE_DOMAIN_ADD_DEL, bridge_domain_add_del)                 \
 _(BRIDGE_DOMAIN_DUMP, bridge_domain_dump)                       \
@@ -558,6 +559,7 @@ vl_api_bridge_flags_t_handler (vl_api_bridge_flags_t * mp)
   vlib_main_t *vm = vlib_get_main ();
   bd_main_t *bdm = &bd_main;
   vl_api_bridge_flags_reply_t *rmp;
+  u32 bitmap = 0;
   int rv = 0;
 
   bd_flags_t flags = bd_flags_decode (mp->flags);
@@ -575,7 +577,7 @@ vl_api_bridge_flags_t_handler (vl_api_bridge_flags_t * mp)
       goto out;
     }
 
-  u32 bitmap = bd_set_flags (vm, bd_index, flags, mp->is_set);
+  bitmap = bd_set_flags (vm, bd_index, flags, mp->is_set);
 
 out:
   /* *INDENT-OFF* */
@@ -890,6 +892,37 @@ vl_api_bd_ip_mac_add_del_t_handler (vl_api_bd_ip_mac_add_del_t * mp)
 
 out:
   REPLY_MACRO (VL_API_BD_IP_MAC_ADD_DEL_REPLY);
+}
+
+static void
+vl_api_bd_ip_mac_flush_t_handler (vl_api_bd_ip_mac_flush_t * mp)
+{
+  vl_api_bd_ip_mac_flush_reply_t *rmp;
+  bd_main_t *bdm = &bd_main;
+  u32 bd_index, bd_id;
+  int rv = 0;
+  uword *p;
+
+  bd_id = ntohl (mp->bd_id);
+
+  if (bd_id == 0)
+    {
+      rv = VNET_API_ERROR_BD_NOT_MODIFIABLE;
+      goto out;
+    }
+
+  p = hash_get (bdm->bd_index_by_bd_id, bd_id);
+  if (p == 0)
+    {
+      rv = VNET_API_ERROR_NO_SUCH_ENTRY;
+      goto out;
+    }
+  bd_index = p[0];
+
+  bd_flush_ip_mac (bd_index);
+
+out:
+  REPLY_MACRO (VL_API_BD_IP_MAC_FLUSH_REPLY);
 }
 
 extern void l2_efp_filter_configure (vnet_main_t * vnet_main,

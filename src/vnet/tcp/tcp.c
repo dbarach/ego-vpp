@@ -172,7 +172,7 @@ tcp_half_open_connection_cleanup (tcp_connection_t * tc)
   /* Make sure this is the owning thread */
   if (tc->c_thread_index != vlib_get_thread_index ())
     return 1;
-  tcp_timer_reset (tc, TCP_TIMER_ESTABLISH);
+  tcp_timer_reset (tc, TCP_TIMER_ESTABLISH_AO);
   tcp_timer_reset (tc, TCP_TIMER_RETRANSMIT_SYN);
   tcp_half_open_connection_del (tc);
   return 0;
@@ -241,7 +241,7 @@ void
 tcp_connection_del (tcp_connection_t * tc)
 {
   TCP_EVT_DBG (TCP_EVT_DELETE, tc);
-  stream_session_delete_notify (&tc->connection);
+  session_transport_delete_notify (&tc->connection);
   tcp_connection_cleanup (tc);
 }
 
@@ -279,7 +279,7 @@ tcp_connection_reset (tcp_connection_t * tc)
     {
     case TCP_STATE_SYN_RCVD:
       /* Cleanup everything. App wasn't notified yet */
-      stream_session_delete_notify (&tc->connection);
+      session_transport_delete_notify (&tc->connection);
       tcp_connection_cleanup (tc);
       break;
     case TCP_STATE_SYN_SENT:
@@ -290,22 +290,28 @@ tcp_connection_reset (tcp_connection_t * tc)
       tcp_connection_timers_reset (tc);
       /* Set the cleanup timer, in case the session layer/app don't
        * cleanly close the connection */
-      tcp_timer_update (tc, TCP_TIMER_WAITCLOSE, TCP_CLOSEWAIT_TIME);
-      stream_session_reset_notify (&tc->connection);
+      tcp_timer_set (tc, TCP_TIMER_WAITCLOSE, TCP_CLOSEWAIT_TIME);
+      session_transport_reset_notify (&tc->connection);
+      tcp_connection_set_state (tc, TCP_STATE_CLOSED);
       break;
     case TCP_STATE_CLOSE_WAIT:
     case TCP_STATE_FIN_WAIT_1:
     case TCP_STATE_FIN_WAIT_2:
     case TCP_STATE_CLOSING:
-      tc->state = TCP_STATE_CLOSED;
-      TCP_EVT_DBG (TCP_EVT_STATE_CHANGE, tc);
+    case TCP_STATE_LAST_ACK:
       tcp_connection_timers_reset (tc);
-      tcp_timer_update (tc, TCP_TIMER_WAITCLOSE, TCP_CLOSEWAIT_TIME);
+      tcp_timer_set (tc, TCP_TIMER_WAITCLOSE, TCP_CLOSEWAIT_TIME);
+      /* Make sure we mark the session as closed. In some states we may
+       * be still trying to send data */
+      session_transport_closed_notify (&tc->connection);
+      tcp_connection_set_state (tc, TCP_STATE_CLOSED);
       break;
     case TCP_STATE_CLOSED:
-      return;
+    case TCP_STATE_TIME_WAIT:
+      break;
+    default:
+      TCP_DBG ("reset state: %u", tc->state);
     }
-  tc->state = TCP_STATE_CLOSED;
 }
 
 /**
@@ -330,12 +336,14 @@ tcp_connection_close (tcp_connection_t * tc)
   switch (tc->state)
     {
     case TCP_STATE_SYN_SENT:
-      tc->state = TCP_STATE_CLOSED;
+      /* Try to cleanup. If not on the right thread, mark as half-open done.
+       * Connection will be cleaned up when establish timer pops */
+      tcp_connection_cleanup (tc);
       break;
     case TCP_STATE_SYN_RCVD:
       tcp_connection_timers_reset (tc);
       tcp_send_fin (tc);
-      tc->state = TCP_STATE_FIN_WAIT_1;
+      tcp_connection_set_state (tc, TCP_STATE_FIN_WAIT_1);
       tcp_timer_update (tc, TCP_TIMER_WAITCLOSE, TCP_FINWAIT1_TIME);
       break;
     case TCP_STATE_ESTABLISHED:
@@ -343,17 +351,18 @@ tcp_connection_close (tcp_connection_t * tc)
 	tcp_send_fin (tc);
       else
 	tc->flags |= TCP_CONN_FINPNDG;
-      tc->state = TCP_STATE_FIN_WAIT_1;
+      tcp_connection_set_state (tc, TCP_STATE_FIN_WAIT_1);
       /* Set a timer in case the peer stops responding. Otherwise the
        * connection will be stuck here forever. */
-      tcp_timer_update (tc, TCP_TIMER_WAITCLOSE, TCP_FINWAIT1_TIME);
+      ASSERT (tc->timers[TCP_TIMER_WAITCLOSE] == TCP_TIMER_HANDLE_INVALID);
+      tcp_timer_set (tc, TCP_TIMER_WAITCLOSE, TCP_FINWAIT1_TIME);
       break;
     case TCP_STATE_CLOSE_WAIT:
       if (!session_tx_fifo_max_dequeue (&tc->connection))
 	{
 	  tcp_send_fin (tc);
 	  tcp_connection_timers_reset (tc);
-	  tc->state = TCP_STATE_LAST_ACK;
+	  tcp_connection_set_state (tc, TCP_STATE_LAST_ACK);
 	  tcp_timer_update (tc, TCP_TIMER_WAITCLOSE, TCP_2MSL_TIME);
 	}
       else
@@ -364,19 +373,14 @@ tcp_connection_close (tcp_connection_t * tc)
       break;
     case TCP_STATE_CLOSED:
       tcp_connection_timers_reset (tc);
+      /* Delete connection but instead of doing it now wait until next
+       * dispatch cycle to give the session layer a chance to clear
+       * unhandled events */
+      tcp_timer_update (tc, TCP_TIMER_WAITCLOSE, TCP_CLEANUP_TIME);
       break;
     default:
       TCP_DBG ("state: %u", tc->state);
     }
-
-  TCP_EVT_DBG (TCP_EVT_STATE_CHANGE, tc);
-
-  /* If in CLOSED and WAITCLOSE timer is not set, delete connection.
-   * But instead of doing it now wait until next dispatch cycle to give
-   * the session layer a chance to clear unhandled events */
-  if (!tcp_timer_is_active (tc, TCP_TIMER_WAITCLOSE)
-      && tc->state == TCP_STATE_CLOSED)
-    tcp_timer_update (tc, TCP_TIMER_WAITCLOSE, TCP_CLEANUP_TIME);
 }
 
 static void
@@ -392,9 +396,7 @@ tcp_session_cleanup (u32 conn_index, u32 thread_index)
 {
   tcp_connection_t *tc;
   tc = tcp_connection_get (conn_index, thread_index);
-  tcp_connection_timers_reset (tc);
-  tc->state = TCP_STATE_CLOSED;
-  TCP_EVT_DBG (TCP_EVT_STATE_CHANGE, tc);
+  tcp_connection_set_state (tc, TCP_STATE_CLOSED);
   tcp_connection_cleanup (tc);
 }
 
@@ -549,6 +551,26 @@ tcp_cc_algo_get (tcp_cc_algorithm_type_e type)
   return &tm->cc_algos[type];
 }
 
+/**
+ * Generate random iss as per rfc6528
+ */
+static u32
+tcp_generate_random_iss (tcp_connection_t * tc)
+{
+  tcp_main_t *tm = &tcp_main;
+  u64 tmp;
+
+  if (tc->c_is_ip4)
+    tmp = (u64) tc->c_lcl_ip.ip4.as_u32 << 32 | (u64) tc->c_rmt_ip.ip4.as_u32;
+  else
+    tmp = tc->c_lcl_ip.ip6.as_u64[0] ^ tc->c_lcl_ip.ip6.as_u64[1]
+      ^ tc->c_rmt_ip.ip6.as_u64[0] ^ tc->c_rmt_ip.ip6.as_u64[1];
+
+  tmp ^= tm->iss_seed.first | ((u64) tc->c_lcl_port << 16 | tc->c_rmt_port);
+  tmp ^= tm->iss_seed.second;
+  tmp = clib_xxhash (tmp) + clib_cpu_time_now ();
+  return ((tmp >> 32) ^ (tmp & 0xffffffff));
+}
 
 /**
  * Initialize connection send variables.
@@ -556,8 +578,6 @@ tcp_cc_algo_get (tcp_cc_algorithm_type_e type)
 void
 tcp_init_snd_vars (tcp_connection_t * tc)
 {
-  u32 time_now;
-
   /*
    * We use the time to randomize iss and for setting up the initial
    * timestamp. Make sure it's updated otherwise syn and ack in the
@@ -565,9 +585,8 @@ tcp_init_snd_vars (tcp_connection_t * tc)
    * direction for us.
    */
   tcp_set_time_now (tcp_get_worker (vlib_get_thread_index ()));
-  time_now = tcp_time_now ();
 
-  tc->iss = random_u32 (&time_now);
+  tc->iss = tcp_generate_random_iss (tc);
   tc->snd_una = tc->iss;
   tc->snd_nxt = tc->iss + 1;
   tc->snd_una_max = tc->snd_nxt;
@@ -1216,33 +1235,40 @@ tcp_timer_establish_handler (u32 conn_index)
 {
   tcp_connection_t *tc;
 
-  tc = tcp_half_open_connection_get (conn_index);
-  if (tc)
-    {
-      ASSERT (tc->state == TCP_STATE_SYN_SENT);
-      session_stream_connect_notify (&tc->connection, 1 /* fail */ );
-      TCP_DBG ("establish pop: %U", format_tcp_connection, tc, 2);
-    }
-  else
-    {
-      tc = tcp_connection_get (conn_index, vlib_get_thread_index ());
-      /* note: the connection may have already disappeared */
-      if (PREDICT_FALSE (tc == 0))
-	return;
-      TCP_DBG ("establish pop: %U", format_tcp_connection, tc, 2);
-      ASSERT (tc->state == TCP_STATE_SYN_RCVD);
-      /* Start cleanup. App wasn't notified yet so use delete notify as
-       * opposed to delete to cleanup session layer state. */
-      stream_session_delete_notify (&tc->connection);
-    }
+  tc = tcp_connection_get (conn_index, vlib_get_thread_index ());
+  /* note: the connection may have already disappeared */
+  if (PREDICT_FALSE (tc == 0))
+    return;
+  ASSERT (tc->state == TCP_STATE_SYN_RCVD);
+  /* Start cleanup. App wasn't notified yet so use delete notify as
+   * opposed to delete to cleanup session layer state. */
+  session_transport_delete_notify (&tc->connection);
   tc->timers[TCP_TIMER_ESTABLISH] = TCP_TIMER_HANDLE_INVALID;
+  tcp_connection_cleanup (tc);
+}
+
+static void
+tcp_timer_establish_ao_handler (u32 conn_index)
+{
+  tcp_connection_t *tc;
+
+  tc = tcp_half_open_connection_get (conn_index);
+  if (!tc)
+    return;
+
+  ASSERT (tc->state == TCP_STATE_SYN_SENT);
+  /* Notify app if we haven't tried to clean this up already */
+  if (!(tc->flags & TCP_CONN_HALF_OPEN_DONE))
+    session_stream_connect_notify (&tc->connection, 1 /* fail */ );
+
+  tc->timers[TCP_TIMER_ESTABLISH_AO] = TCP_TIMER_HANDLE_INVALID;
   tcp_connection_cleanup (tc);
 }
 
 static void
 tcp_timer_waitclose_handler (u32 conn_index)
 {
-  u32 thread_index = vlib_get_thread_index ();
+  u32 thread_index = vlib_get_thread_index (), rto;
   tcp_connection_t *tc;
 
   tc = tcp_connection_get (conn_index, thread_index);
@@ -1250,32 +1276,65 @@ tcp_timer_waitclose_handler (u32 conn_index)
     return;
   tc->timers[TCP_TIMER_WAITCLOSE] = TCP_TIMER_HANDLE_INVALID;
 
-  /* Session didn't come back with a close(). Send FIN either way
-   * and switch to LAST_ACK. */
-  if (tc->state == TCP_STATE_CLOSE_WAIT)
+  switch (tc->state)
     {
-      /* Make sure we don't try to send unsent data */
+    case TCP_STATE_CLOSE_WAIT:
       tcp_connection_timers_reset (tc);
+      session_transport_closed_notify (&tc->connection);
+
+      if (!(tc->flags & TCP_CONN_FINPNDG))
+	{
+	  tcp_connection_set_state (tc, TCP_STATE_CLOSED);
+	  tcp_timer_set (tc, TCP_TIMER_WAITCLOSE, TCP_CLEANUP_TIME);
+	  break;
+	}
+
+      /* Session didn't come back with a close. Send FIN either way
+       * and switch to LAST_ACK. */
       tcp_cong_recovery_off (tc);
+      /* Make sure we don't try to send unsent data */
       tc->snd_una_max = tc->snd_nxt = tc->snd_una;
       tcp_send_fin (tc);
-      tc->state = TCP_STATE_LAST_ACK;
+      tcp_connection_set_state (tc, TCP_STATE_LAST_ACK);
 
       /* Make sure we don't wait in LAST ACK forever */
       tcp_timer_set (tc, TCP_TIMER_WAITCLOSE, TCP_2MSL_TIME);
 
       /* Don't delete the connection yet */
-      return;
-    }
-  else if (tc->state == TCP_STATE_FIN_WAIT_1)
-    {
-      /* Wait for session layer to clean up tx events */
-      tc->state = TCP_STATE_CLOSED;
+      break;
+    case TCP_STATE_FIN_WAIT_1:
+      tcp_connection_timers_reset (tc);
+      if (tc->flags & TCP_CONN_FINPNDG)
+	{
+	  /* If FIN pending send it before closing and wait as long as
+	   * the rto timeout would wait. Notify session layer that transport
+	   * is closed. We haven't sent everything but we did try. */
+	  tcp_cong_recovery_off (tc);
+	  tcp_send_fin (tc);
+	  rto = clib_max ((tc->rto >> tc->rto_boff) * TCP_TO_TIMER_TICK, 1);
+	  tcp_timer_set (tc, TCP_TIMER_WAITCLOSE,
+			 clib_min (rto, TCP_2MSL_TIME));
+	  session_transport_closed_notify (&tc->connection);
+	}
+      else
+	{
+	  /* We've sent the fin but no progress. Close the connection and
+	   * to make sure everything is flushed, setup a cleanup timer */
+	  tcp_connection_set_state (tc, TCP_STATE_CLOSED);
+	  tcp_timer_set (tc, TCP_TIMER_WAITCLOSE, TCP_CLEANUP_TIME);
+	}
+      break;
+    case TCP_STATE_LAST_ACK:
+    case TCP_STATE_CLOSING:
+      tcp_connection_timers_reset (tc);
+      tcp_connection_set_state (tc, TCP_STATE_CLOSED);
       tcp_timer_set (tc, TCP_TIMER_WAITCLOSE, TCP_CLEANUP_TIME);
-      return;
+      session_transport_closed_notify (&tc->connection);
+      break;
+    default:
+      tcp_connection_del (tc);
+      break;
     }
-
-  tcp_connection_del (tc);
 }
 
 /* *INDENT-OFF* */
@@ -1287,7 +1346,8 @@ static timer_expiration_handler *timer_expiration_handlers[TCP_N_TIMERS] =
     tcp_timer_keep_handler,
     tcp_timer_waitclose_handler,
     tcp_timer_retransmit_syn_handler,
-    tcp_timer_establish_handler
+    tcp_timer_establish_handler,
+    tcp_timer_establish_ao_handler,
 };
 /* *INDENT-ON* */
 
@@ -1322,6 +1382,16 @@ tcp_initialize_timer_wheels (tcp_main_t * tm)
     tw->last_run_time = vlib_time_now (this_vlib_main);
   }));
   /* *INDENT-ON* */
+}
+
+static void
+tcp_initialize_iss_seed (tcp_main_t * tm)
+{
+  u32 default_seed = random_default_seed ();
+  u64 time_now = clib_cpu_time_now ();
+
+  tm->iss_seed.first = (u64) random_u32 (&default_seed) << 32;
+  tm->iss_seed.second = random_u64 (&time_now);
 }
 
 static clib_error_t *
@@ -1400,9 +1470,9 @@ tcp_main_enable (vlib_main_t * vm)
     }
 
   tcp_initialize_timer_wheels (tm);
+  tcp_initialize_iss_seed (tm);
 
-  tm->bytes_per_buffer = vlib_buffer_free_list_buffer_size
-    (vm, VLIB_BUFFER_DEFAULT_FREE_LIST_INDEX);
+  tm->bytes_per_buffer = VLIB_BUFFER_DATA_SIZE;
 
   return error;
 }

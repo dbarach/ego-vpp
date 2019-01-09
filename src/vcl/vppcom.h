@@ -31,7 +31,7 @@ extern "C"
 /*
  * VPPCOM Public API Definitions, Enums, and Data Structures
  */
-#define INVALID_SESSION_ID                  	(~0)
+#define INVALID_SESSION_ID                  	((u32)~0)
 #define VPPCOM_CONF_DEFAULT                  	"/etc/vpp/vcl.conf"
 #define VPPCOM_ENV_CONF                      	"VCL_CONFIG"
 #define VPPCOM_ENV_DEBUG                     	"VCL_DEBUG"
@@ -48,6 +48,10 @@ typedef enum
 {
   VPPCOM_PROTO_TCP = 0,
   VPPCOM_PROTO_UDP,
+  VPPCOM_PROTO_SCTP,
+  VPPCOM_PROTO_NONE,
+  VPPCOM_PROTO_TLS,
+  VPPCOM_PROTO_UDPC
 } vppcom_proto_t;
 
 static inline char *
@@ -58,10 +62,19 @@ vppcom_proto_str (vppcom_proto_t proto)
   switch (proto)
     {
     case VPPCOM_PROTO_TCP:
-      proto_str = "VPPCOM_PROTO_TCP";
+      proto_str = "TCP";
       break;
     case VPPCOM_PROTO_UDP:
-      proto_str = "VPPCOM_PROTO_UDP";
+      proto_str = "UDP";
+      break;
+    case VPPCOM_PROTO_SCTP:
+      proto_str = "SCTP";
+      break;
+    case VPPCOM_PROTO_TLS:
+      proto_str = "TLS";
+      break;
+    case VPPCOM_PROTO_UDPC:
+      proto_str = "UDPC";
       break;
     default:
       proto_str = "UNKNOWN";
@@ -83,6 +96,8 @@ typedef struct vppcom_endpt_t_
   uint8_t *ip;
   uint16_t port;
 } vppcom_endpt_t;
+
+typedef uint32_t vcl_session_handle_t;
 
 typedef enum
 {
@@ -138,12 +153,14 @@ typedef enum
   VPPCOM_ATTR_GET_TCP_USER_MSS,
   VPPCOM_ATTR_SET_TCP_USER_MSS,
   VPPCOM_ATTR_GET_REFCNT,
+  VPPCOM_ATTR_SET_SHUT,
+  VPPCOM_ATTR_GET_SHUT,
 } vppcom_attr_op_t;
 
 typedef struct _vcl_poll
 {
   uint32_t fds_ndx;
-  uint32_t sid;
+  vcl_session_handle_t sh;
   short events;
   short revents;
 } vcl_poll_t;
@@ -155,6 +172,8 @@ typedef struct vppcom_data_segment_
 } vppcom_data_segment_t;
 
 typedef vppcom_data_segment_t vppcom_data_segments_t[2];
+
+typedef unsigned long vcl_si_set;
 
 /*
  * VPPCOM Public API Functions
@@ -239,11 +258,12 @@ extern int vppcom_session_connect (uint32_t session_handle,
 extern int vppcom_session_read (uint32_t session_handle, void *buf, size_t n);
 extern int vppcom_session_write (uint32_t session_handle, void *buf,
 				 size_t n);
+extern int vppcom_session_write_msg (uint32_t session_handle, void *buf,
+				     size_t n);
 
-extern int vppcom_select (unsigned long n_bits,
-			  unsigned long *read_map,
-			  unsigned long *write_map,
-			  unsigned long *except_map, double wait_for_time);
+extern int vppcom_select (int n_bits, vcl_si_set * read_map,
+			  vcl_si_set * write_map, vcl_si_set * except_map,
+			  double wait_for_time);
 
 extern int vppcom_epoll_create (void);
 extern int vppcom_epoll_ctl (uint32_t vep_handle, int op,
@@ -262,13 +282,18 @@ extern int vppcom_session_sendto (uint32_t session_handle, void *buffer,
 extern int vppcom_poll (vcl_poll_t * vp, uint32_t n_sids,
 			double wait_for_time);
 extern int vppcom_mq_epoll_fd (void);
-extern int vppcom_session_index (uint32_t session_handle);
+extern int vppcom_session_index (vcl_session_handle_t session_handle);
+extern int vppcom_session_worker (vcl_session_handle_t session_handle);
 extern int vppcom_session_handle (uint32_t session_index);
 
 extern int vppcom_session_read_segments (uint32_t session_handle,
 					 vppcom_data_segments_t ds);
 extern void vppcom_session_free_segments (uint32_t session_handle,
 					  vppcom_data_segments_t ds);
+extern int vppcom_session_tls_add_cert (uint32_t session_handle, char *cert,
+					uint32_t cert_len);
+extern int vppcom_session_tls_add_key (uint32_t session_handle, char *key,
+				       uint32_t key_len);
 extern int vppcom_data_segment_copy (void *buf, vppcom_data_segments_t ds,
 				     uint32_t max_bytes);
 

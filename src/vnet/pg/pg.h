@@ -89,8 +89,6 @@ typedef struct
   /* Buffers pre-initialized with fixed buffer data for this stream. */
   u32 *buffer_fifo;
 
-  /* Buffer free list for this buffer index in stream. */
-  vlib_buffer_free_list_index_t free_list_index;
 } pg_buffer_index_t;
 
 typedef struct pg_stream_t
@@ -327,6 +325,9 @@ typedef struct pg_main_t
   /* Pool of interfaces. */
   pg_interface_t *interfaces;
   uword *if_index_by_if_id;
+
+  /* Vector of buffer indices for use in pg_stream_fill_replay, per thread */
+  u32 **replay_buffers_by_thread;
 
   /* Per VLIB node information. */
   pg_node_t *nodes;

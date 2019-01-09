@@ -63,6 +63,11 @@ enum class dependency_t
   TABLE,
 
   /**
+   * virtual tables - tables with a dependency on another table
+   */
+  VIRTUAL_TABLE,
+
+  /**
    * ACLs
    */
   ACL,
@@ -378,6 +383,22 @@ struct l2_address_t
   std::vector<uint8_t> bytes;
 };
 
+struct counter_t
+{
+  counter_t()
+    : packets(0)
+    , bytes(0)
+  {
+  }
+  counter_t(const counter_t& c)
+    : packets(c.packets)
+    , bytes(c.bytes)
+  {
+  }
+  uint64_t packets;
+  uint64_t bytes;
+};
+
 /**
  * Ostream operator for a MAC address
  */
@@ -387,6 +408,11 @@ std::ostream& operator<<(std::ostream& os, const mac_address_t& mac);
  * Ostream operator for a MAC address
  */
 std::ostream& operator<<(std::ostream& os, const l2_address_t& l2);
+
+/**
+ * Ostream operator for a MAC address
+ */
+std::ostream& operator<<(std::ostream& os, const counter_t& c);
 };
 
 /*

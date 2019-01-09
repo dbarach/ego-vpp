@@ -186,7 +186,7 @@ segment_manager_add_segment (segment_manager_t * sm, u32 segment_size)
   segment_manager_main_t *smm = &segment_manager_main;
   u32 rnd_margin = 128 << 10, seg_index, page_size;
   segment_manager_properties_t *props;
-  uword baseva = (u64) ~ 0, alloc_size;
+  uword baseva = (uword) ~ 0ULL, alloc_size;
   svm_fifo_segment_private_t *seg;
   u8 *seg_name;
   int rv;
@@ -406,7 +406,7 @@ segment_manager_del_sessions (segment_manager_t * sm)
 	  }
 	session = session_get (fifo->master_session_index,
 	                       fifo->master_thread_index);
-	stream_session_disconnect (session);
+	session_close (session);
 	fifo = fifo->next;
       }
 
@@ -735,8 +735,8 @@ segment_manager_show_fn (vlib_main_t * vm, unformat_input_t * input,
   svm_fifo_segment_private_t *seg;
   segment_manager_t *sm;
   u8 show_segments = 0, verbose = 0;
-  uword address;
-  u64 size;
+  char *address;
+  size_t size;
   u32 active_fifos;
   u32 free_fifos;
 

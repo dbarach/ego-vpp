@@ -141,9 +141,9 @@ gbp_route_domain::to_string() const
   s << "gbp-route-domain:[" << m_rd->to_string();
 
   if (m_ip4_uu_fwd)
-    s << " v4-uu:" << m_ip4_uu_fwd->to_string();
+    s << " v4-uu:[" << m_ip4_uu_fwd->to_string() << "]";
   if (m_ip6_uu_fwd)
-    s << " v6-uu:" << m_ip6_uu_fwd->to_string();
+    s << " v6-uu:[" << m_ip6_uu_fwd->to_string() << "]";
 
   s << "]";
 
@@ -237,7 +237,7 @@ gbp_route_domain::event_handler::handle_replay()
 dependency_t
 gbp_route_domain::event_handler::order() const
 {
-  return (dependency_t::TABLE);
+  return (dependency_t::VIRTUAL_TABLE);
 }
 
 void

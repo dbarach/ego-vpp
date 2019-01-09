@@ -25,7 +25,6 @@
 #include "vom/route_domain.hpp"
 #include "vom/rpc_cmd.hpp"
 #include "vom/singular_db.hpp"
-#include "vom/stat_client.hpp"
 
 namespace VOM {
 /**
@@ -198,6 +197,7 @@ public:
     counter_t m_tx_multicast;
     counter_t m_rx_broadcast;
     counter_t m_tx_broadcast;
+    counter_t m_drop;
   };
 
   /**
@@ -619,7 +619,7 @@ private:
   /**
    * Set the interface stat
    */
-  void set(counter_t count, const std::string& stat_type);
+  void set(const counter_t& count, const std::string& stat_type);
 
   /**
    * enable the interface stats in the singular instance
