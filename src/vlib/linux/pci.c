@@ -466,7 +466,7 @@ vlib_pci_bind_to_uio (vlib_main_t * vm, vlib_pci_addr_t * addr,
       clib_memset (&ifr, 0, sizeof ifr);
       clib_memset (&drvinfo, 0, sizeof drvinfo);
       ifr.ifr_data = (char *) &drvinfo;
-      strncpy (ifr.ifr_name, e->d_name, sizeof (ifr.ifr_name) - 1);
+      clib_strncpy (ifr.ifr_name, e->d_name, sizeof (ifr.ifr_name) - 1);
 
       drvinfo.cmd = ETHTOOL_GDRVINFO;
       if (ioctl (fd, SIOCETHTOOL, &ifr) < 0)
@@ -482,7 +482,7 @@ vlib_pci_bind_to_uio (vlib_main_t * vm, vlib_pci_addr_t * addr,
 	continue;
 
       clib_memset (&ifr, 0, sizeof (ifr));
-      strncpy (ifr.ifr_name, e->d_name, sizeof (ifr.ifr_name) - 1);
+      clib_strncpy (ifr.ifr_name, e->d_name, sizeof (ifr.ifr_name) - 1);
 
       if (ioctl (fd, SIOCGIFFLAGS, &ifr) < 0)
 	{
@@ -967,7 +967,7 @@ add_device_vfio (vlib_main_t * vm, linux_pci_device_t * p,
     {
       vlib_buffer_pool_t *bp;
       /* *INDENT-OFF* */
-      vec_foreach (bp, buffer_main.buffer_pools)
+      vec_foreach (bp, vm->buffer_main->buffer_pools)
 	{
 	  u32 i;
 	  vlib_physmem_map_t *pm;
