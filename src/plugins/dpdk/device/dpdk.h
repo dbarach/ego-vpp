@@ -56,8 +56,6 @@
 #include <vlib/pci/pci.h>
 #include <vnet/flow/flow.h>
 
-#define NB_MBUF   (16<<10)
-
 extern vnet_device_class_t dpdk_device_class;
 extern vlib_node_registration_t dpdk_input_node;
 extern vlib_node_registration_t admin_up_down_process_node;
@@ -317,7 +315,9 @@ typedef struct dpdk_device_config_hqos_t
 int dpdk_hqos_validate_mask (u64 mask, u32 n);
 void dpdk_device_config_hqos_pipe_profile_default (dpdk_device_config_hqos_t *
 						   hqos, u32 pipe_profile_id);
+#if 0
 void dpdk_device_config_hqos_default (dpdk_device_config_hqos_t * hqos);
+#endif
 clib_error_t *dpdk_port_setup_hqos (dpdk_device_t * xd,
 				    dpdk_device_config_hqos_t * hqos);
 void dpdk_hqos_metadata_set (dpdk_device_hqos_per_worker_thread_t * hqos,
@@ -364,7 +364,7 @@ typedef struct
   u8 nchannels_set_manually;
   u32 coremask;
   u32 nchannels;
-  u32 num_mbufs;
+  u32 num_crypto_mbufs;
 
   /*
    * format interface names ala xxxEthernet%d/%d/%d instead of
@@ -442,9 +442,6 @@ typedef struct
   vlib_main_t *vlib_main;
   vnet_main_t *vnet_main;
   dpdk_config_main_t *conf;
-
-  /* mempool */
-  struct rte_mempool **pktmbuf_pools;
 
   /* API message ID base */
   u16 msg_id_base;

@@ -27,7 +27,7 @@ foreach(f rules changelog)
   )
 endforeach()
 
-foreach(f control copyright vpp.postinst vpp.postrm vpp.postinst vpp.service)
+foreach(f control copyright vpp.preinst vpp.postrm vpp.postinst vpp.service)
   file(COPY
     ${CMAKE_CURRENT_SOURCE_DIR}/debian/${f}
     DESTINATION ${CMAKE_BINARY_DIR}/debian
@@ -40,4 +40,5 @@ add_custom_target(package-deb
   COMMENT "Building .deb packages..."
   WORKING_DIRECTORY ${CMAKE_BINARY_DIR}
   COMMAND "dpkg-buildpackage" "-us" "-uc" "-b"
+  USES_TERMINAL
 )

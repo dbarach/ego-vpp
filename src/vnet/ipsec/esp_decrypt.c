@@ -21,6 +21,7 @@
 
 #include <vnet/ipsec/ipsec.h>
 #include <vnet/ipsec/esp.h>
+#include <vnet/ipsec/ipsec_io.h>
 
 #define foreach_esp_decrypt_next                \
 _(DROP, "error-drop")                           \
@@ -193,7 +194,9 @@ esp_decrypt_inline (vlib_main_t * vm,
 		}
 	    }
 
-	  sa0->total_data_size += i_b0->current_length;
+	  vlib_increment_combined_counter
+	    (&ipsec_sa_counters, thread_index, sa_index0,
+	     1, i_b0->current_length);
 
 	  if (PREDICT_TRUE (sa0->integ_alg != IPSEC_INTEG_ALG_NONE))
 	    {
@@ -206,8 +209,9 @@ esp_decrypt_inline (vlib_main_t * vm,
 		icv_size;
 	      i_b0->current_length -= icv_size;
 
-	      hmac_calc (sa0->integ_alg, sa0->integ_key, sa0->integ_key_len,
-			 (u8 *) esp0, i_b0->current_length, sig, sa0->use_esn,
+	      hmac_calc (sa0->integ_alg, sa0->integ_key.data,
+			 sa0->integ_key.len, (u8 *) esp0,
+			 i_b0->current_length, sig, sa0->use_esn,
 			 sa0->seq_hi);
 
 	      if (PREDICT_FALSE (memcmp (icv, sig, icv_size)))
@@ -299,7 +303,7 @@ esp_decrypt_inline (vlib_main_t * vm,
 			       esp0->data + IV_SIZE,
 			       (u8 *) vlib_buffer_get_current (o_b0) +
 			       ip_hdr_size, BLOCK_SIZE * blocks,
-			       sa0->crypto_key, esp0->data);
+			       sa0->crypto_key.data, esp0->data);
 
 	      o_b0->current_length = (blocks * BLOCK_SIZE) - 2 + ip_hdr_size;
 	      o_b0->flags = VLIB_BUFFER_TOTAL_LENGTH_VALID;

@@ -340,12 +340,11 @@ static void
 vl_api_unbind_sock_reply_t_handler (vl_api_unbind_sock_reply_t * mp)
 {
   if (mp->retval)
-    clib_warning ("VCL<%d>: ERROR: sid %u: unbind failed: %U",
-		  getpid (), mp->context, format_api_error,
-		  ntohl (mp->retval));
+    VDBG (0, "ERROR: sid %u: unbind failed: %U", mp->context,
+	  format_api_error, ntohl (mp->retval));
 
-  else
-    VDBG (1, "VCL<%d>: sid %u: unbind succeeded!", getpid (), mp->context);
+  VDBG (1, "sid %u: unbind succeeded!", mp->context);
+
 }
 
 static void
@@ -594,9 +593,8 @@ vppcom_send_bind_sock (vcl_session_t * session)
 }
 
 void
-vppcom_send_unbind_sock (u64 vpp_handle)
+vppcom_send_unbind_sock (vcl_worker_t * wrk, u64 vpp_handle)
 {
-  vcl_worker_t *wrk = vcl_worker_get_current ();
   vl_api_unbind_sock_t *ump;
 
   ump = vl_msg_api_alloc (sizeof (*ump));
@@ -606,6 +604,7 @@ vppcom_send_unbind_sock (u64 vpp_handle)
   ump->client_index = wrk->my_client_index;
   ump->wrk_index = wrk->vpp_wrk_index;
   ump->handle = vpp_handle;
+  ump->context = wrk->wrk_index;
   vl_msg_api_send_shmem (wrk->vl_input_queue, (u8 *) & ump);
 }
 
@@ -680,7 +679,7 @@ vppcom_connect_to_vpp (char *app_name)
 	  return VPPCOM_ECONNREFUSED;
 	}
 
-      if (vl_socket_client_init_shm (0))
+      if (vl_socket_client_init_shm (0, 1 /* want_pthread */ ))
 	{
 	  VERR ("app (%s) init shm failed!", app_name);
 	  return VPPCOM_ECONNREFUSED;

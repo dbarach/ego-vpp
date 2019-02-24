@@ -264,7 +264,8 @@ nat_free_session_data (snat_main_t * sm, snat_session_t * s, u32 thread_index)
     return;
 
   /* log NAT event */
-  snat_ipfix_logging_nat44_ses_delete (s->in2out.addr.as_u32,
+  snat_ipfix_logging_nat44_ses_delete (thread_index,
+				       s->in2out.addr.as_u32,
 				       s->out2in.addr.as_u32,
 				       s->in2out.protocol,
 				       s->in2out.port,
@@ -454,7 +455,7 @@ nat_ed_session_alloc (snat_main_t * sm, snat_user_t * u, u32 thread_index,
 	  nat_log_warn ("max translations per user %U", format_ip4_address,
 			&u->addr);
 	  snat_ipfix_logging_max_entries_per_user
-	    (sm->max_translations_per_user, u->addr.as_u32);
+	    (thread_index, sm->max_translations_per_user, u->addr.as_u32);
 	  return 0;
 	}
       else
@@ -1768,7 +1769,7 @@ snat_interface_add_del (u32 sw_if_index, u8 is_inside, int is_del)
             {
               if (is_del)
                 {
-                  outside_fib->refcount--;
+        	  outside_fib->refcount--;
                   if (!outside_fib->refcount)
                     vec_del1 (sm->outside_fibs, outside_fib - sm->outside_fibs);
                 }
@@ -1994,7 +1995,7 @@ snat_interface_add_del_output_feature (u32 sw_if_index,
             {
               if (is_del)
                 {
-                  outside_fib->refcount--;
+        	  outside_fib->refcount--;
                   if (!outside_fib->refcount)
                     vec_del1 (sm->outside_fibs, outside_fib - sm->outside_fibs);
                 }
@@ -2143,6 +2144,65 @@ snat_set_workers (uword * bitmap)
   return 0;
 }
 
+static void
+snat_update_outside_fib (u32 sw_if_index, u32 new_fib_index,
+			 u32 old_fib_index)
+{
+  snat_main_t *sm = &snat_main;
+  nat_outside_fib_t *outside_fib;
+  snat_interface_t *i;
+  u8 is_add = 1;
+
+  if (new_fib_index == old_fib_index)
+    return;
+
+  if (!vec_len (sm->outside_fibs))
+    return;
+
+  pool_foreach (i, sm->interfaces, (
+				     {
+				     if (i->sw_if_index == sw_if_index)
+				     {
+				     if (!(nat_interface_is_outside (i)))
+				     return;}
+				     }
+		));
+  vec_foreach (outside_fib, sm->outside_fibs)
+  {
+    if (outside_fib->fib_index == old_fib_index)
+      {
+	outside_fib->refcount--;
+	if (!outside_fib->refcount)
+	  vec_del1 (sm->outside_fibs, outside_fib - sm->outside_fibs);
+	break;
+      }
+  }
+
+  vec_foreach (outside_fib, sm->outside_fibs)
+  {
+    if (outside_fib->fib_index == new_fib_index)
+      {
+	outside_fib->refcount++;
+	is_add = 0;
+	break;
+      }
+  }
+
+  if (is_add)
+    {
+      vec_add2 (sm->outside_fibs, outside_fib, 1);
+      outside_fib->refcount = 1;
+      outside_fib->fib_index = new_fib_index;
+    }
+}
+
+static void
+snat_ip4_table_bind (ip4_main_t * im,
+		     uword opaque,
+		     u32 sw_if_index, u32 new_fib_index, u32 old_fib_index)
+{
+  snat_update_outside_fib (sw_if_index, new_fib_index, old_fib_index);
+}
 
 static void
 snat_ip4_add_del_interface_address_cb (ip4_main_t * im,
@@ -2180,7 +2240,7 @@ snat_init (vlib_main_t * vm)
   uword *bitmap = 0;
   u32 i;
   ip4_add_del_interface_address_callback_t cb4;
-  vlib_node_t *error_drop_node;
+  vlib_node_t *node;
 
   sm->vlib_main = vm;
   sm->vnet_main = vnet_get_main ();
@@ -2202,9 +2262,62 @@ snat_init (vlib_main_t * vm)
   sm->addr_and_port_alloc_alg = NAT_ADDR_AND_PORT_ALLOC_ALG_DEFAULT;
   sm->forwarding_enabled = 0;
   sm->log_class = vlib_log_register_class ("nat", 0);
-  error_drop_node = vlib_get_node_by_name (vm, (u8 *) "error-drop");
-  sm->error_node_index = error_drop_node->index;
   sm->mss_clamping = 0;
+
+  node = vlib_get_node_by_name (vm, (u8 *) "error-drop");
+  sm->error_node_index = node->index;
+
+  node = vlib_get_node_by_name (vm, (u8 *) "nat44-in2out");
+  sm->in2out_node_index = node->index;
+  node = vlib_get_node_by_name (vm, (u8 *) "nat44-in2out-output");
+  sm->in2out_output_node_index = node->index;
+  node = vlib_get_node_by_name (vm, (u8 *) "nat44-in2out-fast");
+  sm->in2out_fast_node_index = node->index;
+  node = vlib_get_node_by_name (vm, (u8 *) "nat44-in2out-slowpath");
+  sm->in2out_slowpath_node_index = node->index;
+  node = vlib_get_node_by_name (vm, (u8 *) "nat44-in2out-output-slowpath");
+  sm->in2out_slowpath_output_node_index = node->index;
+  node = vlib_get_node_by_name (vm, (u8 *) "nat44-in2out-reass");
+  sm->in2out_reass_node_index = node->index;
+
+  node = vlib_get_node_by_name (vm, (u8 *) "nat44-ed-in2out");
+  sm->ed_in2out_node_index = node->index;
+  node = vlib_get_node_by_name (vm, (u8 *) "nat44-ed-in2out-slowpath");
+  sm->ed_in2out_slowpath_node_index = node->index;
+  node = vlib_get_node_by_name (vm, (u8 *) "nat44-ed-in2out-reass");
+  sm->ed_in2out_reass_node_index = node->index;
+
+  node = vlib_get_node_by_name (vm, (u8 *) "nat44-out2in");
+  sm->out2in_node_index = node->index;
+  node = vlib_get_node_by_name (vm, (u8 *) "nat44-out2in-fast");
+  sm->out2in_fast_node_index = node->index;
+  node = vlib_get_node_by_name (vm, (u8 *) "nat44-out2in-reass");
+  sm->out2in_reass_node_index = node->index;
+
+  node = vlib_get_node_by_name (vm, (u8 *) "nat44-ed-out2in");
+  sm->ed_out2in_node_index = node->index;
+  node = vlib_get_node_by_name (vm, (u8 *) "nat44-ed-out2in-slowpath");
+  sm->ed_out2in_slowpath_node_index = node->index;
+  node = vlib_get_node_by_name (vm, (u8 *) "nat44-ed-out2in-reass");
+  sm->ed_out2in_reass_node_index = node->index;
+
+  node = vlib_get_node_by_name (vm, (u8 *) "nat44-det-in2out");
+  sm->det_in2out_node_index = node->index;
+  node = vlib_get_node_by_name (vm, (u8 *) "nat44-det-out2in");
+  sm->det_out2in_node_index = node->index;
+
+  node = vlib_get_node_by_name (vm, (u8 *) "nat44-hairpinning");
+  sm->hairpinning_node_index = node->index;
+  node = vlib_get_node_by_name (vm, (u8 *) "nat44-hairpin-dst");
+  sm->hairpin_dst_node_index = node->index;
+  node = vlib_get_node_by_name (vm, (u8 *) "nat44-hairpin-src");
+  sm->hairpin_src_node_index = node->index;
+  node = vlib_get_node_by_name (vm, (u8 *) "nat44-ed-hairpinning");
+  sm->ed_hairpinning_node_index = node->index;
+  node = vlib_get_node_by_name (vm, (u8 *) "nat44-ed-hairpin-dst");
+  sm->ed_hairpin_dst_node_index = node->index;
+  node = vlib_get_node_by_name (vm, (u8 *) "nat44-ed-hairpin-src");
+  sm->ed_hairpin_src_node_index = node->index;
 
   p = hash_get_mem (tm->thread_registrations_by_name, "workers");
   if (p)
@@ -2269,7 +2382,12 @@ snat_init (vlib_main_t * vm)
 
   dslite_init (vm);
 
-  nat66_init ();
+  nat66_init (vm);
+
+  ip4_table_bind_callback_t cbt4 = {
+    .function = snat_ip4_table_bind,
+  };
+  vec_add1 (ip4_main.table_bind_callbacks, cbt4);
 
   /* Init virtual fragmenentation reassembly */
   return nat_reass_init (vm);
@@ -2557,7 +2675,7 @@ nat_alloc_addr_and_port_default (snat_address_t * addresses,
     }
 
   /* Totally out of translations to use... */
-  snat_ipfix_logging_addresses_exhausted (0);
+  snat_ipfix_logging_addresses_exhausted (thread_index, 0);
   return 1;
 }
 
@@ -2607,7 +2725,7 @@ nat_alloc_addr_and_port_mape (snat_address_t * addresses,
 
 exhausted:
   /* Totally out of translations to use... */
-  snat_ipfix_logging_addresses_exhausted (0);
+  snat_ipfix_logging_addresses_exhausted (thread_index, 0);
   return 1;
 }
 
@@ -2655,7 +2773,7 @@ nat_alloc_addr_and_port_range (snat_address_t * addresses,
 
 exhausted:
   /* Totally out of translations to use... */
-  snat_ipfix_logging_addresses_exhausted (0);
+  snat_ipfix_logging_addresses_exhausted (thread_index, 0);
   return 1;
 }
 
@@ -2797,20 +2915,47 @@ snat_get_worker_out2in_cb (ip4_header_t * ip0, u32 rx_fib_index0)
       if (PREDICT_FALSE (nat_reass_is_drop_frag (0)))
 	return vlib_get_thread_index ();
 
-      if (PREDICT_TRUE (!ip4_is_first_fragment (ip0)))
+      nat_reass_ip4_t *reass;
+      reass = nat_ip4_reass_find (ip0->src_address, ip0->dst_address,
+				  ip0->fragment_id, ip0->protocol);
+
+      if (reass && (reass->thread_index != (u32) ~ 0))
+	return reass->thread_index;
+
+      if (ip4_is_first_fragment (ip0))
 	{
-	  nat_reass_ip4_t *reass;
+	  reass =
+	    nat_ip4_reass_create (ip0->src_address, ip0->dst_address,
+				  ip0->fragment_id, ip0->protocol);
+	  if (!reass)
+	    goto no_reass;
 
-	  reass = nat_ip4_reass_find (ip0->src_address, ip0->dst_address,
-				      ip0->fragment_id, ip0->protocol);
-
-	  if (reass && (reass->thread_index != (u32) ~ 0))
-	    return reass->thread_index;
-	  else
-	    return vlib_get_thread_index ();
+	  if (PREDICT_FALSE (pool_elts (sm->static_mappings)))
+	    {
+	      m_key.addr = ip0->dst_address;
+	      m_key.port = clib_net_to_host_u16 (port);
+	      m_key.protocol = proto;
+	      m_key.fib_index = rx_fib_index0;
+	      kv.key = m_key.as_u64;
+	      if (!clib_bihash_search_8_8
+		  (&sm->static_mapping_by_external, &kv, &value))
+		{
+		  m = pool_elt_at_index (sm->static_mappings, value.value);
+		  reass->thread_index = m->workers[0];
+		  return reass->thread_index;
+		}
+	    }
+	  reass->thread_index = sm->first_worker_index;
+	  reass->thread_index +=
+	    sm->workers[(clib_net_to_host_u16 (port) - 1024) /
+			sm->port_per_thread];
+	  return reass->thread_index;
 	}
+      else
+	return vlib_get_thread_index ();
     }
 
+no_reass:
   /* unknown protocol */
   if (PREDICT_FALSE (proto == ~0))
     {

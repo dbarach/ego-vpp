@@ -258,7 +258,7 @@ dpdk_process_flow_offload (dpdk_device_t * xd, dpdk_per_thread_data_t * ptd,
   /* TODO prefetch and quad-loop */
   for (n = 0; n < n_rx_packets; n++)
     {
-      if ((ptd->flags[n] & (1 << PKT_RX_FDIR)) == 0)
+      if ((ptd->flags[n] & PKT_RX_FDIR) == 0)
 	continue;
 
       fle = pool_elt_at_index (xd->flow_lookup_entries,
@@ -324,6 +324,7 @@ dpdk_device_input (vlib_main_t * vm, dpdk_main_t * dm, dpdk_device_t * xd,
   /* as DPDK is allocating empty buffers from mempool provided before interface
      start for each queue, it is safe to store this in the template */
   bt->buffer_pool_index = xd->buffer_pool_for_queue[queue_id];
+  bt->ref_count = 1;
   vnet_buffer (bt)->feature_arc_index = 0;
   bt->current_config_index = 0;
 
@@ -389,6 +390,7 @@ dpdk_device_input (vlib_main_t * vm, dpdk_main_t * dm, dpdk_device_t * xd,
 	  if (xd->flags & DPDK_DEVICE_FLAG_RX_IP4_CKSUM &&
 	      (or_flags & PKT_RX_IP_CKSUM_BAD) == 0)
 	    f->flags |= ETH_INPUT_FRAME_F_IP4_CKSUM_OK;
+	  vlib_frame_no_append (f);
 	}
       n_left_to_next -= n_rx_packets;
       vlib_put_next_frame (vm, node, next_index, n_left_to_next);
@@ -440,6 +442,12 @@ dpdk_device_input (vlib_main_t * vm, dpdk_main_t * dm, dpdk_device_t * xd,
   if (PREDICT_FALSE (dm->pcap[VLIB_RX].pcap_enable))
     {
       u32 bi0;
+
+      if (single_next)
+	vlib_get_buffer_indices_with_offset (vm, (void **) ptd->mbufs,
+					     ptd->buffers, n_rx_packets,
+					     sizeof (struct rte_mbuf));
+
       n_left = n_rx_packets;
       buffers = ptd->buffers;
       while (n_left)

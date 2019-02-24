@@ -1492,16 +1492,16 @@ ikev2_create_tunnel_interface (vnet_main_t * vnm, ikev2_sa_t * sa,
   a.is_add = 1;
   if (sa->is_initiator)
     {
-      a.local_ip.as_u32 = sa->iaddr.as_u32;
-      a.remote_ip.as_u32 = sa->raddr.as_u32;
+      a.local_ip.ip4.as_u32 = sa->iaddr.as_u32;
+      a.remote_ip.ip4.as_u32 = sa->raddr.as_u32;
       proposals = child->i_proposals;
       a.local_spi = child->r_proposals[0].spi;
       a.remote_spi = child->i_proposals[0].spi;
     }
   else
     {
-      a.local_ip.as_u32 = sa->raddr.as_u32;
-      a.remote_ip.as_u32 = sa->iaddr.as_u32;
+      a.local_ip.ip4.as_u32 = sa->raddr.as_u32;
+      a.remote_ip.ip4.as_u32 = sa->iaddr.as_u32;
       proposals = child->r_proposals;
       a.local_spi = child->i_proposals[0].spi;
       a.remote_spi = child->r_proposals[0].spi;
@@ -1642,8 +1642,8 @@ ikev2_delete_tunnel_interface (vnet_main_t * vnm, ikev2_sa_t * sa,
 	return 0;
 
       a.is_add = 0;
-      a.local_ip.as_u32 = sa->iaddr.as_u32;
-      a.remote_ip.as_u32 = sa->raddr.as_u32;
+      a.local_ip.ip4.as_u32 = sa->iaddr.as_u32;
+      a.remote_ip.ip4.as_u32 = sa->raddr.as_u32;
       a.local_spi = child->r_proposals[0].spi;
       a.remote_spi = child->i_proposals[0].spi;
     }
@@ -1653,8 +1653,8 @@ ikev2_delete_tunnel_interface (vnet_main_t * vnm, ikev2_sa_t * sa,
 	return 0;
 
       a.is_add = 0;
-      a.local_ip.as_u32 = sa->raddr.as_u32;
-      a.remote_ip.as_u32 = sa->iaddr.as_u32;
+      a.local_ip.ip4.as_u32 = sa->raddr.as_u32;
+      a.remote_ip.ip4.as_u32 = sa->iaddr.as_u32;
       a.local_spi = child->i_proposals[0].spi;
       a.remote_spi = child->r_proposals[0].spi;
     }
@@ -3376,6 +3376,7 @@ ikev2_mngr_process_ipsec_sa (ipsec_sa_t * ipsec_sa)
   ikev2_sa_t *fsa = 0;
   ikev2_child_sa_t *fchild = 0;
   f64 now = vlib_time_now (vm);
+  vlib_counter_t counts;
 
   /* Search for the SA and child SA */
   vec_foreach (tkm, km->per_thread_data)
@@ -3394,11 +3395,13 @@ ikev2_mngr_process_ipsec_sa (ipsec_sa_t * ipsec_sa)
     }));
     /* *INDENT-ON* */
   }
+  vlib_get_combined_counter (&ipsec_sa_counters,
+			     ipsec_sa->stat_index, &counts);
 
   if (fchild && fsa && fsa->profile && fsa->profile->lifetime_maxdata)
     {
       if (!fchild->is_expired
-	  && ipsec_sa->total_data_size > fsa->profile->lifetime_maxdata)
+	  && counts.bytes > fsa->profile->lifetime_maxdata)
 	{
 	  fchild->time_to_expiration = now;
 	}

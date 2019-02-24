@@ -418,8 +418,6 @@ typedef struct
 } vnet_interface_output_runtime_t;
 
 /* Interface output function. */
-void *vnet_interface_output_node_multiarch_select (void);
-
 word vnet_sw_interface_compare (vnet_main_t * vnm, uword sw_if_index0,
 				uword sw_if_index1);
 word vnet_hw_interface_compare (vnet_main_t * vnm, uword hw_if_index0,
@@ -444,6 +442,8 @@ typedef enum
 {
   VNET_INTERFACE_OUTPUT_ERROR_INTERFACE_DOWN,
   VNET_INTERFACE_OUTPUT_ERROR_INTERFACE_DELETED,
+  VNET_INTERFACE_OUTPUT_ERROR_NO_BUFFERS_FOR_GSO,
+  VNET_INTERFACE_OUTPUT_ERROR_UNHANDLED_GSO_TYPE,
 } vnet_interface_output_error_t;
 
 /* Format for interface output traces. */

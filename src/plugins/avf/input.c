@@ -72,7 +72,9 @@ avf_rxq_refill (vlib_main_t * vm, vlib_node_runtime_t * node, avf_rxq_t * rxq,
   slot = (rxq->next - n_refill - 1) & mask;
 
   n_refill &= ~7;		/* round to 8 */
-  n_alloc = vlib_buffer_alloc_to_ring (vm, rxq->bufs, slot, size, n_refill);
+  n_alloc =
+    vlib_buffer_alloc_to_ring_from_pool (vm, rxq->bufs, slot, size, n_refill,
+					 rxq->buffer_pool_index);
 
   if (PREDICT_FALSE (n_alloc != n_refill))
     {
@@ -261,6 +263,10 @@ avf_device_input_inline (vlib_main_t * vm, vlib_node_runtime_t * node,
 
   if (PREDICT_FALSE (ad->per_interface_next_index != ~0))
     next_index = ad->per_interface_next_index;
+
+  if (PREDICT_FALSE (vnet_device_input_have_features (ad->sw_if_index)))
+    vnet_feature_start_device_input_x1 (ad->sw_if_index, &next_index, bt);
+
   vlib_get_new_next_frame (vm, node, next_index, to_next, n_left_to_next);
 
   /* fetch up to AVF_RX_VECTOR_SZ from the rx ring, unflatten them and
@@ -368,6 +374,8 @@ no_more_desc:
 
   vnet_buffer (bt)->sw_if_index[VLIB_RX] = ad->sw_if_index;
   vnet_buffer (bt)->sw_if_index[VLIB_TX] = ~0;
+  bt->buffer_pool_index = rxq->buffer_pool_index;
+  bt->ref_count = 1;
 
   if (n_tail_desc)
     n_rx_bytes = avf_process_rx_burst (vm, node, ptd, n_rx_packets, 1);
@@ -417,6 +425,7 @@ no_more_desc:
 
       if ((or_qw1 & AVF_RXD_ERROR_IPE) == 0)
 	f->flags |= ETH_INPUT_FRAME_F_IP4_CKSUM_OK;
+      vlib_frame_no_append (f);
     }
 
   n_left_to_next -= n_rx_packets;

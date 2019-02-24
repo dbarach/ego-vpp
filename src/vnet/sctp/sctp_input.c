@@ -909,7 +909,7 @@ sctp_handle_cookie_echo (sctp_header_t * sctp_hdr,
   sctp_timer_set (sctp_conn, idx, SCTP_TIMER_T4_HEARTBEAT,
 		  sctp_conn->sub_conn[idx].RTO);
 
-  stream_session_accept_notify (&sctp_conn->sub_conn[idx].connection);
+  session_stream_accept_notify (&sctp_conn->sub_conn[idx].connection);
 
   return SCTP_ERROR_NONE;
 
@@ -940,7 +940,7 @@ sctp_handle_cookie_ack (sctp_header_t * sctp_hdr,
   sctp_timer_set (sctp_conn, idx, SCTP_TIMER_T4_HEARTBEAT,
 		  sctp_conn->sub_conn[idx].RTO);
 
-  stream_session_accept_notify (&sctp_conn->sub_conn[idx].connection);
+  session_stream_accept_notify (&sctp_conn->sub_conn[idx].connection);
 
   return SCTP_ERROR_NONE;
 
@@ -1764,7 +1764,7 @@ sctp46_listen_process_inline (vlib_main_t * vm,
 
 	      if (error0 == SCTP_ERROR_NONE)
 		{
-		  if (stream_session_accept
+		  if (session_stream_accept
 		      (&child_conn->
 		       sub_conn[SCTP_PRIMARY_PATH_IDX].connection,
 		       sctp_listener->
