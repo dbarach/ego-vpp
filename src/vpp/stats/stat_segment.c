@@ -268,14 +268,13 @@ vlib_map_stat_segment_init (void)
   /* Scalar stats and node counters */
   vec_validate (sm->directory_vector, STAT_COUNTERS - 1);
 #define _(E,t,n,p)							\
-  strcpy(sm->directory_vector[STAT_COUNTER_##E].name,  "/sys" #p "/" #n); \
+  strcpy(sm->directory_vector[STAT_COUNTER_##E].name,  #p "/" #n); \
   sm->directory_vector[STAT_COUNTER_##E].type = STAT_DIR_TYPE_##t;
   foreach_stat_segment_counter_name
 #undef _
     /* Save the vector offset in the shared segment, for clients */
     shared_header->directory_offset =
     stat_segment_offset (shared_header, sm->directory_vector);
-  sm->gauges_fns = 0;
 
   clib_mem_set_heap (oldheap);
 
@@ -417,6 +416,33 @@ update_node_counters (stat_segment_main_t * sm)
       stat_validate_counter_vector (&sm->directory_vector
 				    [STAT_COUNTER_NODE_SUSPENDS], l);
 
+      vec_validate (sm->nodes, l);
+      stat_segment_directory_entry_t *ep;
+      ep = &sm->directory_vector[STAT_COUNTER_NODE_NAMES];
+      ep->offset = stat_segment_offset (shared_header, sm->nodes);
+
+      int i;
+      u64 *offset_vector =
+	ep->offset_vector ? stat_segment_pointer (shared_header,
+						  ep->offset_vector) : 0;
+      /* Update names dictionary */
+      vec_validate (offset_vector, l);
+      vlib_node_t **nodes = node_dups[0];
+      for (i = 0; i < vec_len (nodes); i++)
+	{
+	  vlib_node_t *n = nodes[i];
+	  u8 *s = 0;
+	  s = format (s, "%v%c", n->name, 0);
+	  if (sm->nodes[n->index])
+	    vec_free (sm->nodes[n->index]);
+	  sm->nodes[n->index] = s;
+	  offset_vector[i] =
+	    sm->nodes[i] ? stat_segment_offset (shared_header,
+						sm->nodes[i]) : 0;
+
+	}
+      ep->offset_vector = stat_segment_offset (shared_header, offset_vector);
+
       vlib_stat_segment_unlock ();
       clib_mem_set_heap (oldheap);
       no_max_nodes = l;
@@ -508,11 +534,13 @@ do_stat_segment_updates (stat_segment_main_t * sm)
   if (sm->node_counters_enabled)
     update_node_counters (sm);
 
-  for (i = 0; i < vec_len (sm->gauges_fns); i++)
-    {
-      if (sm->gauges_fns[i])
-	sm->gauges_fns[i] (&sm->directory_vector[i]);
-    }
+  /* *INDENT-OFF* */
+  stat_segment_gauges_pool_t *g;
+  pool_foreach(g, sm->gauges,
+  ({
+    g->fn(&sm->directory_vector[g->directory_index], g->caller_index);
+  }));
+  /* *INDENT-ON* */
 
   /* Heartbeat, so clients detect we're still here */
   sm->directory_vector[STAT_COUNTER_HEARTBEAT].value++;
@@ -619,13 +647,15 @@ statseg_init (vlib_main_t * vm)
 }
 
 clib_error_t *
-stat_segment_register_gauge (u8 * name, stat_segment_update_fn update_fn)
+stat_segment_register_gauge (u8 * name, stat_segment_update_fn update_fn,
+			     u32 caller_index)
 {
   stat_segment_main_t *sm = &stat_segment_main;
   stat_segment_shared_header_t *shared_header = sm->shared_header;
   void *oldheap;
   stat_segment_directory_entry_t e;
   u32 index;
+  stat_segment_gauges_pool_t *gauge;
 
   ASSERT (shared_header);
 
@@ -645,8 +675,11 @@ stat_segment_register_gauge (u8 * name, stat_segment_update_fn update_fn)
   vlib_stat_segment_unlock ();
   clib_mem_set_heap (oldheap);
 
-  vec_validate (sm->gauges_fns, index);
-  sm->gauges_fns[index] = update_fn;
+  /* Back on our own heap */
+  pool_get (sm->gauges, gauge);
+  gauge->fn = update_fn;
+  gauge->caller_index = caller_index;
+  gauge->directory_index = index;
 
   return NULL;
 }
@@ -680,8 +713,66 @@ statseg_config (vlib_main_t * vm, unformat_input_t * input)
   return 0;
 }
 
+static clib_error_t *
+statseg_sw_interface_add_del (vnet_main_t * vnm, u32 sw_if_index, u32 is_add)
+{
+  stat_segment_main_t *sm = &stat_segment_main;
+  stat_segment_shared_header_t *shared_header = sm->shared_header;
+
+  void *oldheap = vlib_stats_push_heap ();
+  vlib_stat_segment_lock ();
+
+  vec_validate (sm->interfaces, sw_if_index);
+  if (is_add)
+    {
+      vnet_sw_interface_t *si = vnet_get_sw_interface (vnm, sw_if_index);
+      vnet_sw_interface_t *si_sup =
+	vnet_get_sup_sw_interface (vnm, si->sw_if_index);
+      vnet_hw_interface_t *hi_sup;
+
+      ASSERT (si_sup->type == VNET_SW_INTERFACE_TYPE_HARDWARE);
+      hi_sup = vnet_get_hw_interface (vnm, si_sup->hw_if_index);
+
+      u8 *s = 0;
+      s = format (s, "%v", hi_sup->name);
+      if (si->type != VNET_SW_INTERFACE_TYPE_HARDWARE)
+	s = format (s, ".%d", si->sub.id);
+      s = format (s, "%c", 0);
+      sm->interfaces[sw_if_index] = s;
+    }
+  else
+    {
+      vec_free (sm->interfaces[sw_if_index]);
+      sm->interfaces[sw_if_index] = 0;
+    }
+
+  stat_segment_directory_entry_t *ep;
+  ep = &sm->directory_vector[STAT_COUNTER_INTERFACE_NAMES];
+  ep->offset = stat_segment_offset (shared_header, sm->interfaces);
+
+  int i;
+  u64 *offset_vector =
+    ep->offset_vector ? stat_segment_pointer (shared_header,
+					      ep->offset_vector) : 0;
+
+  vec_validate (offset_vector, vec_len (sm->interfaces) - 1);
+  for (i = 0; i < vec_len (sm->interfaces); i++)
+    {
+      offset_vector[i] =
+	sm->interfaces[i] ? stat_segment_offset (shared_header,
+						 sm->interfaces[i]) : 0;
+    }
+  ep->offset_vector = stat_segment_offset (shared_header, offset_vector);
+
+  vlib_stat_segment_unlock ();
+  clib_mem_set_heap (oldheap);
+
+  return 0;
+}
+
 VLIB_INIT_FUNCTION (statseg_init);
 VLIB_EARLY_CONFIG_FUNCTION (statseg_config, "statseg");
+VNET_SW_INTERFACE_ADD_DEL_FUNCTION (statseg_sw_interface_add_del);
 
 /* *INDENT-OFF* */
 VLIB_REGISTER_NODE (stat_segment_collector, static) =

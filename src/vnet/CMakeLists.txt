@@ -39,6 +39,11 @@ list(APPEND VNET_SOURCES
   misc.c
 )
 
+list(APPEND VNET_MULTIARCH_SOURCES
+  interface_output.c
+  interface_stats.c
+)
+
 list(APPEND VNET_HEADERS
   api_errno.h
   buffer.h
@@ -91,6 +96,12 @@ list(APPEND VNET_SOURCES
   cop/ip4_whitelist.c
   cop/ip6_whitelist.c
   cop/cop_api.c
+)
+
+list(APPEND VNET_MULTIARCH_SOURCES
+  cop/node1.c
+  cop/ip4_whitelist.c
+  cop/ip6_whitelist.c
 )
 
 list(APPEND VNET_HEADERS
@@ -268,6 +279,10 @@ list(APPEND VNET_SOURCES
   vxlan/vxlan_api.c
 )
 
+list(APPEND VNET_MULTIARCH_SOURCES
+  vxlan/encap.c
+)
+
 list(APPEND VNET_HEADERS
   vxlan/vxlan.h
   vxlan/vxlan_packet.h
@@ -286,6 +301,11 @@ list(APPEND VNET_SOURCES
   geneve/encap.c
   geneve/decap.c
   geneve/geneve_api.c
+)
+
+list(APPEND VNET_MULTIARCH_SOURCES
+  geneve/encap.c
+  geneve/decap.c
 )
 
 list(APPEND VNET_HEADERS
@@ -492,11 +512,6 @@ list(APPEND VNET_SOURCES
   ipsec/esp_decrypt.c
   ipsec/ah_decrypt.c
   ipsec/ah_encrypt.c
-  ipsec/ikev2.c
-  ipsec/ikev2_crypto.c
-  ipsec/ikev2_cli.c
-  ipsec/ikev2_payload.c
-  ipsec/ikev2_format.c
   ipsec/ipsec_api.c
 )
 
@@ -524,8 +539,6 @@ list(APPEND VNET_HEADERS
   ipsec/ipsec_if.h
   ipsec/esp.h
   ipsec/ah.h
-  ipsec/ikev2.h
-  ipsec/ikev2_priv.h
 )
 
 ##############################################################################
@@ -556,6 +569,12 @@ list(APPEND VNET_SOURCES
   tcp/tcp.c
 )
 
+list(APPEND VNET_MULTIARCH_SOURCES
+  tcp/tcp_input.c
+  tcp/tcp_output.c
+  tcp/tcp_syn_filter4.c
+)
+
 list(APPEND VNET_HEADERS
   tcp/tcp_packet.h
   tcp/tcp_timer.h
@@ -580,6 +599,11 @@ list(APPEND VNET_SOURCES
   udp/udp_api.c
 )
 
+list(APPEND VNET_MULTIARCH_SOURCES
+  udp/udp_local.c
+  udp/udp_encap_node.c
+)
+
 list(APPEND VNET_HEADERS
   udp/udp_error.def
   udp/udp.h
@@ -597,7 +621,13 @@ list(APPEND VNET_SOURCES
   sctp/sctp_pg.c
   sctp/sctp_input.c
   sctp/sctp_output.c
+  sctp/sctp_output_node.c
   sctp/sctp_format.c
+)
+
+list(APPEND VNET_MULTIARCH_SOURCES
+  sctp/sctp_output_node.c
+  sctp/sctp_input.c
 )
 
 list(APPEND VNET_HEADERS
@@ -620,6 +650,11 @@ list(APPEND VNET_SOURCES
   gre/gre_api.c
 )
 
+list(APPEND VNET_MULTIARCH_SOURCES
+  gre/node.c
+  gre/gre.c
+)
+
 list(APPEND VNET_HEADERS
   gre/gre.h
   gre/packet.h
@@ -637,6 +672,10 @@ list(APPEND VNET_SOURCES
   ipip/sixrd.c
   ipip/ipip_api.c
   ipip/ipip_cli.c
+)
+
+list(APPEND VNET_MULTIARCH_SOURCES
+  ipip/node.c
 )
 
 list(APPEND VNET_HEADERS
@@ -678,6 +717,13 @@ list(APPEND VNET_SOURCES
   mpls/mpls_api.c
 )
 
+list(APPEND VNET_MULTIARCH_SOURCES
+  mpls/mpls_output.c
+  mpls/mpls_input.c
+  mpls/mpls_lookup.c
+  mpls/mpls_features.c
+)
+
 list(APPEND VNET_HEADERS
   mpls/mpls.h
   mpls/mpls_types.h
@@ -699,6 +745,11 @@ list(APPEND VNET_SOURCES
   vxlan-gbp/vxlan_gbp_packet.c
 )
 
+list (APPEND VNET_MULTIARCH_SOURCES
+  vxlan-gbp/decap.c
+  vxlan-gbp/encap.c
+)
+
 list(APPEND VNET_HEADERS
   vxlan-gbp/vxlan_gbp.h
   vxlan-gbp/vxlan_gbp_packet.h
@@ -716,6 +767,10 @@ list(APPEND VNET_SOURCES
   vxlan-gpe/encap.c
   vxlan-gpe/decap.c
   vxlan-gpe/vxlan_gpe_api.c
+)
+
+list (APPEND VNET_MULTIARCH_SOURCES
+  vxlan-gpe/decap.c
 )
 
 list(APPEND VNET_HEADERS
@@ -928,6 +983,10 @@ list(APPEND VNET_SOURCES
   span/node.c
 )
 
+list(APPEND VNET_MULTIARCH_SOURCES
+  span/node.c
+)
+
 list(APPEND VNET_HEADERS
   span/span.h
 )
@@ -999,6 +1058,9 @@ list(APPEND VNET_HEADERS
 list(APPEND VNET_MULTIARCH_SOURCES
   devices/virtio/vhost_user_input.c
   devices/virtio/vhost_user_output.c
+  devices/netmap/node.c
+  devices/virtio/node.c
+  devices/af_packet/node.c
 )
 
 list(APPEND VNET_API_FILES
@@ -1242,6 +1304,11 @@ list(APPEND VNET_SOURCES
   adj/adj_delegate.c
 )
 
+list(APPEND VNET_MULTIARCH_SOURCES
+  adj/adj_nsh.c
+  adj/adj_l2.c
+)
+
 list(APPEND VNET_HEADERS
   adj/adj.h
   adj/adj_types.h
@@ -1337,7 +1404,14 @@ list(APPEND VNET_SOURCES
   qos/qos_api.c
   qos/qos_egress_map.c
   qos/qos_record.c
+  qos/qos_record_node.c
   qos/qos_mark.c
+  qos/qos_mark_node.c
+)
+
+list(APPEND VNET_MULTIARCH_SOURCES
+  qos/qos_record_node.c
+  qos/qos_mark_node.c
 )
 
 list(APPEND VNET_API_FILES qos/qos.api)
@@ -1366,6 +1440,12 @@ list(APPEND VNET_SOURCES
   bier/bier_disp_dispatch_node.c
   bier/bier_disp_table.c
   bier/bier_bift_table.c
+)
+
+list(APPEND VNET_MULTIARCH_SOURCES
+  bier/bier_disp_dispatch_node.c
+  bier/bier_disp_lookup_node.c
+  bier/bier_imp_node.c
 )
 
 list(APPEND VNET_HEADERS

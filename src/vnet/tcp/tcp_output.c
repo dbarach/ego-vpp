@@ -16,9 +16,6 @@
 #include <vnet/tcp/tcp.h>
 #include <math.h>
 
-vlib_node_registration_t tcp4_output_node;
-vlib_node_registration_t tcp6_output_node;
-
 typedef enum _tcp_output_next
 {
   TCP_OUTPUT_NEXT_DROP,
@@ -52,9 +49,11 @@ typedef struct
   tcp_connection_t tcp_connection;
 } tcp_tx_trace_t;
 
+#ifndef CLIB_MARCH_VARIANT
 u16 dummy_mtu = 1460;
+#endif /* CLIB_MARCH_VARIANT */
 
-u8 *
+static u8 *
 format_tcp_tx_trace (u8 * s, va_list * args)
 {
   CLIB_UNUSED (vlib_main_t * vm) = va_arg (*args, vlib_main_t *);
@@ -70,6 +69,7 @@ format_tcp_tx_trace (u8 * s, va_list * args)
   return s;
 }
 
+#ifndef CLIB_MARCH_VARIANT
 static u8
 tcp_window_compute_scale (u32 window)
 {
@@ -464,6 +464,7 @@ tcp_init_mss (tcp_connection_t * tc)
   if (tcp_opts_tstamp (&tc->rcv_opts))
     tc->snd_mss -= TCP_OPTION_LEN_TIMESTAMP;
 }
+#endif /* CLIB_MARCH_VARIANT */
 
 static void *
 tcp_reuse_buffer (vlib_main_t * vm, vlib_buffer_t * b)
@@ -481,6 +482,7 @@ tcp_reuse_buffer (vlib_main_t * vm, vlib_buffer_t * b)
   return vlib_buffer_make_headroom (b, TRANSPORT_MAX_HDRS_LEN);
 }
 
+#ifndef CLIB_MARCH_VARIANT
 static void *
 tcp_init_buffer (vlib_main_t * vm, vlib_buffer_t * b)
 {
@@ -688,6 +690,7 @@ tcp_enqueue_to_output_now (tcp_worker_ctx_t * wrk, vlib_buffer_t * b, u32 bi,
 {
   tcp_enqueue_to_output_i (wrk, b, bi, is_ip4, 1);
 }
+#endif /* CLIB_MARCH_VARIANT */
 
 static int
 tcp_make_reset_in_place (vlib_main_t * vm, vlib_buffer_t * b0,
@@ -768,6 +771,7 @@ tcp_make_reset_in_place (vlib_main_t * vm, vlib_buffer_t * b0,
   return 0;
 }
 
+#ifndef CLIB_MARCH_VARIANT
 /**
  *  Send reset without reusing existing buffer
  *
@@ -1340,8 +1344,8 @@ tcp_prepare_segment (tcp_worker_ctx_t * wrk, tcp_connection_t * tc,
 	return 0;
       *b = vlib_get_buffer (vm, bi);
       data = tcp_init_buffer (vm, *b);
-      n_bytes = stream_session_peek_bytes (&tc->connection, data, offset,
-					   max_deq_bytes);
+      n_bytes = session_tx_fifo_peek_bytes (&tc->connection, data, offset,
+					    max_deq_bytes);
       ASSERT (n_bytes == max_deq_bytes);
       b[0]->current_length = n_bytes;
       tcp_push_hdr_i (tc, *b, tc->state, /* compute opts */ 0, /* burst */ 0);
@@ -1370,9 +1374,9 @@ tcp_prepare_segment (tcp_worker_ctx_t * wrk, tcp_connection_t * tc,
 
       *b = vlib_get_buffer (vm, wrk->tx_buffers[--n_bufs]);
       data = tcp_init_buffer (vm, *b);
-      n_bytes = stream_session_peek_bytes (&tc->connection, data, offset,
-					   bytes_per_buffer -
-					   TRANSPORT_MAX_HDRS_LEN);
+      n_bytes = session_tx_fifo_peek_bytes (&tc->connection, data, offset,
+					    bytes_per_buffer -
+					    TRANSPORT_MAX_HDRS_LEN);
       b[0]->current_length = n_bytes;
       b[0]->flags |= VLIB_BUFFER_TOTAL_LENGTH_VALID;
       b[0]->total_length_not_including_first_buffer = 0;
@@ -1387,8 +1391,9 @@ tcp_prepare_segment (tcp_worker_ctx_t * wrk, tcp_connection_t * tc,
 	  chain_b = vlib_get_buffer (vm, chain_bi);
 	  chain_b->current_data = 0;
 	  data = vlib_buffer_get_current (chain_b);
-	  n_peeked = stream_session_peek_bytes (&tc->connection, data,
-						offset + n_bytes, len_to_deq);
+	  n_peeked = session_tx_fifo_peek_bytes (&tc->connection, data,
+						 offset + n_bytes,
+						 len_to_deq);
 	  ASSERT (n_peeked == len_to_deq);
 	  n_bytes += n_peeked;
 	  chain_b->current_length = n_peeked;
@@ -1439,7 +1444,7 @@ tcp_prepare_retransmit_segment (tcp_worker_ctx_t * wrk,
   /*
    * Make sure we can retransmit something
    */
-  available_bytes = session_tx_fifo_max_dequeue (&tc->connection);
+  available_bytes = transport_max_tx_dequeue (&tc->connection);
   ASSERT (available_bytes >= offset);
   available_bytes -= offset;
   if (!available_bytes)
@@ -1716,7 +1721,7 @@ tcp_timer_persist_handler (u32 index)
       || tc->snd_wnd > tc->snd_mss)
     return;
 
-  available_bytes = session_tx_fifo_max_dequeue (&tc->connection);
+  available_bytes = transport_max_tx_dequeue (&tc->connection);
   offset = tc->snd_una_max - tc->snd_una;
 
   /* Reprogram persist if no new bytes available to send. We may have data
@@ -1753,7 +1758,7 @@ tcp_timer_persist_handler (u32 index)
   max_snd_bytes =
     clib_min (tc->snd_mss, tm->bytes_per_buffer - TRANSPORT_MAX_HDRS_LEN);
   n_bytes =
-    stream_session_peek_bytes (&tc->connection, data, offset, max_snd_bytes);
+    session_tx_fifo_peek_bytes (&tc->connection, data, offset, max_snd_bytes);
   b->current_length = n_bytes;
   ASSERT (n_bytes != 0 && (tcp_timer_is_active (tc, TCP_TIMER_RETRANSMIT)
 			   || tc->snd_nxt == tc->snd_una_max
@@ -1855,7 +1860,7 @@ tcp_fast_retransmit_sack (tcp_worker_ctx_t * wrk, tcp_connection_t * tc,
   sb = &tc->sack_sb;
   hole = scoreboard_get_hole (sb, sb->cur_rxt_hole);
 
-  max_deq = session_tx_fifo_max_dequeue (&tc->connection);
+  max_deq = transport_max_tx_dequeue (&tc->connection);
   max_deq -= tc->snd_una_max - tc->snd_una;
 
   while (snd_space > 0 && n_segs < burst_size)
@@ -1982,7 +1987,7 @@ send_unsent:
   if (snd_space < tc->snd_mss || tc->snd_mss == 0)
     goto done;
 
-  max_deq = session_tx_fifo_max_dequeue (&tc->connection);
+  max_deq = transport_max_tx_dequeue (&tc->connection);
   max_deq -= tc->snd_una_max - tc->snd_una;
   if (max_deq)
     {
@@ -2014,6 +2019,7 @@ tcp_fast_retransmit (tcp_worker_ctx_t * wrk, tcp_connection_t * tc,
   else
     return tcp_fast_retransmit_no_sack (wrk, tc, burst_size);
 }
+#endif /* CLIB_MARCH_VARIANT */
 
 static void
 tcp_output_handle_link_local (tcp_connection_t * tc0, vlib_buffer_t * b0,
@@ -2199,16 +2205,14 @@ tcp46_output_inline (vlib_main_t * vm, vlib_node_runtime_t * node,
   return frame->n_vectors;
 }
 
-static uword
-tcp4_output (vlib_main_t * vm, vlib_node_runtime_t * node,
-	     vlib_frame_t * from_frame)
+VLIB_NODE_FN (tcp4_output_node) (vlib_main_t * vm, vlib_node_runtime_t * node,
+				 vlib_frame_t * from_frame)
 {
   return tcp46_output_inline (vm, node, from_frame, 1 /* is_ip4 */ );
 }
 
-static uword
-tcp6_output (vlib_main_t * vm, vlib_node_runtime_t * node,
-	     vlib_frame_t * from_frame)
+VLIB_NODE_FN (tcp6_output_node) (vlib_main_t * vm, vlib_node_runtime_t * node,
+				 vlib_frame_t * from_frame)
 {
   return tcp46_output_inline (vm, node, from_frame, 0 /* is_ip4 */ );
 }
@@ -2216,7 +2220,6 @@ tcp6_output (vlib_main_t * vm, vlib_node_runtime_t * node,
 /* *INDENT-OFF* */
 VLIB_REGISTER_NODE (tcp4_output_node) =
 {
-  .function = tcp4_output,
   .name = "tcp4-output",
   /* Takes a vector of packets. */
   .vector_size = sizeof (u32),
@@ -2234,12 +2237,9 @@ VLIB_REGISTER_NODE (tcp4_output_node) =
 };
 /* *INDENT-ON* */
 
-VLIB_NODE_FUNCTION_MULTIARCH (tcp4_output_node, tcp4_output);
-
 /* *INDENT-OFF* */
 VLIB_REGISTER_NODE (tcp6_output_node) =
 {
-  .function = tcp6_output,
   .name = "tcp6-output",
     /* Takes a vector of packets. */
   .vector_size = sizeof (u32),
@@ -2256,8 +2256,6 @@ VLIB_REGISTER_NODE (tcp6_output_node) =
   .format_trace = format_tcp_tx_trace,
 };
 /* *INDENT-ON* */
-
-VLIB_NODE_FUNCTION_MULTIARCH (tcp6_output_node, tcp6_output);
 
 typedef enum _tcp_reset_next
 {
@@ -2344,23 +2342,20 @@ tcp46_send_reset_inline (vlib_main_t * vm, vlib_node_runtime_t * node,
   return from_frame->n_vectors;
 }
 
-static uword
-tcp4_send_reset (vlib_main_t * vm, vlib_node_runtime_t * node,
-		 vlib_frame_t * from_frame)
+VLIB_NODE_FN (tcp4_reset_node) (vlib_main_t * vm, vlib_node_runtime_t * node,
+				vlib_frame_t * from_frame)
 {
   return tcp46_send_reset_inline (vm, node, from_frame, 1);
 }
 
-static uword
-tcp6_send_reset (vlib_main_t * vm, vlib_node_runtime_t * node,
-		 vlib_frame_t * from_frame)
+VLIB_NODE_FN (tcp6_reset_node) (vlib_main_t * vm, vlib_node_runtime_t * node,
+				vlib_frame_t * from_frame)
 {
   return tcp46_send_reset_inline (vm, node, from_frame, 0);
 }
 
 /* *INDENT-OFF* */
 VLIB_REGISTER_NODE (tcp4_reset_node) = {
-  .function = tcp4_send_reset,
   .name = "tcp4-reset",
   .vector_size = sizeof (u32),
   .n_errors = TCP_N_ERROR,
@@ -2375,11 +2370,8 @@ VLIB_REGISTER_NODE (tcp4_reset_node) = {
 };
 /* *INDENT-ON* */
 
-VLIB_NODE_FUNCTION_MULTIARCH (tcp4_reset_node, tcp4_send_reset);
-
 /* *INDENT-OFF* */
 VLIB_REGISTER_NODE (tcp6_reset_node) = {
-  .function = tcp6_send_reset,
   .name = "tcp6-reset",
   .vector_size = sizeof (u32),
   .n_errors = TCP_N_ERROR,
@@ -2393,8 +2385,6 @@ VLIB_REGISTER_NODE (tcp6_reset_node) = {
   .format_trace = format_tcp_tx_trace,
 };
 /* *INDENT-ON* */
-
-VLIB_NODE_FUNCTION_MULTIARCH (tcp6_reset_node, tcp6_send_reset);
 
 /*
  * fd.io coding-style-patch-verification: ON

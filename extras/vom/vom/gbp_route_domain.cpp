@@ -77,7 +77,7 @@ gbp_route_domain::key() const
   return (m_rd->key());
 }
 
-uint32_t
+route::table_id_t
 gbp_route_domain::id() const
 {
   return (m_rd->table_id());
@@ -87,6 +87,18 @@ const std::shared_ptr<route_domain>
 gbp_route_domain::get_route_domain() const
 {
   return m_rd;
+}
+
+const std::shared_ptr<interface>
+gbp_route_domain::get_ip4_uu_fwd() const
+{
+  return m_ip4_uu_fwd;
+}
+
+const std::shared_ptr<interface>
+gbp_route_domain::get_ip6_uu_fwd() const
+{
+  return m_ip6_uu_fwd;
 }
 
 bool
