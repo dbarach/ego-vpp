@@ -129,7 +129,6 @@ ct_session_connect_notify (session_t * ss)
   cs->session_state = SESSION_STATE_CONNECTING;
   cs->app_wrk_index = client_wrk->wrk_index;
   cs->connection_index = cct->c_c_index;
-  cs->t_app_index = client_wrk->app_index;
 
   cct->c_s_index = cs->session_index;
   cct->client_rx_fifo = ss->tx_fifo;
@@ -282,7 +281,6 @@ ct_connect (app_worker_t * client_wrk, session_t * ll,
 
   server_wrk = application_listener_select_worker (ll);
   ss->app_wrk_index = server_wrk->wrk_index;
-  ss->t_app_index = server_wrk->app_index;
 
   sct->c_s_index = ss->session_index;
   sct->server_wrk = ss->app_wrk_index;
@@ -464,6 +462,15 @@ format_ct_connection_id (u8 * s, va_list * args)
   return s;
 }
 
+static int
+ct_custom_tx (void *session)
+{
+  session_t *s = (session_t *) session;
+  if (session_has_transport (s))
+    return 0;
+  return ct_session_tx (s);
+}
+
 static u8 *
 format_ct_listener (u8 * s, va_list * args)
 {
@@ -523,6 +530,7 @@ const static transport_proto_vft_t cut_thru_proto = {
   .connect = ct_session_connect,
   .close = ct_session_close,
   .get_connection = ct_session_get,
+  .custom_tx = ct_custom_tx,
   .tx_type = TRANSPORT_TX_INTERNAL,
   .service_type = TRANSPORT_SERVICE_APP,
   .format_listener = format_ct_listener,

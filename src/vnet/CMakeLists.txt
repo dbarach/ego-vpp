@@ -79,6 +79,10 @@ list(APPEND VNET_SOURCES
   policer/policer_api.c
 )
 
+list(APPEND VNET_MULTIARCH_SOURCES
+  policer/node_funcs.c
+)
+
 list(APPEND VNET_HEADERS
   policer/police.h
   policer/policer.h
@@ -363,6 +367,11 @@ list(APPEND VNET_SOURCES
   classify/flow_classify_node.c
   classify/vnet_classify.h
   classify/classify_api.c
+)
+
+list(APPEND VNET_MULTIARCH_SOURCES
+  classify/ip_classify.c
+  classify/flow_classify_node.c
 )
 
 list(APPEND VNET_HEADERS
