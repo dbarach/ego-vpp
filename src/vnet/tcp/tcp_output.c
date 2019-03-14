@@ -172,7 +172,7 @@ tcp_update_rcv_wnd (tcp_connection_t * tc)
   /* Make sure we have a multiple of rcv_wscale */
   if (wnd && tc->rcv_wscale)
     {
-      wnd &= ~(1 << tc->rcv_wscale);
+      wnd &= ~((1 << tc->rcv_wscale) - 1);
       if (wnd == 0)
 	wnd = 1 << tc->rcv_wscale;
     }
@@ -1087,42 +1087,16 @@ tcp_send_fin (tcp_connection_t * tc)
     }
 }
 
-always_inline u8
-tcp_make_state_flags (tcp_connection_t * tc, tcp_state_t next_state)
-{
-  switch (next_state)
-    {
-    case TCP_STATE_ESTABLISHED:
-    case TCP_STATE_CLOSE_WAIT:
-    case TCP_STATE_TIME_WAIT:
-    case TCP_STATE_FIN_WAIT_2:
-      return TCP_FLAG_ACK;
-    case TCP_STATE_SYN_RCVD:
-      return TCP_FLAG_SYN | TCP_FLAG_ACK;
-    case TCP_STATE_SYN_SENT:
-      return TCP_FLAG_SYN;
-    case TCP_STATE_LAST_ACK:
-    case TCP_STATE_FIN_WAIT_1:
-    case TCP_STATE_CLOSING:
-      if (tc->snd_nxt + 1 < tc->snd_una_max)
-	return TCP_FLAG_ACK;
-      else
-	return TCP_FLAG_FIN;
-    default:
-      clib_warning ("Shouldn't be here!");
-    }
-  return 0;
-}
-
 /**
- * Push TCP header and update connection variables
+ * Push TCP header and update connection variables. Should only be called
+ * for segments with data, not for 'control' packets.
  */
 always_inline void
 tcp_push_hdr_i (tcp_connection_t * tc, vlib_buffer_t * b,
 		tcp_state_t next_state, u8 compute_opts, u8 maybe_burst)
 {
+  u8 tcp_hdr_opts_len, flags = TCP_FLAG_ACK;
   u32 advertise_wnd, data_len;
-  u8 tcp_hdr_opts_len, flags;
   tcp_main_t *tm = &tcp_main;
   tcp_header_t *th;
 
@@ -1143,7 +1117,6 @@ tcp_push_hdr_i (tcp_connection_t * tc, vlib_buffer_t * b,
   else
     advertise_wnd = tcp_window_to_advertise (tc, next_state);
 
-  flags = tcp_make_state_flags (tc, next_state);
   if (PREDICT_FALSE (tc->flags & TCP_CONN_PSH_PENDING))
     {
       if (seq_geq (tc->psh_seq, tc->snd_nxt)
@@ -1177,8 +1150,9 @@ tcp_push_hdr_i (tcp_connection_t * tc, vlib_buffer_t * b,
 }
 
 u32
-tcp_push_header (tcp_connection_t * tc, vlib_buffer_t * b)
+tcp_session_push_header (transport_connection_t * tconn, vlib_buffer_t * b)
 {
+  tcp_connection_t *tc = (tcp_connection_t *) tconn;
   tcp_push_hdr_i (tc, b, TCP_STATE_ESTABLISHED, /* compute opts */ 0,
 		  /* burst */ 1);
   tc->snd_una_max = tc->snd_nxt;
@@ -1709,7 +1683,6 @@ tcp_timer_persist_handler (u32 index)
   u8 *data;
 
   tc = tcp_connection_get_if_valid (index, thread_index);
-
   if (!tc)
     return;
 
@@ -1717,8 +1690,8 @@ tcp_timer_persist_handler (u32 index)
   tc->timers[TCP_TIMER_PERSIST] = TCP_TIMER_HANDLE_INVALID;
 
   /* Problem already solved or worse */
-  if (tc->state == TCP_STATE_CLOSED || tc->state > TCP_STATE_ESTABLISHED
-      || tc->snd_wnd > tc->snd_mss)
+  if (tc->state == TCP_STATE_CLOSED || tc->snd_wnd > tc->snd_mss
+      || (tc->flags & TCP_CONN_FINSNT))
     return;
 
   available_bytes = transport_max_tx_dequeue (&tc->connection);
@@ -1755,10 +1728,10 @@ tcp_timer_persist_handler (u32 index)
 
   tcp_validate_txf_size (tc, offset);
   tc->snd_opts_len = tcp_make_options (tc, &tc->snd_opts, tc->state);
-  max_snd_bytes =
-    clib_min (tc->snd_mss, tm->bytes_per_buffer - TRANSPORT_MAX_HDRS_LEN);
-  n_bytes =
-    session_tx_fifo_peek_bytes (&tc->connection, data, offset, max_snd_bytes);
+  max_snd_bytes = clib_min (tc->snd_mss,
+			    tm->bytes_per_buffer - TRANSPORT_MAX_HDRS_LEN);
+  n_bytes = session_tx_fifo_peek_bytes (&tc->connection, data, offset,
+					max_snd_bytes);
   b->current_length = n_bytes;
   ASSERT (n_bytes != 0 && (tcp_timer_is_active (tc, TCP_TIMER_RETRANSMIT)
 			   || tc->snd_nxt == tc->snd_una_max

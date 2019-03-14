@@ -388,6 +388,7 @@ dpdk_lib_init (dpdk_main_t * dm)
 	    case VNET_DPDK_PMD_IGB:
 	    case VNET_DPDK_PMD_IXGBE:
 	    case VNET_DPDK_PMD_I40E:
+	    case VNET_DPDK_PMD_ICE:
 	      xd->port_type = port_type_from_speed_capa (&dev_info);
 	      xd->supported_flow_actions = VNET_FLOW_ACTION_MARK |
 		VNET_FLOW_ACTION_REDIRECT_TO_NODE |
@@ -842,7 +843,8 @@ dpdk_bind_devices_to_uio (dpdk_config_main_t * conf)
         (d->device_id == 0x0443 || d->device_id == 0x37c9 || d->device_id == 0x19e3))
       ;
     /* Cisco VIC */
-    else if (d->vendor_id == 0x1137 && d->device_id == 0x0043)
+    else if (d->vendor_id == 0x1137 &&
+        (d->device_id == 0x0043 || d->device_id == 0x0071))
       ;
     /* Chelsio T4/T5 */
     else if (d->vendor_id == 0x1425 && (d->device_id & 0xe000) == 0x4000)
@@ -1061,7 +1063,6 @@ dpdk_config (vlib_main_t * vm, unformat_input_t * input)
   unformat_input_t sub_input;
   uword default_hugepage_sz, x;
   u8 *s, *tmp = 0;
-  u32 log_level;
   int ret, i;
   int num_whitelisted = 0;
   u8 no_pci = 0;
@@ -1075,7 +1076,6 @@ dpdk_config (vlib_main_t * vm, unformat_input_t * input)
     format (0, "%s/hugepages%c", vlib_unix_get_runtime_dir (), 0);
 
   conf->device_config_index_by_pci_addr = hash_create (0, sizeof (uword));
-  log_level = RTE_LOG_NOTICE;
 
   while (unformat_check_input (input) != UNFORMAT_END_OF_INPUT)
     {
@@ -1093,9 +1093,6 @@ dpdk_config (vlib_main_t * vm, unformat_input_t * input)
 
       else if (unformat (input, "decimal-interface-names"))
 	conf->interface_name_format_decimal = 1;
-
-      else if (unformat (input, "log-level %U", unformat_dpdk_log_level, &x))
-	log_level = x;
 
       else if (unformat (input, "no-multi-seg"))
 	conf->no_multi_seg = 1;
@@ -1335,7 +1332,6 @@ dpdk_config (vlib_main_t * vm, unformat_input_t * input)
 
   /* Set up DPDK eal and packet mbuf pool early. */
 
-  rte_log_set_global_level (log_level);
   int log_fds[2] = { 0 };
   if (pipe (log_fds) == 0)
     {
