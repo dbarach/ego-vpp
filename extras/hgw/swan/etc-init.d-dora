@@ -1,0 +1,66 @@
+#! /bin/sh
+
+### BEGIN INIT INFO
+# Provides:		dora
+# Required-Start:	$remote_fs $syslog
+# Required-Stop:	$remote_fs $syslog
+# Default-Start:	2 3 4 5
+# Default-Stop:		
+# Short-Description:	Mount Dora tunnels
+### END INIT INFO
+
+set -e
+
+. /lib/lsb/init-functions
+
+# Tunnels to Mount Dora
+
+# Are we running from init?
+run_by_init() {
+    ([ "$previous" ] && [ "$runlevel" ]) || [ "$runlevel" = S ]
+}
+
+export PATH="${PATH:+$PATH:}/usr/sbin:/sbin:/usr/local/bin"
+
+case "$1" in
+  start)
+	log_daemon_msg "Starting Dora Tunnels" "dora" || true
+	if start-stop-daemon -c dbarach --start --quiet --oknodo --pidfile /run/dora.pid --exec /usr/local/bin/dora-tunnels -- ; then
+	    log_end_msg 0 || true
+	else
+	    log_end_msg 1 || true
+	fi
+	;;
+  stop)
+	log_daemon_msg "Stopping Dora Tunnels" "dora" || true
+	killall dora-tunnel
+	killall sleep
+	if start-stop-daemon -c dbarach --stop --quiet --oknodo --pidfile /run/dora.pid; then
+	    log_end_msg 0 || true
+	else
+	    log_end_msg 1 || true
+	fi
+	;;
+
+  restart)
+	log_daemon_msg "Restarting Dora Tunnels" "dora" || true
+	killall dora-tunnel
+	killall sleep
+	start-stop-daemon -c dbarach --stop --quiet --oknodo --retry 30 --pidfile /run/dora.pid
+	if start-stop-daemon -c dbarach --start --quiet --oknodo --pidfile /run/dora.pid --exec /usr/local/bin/dora-tunnels -- ; then
+	    log_end_msg 0 || true
+	else
+	    log_end_msg 1 || true
+	fi
+	;;
+
+  status)
+	status_of_proc -p /run/dora.pid dora-tunnel sshd && exit 0 || exit $?
+	;;
+
+  *)
+	log_action_msg "Usage: /etc/init.d/dora {start|stop|reload|force-reload|restart|try-restart|status}" || true
+	exit 1
+esac
+
+exit 0
