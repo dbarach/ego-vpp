@@ -331,6 +331,7 @@ gbp_classify_get_src_ip_address (const ethernet_header_t * eh0,
 	      break;
 	    }
 	  }
+	break;
       }
     case ETHERNET_TYPE_ARP:
       {
@@ -514,6 +515,10 @@ gbp_lpm_classify_inline (vlib_main_t * vm,
 	    }
 	  lb0 = load_balance_get (lbi0);
 	  dpo0 = load_balance_get_bucket_i (lb0, 0);
+
+	  /* all packets from an external network should not be learned by the
+	   * reciever. so set the Do-not-learn bit here */
+	  vnet_buffer2 (b0)->gbp.flags = VXLAN_GBP_GPFLAGS_D;
 
 	  if (gbp_policy_dpo_type == dpo0->dpoi_type)
 	    {

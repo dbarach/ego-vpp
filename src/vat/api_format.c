@@ -5030,8 +5030,8 @@ static void vl_api_policer_classify_details_t_handler_json
   vat_json_object_add_uint (node, "table_index", ntohl (mp->table_index));
 }
 
-static void vl_api_ipsec_gre_add_del_tunnel_reply_t_handler
-  (vl_api_ipsec_gre_add_del_tunnel_reply_t * mp)
+static void vl_api_ipsec_gre_tunnel_add_del_reply_t_handler
+  (vl_api_ipsec_gre_tunnel_add_del_reply_t * mp)
 {
   vat_main_t *vam = &vat_main;
   i32 retval = ntohl (mp->retval);
@@ -5048,8 +5048,8 @@ static void vl_api_ipsec_gre_add_del_tunnel_reply_t_handler
   vam->regenerate_interface_table = 1;
 }
 
-static void vl_api_ipsec_gre_add_del_tunnel_reply_t_handler_json
-  (vl_api_ipsec_gre_add_del_tunnel_reply_t * mp)
+static void vl_api_ipsec_gre_tunnel_add_del_reply_t_handler_json
+  (vl_api_ipsec_gre_tunnel_add_del_reply_t * mp)
 {
   vat_main_t *vam = &vat_main;
   vat_json_node_t node;
@@ -5550,7 +5550,7 @@ _(IP_SOURCE_AND_PORT_RANGE_CHECK_ADD_DEL_REPLY,                         \
  ip_source_and_port_range_check_add_del_reply)                          \
 _(IP_SOURCE_AND_PORT_RANGE_CHECK_INTERFACE_ADD_DEL_REPLY,               \
  ip_source_and_port_range_check_interface_add_del_reply)                \
-_(IPSEC_GRE_ADD_DEL_TUNNEL_REPLY, ipsec_gre_add_del_tunnel_reply)       \
+_(IPSEC_GRE_TUNNEL_ADD_DEL_REPLY, ipsec_gre_tunnel_add_del_reply)       \
 _(IPSEC_GRE_TUNNEL_DETAILS, ipsec_gre_tunnel_details)                   \
 _(DELETE_SUBIF_REPLY, delete_subif_reply)                               \
 _(L2_INTERFACE_PBB_TAG_REWRITE_REPLY, l2_interface_pbb_tag_rewrite_reply) \
@@ -15028,8 +15028,8 @@ api_ipsec_tunnel_if_add_del (vat_main_t * vam)
   u32 crypto_alg = 0, integ_alg = 0;
   u8 *lck = NULL, *rck = NULL;
   u8 *lik = NULL, *rik = NULL;
-  ip4_address_t local_ip = { {0} };
-  ip4_address_t remote_ip = { {0} };
+  vl_api_address_t local_ip = { 0 };
+  vl_api_address_t remote_ip = { 0 };
   u8 is_add = 1;
   u8 esn = 0;
   u8 anti_replay = 0;
@@ -15049,9 +15049,11 @@ api_ipsec_tunnel_if_add_del (vat_main_t * vam)
 	;
       else if (unformat (i, "remote_spi %d", &remote_spi))
 	;
-      else if (unformat (i, "local_ip %U", unformat_ip4_address, &local_ip))
+      else
+	if (unformat (i, "local_ip %U", unformat_vl_api_address, &local_ip))
 	;
-      else if (unformat (i, "remote_ip %U", unformat_ip4_address, &remote_ip))
+      else
+	if (unformat (i, "remote_ip %U", unformat_vl_api_address, &remote_ip))
 	;
       else if (unformat (i, "local_crypto_key %U", unformat_hex_string, &lck))
 	;
@@ -15099,8 +15101,8 @@ api_ipsec_tunnel_if_add_del (vat_main_t * vam)
   mp->esn = esn;
   mp->anti_replay = anti_replay;
 
-  clib_memcpy (mp->local_ip, &local_ip, sizeof (ip4_address_t));
-  clib_memcpy (mp->remote_ip, &remote_ip, sizeof (ip4_address_t));
+  clib_memcpy (&mp->local_ip, &local_ip, sizeof (local_ip));
+  clib_memcpy (&mp->remote_ip, &remote_ip, sizeof (remote_ip));
 
   mp->local_spi = htonl (local_spi);
   mp->remote_spi = htonl (remote_spi);
@@ -15229,8 +15231,7 @@ static void vl_api_ipsec_sa_details_t_handler_json
 			    ntohl (mp->entry.integrity_algorithm));
   flags = ntohl (mp->entry.flags);
   vat_json_object_add_uint (node, "use_esn",
-			    ! !(flags &
-				IPSEC_API_SAD_FLAG_USE_EXTENDED_SEQ_NUM));
+			    ! !(flags & IPSEC_API_SAD_FLAG_USE_ESN));
   vat_json_object_add_uint (node, "use_anti_replay",
 			    ! !(flags & IPSEC_API_SAD_FLAG_USE_ANTI_REPLAY));
   vat_json_object_add_uint (node, "is_tunnel",
@@ -20345,14 +20346,14 @@ api_ip_source_and_port_range_check_interface_add_del (vat_main_t * vam)
 }
 
 static int
-api_ipsec_gre_add_del_tunnel (vat_main_t * vam)
+api_ipsec_gre_tunnel_add_del (vat_main_t * vam)
 {
   unformat_input_t *i = vam->input;
-  vl_api_ipsec_gre_add_del_tunnel_t *mp;
+  vl_api_ipsec_gre_tunnel_add_del_t *mp;
   u32 local_sa_id = 0;
   u32 remote_sa_id = 0;
-  ip4_address_t src_address;
-  ip4_address_t dst_address;
+  vl_api_ip4_address_t src_address;
+  vl_api_ip4_address_t dst_address;
   u8 is_add = 1;
   int ret;
 
@@ -20362,9 +20363,11 @@ api_ipsec_gre_add_del_tunnel (vat_main_t * vam)
 	;
       else if (unformat (i, "remote_sa %d", &remote_sa_id))
 	;
-      else if (unformat (i, "src %U", unformat_ip4_address, &src_address))
+      else
+	if (unformat (i, "src %U", unformat_vl_api_ip4_address, &src_address))
 	;
-      else if (unformat (i, "dst %U", unformat_ip4_address, &dst_address))
+      else
+	if (unformat (i, "dst %U", unformat_vl_api_ip4_address, &dst_address))
 	;
       else if (unformat (i, "del"))
 	is_add = 0;
@@ -20375,12 +20378,12 @@ api_ipsec_gre_add_del_tunnel (vat_main_t * vam)
 	}
     }
 
-  M (IPSEC_GRE_ADD_DEL_TUNNEL, mp);
+  M (IPSEC_GRE_TUNNEL_ADD_DEL, mp);
 
-  mp->local_sa_id = ntohl (local_sa_id);
-  mp->remote_sa_id = ntohl (remote_sa_id);
-  clib_memcpy (mp->src_address, &src_address, sizeof (src_address));
-  clib_memcpy (mp->dst_address, &dst_address, sizeof (dst_address));
+  mp->tunnel.local_sa_id = ntohl (local_sa_id);
+  mp->tunnel.remote_sa_id = ntohl (remote_sa_id);
+  clib_memcpy (mp->tunnel.src, &src_address, sizeof (src_address));
+  clib_memcpy (mp->tunnel.dst, &dst_address, sizeof (dst_address));
   mp->is_add = is_add;
 
   S (mp);
@@ -20434,10 +20437,21 @@ static void vl_api_ipsec_gre_tunnel_details_t_handler
   vat_main_t *vam = &vat_main;
 
   print (vam->ofp, "%11d%15U%15U%14d%14d",
-	 ntohl (mp->sw_if_index),
-	 format_ip4_address, &mp->src_address,
-	 format_ip4_address, &mp->dst_address,
-	 ntohl (mp->local_sa_id), ntohl (mp->remote_sa_id));
+	 ntohl (mp->tunnel.sw_if_index),
+	 format_vl_api_ip4_address, mp->tunnel.src,
+	 format_vl_api_ip4_address, mp->tunnel.dst,
+	 ntohl (mp->tunnel.local_sa_id), ntohl (mp->tunnel.remote_sa_id));
+}
+
+static void
+vat_json_object_add_vl_api_ip4 (vat_json_node_t * node,
+				const char *name,
+				const vl_api_ip4_address_t addr)
+{
+  struct in_addr ip4;
+
+  clib_memcpy (&ip4, addr, sizeof (ip4));
+  vat_json_object_add_ip4 (node, name, ip4);
 }
 
 static void vl_api_ipsec_gre_tunnel_details_t_handler_json
@@ -20455,13 +20469,14 @@ static void vl_api_ipsec_gre_tunnel_details_t_handler_json
   node = vat_json_array_add (&vam->json_tree);
 
   vat_json_init_object (node);
-  vat_json_object_add_uint (node, "sw_if_index", ntohl (mp->sw_if_index));
-  clib_memcpy (&ip4, &mp->src_address, sizeof (ip4));
-  vat_json_object_add_ip4 (node, "src_address", ip4);
-  clib_memcpy (&ip4, &mp->dst_address, sizeof (ip4));
-  vat_json_object_add_ip4 (node, "dst_address", ip4);
-  vat_json_object_add_uint (node, "local_sa_id", ntohl (mp->local_sa_id));
-  vat_json_object_add_uint (node, "remote_sa_id", ntohl (mp->remote_sa_id));
+  vat_json_object_add_uint (node, "sw_if_index",
+			    ntohl (mp->tunnel.sw_if_index));
+  vat_json_object_add_vl_api_ip4 (node, "src", mp->tunnel.src);
+  vat_json_object_add_vl_api_ip4 (node, "src", mp->tunnel.dst);
+  vat_json_object_add_uint (node, "local_sa_id",
+			    ntohl (mp->tunnel.local_sa_id));
+  vat_json_object_add_uint (node, "remote_sa_id",
+			    ntohl (mp->tunnel.remote_sa_id));
 }
 
 static int
@@ -22656,7 +22671,7 @@ _(ip_source_and_port_range_check_add_del,                               \
 _(ip_source_and_port_range_check_interface_add_del,                     \
   "<intf> | sw_if_index <nn> [tcp-out-vrf <id>] [tcp-in-vrf <id>]"      \
   "[udp-in-vrf <id>] [udp-out-vrf <id>]")                               \
-_(ipsec_gre_add_del_tunnel,                                             \
+_(ipsec_gre_tunnel_add_del,                                             \
   "src <addr> dst <addr> local_sa <sa-id> remote_sa <sa-id> [del]")     \
 _(ipsec_gre_tunnel_dump, "[sw_if_index <nn>]")                          \
 _(delete_subif,"<intfc> | sw_if_index <nn>")                            \

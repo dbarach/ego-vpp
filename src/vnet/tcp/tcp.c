@@ -545,6 +545,7 @@ tcp_cc_algo_register (tcp_cc_algorithm_type_e type,
   vec_validate (tm->cc_algos, type);
 
   tm->cc_algos[type] = *vft;
+  hash_set_mem (tm->cc_algo_by_name, vft->name, type);
 }
 
 tcp_cc_algorithm_t *
@@ -841,9 +842,10 @@ format_tcp_vars (u8 * s, va_list * args)
 	      tcp_flight_size (tc), tcp_available_output_snd_space (tc),
 	      tcp_rcv_wnd_available (tc));
   s = format (s, " tsval_recent %u\n", tc->tsval_recent);
-  s = format (s, " tsecr %u tsecr_last_ack %u tsval_recent_age %u\n",
+  s = format (s, " tsecr %u tsecr_last_ack %u tsval_recent_age %u",
 	      tc->rcv_opts.tsecr, tc->tsecr_last_ack,
 	      tcp_time_now () - tc->tsval_recent_age);
+  s = format (s, " snd_mss %u\n", tc->snd_mss);
   s = format (s, " rto %u rto_boff %u srtt %u us %.3f rttvar %u rtt_ts %.4f",
 	      tc->rto, tc->rto_boff, tc->srtt, tc->mrtt_us * 1000, tc->rttvar,
 	      tc->rtt_ts);
@@ -1164,7 +1166,7 @@ tcp_session_flush_data (transport_connection_t * tconn)
   if (tc->flags & TCP_CONN_PSH_PENDING)
     return;
   tc->flags |= TCP_CONN_PSH_PENDING;
-  tc->psh_seq = tc->snd_una_max + transport_max_tx_dequeue (tconn) - 1;
+  tc->psh_seq = tc->snd_una + transport_max_tx_dequeue (tconn) - 1;
 }
 
 /* *INDENT-OFF* */
@@ -1296,7 +1298,7 @@ tcp_timer_waitclose_handler (u32 conn_index)
        * and switch to LAST_ACK. */
       tcp_cong_recovery_off (tc);
       /* Make sure we don't try to send unsent data */
-      tc->snd_una_max = tc->snd_nxt = tc->snd_una;
+      tc->snd_nxt = tc->snd_una;
       tcp_send_fin (tc);
       tcp_connection_set_state (tc, TCP_STATE_LAST_ACK);
 
@@ -1532,8 +1534,10 @@ tcp_init (vlib_main_t * vm)
 			       FIB_PROTOCOL_IP6, tcp6_output_node.index);
 
   tcp_api_reference ();
+  tm->cc_algo_by_name = hash_create_string (0, sizeof (uword));
   tm->tx_pacing = 1;
   tm->cc_algo = TCP_CC_NEWRENO;
+  tm->default_mtu = 1460;
   return 0;
 }
 
@@ -1543,15 +1547,20 @@ uword
 unformat_tcp_cc_algo (unformat_input_t * input, va_list * va)
 {
   uword *result = va_arg (*va, uword *);
+  tcp_main_t *tm = &tcp_main;
+  char *cc_algo_name;
+  u8 found = 0;
+  uword *p;
 
-  if (unformat (input, "newreno"))
-    *result = TCP_CC_NEWRENO;
-  else if (unformat (input, "cubic"))
-    *result = TCP_CC_CUBIC;
-  else
-    return 0;
+  if (unformat (input, "%s", &cc_algo_name)
+      && ((p = hash_get_mem (tm->cc_algo_by_name, cc_algo_name))))
+    {
+      *result = *p;
+      found = 1;
+    }
 
-  return 1;
+  vec_free (cc_algo_name);
+  return found;
 }
 
 uword
@@ -1595,6 +1604,8 @@ tcp_config_fn (vlib_main_t * vm, unformat_input_t * input)
 	;
       else if (unformat (input, "max-rx-fifo %U", unformat_memory_size,
 			 &tm->max_rx_fifo))
+	;
+      else if (unformat (input, "mtu %d", &tm->default_mtu))
 	;
       else if (unformat (input, "no-tx-pacing"))
 	tm->tx_pacing = 0;

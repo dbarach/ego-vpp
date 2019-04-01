@@ -21,8 +21,6 @@
 #include <svm/message_queue.h>
 #include <svm/ssvm.h>
 
-#define SESSION_PROXY_LISTENER_INDEX ((u8)~0 - 1)
-
 #define foreach_session_input_error                                    	\
 _(NO_SESSION, "No session drops")                                       \
 _(NO_LISTENER, "No listener for dst port drops")                        \
@@ -49,7 +47,6 @@ typedef struct session_tx_context_
   session_t *s;
   transport_proto_vft_t *transport_vft;
   transport_connection_t *tc;
-  vlib_buffer_t *b;
   u32 max_dequeue;
   u32 snd_space;
   u32 left_to_snd;
@@ -79,9 +76,6 @@ typedef struct session_worker_
 
   /** vlib_time_now last time around the track */
   f64 last_vlib_time;
-
-  /** Per-proto enqueue epoch counters */
-  u64 current_enqueue_epoch[TRANSPORT_N_PROTO];
 
   /** Per-proto vector of sessions to enqueue */
   u32 *session_to_enqueue[TRANSPORT_N_PROTO];
@@ -341,6 +335,8 @@ int session_send_io_evt_to_thread_custom (void *data, u32 thread_index,
 					  session_evt_type_t evt_type);
 void session_send_rpc_evt_to_thread (u32 thread_index, void *fp,
 				     void *rpc_args);
+void session_send_rpc_evt_to_thread_force (u32 thread_index, void *fp,
+					   void *rpc_args);
 transport_connection_t *session_get_transport (session_t * s);
 
 
