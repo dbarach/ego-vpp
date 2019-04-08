@@ -66,16 +66,16 @@ typedef struct
 
 typedef struct
 {
-  vnet_crypto_op_type_t enc_op_type;
-  vnet_crypto_op_type_t dec_op_type;
+  vnet_crypto_op_id_t enc_op_id;
+  vnet_crypto_op_id_t dec_op_id;
   u8 iv_size;
   u8 block_size;
 } ipsec_main_crypto_alg_t;
 
 typedef struct
 {
-  vnet_crypto_op_type_t op_type;
-  u8 trunc_size;
+  vnet_crypto_op_id_t op_id;
+  u8 icv_size;
 } ipsec_main_integ_alg_t;
 
 typedef struct
@@ -153,6 +153,12 @@ typedef struct
   /* per-thread data */
   ipsec_per_thread_data_t *ptd;
 } ipsec_main_t;
+
+typedef enum ipsec_format_flags_t_
+{
+  IPSEC_FORMAT_BRIEF = 0,
+  IPSEC_FORMAT_DETAIL = (1 << 0),
+} ipsec_format_flags_t;
 
 extern ipsec_main_t ipsec_main;
 

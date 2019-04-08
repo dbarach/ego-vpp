@@ -91,6 +91,7 @@ typedef struct ipsec_key_t_
   _ (8, IS_TUNNEL_V6, "tunnel-v6")                        \
   _ (16, UDP_ENCAP, "udp-encap")                          \
   _ (32, IS_GRE, "GRE")                                   \
+  _ (64, IS_INBOUND, "inboud")                            \
 
 typedef enum ipsec_sad_flags_t_
 {
@@ -110,7 +111,7 @@ typedef struct
 
   u8 crypto_iv_size;
   u8 crypto_block_size;
-  u8 integ_trunc_size;
+  u8 integ_icv_size;
   u32 spi;
   u32 seq;
   u32 seq_hi;
@@ -118,9 +119,9 @@ typedef struct
   u32 last_seq_hi;
   u64 replay_window;
 
-  vnet_crypto_op_type_t crypto_enc_op_type;
-  vnet_crypto_op_type_t crypto_dec_op_type;
-  vnet_crypto_op_type_t integ_op_type;
+  vnet_crypto_op_id_t crypto_enc_op_id;
+  vnet_crypto_op_id_t crypto_dec_op_id;
+  vnet_crypto_op_id_t integ_op_id;
 
   dpo_id_t dpo[IPSEC_N_PROTOCOLS];
 

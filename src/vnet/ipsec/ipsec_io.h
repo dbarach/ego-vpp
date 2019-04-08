@@ -27,6 +27,7 @@ typedef enum
 } ipsec_output_next_t;
 
 #define foreach_ipsec_input_next   \
+  _ (PUNT, "punt-dispatch")        \
   _ (DROP, "error-drop")
 
 #define _(v, s) IPSEC_INPUT_NEXT_##v,

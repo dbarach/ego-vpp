@@ -17,6 +17,7 @@ add_vpp_plugin(unittest
   bihash_test.c
   crypto_test.c
   crypto/aes_cbc.c
+  crypto/aes_gcm.c
   crypto/rfc2202_hmac_sha1.c
   crypto/rfc2202_hmac_md5.c
   crypto/rfc4231.c
@@ -28,5 +29,6 @@ add_vpp_plugin(unittest
   session_test.c
   string_test.c
   tcp_test.c
+  sparse_vec_test.c
   unittest.c
 )

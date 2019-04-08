@@ -27,9 +27,16 @@ JOBS := $(if $(shell [ -f /proc/cpuinfo ] && head /proc/cpuinfo),\
 B := $(BUILD_DIR)
 I := $(INSTALL_DIR)
 
+ifneq ($(shell which cmake3),)
+CMAKE?=cmake3
+else
+CMAKE?=cmake
+endif
+
 include packages.mk
 include packages/nasm.mk
 include packages/ipsec-mb.mk
+include packages/quicly.mk
 include packages/dpdk.mk
 include packages/rdma-core.mk
 
@@ -38,7 +45,7 @@ clean:
 	@rm -rf $(B) $(I)
 
 .PHONY: install
-install: dpdk-install rdma-core-install
+install: dpdk-install rdma-core-install quicly-install
 
 .PHONY: config
 config: dpdk-config rdma-core-config

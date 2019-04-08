@@ -98,8 +98,8 @@ ipsec_sa_set_crypto_alg (ipsec_sa_t * sa, ipsec_crypto_alg_t crypto_alg)
   sa->crypto_alg = crypto_alg;
   sa->crypto_iv_size = im->crypto_algs[crypto_alg].iv_size;
   sa->crypto_block_size = im->crypto_algs[crypto_alg].block_size;
-  sa->crypto_enc_op_type = im->crypto_algs[crypto_alg].enc_op_type;
-  sa->crypto_dec_op_type = im->crypto_algs[crypto_alg].dec_op_type;
+  sa->crypto_enc_op_id = im->crypto_algs[crypto_alg].enc_op_id;
+  sa->crypto_dec_op_id = im->crypto_algs[crypto_alg].dec_op_id;
   ASSERT (sa->crypto_iv_size <= ESP_MAX_IV_SIZE);
   ASSERT (sa->crypto_block_size <= ESP_MAX_BLOCK_SIZE);
 }
@@ -109,9 +109,9 @@ ipsec_sa_set_integ_alg (ipsec_sa_t * sa, ipsec_integ_alg_t integ_alg)
 {
   ipsec_main_t *im = &ipsec_main;
   sa->integ_alg = integ_alg;
-  sa->integ_trunc_size = im->integ_algs[integ_alg].trunc_size;
-  sa->integ_op_type = im->integ_algs[integ_alg].op_type;
-  ASSERT (sa->integ_trunc_size <= ESP_MAX_ICV_SIZE);
+  sa->integ_icv_size = im->integ_algs[integ_alg].icv_size;
+  sa->integ_op_id = im->integ_algs[integ_alg].op_id;
+  ASSERT (sa->integ_icv_size <= ESP_MAX_ICV_SIZE);
 }
 
 int
@@ -149,23 +149,13 @@ ipsec_sa_add (u32 id,
   sa->spi = spi;
   sa->stat_index = sa_index;
   sa->protocol = proto;
+  sa->flags = flags;
   ipsec_sa_set_crypto_alg (sa, crypto_alg);
   clib_memcpy (&sa->crypto_key, ck, sizeof (sa->crypto_key));
   ipsec_sa_set_integ_alg (sa, integ_alg);
   clib_memcpy (&sa->integ_key, ik, sizeof (sa->integ_key));
   ip46_address_copy (&sa->tunnel_src_addr, tun_src);
   ip46_address_copy (&sa->tunnel_dst_addr, tun_dst);
-
-  if (flags & IPSEC_SA_FLAG_USE_ESN)
-    ipsec_sa_set_USE_ESN (sa);
-  if (flags & IPSEC_SA_FLAG_USE_ANTI_REPLAY)
-    ipsec_sa_set_USE_ANTI_REPLAY (sa);
-  if (flags & IPSEC_SA_FLAG_IS_TUNNEL)
-    ipsec_sa_set_IS_TUNNEL (sa);
-  if (flags & IPSEC_SA_FLAG_IS_TUNNEL_V6)
-    ipsec_sa_set_IS_TUNNEL_V6 (sa);
-  if (flags & IPSEC_SA_FLAG_UDP_ENCAP)
-    ipsec_sa_set_UDP_ENCAP (sa);
 
   err = ipsec_check_support_cb (im, sa);
   if (err)
@@ -182,7 +172,7 @@ ipsec_sa_add (u32 id,
       return VNET_API_ERROR_SYSCALL_ERROR_1;
     }
 
-  if (ipsec_sa_is_set_IS_TUNNEL (sa))
+  if (ipsec_sa_is_set_IS_TUNNEL (sa) && !ipsec_sa_is_set_IS_INBOUND (sa))
     {
       fib_protocol_t fproto = (ipsec_sa_is_set_IS_TUNNEL_V6 (sa) ?
 			       FIB_PROTOCOL_IP6 : FIB_PROTOCOL_IP4);
@@ -280,7 +270,7 @@ ipsec_sa_del (u32 id)
   if (err)
     return VNET_API_ERROR_SYSCALL_ERROR_1;
 
-  if (ipsec_sa_is_set_IS_TUNNEL (sa))
+  if (ipsec_sa_is_set_IS_TUNNEL (sa) && !ipsec_sa_is_set_IS_INBOUND (sa))
     {
       fib_entry_child_remove (sa->fib_entry_index, sa->sibling);
       fib_table_entry_special_remove
