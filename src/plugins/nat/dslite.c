@@ -27,10 +27,10 @@ dslite_init (vlib_main_t * vm)
   uword *p;
   vlib_node_t *node;
   dslite_per_thread_data_t *td;
-  u32 translation_buckets = 1024;
-  u32 translation_memory_size = 128 << 20;
+  u32 translation_buckets = 32; // 1024;
+  u32 translation_memory_size = 4<<20; // 128 << 20;
   u32 b4_buckets = 128;
-  u32 b4_memory_size = 64 << 20;
+  u32 b4_memory_size = 2<<20; // 64 << 20;
 
   node = vlib_get_node_by_name (vm, (u8 *) "dslite-in2out");
   dm->dslite_in2out_node_index = node->index;
