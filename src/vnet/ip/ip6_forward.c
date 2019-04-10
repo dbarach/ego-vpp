@@ -1011,7 +1011,7 @@ ip6_tcp_udp_icmp_compute_checksum (vlib_main_t * vm, vlib_buffer_t * p0,
 	}
       p0 = vlib_get_buffer (vm, p0->next_buffer);
       data_this_buffer = vlib_buffer_get_current (p0);
-      n_this_buffer = p0->current_length;
+      n_this_buffer = clib_min (p0->current_length, n_bytes_left);
     }
 
   sum16 = ~ip_csum_fold (sum0);
@@ -1794,7 +1794,7 @@ ip6_rewrite_inline_with_gso (vlib_main_t * vm,
 			 is_locally_originated1, &next1, &error1);
 
 	  /* Don't adjust the buffer for hop count issue; icmp-error node
-	   * wants to see the IP headerr */
+	   * wants to see the IP header */
 	  if (PREDICT_TRUE (error0 == IP6_ERROR_NONE))
 	    {
 	      p0->current_data -= rw_len0;

@@ -1174,7 +1174,7 @@ ip4_tcp_udp_compute_checksum (vlib_main_t * vm, vlib_buffer_t * p0,
       ASSERT (p0->flags & VLIB_BUFFER_NEXT_PRESENT);
       p0 = vlib_get_buffer (vm, p0->next_buffer);
       data_this_buffer = vlib_buffer_get_current (p0);
-      n_this_buffer = p0->current_length;
+      n_this_buffer = clib_min (p0->current_length, n_bytes_left);
     }
 
   sum16 = ~ip_csum_fold (sum0);
@@ -2299,7 +2299,7 @@ ip4_rewrite_inline_with_gso (vlib_main_t * vm,
 	}
 
       /* Don't adjust the buffer for ttl issue; icmp-error node wants
-       * to see the IP headerr */
+       * to see the IP header */
       if (PREDICT_TRUE (error0 == IP4_ERROR_NONE))
 	{
 	  u32 next_index = adj0[0].rewrite_header.next_index;
@@ -2435,7 +2435,7 @@ ip4_rewrite_inline_with_gso (vlib_main_t * vm,
 	}
 
       /* Don't adjust the buffer for ttl issue; icmp-error node wants
-       * to see the IP headerr */
+       * to see the IP header */
       if (PREDICT_TRUE (error0 == IP4_ERROR_NONE))
 	{
 	  u32 next_index = adj0[0].rewrite_header.next_index;
