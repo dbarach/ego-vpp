@@ -63,10 +63,15 @@ class TestLB(VppTestCase):
             super(TestLB, cls).tearDownClass()
             raise
 
+    @classmethod
+    def tearDownClass(cls):
+        super(TestLB, cls).tearDownClass()
+
     def tearDown(self):
         super(TestLB, self).tearDown()
-        if not self.vpp_dead:
-            self.logger.info(self.vapi.cli("show lb vip verbose"))
+
+    def show_commands_at_teardown(self):
+        self.logger.info(self.vapi.cli("show lb vip verbose"))
 
     def getIPv4Flow(self, id):
         return (IP(dst="90.0.%u.%u" % (id / 255, id % 255),

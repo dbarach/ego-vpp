@@ -278,18 +278,23 @@ class TestGtpu(BridgeDomain, VppTestCase):
             super(TestGtpu, cls).tearDownClass()
             raise
 
+    @classmethod
+    def tearDownClass(cls):
+        super(TestGtpu, cls).tearDownClass()
+
     # Method to define VPP actions before tear down of the test case.
     #  Overrides tearDown method in VppTestCase class.
     #  @param self The object pointer.
     def tearDown(self):
         super(TestGtpu, self).tearDown()
-        if not self.vpp_dead:
-            self.logger.info(self.vapi.cli("show bridge-domain 11 detail"))
-            self.logger.info(self.vapi.cli("show bridge-domain 12 detail"))
-            self.logger.info(self.vapi.cli("show bridge-domain 13 detail"))
-            self.logger.info(self.vapi.cli("show int"))
-            self.logger.info(self.vapi.cli("show gtpu tunnel"))
-            self.logger.info(self.vapi.cli("show trace"))
+
+    def show_commands_at_teardown(self):
+        self.logger.info(self.vapi.cli("show bridge-domain 11 detail"))
+        self.logger.info(self.vapi.cli("show bridge-domain 12 detail"))
+        self.logger.info(self.vapi.cli("show bridge-domain 13 detail"))
+        self.logger.info(self.vapi.cli("show int"))
+        self.logger.info(self.vapi.cli("show gtpu tunnel"))
+        self.logger.info(self.vapi.cli("show trace"))
 
 
 if __name__ == '__main__':

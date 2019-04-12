@@ -67,6 +67,10 @@ class TestVtr(VppTestCase):
             super(TestVtr, cls).tearDownClass()
             raise
 
+    @classmethod
+    def tearDownClass(cls):
+        super(TestVtr, cls).tearDownClass()
+
     def setUp(self):
         """
         Clear trace and packet infos before running each test.
@@ -79,10 +83,11 @@ class TestVtr(VppTestCase):
         Show various debug prints after each test.
         """
         super(TestVtr, self).tearDown()
-        if not self.vpp_dead:
-            self.logger.info(self.vapi.ppcli("show l2fib verbose"))
-            self.logger.info(self.vapi.ppcli("show bridge-domain %s detail" %
-                                             self.bd_id))
+
+    def show_commands_at_teardown(self):
+        self.logger.info(self.vapi.ppcli("show l2fib verbose"))
+        self.logger.info(self.vapi.ppcli("show bridge-domain %s detail" %
+                                         self.bd_id))
 
     @classmethod
     def create_hosts_and_learn(cls, count):

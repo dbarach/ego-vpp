@@ -156,6 +156,10 @@ class TestVxlanGbp(VppTestCase):
             super(TestVxlanGbp, cls).tearDownClass()
             raise
 
+    @classmethod
+    def tearDownClass(cls):
+        super(TestVxlanGbp, cls).tearDownClass()
+
     def assert_eq_pkts(self, pkt1, pkt2):
         """ Verify the Ether, IP, UDP, payload are equal in both
         packets
@@ -256,11 +260,12 @@ class TestVxlanGbp(VppTestCase):
 #  @param self The object pointer.
     def tearDown(self):
         super(TestVxlanGbp, self).tearDown()
-        if not self.vpp_dead:
-            self.logger.info(self.vapi.cli("show bridge-domain 1 detail"))
-            self.logger.info(self.vapi.cli("show bridge-domain 3 detail"))
-            self.logger.info(self.vapi.cli("show vxlan-gbp tunnel"))
-            self.logger.info(self.vapi.cli("show error"))
+
+    def show_commands_at_teardown(self):
+        self.logger.info(self.vapi.cli("show bridge-domain 1 detail"))
+        self.logger.info(self.vapi.cli("show bridge-domain 3 detail"))
+        self.logger.info(self.vapi.cli("show vxlan-gbp tunnel"))
+        self.logger.info(self.vapi.cli("show error"))
 
 
 if __name__ == '__main__':
