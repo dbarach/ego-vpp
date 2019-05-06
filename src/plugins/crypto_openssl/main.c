@@ -44,7 +44,10 @@ static openssl_per_thread_data_t *per_thread_data = 0;
   _(cbc, AES_256_CBC, EVP_aes_256_cbc) \
   _(gcm, AES_128_GCM, EVP_aes_128_gcm) \
   _(gcm, AES_192_GCM, EVP_aes_192_gcm) \
-  _(gcm, AES_256_GCM, EVP_aes_256_gcm)
+  _(gcm, AES_256_GCM, EVP_aes_256_gcm) \
+  _(cbc, AES_128_CTR, EVP_aes_128_ctr) \
+  _(cbc, AES_192_CTR, EVP_aes_192_ctr) \
+  _(cbc, AES_256_CTR, EVP_aes_256_ctr) \
 
 #define foreach_openssl_hmac_op \
   _(MD5, EVP_md5) \
@@ -65,12 +68,13 @@ openssl_ops_enc_cbc (vlib_main_t * vm, vnet_crypto_op_t * ops[], u32 n_ops,
   for (i = 0; i < n_ops; i++)
     {
       vnet_crypto_op_t *op = ops[i];
+      vnet_crypto_key_t *key = vnet_crypto_get_key (op->key_index);
       int out_len;
 
       if (op->flags & VNET_CRYPTO_OP_FLAG_INIT_IV)
 	RAND_bytes (op->iv, 16);
 
-      EVP_EncryptInit_ex (ctx, cipher, NULL, op->key, op->iv);
+      EVP_EncryptInit_ex (ctx, cipher, NULL, key->data, op->iv);
       EVP_EncryptUpdate (ctx, op->dst, &out_len, op->src, op->len);
       if (out_len < op->len)
 	EVP_EncryptFinal_ex (ctx, op->dst + out_len, &out_len);
@@ -90,9 +94,10 @@ openssl_ops_dec_cbc (vlib_main_t * vm, vnet_crypto_op_t * ops[], u32 n_ops,
   for (i = 0; i < n_ops; i++)
     {
       vnet_crypto_op_t *op = ops[i];
+      vnet_crypto_key_t *key = vnet_crypto_get_key (op->key_index);
       int out_len;
 
-      EVP_DecryptInit_ex (ctx, cipher, NULL, op->key, op->iv);
+      EVP_DecryptInit_ex (ctx, cipher, NULL, key->data, op->iv);
       EVP_DecryptUpdate (ctx, op->dst, &out_len, op->src, op->len);
       if (out_len < op->len)
 	EVP_DecryptFinal_ex (ctx, op->dst + out_len, &out_len);
@@ -112,14 +117,15 @@ openssl_ops_enc_gcm (vlib_main_t * vm, vnet_crypto_op_t * ops[], u32 n_ops,
   for (i = 0; i < n_ops; i++)
     {
       vnet_crypto_op_t *op = ops[i];
+      vnet_crypto_key_t *key = vnet_crypto_get_key (op->key_index);
       int len;
 
       if (op->flags & VNET_CRYPTO_OP_FLAG_INIT_IV)
-	RAND_bytes (op->iv, op->iv_len);
+	RAND_bytes (op->iv, 8);
 
       EVP_EncryptInit_ex (ctx, cipher, 0, 0, 0);
-      EVP_CIPHER_CTX_ctrl (ctx, EVP_CTRL_GCM_SET_IVLEN, op->iv_len, NULL);
-      EVP_EncryptInit_ex (ctx, 0, 0, op->key, op->iv);
+      EVP_CIPHER_CTX_ctrl (ctx, EVP_CTRL_GCM_SET_IVLEN, 12, NULL);
+      EVP_EncryptInit_ex (ctx, 0, 0, key->data, op->iv);
       if (op->aad_len)
 	EVP_EncryptUpdate (ctx, NULL, &len, op->aad, op->aad_len);
       EVP_EncryptUpdate (ctx, op->dst, &len, op->src, op->len);
@@ -137,15 +143,16 @@ openssl_ops_dec_gcm (vlib_main_t * vm, vnet_crypto_op_t * ops[], u32 n_ops,
   openssl_per_thread_data_t *ptd = vec_elt_at_index (per_thread_data,
 						     vm->thread_index);
   EVP_CIPHER_CTX *ctx = ptd->evp_cipher_ctx;
-  u32 i;
+  u32 i, n_fail = 0;
   for (i = 0; i < n_ops; i++)
     {
       vnet_crypto_op_t *op = ops[i];
+      vnet_crypto_key_t *key = vnet_crypto_get_key (op->key_index);
       int len;
 
       EVP_DecryptInit_ex (ctx, cipher, 0, 0, 0);
-      EVP_CIPHER_CTX_ctrl (ctx, EVP_CTRL_GCM_SET_IVLEN, op->iv_len, 0);
-      EVP_DecryptInit_ex (ctx, 0, 0, op->key, op->iv);
+      EVP_CIPHER_CTX_ctrl (ctx, EVP_CTRL_GCM_SET_IVLEN, 12, 0);
+      EVP_DecryptInit_ex (ctx, 0, 0, key->data, op->iv);
       if (op->aad_len)
 	EVP_DecryptUpdate (ctx, 0, &len, op->aad, op->aad_len);
       EVP_DecryptUpdate (ctx, op->dst, &len, op->src, op->len);
@@ -154,9 +161,12 @@ openssl_ops_dec_gcm (vlib_main_t * vm, vnet_crypto_op_t * ops[], u32 n_ops,
       if (EVP_DecryptFinal_ex (ctx, op->dst + len, &len) > 0)
 	op->status = VNET_CRYPTO_OP_STATUS_COMPLETED;
       else
-	op->status = VNET_CRYPTO_OP_STATUS_FAIL_DECRYPT;
+	{
+	  n_fail++;
+	  op->status = VNET_CRYPTO_OP_STATUS_FAIL_DECRYPT;
+	}
     }
-  return n_ops;
+  return n_ops - n_fail;
 }
 
 static_always_inline u32
@@ -171,10 +181,11 @@ openssl_ops_hmac (vlib_main_t * vm, vnet_crypto_op_t * ops[], u32 n_ops,
   for (i = 0; i < n_ops; i++)
     {
       vnet_crypto_op_t *op = ops[i];
+      vnet_crypto_key_t *key = vnet_crypto_get_key (op->key_index);
       unsigned int out_len;
       size_t sz = op->digest_len ? op->digest_len : EVP_MD_size (md);
 
-      HMAC_Init_ex (ctx, op->key, op->key_len, md, NULL);
+      HMAC_Init_ex (ctx, key->data, vec_len (key->data), md, NULL);
       HMAC_Update (ctx, op->src, op->len);
       HMAC_Final (ctx, buffer, &out_len);
 
@@ -278,7 +289,7 @@ VLIB_INIT_FUNCTION (crypto_openssl_init);
 /* *INDENT-OFF* */
 VLIB_PLUGIN_REGISTER () = {
   .version = VPP_BUILD_VER,
-  .description = "OpenSSL Crypto Engine Plugin",
+  .description = "OpenSSL Crypto Engine",
 };
 /* *INDENT-ON* */
 

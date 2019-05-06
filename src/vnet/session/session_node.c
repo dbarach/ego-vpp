@@ -82,7 +82,8 @@ session_mq_accepted_reply_handler (void *data)
     {
       old_state = s->session_state;
       s->session_state = SESSION_STATE_READY;
-      if (!svm_fifo_is_empty (s->rx_fifo))
+
+      if (!svm_fifo_is_empty_prod (s->rx_fifo))
 	app_worker_lock_and_send_event (app_wrk, s, SESSION_IO_EVT_RX);
 
       /* Closed while waiting for app to reply. Resend disconnect */
@@ -413,8 +414,8 @@ session_tx_fifo_chain_tail (vlib_main_t * vm, session_tx_context_t * ctx,
 		}
 	    }
 	  else
-	    n_bytes_read = svm_fifo_dequeue_nowait (ctx->s->tx_fifo,
-						    len_to_deq, data);
+	    n_bytes_read = svm_fifo_dequeue (ctx->s->tx_fifo,
+					     len_to_deq, data);
 	}
       ASSERT (n_bytes_read == len_to_deq);
       chain_b->current_length = n_bytes_read;
@@ -493,8 +494,8 @@ session_tx_fill_buffer (vlib_main_t * vm, session_tx_context_t * ctx,
 	}
       else
 	{
-	  n_bytes_read = svm_fifo_dequeue_nowait (ctx->s->tx_fifo,
-						  len_to_deq, data0);
+	  n_bytes_read = svm_fifo_dequeue (ctx->s->tx_fifo,
+					   len_to_deq, data0);
 	  ASSERT (n_bytes_read > 0);
 	}
     }
@@ -557,7 +558,7 @@ session_tx_set_dequeue_params (vlib_main_t * vm, session_tx_context_t * ctx,
 			       u32 max_segs, u8 peek_data)
 {
   u32 n_bytes_per_buf, n_bytes_per_seg;
-  ctx->max_dequeue = svm_fifo_max_dequeue (ctx->s->tx_fifo);
+  ctx->max_dequeue = svm_fifo_max_dequeue_cons (ctx->s->tx_fifo);
   if (peek_data)
     {
       /* Offset in rx fifo from where to peek data */
@@ -788,7 +789,7 @@ session_tx_fifo_read_and_snd_i (vlib_main_t * vm, vlib_node_runtime_t * node,
 	svm_fifo_overwrite_head (ctx->s->tx_fifo, (u8 *) & ctx->hdr,
 				 sizeof (session_dgram_pre_hdr_t));
       /* More data needs to be read */
-      else if (svm_fifo_max_dequeue (ctx->s->tx_fifo) > 0)
+      else if (svm_fifo_max_dequeue_cons (ctx->s->tx_fifo) > 0)
 	if (svm_fifo_set_event (ctx->s->tx_fifo))
 	  vec_add1 (wrk->pending_event_vector, *e);
     }
@@ -946,6 +947,13 @@ session_queue_node_fn (vlib_main_t * vm, vlib_node_runtime_t * node,
 	      continue;
 	    }
 	  break;
+	case SESSION_IO_EVT_RX:
+	  s = session_event_get_session (e, thread_index);
+	  if (!s)
+	    break;
+	  transport_app_rx_evt (session_get_transport_proto (s),
+				s->connection_index, s->thread_index);
+	  break;
 	case SESSION_CTRL_EVT_CLOSE:
 	  s = session_get_from_handle_if_valid (e->session_handle);
 	  if (PREDICT_FALSE (!s))
@@ -956,7 +964,8 @@ session_queue_node_fn (vlib_main_t * vm, vlib_node_runtime_t * node,
 	   * and the tx queue is still not empty, try to wait for some
 	   * dispatch cycles */
 	  if (!e->postponed
-	      || (e->postponed < 200 && svm_fifo_max_dequeue (s->tx_fifo)))
+	      || (e->postponed < 200
+		  && svm_fifo_max_dequeue_cons (s->tx_fifo)))
 	    {
 	      e->postponed += 1;
 	      vec_add1 (wrk->pending_disconnects, *e);

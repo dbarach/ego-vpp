@@ -732,7 +732,7 @@ ila_add_del_entry (ila_add_del_entry_args_t * args)
 	      .fp_proto = FIB_PROTOCOL_IP6,
 	  };
 
-	  e->next_hop_fib_entry_index = 
+	  e->next_hop_fib_entry_index =
 	      fib_table_entry_special_add(0,
 					  &next_hop,
 					  FIB_SOURCE_RR,
@@ -824,7 +824,7 @@ ila_interface (u32 sw_if_index, u8 disable)
 /* *INDENT-OFF* */
 VLIB_PLUGIN_REGISTER () = {
     .version = VPP_BUILD_VER,
-    .description = "Identifier-locator addressing for IPv6",
+    .description = "Identifier Locator Addressing (ILA) for IPv6",
     .default_disabled = 1,
 };
 /* *INDENT-ON* */

@@ -127,8 +127,6 @@ class VCLTestCase(VppTestCase):
             i.set_table_ip4(0)
             i.admin_down()
 
-        self.vapi.session_enable_disable(is_enabled=0)
-
     def thru_host_stack_ipv6_setup(self):
         self.vapi.session_enable_disable(is_enabled=1)
         self.create_loopback_interfaces(2)
@@ -346,9 +344,10 @@ class VCLCutThruTestCase(VCLTestCase):
                                               self.server_port]
 
     def tearDown(self):
-        self.cut_thru_tear_down()
-
         super(VCLCutThruTestCase, self).tearDown()
+
+    def show_commands_at_teardown(self):
+        self.logger.debug(self.vapi.cli("show session verbose 2"))
 
     def test_vcl_cut_thru_echo(self):
         """ run VCL cut thru echo test """

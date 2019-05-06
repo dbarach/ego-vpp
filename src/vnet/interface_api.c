@@ -239,38 +239,38 @@ send_sw_interface_details (vpe_api_main_t * am,
       mp->sub_default = sub->eth.flags.default_sub;
       mp->sub_outer_vlan_id_any = sub->eth.flags.outer_vlan_id_any;
       mp->sub_inner_vlan_id_any = sub->eth.flags.inner_vlan_id_any;
+    }
 
-      /* vlan tag rewrite data */
-      u32 vtr_op = L2_VTR_DISABLED;
-      u32 vtr_push_dot1q = 0, vtr_tag1 = 0, vtr_tag2 = 0;
+  /* vlan tag rewrite data */
+  u32 vtr_op = L2_VTR_DISABLED;
+  u32 vtr_push_dot1q = 0, vtr_tag1 = 0, vtr_tag2 = 0;
 
-      if (l2vtr_get (am->vlib_main, am->vnet_main, swif->sw_if_index,
-		     &vtr_op, &vtr_push_dot1q, &vtr_tag1, &vtr_tag2) != 0)
-	{
-	  // error - default to disabled
-	  mp->vtr_op = ntohl (L2_VTR_DISABLED);
-	  clib_warning ("cannot get vlan tag rewrite for sw_if_index %d",
-			swif->sw_if_index);
-	}
-      else
-	{
-	  mp->vtr_op = ntohl (vtr_op);
-	  mp->vtr_push_dot1q = ntohl (vtr_push_dot1q);
-	  mp->vtr_tag1 = ntohl (vtr_tag1);
-	  mp->vtr_tag2 = ntohl (vtr_tag2);
-	}
+  if (l2vtr_get (am->vlib_main, am->vnet_main, swif->sw_if_index,
+		 &vtr_op, &vtr_push_dot1q, &vtr_tag1, &vtr_tag2) != 0)
+    {
+      // error - default to disabled
+      mp->vtr_op = ntohl (L2_VTR_DISABLED);
+      clib_warning ("cannot get vlan tag rewrite for sw_if_index %d",
+		    swif->sw_if_index);
+    }
+  else
+    {
+      mp->vtr_op = ntohl (vtr_op);
+      mp->vtr_push_dot1q = ntohl (vtr_push_dot1q);
+      mp->vtr_tag1 = ntohl (vtr_tag1);
+      mp->vtr_tag2 = ntohl (vtr_tag2);
     }
 
   /* pbb tag rewrite data */
   ethernet_header_t eth_hdr;
-  u32 vtr_op = L2_VTR_DISABLED;
+  u32 pbb_vtr_op = L2_VTR_DISABLED;
   u16 outer_tag = 0;
   u16 b_vlanid = 0;
   u32 i_sid = 0;
   clib_memset (&eth_hdr, 0, sizeof (eth_hdr));
 
   if (!l2pbb_get (am->vlib_main, am->vnet_main, swif->sw_if_index,
-		  &vtr_op, &outer_tag, &eth_hdr, &b_vlanid, &i_sid))
+		  &pbb_vtr_op, &outer_tag, &eth_hdr, &b_vlanid, &i_sid))
     {
       mp->sub_dot1ah = 1;
       clib_memcpy (mp->b_dmac, eth_hdr.dst_address,
@@ -295,6 +295,7 @@ vl_api_sw_interface_dump_t_handler (vl_api_sw_interface_dump_t * mp)
   vnet_sw_interface_t *swif;
   vnet_interface_main_t *im = &am->vnet_main->interface_main;
   vl_api_registration_t *rp;
+  u32 sw_if_index;
 
   rp = vl_api_client_index_to_registration (mp->client_index);
 
@@ -305,6 +306,25 @@ vl_api_sw_interface_dump_t_handler (vl_api_sw_interface_dump_t * mp)
     }
 
   u8 *filter = 0, *name = 0;
+  sw_if_index = ntohl (mp->sw_if_index);
+
+  if (!mp->name_filter_valid && sw_if_index != ~0 && sw_if_index != 0)
+    {
+      /* is it a valid sw_if_index? */
+      if (vec_len (im->sw_interfaces) <= sw_if_index)
+	return;
+
+      swif = vec_elt_at_index (im->sw_interfaces, sw_if_index);
+
+      vec_reset_length (name);
+      name =
+	format (name, "%U%c", format_vnet_sw_interface_name, am->vnet_main,
+		swif, 0);
+      send_sw_interface_details (am, rp, swif, name, mp->context);
+      vec_free (name);
+      return;
+    }
+
   if (mp->name_filter_valid)
     {
       mp->name_filter[ARRAY_LEN (mp->name_filter) - 1] = 0;
@@ -1393,6 +1413,11 @@ interface_api_hookup (vlib_main_t * vm)
                            sizeof(vl_api_##n##_t), 1);
   foreach_vpe_api_msg;
 #undef _
+
+  /* Mark these APIs as mp safe */
+  am->is_mp_safe[VL_API_SW_INTERFACE_DUMP] = 1;
+  am->is_mp_safe[VL_API_SW_INTERFACE_DETAILS] = 1;
+  am->is_mp_safe[VL_API_SW_INTERFACE_TAG_ADD_DEL] = 1;
 
   /*
    * Set up the (msg_name, crc, message-id) table

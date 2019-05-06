@@ -1,8 +1,9 @@
 import unittest
 import socket
+import struct
 
 from scapy.layers.inet import IP, ICMP, TCP, UDP
-from scapy.layers.ipsec import SecurityAssociation
+from scapy.layers.ipsec import SecurityAssociation, ESP
 from scapy.layers.l2 import Ether, Raw
 from scapy.layers.inet6 import IPv6, ICMPv6EchoRequest
 
@@ -42,6 +43,7 @@ class IPsecIPv4Params(object):
                                   IPSEC_API_CRYPTO_ALG_AES_CBC_128)
         self.crypt_algo = 'AES-CBC'  # scapy name
         self.crypt_key = 'JPjyOWBeVEQiMe7h'
+        self.salt = 0
         self.flags = 0
         self.nat_header = None
 
@@ -77,6 +79,7 @@ class IPsecIPv6Params(object):
                                   IPSEC_API_CRYPTO_ALG_AES_CBC_128)
         self.crypt_algo = 'AES-CBC'  # scapy name
         self.crypt_key = 'JPjyOWBeVEQiMe7h'
+        self.salt = 0
         self.flags = 0
         self.nat_header = None
 
@@ -85,9 +88,14 @@ def config_tun_params(p, encryption_type, tun_if):
     ip_class_by_addr_type = {socket.AF_INET: IP, socket.AF_INET6: IPv6}
     use_esn = bool(p.flags & (VppEnum.vl_api_ipsec_sad_flags_t.
                               IPSEC_API_SAD_FLAG_USE_ESN))
+    if p.crypt_algo == "AES-GCM":
+        crypt_key = p.crypt_key + struct.pack("!I", p.salt)
+    else:
+        crypt_key = p.crypt_key
     p.scapy_tun_sa = SecurityAssociation(
         encryption_type, spi=p.vpp_tun_spi,
-        crypt_algo=p.crypt_algo, crypt_key=p.crypt_key,
+        crypt_algo=p.crypt_algo,
+        crypt_key=crypt_key,
         auth_algo=p.auth_algo, auth_key=p.auth_key,
         tunnel_header=ip_class_by_addr_type[p.addr_type](
             src=tun_if.remote_addr[p.addr_type],
@@ -96,7 +104,8 @@ def config_tun_params(p, encryption_type, tun_if):
         use_esn=use_esn)
     p.vpp_tun_sa = SecurityAssociation(
         encryption_type, spi=p.scapy_tun_spi,
-        crypt_algo=p.crypt_algo, crypt_key=p.crypt_key,
+        crypt_algo=p.crypt_algo,
+        crypt_key=crypt_key,
         auth_algo=p.auth_algo, auth_key=p.auth_key,
         tunnel_header=ip_class_by_addr_type[p.addr_type](
             dst=tun_if.remote_addr[p.addr_type],
@@ -108,11 +117,15 @@ def config_tun_params(p, encryption_type, tun_if):
 def config_tra_params(p, encryption_type):
     use_esn = bool(p.flags & (VppEnum.vl_api_ipsec_sad_flags_t.
                               IPSEC_API_SAD_FLAG_USE_ESN))
+    if p.crypt_algo == "AES-GCM":
+        crypt_key = p.crypt_key + struct.pack("!I", p.salt)
+    else:
+        crypt_key = p.crypt_key
     p.scapy_tra_sa = SecurityAssociation(
         encryption_type,
         spi=p.vpp_tra_spi,
         crypt_algo=p.crypt_algo,
-        crypt_key=p.crypt_key,
+        crypt_key=crypt_key,
         auth_algo=p.auth_algo,
         auth_key=p.auth_key,
         nat_t_header=p.nat_header,
@@ -121,7 +134,7 @@ def config_tra_params(p, encryption_type):
         encryption_type,
         spi=p.scapy_tra_spi,
         crypt_algo=p.crypt_algo,
-        crypt_key=p.crypt_key,
+        crypt_key=crypt_key,
         auth_algo=p.auth_algo,
         auth_key=p.auth_key,
         nat_t_header=p.nat_header,
@@ -295,7 +308,11 @@ class IpsecTra4(object):
 
         # a packet that does not decrypt does not move the window forward
         bogus_sa = SecurityAssociation(self.encryption_type,
-                                       p.vpp_tra_spi)
+                                       p.vpp_tra_spi,
+                                       crypt_algo=p.crypt_algo,
+                                       crypt_key=p.crypt_key[::-1],
+                                       auth_algo=p.auth_algo,
+                                       auth_key=p.auth_key[::-1])
         pkt = (Ether(src=self.tra_if.remote_mac,
                      dst=self.tra_if.local_mac) /
                bogus_sa.encrypt(IP(src=self.tra_if.remote_ip4,
@@ -306,6 +323,22 @@ class IpsecTra4(object):
 
         self.assert_packet_counter_equal(
             '/err/%s/Integrity check failed' % self.tra4_decrypt_node_name, 17)
+
+        # a malformed 'runt' packet
+        #  created by a mis-constructed SA
+        if (ESP == self.encryption_type):
+            bogus_sa = SecurityAssociation(self.encryption_type,
+                                           p.vpp_tra_spi)
+            pkt = (Ether(src=self.tra_if.remote_mac,
+                         dst=self.tra_if.local_mac) /
+                   bogus_sa.encrypt(IP(src=self.tra_if.remote_ip4,
+                                       dst=self.tra_if.local_ip4) /
+                                    ICMP(),
+                                    seq_num=350))
+            self.send_and_assert_no_replies(self.tra_if, pkt * 17)
+
+            self.assert_packet_counter_equal(
+                '/err/%s/undersized packet' % self.tra4_decrypt_node_name, 17)
 
         # which we can determine since this packet is still in the window
         pkt = (Ether(src=self.tra_if.remote_mac,
@@ -399,6 +432,8 @@ class IpsecTra4(object):
             recv_pkts = self.send_and_expect(self.tra_if, send_pkts,
                                              self.tra_if)
             for rx in recv_pkts:
+                self.assertEqual(len(rx) - len(Ether()), rx[IP].len)
+                self.assert_packet_checksums_valid(rx)
                 try:
                     decrypted = p.vpp_tra_sa.decrypt(rx[IP])
                     self.assert_packet_checksums_valid(decrypted)
@@ -450,6 +485,8 @@ class IpsecTra6(object):
             recv_pkts = self.send_and_expect(self.tra_if, send_pkts,
                                              self.tra_if)
             for rx in recv_pkts:
+                self.assertEqual(len(rx) - len(Ether()) - len(IPv6()),
+                                 rx[IPv6].plen)
                 try:
                     decrypted = p.vpp_tra_sa.decrypt(rx[IPv6])
                     self.assert_packet_checksums_valid(decrypted)
@@ -519,6 +556,8 @@ class IpsecTun4(object):
     def verify_encrypted(self, p, sa, rxs):
         decrypt_pkts = []
         for rx in rxs:
+            self.assert_packet_checksums_valid(rx)
+            self.assertEqual(len(rx) - len(Ether()), rx[IP].len)
             try:
                 decrypt_pkt = p.vpp_tun_sa.decrypt(rx[IP])
                 if not decrypt_pkt.haslayer(IP):
@@ -647,6 +686,8 @@ class IpsecTun6(object):
                                        count=count)
             recv_pkts = self.send_and_expect(self.pg1, send_pkts, self.tun_if)
             for recv_pkt in recv_pkts:
+                self.assertEqual(len(recv_pkt) - len(Ether()) - len(IPv6()),
+                                 recv_pkt[IPv6].plen)
                 try:
                     decrypt_pkt = p.vpp_tun_sa.decrypt(recv_pkt[IPv6])
                     if not decrypt_pkt.haslayer(IPv6):

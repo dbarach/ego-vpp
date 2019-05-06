@@ -566,10 +566,11 @@ unix_config (vlib_main_t * vm, unformat_input_t * input)
  *
  * @cfgcmd{runtime-dir}
  * Define directory where VPP is going to store all runtime files.
- * Default is /run/vpp.
+ * Default is /run/vpp when running as root, /run/user/<UID>/vpp if running as
+ * an unprivileged user.
  *
  * @cfgcmd{cli-listen, &lt;address:port&gt;}
- * Bind the CLI to listen at the address and port given. @clocalhost
+ * Bind the CLI to listen at the address and port given. @c localhost
  * on TCP port @c 5002, given as <tt>cli-listen localhost:5002</tt>,
  * is typical.
  *
@@ -581,7 +582,7 @@ unix_config (vlib_main_t * vm, unformat_input_t * input)
  * Configure the CLI prompt to be @c string.
  *
  * @cfgcmd{cli-history-limit, &lt;nn&gt;}
- * Limit commmand history to @c nn  lines. A value of @c 0
+ * Limit command history to @c nn  lines. A value of @c 0
  * disables command history. Default value: @c 50
  *
  * @cfgcmd{cli-no-banner}
@@ -593,6 +594,12 @@ unix_config (vlib_main_t * vm, unformat_input_t * input)
  * @cfgcmd{cli-pager-buffer-limit, &lt;nn&gt;}
  * Limit pager buffer to @c nn lines of output.
  * A value of @c 0 disables the pager. Default value: @c 100000
+ *
+ * @cfgcmd{gid, &lt;nn&gt;}
+ * Set the effective gid under which the vpp process is to run.
+ *
+ * @cfgcmd{poll-sleep-usec, &lt;nn&gt;}
+ * Set a fixed poll sleep interval between main loop polls.
 ?*/
 VLIB_EARLY_CONFIG_FUNCTION (unix_config, "unix");
 
@@ -627,7 +634,7 @@ vlib_thread_stack_init (uword thread_index)
 {
   vec_validate (vlib_thread_stacks, thread_index);
   vlib_thread_stacks[thread_index] = clib_mem_alloc_aligned
-    (VLIB_THREAD_STACK_SIZE, VLIB_THREAD_STACK_SIZE);
+    (VLIB_THREAD_STACK_SIZE, clib_mem_get_page_size ());
 
   /*
    * Disallow writes to the bottom page of the stack, to

@@ -42,6 +42,7 @@ typedef struct _session_endpoint_cfg
   u32 ns_index;
   u8 original_tp;
   u8 *hostname;
+  u64 transport_opts;
 } session_endpoint_cfg_t;
 
 #define SESSION_IP46_ZERO			\
@@ -132,6 +133,7 @@ typedef enum session_flags_
 {
   SESSION_F_RX_EVT = 1,
   SESSION_F_PROXY = (1 << 1),
+  SESSION_F_QUIC_STREAM = (1 << 2),
 } session_flags_t;
 
 typedef struct session_

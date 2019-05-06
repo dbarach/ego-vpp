@@ -296,7 +296,7 @@ session_enqueue_chain_tail (session_t * s, vlib_buffer_t * b,
 	continue;
       if (is_in_order)
 	{
-	  rv = svm_fifo_enqueue_nowait (s->rx_fifo, len, data);
+	  rv = svm_fifo_enqueue (s->rx_fifo, len, data);
 	  if (rv == len)
 	    {
 	      written += rv;
@@ -363,9 +363,9 @@ session_enqueue_stream_connection (transport_connection_t * tc,
 
   if (is_in_order)
     {
-      enqueued = svm_fifo_enqueue_nowait (s->rx_fifo,
-					  b->current_length,
-					  vlib_buffer_get_current (b));
+      enqueued = svm_fifo_enqueue (s->rx_fifo,
+				   b->current_length,
+				   vlib_buffer_get_current (b));
       if (PREDICT_FALSE ((b->flags & VLIB_BUFFER_NEXT_PRESENT)
 			 && enqueued >= 0))
 	{
@@ -411,13 +411,12 @@ session_enqueue_dgram_connection (session_t * s,
 {
   int enqueued = 0, rv, in_order_off;
 
-  ASSERT (svm_fifo_max_enqueue (s->rx_fifo)
+  ASSERT (svm_fifo_max_enqueue_prod (s->rx_fifo)
 	  >= b->current_length + sizeof (*hdr));
 
-  svm_fifo_enqueue_nowait (s->rx_fifo, sizeof (session_dgram_hdr_t),
-			   (u8 *) hdr);
-  enqueued = svm_fifo_enqueue_nowait (s->rx_fifo, b->current_length,
-				      vlib_buffer_get_current (b));
+  svm_fifo_enqueue (s->rx_fifo, sizeof (session_dgram_hdr_t), (u8 *) hdr);
+  enqueued = svm_fifo_enqueue (s->rx_fifo, b->current_length,
+			       vlib_buffer_get_current (b));
   if (PREDICT_FALSE ((b->flags & VLIB_BUFFER_NEXT_PRESENT) && enqueued >= 0))
     {
       in_order_off = enqueued > b->current_length ? enqueued : 0;
@@ -492,6 +491,11 @@ static inline int
 session_enqueue_notify_inline (session_t * s)
 {
   app_worker_t *app_wrk;
+  u32 session_index;
+  u8 n_subscribers;
+
+  session_index = s->session_index;
+  n_subscribers = svm_fifo_n_subscribers (s->rx_fifo);
 
   app_wrk = app_worker_get_if_valid (s->app_wrk_index);
   if (PREDICT_FALSE (!app_wrk))
@@ -503,7 +507,7 @@ session_enqueue_notify_inline (session_t * s)
   /* *INDENT-OFF* */
   SESSION_EVT_DBG(SESSION_EVT_ENQ, s, ({
       ed->data[0] = SESSION_IO_EVT_RX;
-      ed->data[1] = svm_fifo_max_dequeue (s->rx_fifo);
+      ed->data[1] = svm_fifo_max_dequeue_prod (s->rx_fifo);
   }));
   /* *INDENT-ON* */
 
@@ -512,9 +516,12 @@ session_enqueue_notify_inline (session_t * s)
 						     SESSION_IO_EVT_RX)))
     return -1;
 
-  if (PREDICT_FALSE (svm_fifo_n_subscribers (s->rx_fifo)))
-    return session_notify_subscribers (app_wrk->app_index, s,
-				       s->rx_fifo, SESSION_IO_EVT_RX);
+  if (PREDICT_FALSE (n_subscribers))
+    {
+      s = session_get (session_index, vlib_get_thread_index ());
+      return session_notify_subscribers (app_wrk->app_index, s,
+					 s->rx_fifo, SESSION_IO_EVT_RX);
+    }
 
   return 0;
 }
@@ -1104,7 +1111,7 @@ session_transport_close (session_t * s)
    * point, either after sending everything or after a timeout, call delete
    * notify. This will finally lead to the complete cleanup of the session.
    */
-  if (svm_fifo_max_dequeue (s->tx_fifo))
+  if (svm_fifo_max_dequeue_cons (s->tx_fifo))
     s->session_state = SESSION_STATE_CLOSED_WAITING;
   else
     s->session_state = SESSION_STATE_CLOSED;
@@ -1220,7 +1227,7 @@ session_segment_handle (session_t * s)
 {
   svm_fifo_t *f;
 
-  if (s->session_state == SESSION_STATE_LISTENING)
+  if (!s->rx_fifo)
     return SESSION_INVALID_HANDLE;
 
   f = s->rx_fifo;
@@ -1281,6 +1288,18 @@ session_get_transport (session_t * s)
   else
     return transport_get_listener (session_get_transport_proto (s),
 				   s->connection_index);
+}
+
+void
+session_get_endpoint (session_t * s, transport_endpoint_t * tep, u8 is_lcl)
+{
+  if (s->session_state != SESSION_STATE_LISTENING)
+    return transport_get_endpoint (session_get_transport_proto (s),
+				   s->connection_index, s->thread_index, tep,
+				   is_lcl);
+  else
+    return transport_get_listener_endpoint (session_get_transport_proto (s),
+					    s->connection_index, tep, is_lcl);
 }
 
 transport_connection_t *

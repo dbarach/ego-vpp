@@ -43,6 +43,11 @@ typedef enum
     IPSEC_CRYPTO_N_ALG,
 } ipsec_crypto_alg_t;
 
+#define IPSEC_CRYPTO_ALG_IS_GCM(_alg)                     \
+  (((_alg == IPSEC_CRYPTO_ALG_AES_GCM_128) ||             \
+    (_alg == IPSEC_CRYPTO_ALG_AES_GCM_192) ||             \
+    (_alg == IPSEC_CRYPTO_ALG_AES_GCM_256)))
+
 #define foreach_ipsec_integ_alg                                            \
   _ (0, NONE, "none")                                                      \
   _ (1, MD5_96, "md5-96")           /* RFC2403 */                          \
@@ -92,6 +97,7 @@ typedef struct ipsec_key_t_
   _ (16, UDP_ENCAP, "udp-encap")                          \
   _ (32, IS_GRE, "GRE")                                   \
   _ (64, IS_INBOUND, "inboud")                            \
+  _ (128, IS_AEAD, "aead")                                \
 
 typedef enum ipsec_sad_flags_t_
 {
@@ -119,9 +125,11 @@ typedef struct
   u32 last_seq_hi;
   u64 replay_window;
 
-  vnet_crypto_op_id_t crypto_enc_op_id;
-  vnet_crypto_op_id_t crypto_dec_op_id;
-  vnet_crypto_op_id_t integ_op_id;
+  vnet_crypto_key_index_t crypto_key_index;
+  vnet_crypto_key_index_t integ_key_index;
+  vnet_crypto_op_id_t crypto_enc_op_id:16;
+  vnet_crypto_op_id_t crypto_dec_op_id:16;
+  vnet_crypto_op_id_t integ_op_id:16;
 
   dpo_id_t dpo[IPSEC_N_PROTOCOLS];
 
@@ -143,9 +151,11 @@ typedef struct
 
   ipsec_crypto_alg_t crypto_alg;
   ipsec_key_t crypto_key;
+  vnet_crypto_alg_t crypto_calg;
 
   ipsec_integ_alg_t integ_alg;
   ipsec_key_t integ_key;
+  vnet_crypto_alg_t integ_calg;
 
   ip46_address_t tunnel_src_addr;
   ip46_address_t tunnel_dst_addr;
@@ -154,9 +164,10 @@ typedef struct
   u32 sibling;
 
   u32 tx_fib_index;
-  u32 salt;
 
-  /* runtime */
+  /* Salt used in GCM modes - stored in network byte order */
+  u32 salt;
+  u64 gcm_iv_counter;
 } ipsec_sa_t;
 
 STATIC_ASSERT_OFFSET_OF (ipsec_sa_t, cacheline1, CLIB_CACHE_LINE_BYTES);
@@ -192,11 +203,11 @@ extern int ipsec_sa_add (u32 id,
 			 const ipsec_key_t * ik,
 			 ipsec_sa_flags_t flags,
 			 u32 tx_table_id,
+			 u32 salt,
 			 const ip46_address_t * tunnel_src_addr,
 			 const ip46_address_t * tunnel_dst_addr,
 			 u32 * sa_index);
 extern u32 ipsec_sa_del (u32 id);
-extern void ipsec_sa_stack (ipsec_sa_t * sa);
 extern void ipsec_sa_set_crypto_alg (ipsec_sa_t * sa,
 				     ipsec_crypto_alg_t crypto_alg);
 extern void ipsec_sa_set_integ_alg (ipsec_sa_t * sa,

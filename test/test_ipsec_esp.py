@@ -101,6 +101,7 @@ class ConfigIpsecESP(TemplateIpsec):
         addr_bcast = params.addr_bcast
         e = VppEnum.vl_api_ipsec_spd_action_t
         flags = params.flags
+        salt = params.salt
         objs = []
 
         params.tun_sa_in = VppIpsecSA(self, scapy_tun_sa_id, scapy_tun_spi,
@@ -109,14 +110,16 @@ class ConfigIpsecESP(TemplateIpsec):
                                       self.vpp_esp_protocol,
                                       self.tun_if.local_addr[addr_type],
                                       self.tun_if.remote_addr[addr_type],
-                                      flags=flags)
+                                      flags=flags,
+                                      salt=salt)
         params.tun_sa_out = VppIpsecSA(self, vpp_tun_sa_id, vpp_tun_spi,
                                        auth_algo_vpp_id, auth_key,
                                        crypt_algo_vpp_id, crypt_key,
                                        self.vpp_esp_protocol,
                                        self.tun_if.remote_addr[addr_type],
                                        self.tun_if.local_addr[addr_type],
-                                       flags=flags)
+                                       flags=flags,
+                                       salt=salt)
         objs.append(params.tun_sa_in)
         objs.append(params.tun_sa_out)
 
@@ -184,18 +187,21 @@ class ConfigIpsecESP(TemplateIpsec):
                  IPSEC_API_SAD_FLAG_USE_ANTI_REPLAY)
         e = VppEnum.vl_api_ipsec_spd_action_t
         flags = params.flags | flags
+        salt = params.salt
         objs = []
 
         params.tra_sa_in = VppIpsecSA(self, scapy_tra_sa_id, scapy_tra_spi,
                                       auth_algo_vpp_id, auth_key,
                                       crypt_algo_vpp_id, crypt_key,
                                       self.vpp_esp_protocol,
-                                      flags=flags)
+                                      flags=flags,
+                                      salt=salt)
         params.tra_sa_out = VppIpsecSA(self, vpp_tra_sa_id, vpp_tra_spi,
                                        auth_algo_vpp_id, auth_key,
                                        crypt_algo_vpp_id, crypt_key,
                                        self.vpp_esp_protocol,
-                                       flags=flags)
+                                       flags=flags,
+                                       salt=salt)
         objs.append(params.tra_sa_in)
         objs.append(params.tra_sa_out)
 
@@ -357,23 +363,59 @@ class TestIpsecEspAll(ConfigIpsecESP,
         super(TestIpsecEspAll, self).tearDown()
 
     def test_crypto_algs(self):
-        """All engines AES-CBC-[128, 192, 256] w/ & w/o ESN"""
+        """All engines AES-[CBC, GCM]-[128, 192, 256] w/ & w/o ESN"""
 
         # foreach VPP crypto engine
         engines = ["ia32", "ipsecmb", "openssl"]
 
         # foreach crypto algorithm
-        algos = [{'vpp': VppEnum.vl_api_ipsec_crypto_alg_t.
-                  IPSEC_API_CRYPTO_ALG_AES_CBC_128,
-                  'scapy': "AES-CBC",
+        algos = [{'vpp-crypto': (VppEnum.vl_api_ipsec_crypto_alg_t.
+                                 IPSEC_API_CRYPTO_ALG_AES_GCM_128),
+                  'vpp-integ': (VppEnum.vl_api_ipsec_integ_alg_t.
+                                IPSEC_API_INTEG_ALG_NONE),
+                  'scapy-crypto': "AES-GCM",
+                  'scapy-integ': "NULL",
+                  'key': "JPjyOWBeVEQiMe7h",
+                  'salt': 0},
+                 {'vpp-crypto': (VppEnum.vl_api_ipsec_crypto_alg_t.
+                                 IPSEC_API_CRYPTO_ALG_AES_GCM_192),
+                  'vpp-integ': (VppEnum.vl_api_ipsec_integ_alg_t.
+                                IPSEC_API_INTEG_ALG_NONE),
+                  'scapy-crypto': "AES-GCM",
+                  'scapy-integ': "NULL",
+                  'key': "JPjyOWBeVEQiMe7h01234567",
+                  'salt': 1010},
+                 {'vpp-crypto': (VppEnum.vl_api_ipsec_crypto_alg_t.
+                                 IPSEC_API_CRYPTO_ALG_AES_GCM_256),
+                  'vpp-integ': (VppEnum.vl_api_ipsec_integ_alg_t.
+                                IPSEC_API_INTEG_ALG_NONE),
+                  'scapy-crypto': "AES-GCM",
+                  'scapy-integ': "NULL",
+                  'key': "JPjyOWBeVEQiMe7h0123456787654321",
+                  'salt': 2020},
+                 {'vpp-crypto': (VppEnum.vl_api_ipsec_crypto_alg_t.
+                                 IPSEC_API_CRYPTO_ALG_AES_CBC_128),
+                  'vpp-integ': (VppEnum.vl_api_ipsec_integ_alg_t.
+                                IPSEC_API_INTEG_ALG_SHA1_96),
+                  'scapy-crypto': "AES-CBC",
+                  'scapy-integ': "HMAC-SHA1-96",
+                  'salt': 0,
                   'key': "JPjyOWBeVEQiMe7h"},
-                 {'vpp': VppEnum.vl_api_ipsec_crypto_alg_t.
-                  IPSEC_API_CRYPTO_ALG_AES_CBC_192,
-                  'scapy': "AES-CBC",
+                 {'vpp-crypto': (VppEnum.vl_api_ipsec_crypto_alg_t.
+                                 IPSEC_API_CRYPTO_ALG_AES_CBC_192),
+                  'vpp-integ': (VppEnum.vl_api_ipsec_integ_alg_t.
+                                IPSEC_API_INTEG_ALG_SHA1_96),
+                  'scapy-crypto': "AES-CBC",
+                  'scapy-integ': "HMAC-SHA1-96",
+                  'salt': 0,
                   'key': "JPjyOWBeVEQiMe7hJPjyOWBe"},
-                 {'vpp': VppEnum.vl_api_ipsec_crypto_alg_t.
-                  IPSEC_API_CRYPTO_ALG_AES_CBC_256,
-                  'scapy': "AES-CBC",
+                 {'vpp-crypto': (VppEnum.vl_api_ipsec_crypto_alg_t.
+                                 IPSEC_API_CRYPTO_ALG_AES_CBC_256),
+                  'vpp-integ': (VppEnum.vl_api_ipsec_integ_alg_t.
+                                IPSEC_API_INTEG_ALG_SHA1_96),
+                  'scapy-crypto': "AES-CBC",
+                  'scapy-integ': "HMAC-SHA1-96",
+                  'salt': 0,
                   'key': "JPjyOWBeVEQiMe7hJPjyOWBeVEQiMe7h"}]
 
         # with and without ESN
@@ -385,7 +427,6 @@ class TestIpsecEspAll(ConfigIpsecESP,
         #
         for engine in engines:
             self.vapi.cli("set crypto handler all %s" % engine)
-
             #
             # loop through each of the algorithms
             #
@@ -404,9 +445,12 @@ class TestIpsecEspAll(ConfigIpsecESP,
                                    self.ipv6_params}
 
                     for _, p in self.params.items():
-                        p.crypt_algo_vpp_id = algo['vpp']
-                        p.crypt_algo = algo['scapy']
+                        p.auth_algo_vpp_id = algo['vpp-integ']
+                        p.crypt_algo_vpp_id = algo['vpp-crypto']
+                        p.crypt_algo = algo['scapy-crypto']
+                        p.auth_algo = algo['scapy-integ']
                         p.crypt_key = algo['key']
+                        p.salt = algo['salt']
                         p.flags = p.flags | flag
 
                     #
@@ -421,8 +465,8 @@ class TestIpsecEspAll(ConfigIpsecESP,
                     #
                     self.verify_tra_basic6(count=17)
                     self.verify_tra_basic4(count=17)
-                    self.verify_tun_66(self.params[socket.AF_INET6], 1)
-                    self.verify_tun_44(self.params[socket.AF_INET], 1)
+                    self.verify_tun_66(self.params[socket.AF_INET6], 17)
+                    self.verify_tun_44(self.params[socket.AF_INET], 17)
 
                     #
                     # remove the SPDs, SAs, etc

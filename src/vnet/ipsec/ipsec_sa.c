@@ -66,7 +66,7 @@ ipsec_mk_key (ipsec_key_t * key, const u8 * data, u8 len)
 /**
  * 'stack' (resolve the recursion for) the SA tunnel destination
  */
-void
+static void
 ipsec_sa_stack (ipsec_sa_t * sa)
 {
   ipsec_main_t *im = &ipsec_main;
@@ -100,8 +100,14 @@ ipsec_sa_set_crypto_alg (ipsec_sa_t * sa, ipsec_crypto_alg_t crypto_alg)
   sa->crypto_block_size = im->crypto_algs[crypto_alg].block_size;
   sa->crypto_enc_op_id = im->crypto_algs[crypto_alg].enc_op_id;
   sa->crypto_dec_op_id = im->crypto_algs[crypto_alg].dec_op_id;
+  sa->crypto_calg = im->crypto_algs[crypto_alg].alg;
   ASSERT (sa->crypto_iv_size <= ESP_MAX_IV_SIZE);
   ASSERT (sa->crypto_block_size <= ESP_MAX_BLOCK_SIZE);
+  if (IPSEC_CRYPTO_ALG_IS_GCM (crypto_alg))
+    {
+      sa->integ_icv_size = im->crypto_algs[crypto_alg].icv_size;
+      ipsec_sa_set_IS_AEAD (sa);
+    }
 }
 
 void
@@ -111,6 +117,7 @@ ipsec_sa_set_integ_alg (ipsec_sa_t * sa, ipsec_integ_alg_t integ_alg)
   sa->integ_alg = integ_alg;
   sa->integ_icv_size = im->integ_algs[integ_alg].icv_size;
   sa->integ_op_id = im->integ_algs[integ_alg].op_id;
+  sa->integ_calg = im->integ_algs[integ_alg].alg;
   ASSERT (sa->integ_icv_size <= ESP_MAX_ICV_SIZE);
 }
 
@@ -124,9 +131,11 @@ ipsec_sa_add (u32 id,
 	      const ipsec_key_t * ik,
 	      ipsec_sa_flags_t flags,
 	      u32 tx_table_id,
+	      u32 salt,
 	      const ip46_address_t * tun_src,
 	      const ip46_address_t * tun_dst, u32 * sa_out_index)
 {
+  vlib_main_t *vm = vlib_get_main ();
   ipsec_main_t *im = &ipsec_main;
   clib_error_t *err;
   ipsec_sa_t *sa;
@@ -150,12 +159,25 @@ ipsec_sa_add (u32 id,
   sa->stat_index = sa_index;
   sa->protocol = proto;
   sa->flags = flags;
-  ipsec_sa_set_crypto_alg (sa, crypto_alg);
-  clib_memcpy (&sa->crypto_key, ck, sizeof (sa->crypto_key));
+  sa->salt = salt;
   ipsec_sa_set_integ_alg (sa, integ_alg);
   clib_memcpy (&sa->integ_key, ik, sizeof (sa->integ_key));
+  ipsec_sa_set_crypto_alg (sa, crypto_alg);
+  clib_memcpy (&sa->crypto_key, ck, sizeof (sa->crypto_key));
   ip46_address_copy (&sa->tunnel_src_addr, tun_src);
   ip46_address_copy (&sa->tunnel_dst_addr, tun_dst);
+
+  sa->crypto_key_index = vnet_crypto_key_add (vm,
+					      im->crypto_algs[crypto_alg].alg,
+					      (u8 *) ck->data, ck->len);
+  if (~0 == sa->crypto_key_index)
+    return VNET_API_ERROR_INVALID_VALUE;
+
+  sa->integ_key_index = vnet_crypto_key_add (vm,
+					     im->integ_algs[integ_alg].alg,
+					     (u8 *) ik->data, ik->len);
+  if (~0 == sa->integ_key_index)
+    return VNET_API_ERROR_INVALID_VALUE;
 
   err = ipsec_check_support_cb (im, sa);
   if (err)
@@ -246,6 +268,7 @@ ipsec_sa_add (u32 id,
 u32
 ipsec_sa_del (u32 id)
 {
+  vlib_main_t *vm = vlib_get_main ();
   ipsec_main_t *im = &ipsec_main;
   ipsec_sa_t *sa = 0;
   uword *p;
@@ -279,6 +302,8 @@ ipsec_sa_del (u32 id)
       dpo_reset (&sa->dpo[IPSEC_PROTOCOL_AH]);
       dpo_reset (&sa->dpo[IPSEC_PROTOCOL_ESP]);
     }
+  vnet_crypto_key_del (vm, sa->crypto_key_index);
+  vnet_crypto_key_del (vm, sa->integ_key_index);
   pool_put (im->sad, sa);
   return 0;
 }
@@ -313,6 +338,7 @@ ipsec_is_sa_used (u32 sa_index)
 int
 ipsec_set_sa_key (u32 id, const ipsec_key_t * ck, const ipsec_key_t * ik)
 {
+  vlib_main_t *vm = vlib_get_main ();
   ipsec_main_t *im = &ipsec_main;
   uword *p;
   u32 sa_index;
@@ -330,12 +356,16 @@ ipsec_set_sa_key (u32 id, const ipsec_key_t * ck, const ipsec_key_t * ik)
   if (ck)
     {
       clib_memcpy (&sa->crypto_key, ck, sizeof (sa->crypto_key));
+      vnet_crypto_key_modify (vm, sa->crypto_key_index, sa->crypto_calg,
+			      (u8 *) ck->data, ck->len);
     }
 
   /* new integ key */
   if (ik)
     {
       clib_memcpy (&sa->integ_key, 0, sizeof (sa->integ_key));
+      vnet_crypto_key_modify (vm, sa->integ_key_index, sa->integ_calg,
+			      (u8 *) ik->data, ik->len);
     }
 
   if (ck || ik)

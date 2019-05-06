@@ -427,7 +427,7 @@ update_node_counters (stat_segment_main_t * sm)
       stat_validate_counter_vector (&sm->directory_vector
 				    [STAT_COUNTER_NODE_SUSPENDS], l);
 
-      vec_validate (sm->nodes, l);
+      vec_validate (sm->nodes, l - 1);
       stat_segment_directory_entry_t *ep;
       ep = &sm->directory_vector[STAT_COUNTER_NODE_NAMES];
       ep->offset = stat_segment_offset (shared_header, sm->nodes);
@@ -437,8 +437,9 @@ update_node_counters (stat_segment_main_t * sm)
 	ep->offset_vector ? stat_segment_pointer (shared_header,
 						  ep->offset_vector) : 0;
       /* Update names dictionary */
-      vec_validate (offset_vector, l);
+      vec_validate (offset_vector, l - 1);
       vlib_node_t **nodes = node_dups[0];
+
       for (i = 0; i < vec_len (nodes); i++)
 	{
 	  vlib_node_t *n = nodes[i];
@@ -702,6 +703,11 @@ statseg_config (vlib_main_t * vm, unformat_input_t * input)
 
   /* set default socket file name when statseg config stanza is empty. */
   sm->socket_name = format (0, "%s", STAT_SEGMENT_SOCKET_FILE);
+  /*
+   * NULL-terminate socket name string
+   * clib_socket_init()->socket_config() use C str*
+   */
+  vec_add1 (sm->socket_name, 0);
 
   while (unformat_check_input (input) != UNFORMAT_END_OF_INPUT)
     {

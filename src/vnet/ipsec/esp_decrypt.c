@@ -44,6 +44,7 @@ typedef enum
  _(INTEG_ERROR, "Integrity check failed")                       \
  _(CRYPTO_ENGINE_ERROR, "crypto engine error (packet dropped)") \
  _(REPLAY, "SA replayed packet")                                \
+ _(RUNT, "undersized packet")                                   \
  _(CHAINED_BUFFER, "chained buffers (packet dropped)")          \
  _(OVERSIZED_HEADER, "buffer with oversized header (dropped)")  \
  _(NO_TAIL_SPACE, "no enough buffer tail space (dropped)")
@@ -193,18 +194,24 @@ esp_decrypt_inline (vlib_main_t * vm,
 	  goto next;
 	}
 
+      if (pd->current_length < cpd.icv_sz + esp_sz + cpd.iv_sz)
+	{
+	  b[0]->error = node->errors[ESP_DECRYPT_ERROR_RUNT];
+	  next[0] = ESP_DECRYPT_NEXT_DROP;
+	  goto next;
+	}
+
       len = pd->current_length - cpd.icv_sz;
       current_sa_pkts += 1;
       current_sa_bytes += pd->current_length;
 
-      if (PREDICT_TRUE (cpd.icv_sz > 0))
+      if (PREDICT_TRUE (sa0->integ_op_id != VNET_CRYPTO_OP_NONE))
 	{
 	  vnet_crypto_op_t *op;
 	  vec_add2_aligned (ptd->integ_ops, op, 1, CLIB_CACHE_LINE_BYTES);
 
 	  vnet_crypto_op_init (op, sa0->integ_op_id);
-	  op->key = sa0->integ_key.data;
-	  op->key_len = sa0->integ_key.len;
+	  op->key_index = sa0->integ_key_index;
 	  op->src = payload;
 	  op->flags = VNET_CRYPTO_OP_FLAG_HMAC_CHECK;
 	  op->user_data = b - bufs;
@@ -231,10 +238,40 @@ esp_decrypt_inline (vlib_main_t * vm,
 	  vnet_crypto_op_t *op;
 	  vec_add2_aligned (ptd->crypto_ops, op, 1, CLIB_CACHE_LINE_BYTES);
 	  vnet_crypto_op_init (op, sa0->crypto_dec_op_id);
-	  op->key = sa0->crypto_key.data;
+	  op->key_index = sa0->crypto_key_index;
 	  op->iv = payload;
+
+	  if (ipsec_sa_is_set_IS_AEAD (sa0))
+	    {
+	      esp_header_t *esp0;
+	      esp_aead_t *aad;
+	      u8 *scratch;
+
+	      /*
+	       * construct the AAD and the nonce (Salt || IV) in a scratch
+	       * space in front of the IP header.
+	       */
+	      scratch = payload - esp_sz;
+	      esp0 = (esp_header_t *) (scratch);
+
+	      scratch -= (sizeof (*aad) + pd->hdr_sz);
+	      op->aad = scratch;
+
+	      esp_aad_fill (op, esp0, sa0);
+
+	      /*
+	       * we don't need to refer to the ESP header anymore so we
+	       * can overwrite it with the salt and use the IV where it is
+	       * to form the nonce = (Salt + IV)
+	       */
+	      op->iv -= sizeof (sa0->salt);
+	      clib_memcpy_fast (op->iv, &sa0->salt, sizeof (sa0->salt));
+
+	      op->tag = payload + len;
+	      op->tag_len = 16;
+	    }
 	  op->src = op->dst = payload += cpd.iv_sz;
-	  op->len = len;
+	  op->len = len - cpd.iv_sz;
 	  op->user_data = b - bufs;
 	}
 

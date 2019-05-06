@@ -84,8 +84,8 @@ ipsec_sa_add_del_command_fn (vlib_main_t * vm,
   clib_error_t *error;
   ipsec_key_t ck = { 0 };
   ipsec_key_t ik = { 0 };
+  u32 id, spi, salt;
   int is_add, rv;
-  u32 id, spi;
 
   error = NULL;
   is_add = 0;
@@ -102,6 +102,8 @@ ipsec_sa_add_del_command_fn (vlib_main_t * vm,
       else if (unformat (line_input, "del %u", &id))
 	is_add = 0;
       else if (unformat (line_input, "spi %u", &spi))
+	;
+      else if (unformat (line_input, "salt %u", &salt))
 	;
       else if (unformat (line_input, "esp"))
 	proto = IPSEC_PROTOCOL_ESP;
@@ -141,7 +143,8 @@ ipsec_sa_add_del_command_fn (vlib_main_t * vm,
   if (is_add)
     rv = ipsec_sa_add (id, spi, proto, crypto_alg,
 		       &ck, integ_alg, &ik, flags,
-		       0, &tun_src, &tun_dst, NULL);
+		       0, clib_host_to_net_u32 (salt),
+		       &tun_src, &tun_dst, NULL);
   else
     rv = ipsec_sa_del (id);
 
@@ -658,17 +661,16 @@ ipsec_select_backend_command_fn (vlib_main_t * vm,
 				 unformat_input_t * input,
 				 vlib_cli_command_t * cmd)
 {
-  u32 backend_index;
-  ipsec_main_t *im = &ipsec_main;
-
-  if (pool_elts (im->sad) > 0)
-    {
-      return clib_error_return (0,
-				"Cannot change IPsec backend, while %u SA entries are configured",
-				pool_elts (im->sad));
-    }
-
   unformat_input_t _line_input, *line_input = &_line_input;
+  ipsec_main_t *im = &ipsec_main;
+  clib_error_t *error;
+  u32 backend_index;
+
+  error = ipsec_rsc_in_use (im);
+
+  if (error)
+    return error;
+
   /* Get a line of input. */
   if (!unformat_user (input, unformat_line_input, line_input))
     return 0;
@@ -790,6 +792,8 @@ create_ipsec_tunnel_command_fn (vlib_main_t * vm,
 	num_m_args++;
       else if (unformat (line_input, "instance %u", &a.show_instance))
 	a.renumber = 1;
+      else if (unformat (line_input, "salt 0x%x", &a.salt))
+	;
       else if (unformat (line_input, "udp-encap"))
 	a.udp_encap = 1;
       else if (unformat (line_input, "use-esn"))
@@ -815,7 +819,7 @@ create_ipsec_tunnel_command_fn (vlib_main_t * vm,
 	;
       else
 	if (unformat
-	    (line_input, "rmote-integ-key %U", unformat_ipsec_key, &rik))
+	    (line_input, "remote-integ-key %U", unformat_ipsec_key, &rik))
 	;
       else if (unformat (line_input, "integ-alg %U",
 			 unformat_ipsec_integ_alg, &a.integ_alg))

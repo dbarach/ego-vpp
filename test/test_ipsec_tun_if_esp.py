@@ -1,6 +1,7 @@
 import unittest
 import socket
 import copy
+
 from scapy.layers.ipsec import ESP
 from scapy.layers.l2 import Ether, Raw, GRE
 from scapy.layers.inet import IP, UDP
@@ -13,6 +14,7 @@ from vpp_ip_route import VppIpRoute, VppRoutePath, DpoProto
 from vpp_ipsec import VppIpsecSA
 from vpp_l2 import VppBridgeDomain, VppBridgeDomainPort
 from util import ppp
+from vpp_papi import VppEnum
 
 
 class TemplateIpsec4TunIfEsp(TemplateIpsec):
@@ -198,6 +200,188 @@ class TestIpsec4MultiTunIfEsp(TemplateIpsec, IpsecTun4):
             self.assertEqual(c['packets'], 127)
             c = p.tun_if.get_tx_stats()
             self.assertEqual(c['packets'], 127)
+
+
+class TestIpsec4TunIfEspAll(TemplateIpsec, IpsecTun4):
+    """ IPsec IPv4 Tunnel interface all Algos """
+
+    encryption_type = ESP
+    tun4_encrypt_node_name = "esp4-encrypt"
+    tun4_decrypt_node_name = "esp4-decrypt"
+
+    def config_network(self, p):
+        config_tun_params(p, self.encryption_type, self.tun_if)
+
+        p.tun_if = VppIpsecTunInterface(self, self.pg0, p.vpp_tun_spi,
+                                        p.scapy_tun_spi,
+                                        p.crypt_algo_vpp_id,
+                                        p.crypt_key, p.crypt_key,
+                                        p.auth_algo_vpp_id, p.auth_key,
+                                        p.auth_key,
+                                        salt=p.salt)
+        p.tun_if.add_vpp_config()
+        p.tun_if.admin_up()
+        p.tun_if.config_ip4()
+        self.logger.info(self.vapi.cli("sh ipsec sa 0"))
+        self.logger.info(self.vapi.cli("sh ipsec sa 1"))
+
+        p.route = VppIpRoute(self, p.remote_tun_if_host, 32,
+                             [VppRoutePath(p.tun_if.remote_ip4,
+                                           0xffffffff)])
+        p.route.add_vpp_config()
+
+    def unconfig_network(self, p):
+        p.tun_if.unconfig_ip4()
+        p.tun_if.remove_vpp_config()
+        p.route.remove_vpp_config()
+
+    def setUp(self):
+        super(TestIpsec4TunIfEspAll, self).setUp()
+
+        self.tun_if = self.pg0
+
+    def tearDown(self):
+        super(TestIpsec4TunIfEspAll, self).tearDown()
+
+    def rekey(self, p):
+        #
+        # change the key and the SPI
+        #
+        p.crypt_key = 'X' + p.crypt_key[1:]
+        p.scapy_tun_spi += 1
+        p.scapy_tun_sa_id += 1
+        p.vpp_tun_spi += 1
+        p.vpp_tun_sa_id += 1
+        p.tun_if.local_spi = p.vpp_tun_spi
+        p.tun_if.remote_spi = p.scapy_tun_spi
+
+        config_tun_params(p, self.encryption_type, self.tun_if)
+
+        p.tun_sa_in = VppIpsecSA(self,
+                                 p.scapy_tun_sa_id,
+                                 p.scapy_tun_spi,
+                                 p.auth_algo_vpp_id,
+                                 p.auth_key,
+                                 p.crypt_algo_vpp_id,
+                                 p.crypt_key,
+                                 self.vpp_esp_protocol,
+                                 self.tun_if.local_addr[p.addr_type],
+                                 self.tun_if.remote_addr[p.addr_type],
+                                 flags=p.flags,
+                                 salt=p.salt)
+        p.tun_sa_out = VppIpsecSA(self,
+                                  p.vpp_tun_sa_id,
+                                  p.vpp_tun_spi,
+                                  p.auth_algo_vpp_id,
+                                  p.auth_key,
+                                  p.crypt_algo_vpp_id,
+                                  p.crypt_key,
+                                  self.vpp_esp_protocol,
+                                  self.tun_if.remote_addr[p.addr_type],
+                                  self.tun_if.local_addr[p.addr_type],
+                                  flags=p.flags,
+                                  salt=p.salt)
+        p.tun_sa_in.add_vpp_config()
+        p.tun_sa_out.add_vpp_config()
+
+        self.vapi.ipsec_tunnel_if_set_sa(sw_if_index=p.tun_if.sw_if_index,
+                                         sa_id=p.tun_sa_in.id,
+                                         is_outbound=1)
+        self.vapi.ipsec_tunnel_if_set_sa(sw_if_index=p.tun_if.sw_if_index,
+                                         sa_id=p.tun_sa_out.id,
+                                         is_outbound=0)
+        self.logger.info(self.vapi.cli("sh ipsec sa"))
+
+    def test_tun_44(self):
+        """IPSEC tunnel all algos """
+
+        # foreach VPP crypto engine
+        engines = ["ia32", "ipsecmb", "openssl"]
+
+        # foreach crypto algorithm
+        algos = [{'vpp-crypto': (VppEnum.vl_api_ipsec_crypto_alg_t.
+                                 IPSEC_API_CRYPTO_ALG_AES_GCM_128),
+                  'vpp-integ': (VppEnum.vl_api_ipsec_integ_alg_t.
+                                IPSEC_API_INTEG_ALG_NONE),
+                  'scapy-crypto': "AES-GCM",
+                  'scapy-integ': "NULL",
+                  'key': "JPjyOWBeVEQiMe7h",
+                  'salt': 3333},
+                 {'vpp-crypto': (VppEnum.vl_api_ipsec_crypto_alg_t.
+                                 IPSEC_API_CRYPTO_ALG_AES_GCM_192),
+                  'vpp-integ': (VppEnum.vl_api_ipsec_integ_alg_t.
+                                IPSEC_API_INTEG_ALG_NONE),
+                  'scapy-crypto': "AES-GCM",
+                  'scapy-integ': "NULL",
+                  'key': "JPjyOWBeVEQiMe7hJPjyOWBe",
+                  'salt': 0},
+                 {'vpp-crypto': (VppEnum.vl_api_ipsec_crypto_alg_t.
+                                 IPSEC_API_CRYPTO_ALG_AES_GCM_256),
+                  'vpp-integ': (VppEnum.vl_api_ipsec_integ_alg_t.
+                                IPSEC_API_INTEG_ALG_NONE),
+                  'scapy-crypto': "AES-GCM",
+                  'scapy-integ': "NULL",
+                  'key': "JPjyOWBeVEQiMe7hJPjyOWBeVEQiMe7h",
+                  'salt': 9999},
+                 {'vpp-crypto': (VppEnum.vl_api_ipsec_crypto_alg_t.
+                                 IPSEC_API_CRYPTO_ALG_AES_CBC_128),
+                  'vpp-integ': (VppEnum.vl_api_ipsec_integ_alg_t.
+                                IPSEC_API_INTEG_ALG_SHA1_96),
+                  'scapy-crypto': "AES-CBC",
+                  'scapy-integ': "HMAC-SHA1-96",
+                  'salt': 0,
+                  'key': "JPjyOWBeVEQiMe7h"},
+                 {'vpp-crypto': (VppEnum.vl_api_ipsec_crypto_alg_t.
+                                 IPSEC_API_CRYPTO_ALG_AES_CBC_192),
+                  'vpp-integ': (VppEnum.vl_api_ipsec_integ_alg_t.
+                                IPSEC_API_INTEG_ALG_SHA1_96),
+                  'scapy-crypto': "AES-CBC",
+                  'scapy-integ': "HMAC-SHA1-96",
+                  'salt': 0,
+                  'key': "JPjyOWBeVEQiMe7hJPjyOWBe"},
+                 {'vpp-crypto': (VppEnum.vl_api_ipsec_crypto_alg_t.
+                                 IPSEC_API_CRYPTO_ALG_AES_CBC_256),
+                  'vpp-integ': (VppEnum.vl_api_ipsec_integ_alg_t.
+                                IPSEC_API_INTEG_ALG_SHA1_96),
+                  'scapy-crypto': "AES-CBC",
+                  'scapy-integ': "HMAC-SHA1-96",
+                  'salt': 0,
+                  'key': "JPjyOWBeVEQiMe7hJPjyOWBeVEQiMe7h"}]
+
+        for engine in engines:
+            self.vapi.cli("set crypto handler all %s" % engine)
+
+            #
+            # loop through each of the algorithms
+            #
+            for algo in algos:
+                # with self.subTest(algo=algo['scapy']):
+
+                p = copy.copy(self.ipv4_params)
+                p.auth_algo_vpp_id = algo['vpp-integ']
+                p.crypt_algo_vpp_id = algo['vpp-crypto']
+                p.crypt_algo = algo['scapy-crypto']
+                p.auth_algo = algo['scapy-integ']
+                p.crypt_key = algo['key']
+                p.salt = algo['salt']
+
+                self.config_network(p)
+
+                self.verify_tun_44(p, count=127)
+                c = p.tun_if.get_rx_stats()
+                self.assertEqual(c['packets'], 127)
+                c = p.tun_if.get_tx_stats()
+                self.assertEqual(c['packets'], 127)
+
+                #
+                # rekey the tunnel
+                #
+                self.rekey(p)
+                self.verify_tun_44(p, count=127)
+
+                self.unconfig_network(p)
+                p.tun_sa_out.remove_vpp_config()
+                p.tun_sa_in.remove_vpp_config()
 
 
 class TestIpsec6MultiTunIfEsp(TemplateIpsec, IpsecTun6):

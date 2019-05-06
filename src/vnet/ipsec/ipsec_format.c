@@ -290,17 +290,20 @@ format_ipsec_sa (u8 * s, va_list * args)
   if (!(flags & IPSEC_FORMAT_DETAIL))
     goto done;
 
+  s = format (s, "\n   salt 0x%x", clib_net_to_host_u32 (sa->salt));
   s = format (s, "\n   seq %u seq-hi %u", sa->seq, sa->seq_hi);
   s = format (s, "\n   last-seq %u last-seq-hi %u window %U",
 	      sa->last_seq, sa->last_seq_hi,
 	      format_ipsec_replay_window, sa->replay_window);
-  s = format (s, "\n   crypto alg %U%s%U",
-	      format_ipsec_crypto_alg, sa->crypto_alg,
-	      sa->crypto_alg ? " key " : "",
-	      format_ipsec_key, &sa->crypto_key);
-  s = format (s, "\n   integrity alg %U%s%U",
-	      format_ipsec_integ_alg, sa->integ_alg,
-	      sa->integ_alg ? " key " : "", format_ipsec_key, &sa->integ_key);
+  s = format (s, "\n   crypto alg %U",
+	      format_ipsec_crypto_alg, sa->crypto_alg);
+  if (sa->crypto_alg)
+    s = format (s, " key %U", format_ipsec_key, &sa->crypto_key);
+  s = format (s, "\n   integrity alg %U",
+	      format_ipsec_integ_alg, sa->integ_alg);
+  if (sa->integ_alg)
+    s = format (s, " key %U", format_ipsec_key, &sa->integ_key);
+
   vlib_get_combined_counter (&ipsec_sa_counters, sai, &counts);
   s = format (s, "\n   packets %u bytes %u", counts.packets, counts.bytes);
 
@@ -333,7 +336,6 @@ format_ipsec_tunnel (u8 * s, va_list * args)
 {
   ipsec_main_t *im = &ipsec_main;
   u32 ti = va_arg (*args, u32);
-  vnet_hw_interface_t *hi;
   ipsec_tunnel_if_t *t;
 
   if (pool_is_free_index (im->tunnel_interfaces, ti))
@@ -347,9 +349,9 @@ format_ipsec_tunnel (u8 * s, va_list * args)
   if (t->hw_if_index == ~0)
     goto done;
 
-  hi = vnet_get_hw_interface (im->vnet_main, t->hw_if_index);
-
-  s = format (s, "%s\n", hi->name);
+  s =
+    format (s, "%U\n", format_vnet_hw_if_index_name, im->vnet_main,
+	    t->hw_if_index);
 
   s = format (s, "   out-bound sa: ");
   s = format (s, "%U\n", format_ipsec_sa, t->output_sa_index,

@@ -15,10 +15,10 @@
 
 #include <stdio.h>
 #include <stdlib.h>
-#include <svm/svm_fifo_segment.h>
 #include <vcl/vppcom.h>
 #include <vcl/vcl_debug.h>
 #include <vcl/vcl_private.h>
+#include <svm/fifo_segment.h>
 
 __thread uword __vcl_worker_index = ~0;
 
@@ -309,9 +309,9 @@ vcl_session_accepted_handler (vcl_worker_t * wrk, session_accepted_msg_t * mp)
   session->tx_fifo = tx_fifo;
 
   session->session_state = STATE_ACCEPT;
-  session->transport.rmt_port = mp->port;
-  session->transport.is_ip4 = mp->is_ip4;
-  clib_memcpy_fast (&session->transport.rmt_ip, mp->ip,
+  session->transport.rmt_port = mp->rmt.port;
+  session->transport.is_ip4 = mp->rmt.is_ip4;
+  clib_memcpy_fast (&session->transport.rmt_ip, &mp->rmt.ip,
 		    sizeof (ip46_address_t));
 
   vcl_session_table_add_vpp_handle (wrk, mp->handle, session->session_index);
@@ -322,9 +322,9 @@ vcl_session_accepted_handler (vcl_worker_t * wrk, session_accepted_msg_t * mp)
 
   VDBG (1, "session %u [0x%llx]: client accept request from %s address %U"
 	" port %d queue %p!", session->session_index, mp->handle,
-	mp->is_ip4 ? "IPv4" : "IPv6", format_ip46_address, &mp->ip,
-	mp->is_ip4 ? IP46_TYPE_IP4 : IP46_TYPE_IP6,
-	clib_net_to_host_u16 (mp->port), session->vpp_evt_q);
+	mp->rmt.is_ip4 ? "IPv4" : "IPv6", format_ip46_address, &mp->rmt.ip,
+	mp->rmt.is_ip4 ? IP46_TYPE_IP4 : IP46_TYPE_IP6,
+	clib_net_to_host_u16 (mp->rmt.port), session->vpp_evt_q);
   vcl_evt (VCL_EVT_ACCEPT, session, listen_session, session_index);
 
   return session->session_index;
@@ -393,10 +393,10 @@ vcl_session_connected_handler (vcl_worker_t * wrk,
   session->tx_fifo = tx_fifo;
   session->vpp_handle = mp->handle;
   session->vpp_thread_index = rx_fifo->master_thread_index;
-  session->transport.is_ip4 = mp->is_ip4;
-  clib_memcpy_fast (&session->transport.lcl_ip, mp->lcl_ip,
+  session->transport.is_ip4 = mp->lcl.is_ip4;
+  clib_memcpy_fast (&session->transport.lcl_ip, &mp->lcl.ip,
 		    sizeof (session->transport.lcl_ip));
-  session->transport.lcl_port = mp->lcl_port;
+  session->transport.lcl_port = mp->lcl.port;
   session->session_state = STATE_CONNECT;
 
   /* Add it to lookup table */
@@ -924,8 +924,8 @@ vppcom_app_create (char *app_name)
   vcm->main_pid = getpid ();
   vcm->app_name = format (0, "%s", app_name);
   vppcom_init_error_string_table ();
-  svm_fifo_segment_main_init (&vcm->segment_main, vcl_cfg->segment_baseva,
-			      20 /* timeout in secs */ );
+  fifo_segment_main_init (&vcm->segment_main, vcl_cfg->segment_baseva,
+			  20 /* timeout in secs */ );
   pool_alloc (vcm->workers, vcl_cfg->max_workers);
   clib_spinlock_init (&vcm->workers_lock);
   clib_rwlock_init (&vcm->segment_table_lock);
@@ -1496,14 +1496,14 @@ vppcom_session_read_internal (uint32_t session_handle, void *buf, int n,
   rx_fifo = is_ct ? s->ct_rx_fifo : s->rx_fifo;
   s->has_rx_evt = 0;
 
-  if (svm_fifo_is_empty (rx_fifo))
+  if (svm_fifo_is_empty_cons (rx_fifo))
     {
       if (is_nonblocking)
 	{
 	  svm_fifo_unset_event (s->rx_fifo);
 	  return VPPCOM_EWOULDBLOCK;
 	}
-      while (svm_fifo_is_empty (rx_fifo))
+      while (svm_fifo_is_empty_cons (rx_fifo))
 	{
 	  if (vcl_session_is_closing (s))
 	    return vcl_session_closing_error (s);
@@ -1527,8 +1527,16 @@ vppcom_session_read_internal (uint32_t session_handle, void *buf, int n,
   else
     n_read = app_recv_stream_raw (rx_fifo, buf, n, 0, peek);
 
-  if (svm_fifo_is_empty (rx_fifo))
+  if (svm_fifo_is_empty_cons (rx_fifo))
     svm_fifo_unset_event (s->rx_fifo);
+
+  /* Cut-through sessions might request tx notifications on rx fifos */
+  if (PREDICT_FALSE (rx_fifo->want_tx_ntf))
+    {
+      app_send_io_evt_to_vpp (s->vpp_evt_q, s->rx_fifo->master_session_index,
+			      SESSION_IO_EVT_RX, SVM_Q_WAIT);
+      svm_fifo_reset_tx_ntf (s->rx_fifo);
+    }
 
   VDBG (2, "session %u[0x%llx]: read %d bytes from (%p)", s->session_index,
 	s->vpp_handle, n_read, rx_fifo);
@@ -1577,14 +1585,14 @@ vppcom_session_read_segments (uint32_t session_handle,
   if (is_ct)
     svm_fifo_unset_event (s->rx_fifo);
 
-  if (svm_fifo_is_empty (rx_fifo))
+  if (svm_fifo_is_empty_cons (rx_fifo))
     {
       if (is_nonblocking)
 	{
 	  svm_fifo_unset_event (rx_fifo);
 	  return VPPCOM_EWOULDBLOCK;
 	}
-      while (svm_fifo_is_empty (rx_fifo))
+      while (svm_fifo_is_empty_cons (rx_fifo))
 	{
 	  if (vcl_session_is_closing (s))
 	    return vcl_session_closing_error (s);
@@ -1603,7 +1611,7 @@ vppcom_session_read_segments (uint32_t session_handle,
 	}
     }
 
-  n_read = svm_fifo_segments (rx_fifo, (svm_fifo_segment_t *) ds);
+  n_read = svm_fifo_segments (rx_fifo, (svm_fifo_seg_t *) ds);
   svm_fifo_unset_event (rx_fifo);
 
   return n_read;
@@ -1620,7 +1628,7 @@ vppcom_session_free_segments (uint32_t session_handle,
   if (PREDICT_FALSE (!s || s->is_vep))
     return;
 
-  svm_fifo_segments_free (s->rx_fifo, (svm_fifo_segment_t *) ds);
+  svm_fifo_segments_free (s->rx_fifo, (svm_fifo_seg_t *) ds);
 }
 
 int
@@ -1681,14 +1689,15 @@ vppcom_session_write_inline (uint32_t session_handle, void *buf, size_t n,
   is_ct = vcl_session_is_ct (s);
   tx_fifo = is_ct ? s->ct_tx_fifo : s->tx_fifo;
   is_nonblocking = VCL_SESS_ATTR_TEST (s->attr, VCL_SESS_ATTR_NONBLOCK);
+
   mq = wrk->app_event_queue;
-  if (svm_fifo_is_full (tx_fifo))
+  if (svm_fifo_is_full_prod (tx_fifo))
     {
       if (is_nonblocking)
 	{
 	  return VPPCOM_EWOULDBLOCK;
 	}
-      while (svm_fifo_is_full (tx_fifo))
+      while (svm_fifo_is_full_prod (tx_fifo))
 	{
 	  svm_fifo_add_want_tx_ntf (tx_fifo, SVM_FIFO_WANT_TX_NOTIF);
 	  if (vcl_session_is_closing (s))
@@ -2003,7 +2012,7 @@ vppcom_select (int n_bits, vcl_si_set * read_map, vcl_si_set * write_map,
         continue;
       }
 
-    rv = svm_fifo_is_full (session->tx_fifo);
+    rv = svm_fifo_is_full_prod (session->tx_fifo);
     if (!rv)
       {
         clib_bitmap_set_no_check ((uword*)write_map, sid, 1);

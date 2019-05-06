@@ -344,9 +344,11 @@ int
 udpc_connection_open (transport_endpoint_cfg_t * rmt)
 {
   udp_connection_t *uc;
+  /* Reproduce the logic of udp_open_connection to find the correct thread */
+  u32 thread_index = vlib_num_workers ()? 1 : vlib_get_main ()->thread_index;
   u32 uc_index;
   uc_index = udp_open_connection (rmt);
-  uc = udp_connection_get (uc_index, vlib_get_thread_index ());
+  uc = udp_connection_get (uc_index, thread_index);
   uc->is_connected = 1;
   return uc_index;
 }
@@ -378,7 +380,7 @@ const static transport_proto_vft_t udpc_proto = {
   .format_connection = format_udp_session,
   .format_half_open = format_udp_half_open_session,
   .format_listener = format_udp_listener_session,
-  .tx_type = TRANSPORT_TX_DEQUEUE,
+  .tx_type = TRANSPORT_TX_DGRAM,
   .service_type = TRANSPORT_SERVICE_CL,
 };
 /* *INDENT-ON* */

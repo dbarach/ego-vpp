@@ -194,8 +194,8 @@ ipsec_output_inline (vlib_main_t * vm, vlib_node_runtime_t * node,
 
   while (n_left_from > 0)
     {
-      u32 bi0, pi0;
-      vlib_buffer_t *b0;
+      u32 bi0, pi0, bi1;
+      vlib_buffer_t *b0, *b1;
       ipsec_policy_t *p0;
       ip4_header_t *ip0;
       ip6_header_t *ip6_0 = 0;
@@ -206,6 +206,13 @@ ipsec_output_inline (vlib_main_t * vm, vlib_node_runtime_t * node,
 
       bi0 = from[0];
       b0 = vlib_get_buffer (vm, bi0);
+      if (n_left_from > 1)
+	{
+	  bi1 = from[1];
+	  b1 = vlib_get_buffer (vm, bi1);
+	  CLIB_PREFETCH (b1, CLIB_CACHE_LINE_BYTES * 2, STORE);
+	  vlib_prefetch_buffer_data (b1, LOAD);
+	}
       sw_if_index0 = vnet_buffer (b0)->sw_if_index[VLIB_TX];
       iph_offset = vnet_buffer (b0)->ip.save_rewrite_length;
       ip0 = (ip4_header_t *) ((u8 *) vlib_buffer_get_current (b0)

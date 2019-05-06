@@ -6,7 +6,7 @@ import unittest
 from scapy.packet import Raw
 from scapy.layers.l2 import Ether, ARP, Dot1Q
 from scapy.layers.inet import IP, UDP, ICMP
-from scapy.layers.inet6 import IPv6, ICMPv6ND_NS,  ICMPv6NDOptSrcLLAddr, \
+from scapy.layers.inet6 import IPv6, ICMPv6ND_NS, ICMPv6NDOptSrcLLAddr, \
     ICMPv6ND_NA
 from scapy.utils6 import in6_getnsma, in6_getnsmac
 from scapy.layers.vxlan import VXLAN
@@ -220,6 +220,7 @@ class VppGbpSubnet(VppObject):
     """
     GBP Subnet
     """
+
     def __init__(self, test, rd, address, address_len,
                  type, sw_if_index=None, sclass=None):
         self._test = test
@@ -253,8 +254,8 @@ class VppGbpSubnet(VppObject):
         ss = self._test.vapi.gbp_subnet_dump()
         for s in ss:
             if s.subnet.rd_id == self.rd_id and \
-               s.subnet.type == self.type and \
-               s.subnet.prefix == self.prefix:
+                    s.subnet.type == self.type and \
+                    s.subnet.prefix == self.prefix:
                 return True
         return False
 
@@ -475,7 +476,7 @@ class VppGbpContract(VppObject):
         cs = self._test.vapi.gbp_contract_dump()
         for c in cs:
             if c.contract.sclass == self.sclass \
-               and c.contract.dclass == self.dclass:
+                    and c.contract.dclass == self.dclass:
                 return True
         return False
 
@@ -574,6 +575,10 @@ class VppGbpAcl(VppObject):
 
 class TestGBP(VppTestCase):
     """ GBP Test Case """
+
+    @property
+    def config_flags(self):
+        return VppEnum.vl_api_nat_config_flags_t
 
     @classmethod
     def setUpClass(cls):
@@ -795,12 +800,13 @@ class TestGBP(VppTestCase):
                     self.router_mac.packed)
 
                 # The BVIs are NAT inside interfaces
-                self.vapi.nat44_interface_add_del_feature(epg.bvi.sw_if_index,
-                                                          is_inside=1,
-                                                          is_add=1)
-                self.vapi.nat66_add_del_interface(epg.bvi.sw_if_index,
-                                                  is_inside=1,
-                                                  is_add=1)
+                flags = self.config_flags.NAT_IS_INSIDE
+                self.vapi.nat44_interface_add_del_feature(
+                    sw_if_index=epg.bvi.sw_if_index,
+                    flags=flags, is_add=1)
+                self.vapi.nat66_add_del_interface(
+                    is_add=1, flags=flags,
+                    sw_if_index=epg.bvi.sw_if_index)
 
             if_ip4 = VppIpInterfaceAddress(self, epg.bvi, epg.bvi_ip4, 32)
             if_ip6 = VppIpInterfaceAddress(self, epg.bvi, epg.bvi_ip6, 128)
@@ -832,13 +838,10 @@ class TestGBP(VppTestCase):
                                recirc.epg.rd.t6).add_vpp_config()
 
             self.vapi.nat44_interface_add_del_feature(
-                recirc.recirc.sw_if_index,
-                is_inside=0,
-                is_add=1)
+                sw_if_index=recirc.recirc.sw_if_index, is_add=1)
             self.vapi.nat66_add_del_interface(
-                recirc.recirc.sw_if_index,
-                is_inside=0,
-                is_add=1)
+                is_add=1,
+                sw_if_index=recirc.recirc.sw_if_index)
 
             recirc.add_vpp_config()
 
@@ -858,14 +861,19 @@ class TestGBP(VppTestCase):
             for (ip, fip) in zip(ep.ips, ep.fips):
                 # Add static mappings for each EP from the 10/8 to 11/8 network
                 if ip.af == AF_INET:
-                    self.vapi.nat44_add_del_static_mapping(ip.bytes,
-                                                           fip.bytes,
-                                                           vrf_id=0,
-                                                           addr_only=1)
+                    flags = self.config_flags.NAT_IS_ADDR_ONLY
+                    self.vapi.nat44_add_del_static_mapping(
+                        is_add=1,
+                        local_ip_address=ip.bytes,
+                        external_ip_address=fip.bytes,
+                        external_sw_if_index=0xFFFFFFFF,
+                        vrf_id=0,
+                        flags=flags)
                 else:
-                    self.vapi.nat66_add_del_static_mapping(ip.bytes,
-                                                           fip.bytes,
-                                                           vrf_id=0)
+                    self.vapi.nat66_add_del_static_mapping(
+                        local_ip_address=ip.bytes,
+                        external_ip_address=fip.bytes,
+                        vrf_id=0, is_add=1)
 
             # VPP EP create ...
             ep.add_vpp_config()
@@ -1138,9 +1146,9 @@ class TestGBP(VppTestCase):
             [VppGbpContractRule(
                 VppEnum.vl_api_gbp_rule_action_t.GBP_API_RULE_PERMIT,
                 []),
-             VppGbpContractRule(
-                 VppEnum.vl_api_gbp_rule_action_t.GBP_API_RULE_PERMIT,
-                 [])],
+                VppGbpContractRule(
+                    VppEnum.vl_api_gbp_rule_action_t.GBP_API_RULE_PERMIT,
+                    [])],
             [ETH_P_IP, ETH_P_IPV6])
         c1.add_vpp_config()
 
@@ -1158,9 +1166,9 @@ class TestGBP(VppTestCase):
             [VppGbpContractRule(
                 VppEnum.vl_api_gbp_rule_action_t.GBP_API_RULE_PERMIT,
                 []),
-             VppGbpContractRule(
-                 VppEnum.vl_api_gbp_rule_action_t.GBP_API_RULE_PERMIT,
-                 [])],
+                VppGbpContractRule(
+                    VppEnum.vl_api_gbp_rule_action_t.GBP_API_RULE_PERMIT,
+                    [])],
             [ETH_P_IP, ETH_P_IPV6])
         c2.add_vpp_config()
 
@@ -1200,9 +1208,9 @@ class TestGBP(VppTestCase):
             [VppGbpContractRule(
                 VppEnum.vl_api_gbp_rule_action_t.GBP_API_RULE_PERMIT,
                 []),
-             VppGbpContractRule(
-                 VppEnum.vl_api_gbp_rule_action_t.GBP_API_RULE_PERMIT,
-                 [])],
+                VppGbpContractRule(
+                    VppEnum.vl_api_gbp_rule_action_t.GBP_API_RULE_PERMIT,
+                    [])],
             [ETH_P_IP, ETH_P_IPV6])
         c3.add_vpp_config()
 
@@ -1305,9 +1313,9 @@ class TestGBP(VppTestCase):
             [VppGbpContractRule(
                 VppEnum.vl_api_gbp_rule_action_t.GBP_API_RULE_PERMIT,
                 []),
-             VppGbpContractRule(
-                 VppEnum.vl_api_gbp_rule_action_t.GBP_API_RULE_PERMIT,
-                 [])],
+                VppGbpContractRule(
+                    VppEnum.vl_api_gbp_rule_action_t.GBP_API_RULE_PERMIT,
+                    [])],
             [ETH_P_IP, ETH_P_IPV6])
         c4.add_vpp_config()
 
@@ -1346,9 +1354,9 @@ class TestGBP(VppTestCase):
             [VppGbpContractRule(
                 VppEnum.vl_api_gbp_rule_action_t.GBP_API_RULE_PERMIT,
                 []),
-             VppGbpContractRule(
-                 VppEnum.vl_api_gbp_rule_action_t.GBP_API_RULE_PERMIT,
-                 [])],
+                VppGbpContractRule(
+                    VppEnum.vl_api_gbp_rule_action_t.GBP_API_RULE_PERMIT,
+                    [])],
             [ETH_P_IP, ETH_P_IPV6])
         c5.add_vpp_config()
 
@@ -1404,35 +1412,38 @@ class TestGBP(VppTestCase):
         #
         for ep in eps:
             # del static mappings for each EP from the 10/8 to 11/8 network
-            self.vapi.nat44_add_del_static_mapping(ep.ip4.bytes,
-                                                   ep.fip4.bytes,
-                                                   vrf_id=0,
-                                                   addr_only=1,
-                                                   is_add=0)
-            self.vapi.nat66_add_del_static_mapping(ep.ip6.bytes,
-                                                   ep.fip6.bytes,
-                                                   vrf_id=0,
-                                                   is_add=0)
+            flags = self.config_flags.NAT_IS_ADDR_ONLY
+            self.vapi.nat44_add_del_static_mapping(
+                is_add=0,
+                local_ip_address=ep.ip4.bytes,
+                external_ip_address=ep.fip4.bytes,
+                external_sw_if_index=0xFFFFFFFF,
+                vrf_id=0,
+                flags=flags)
+            self.vapi.nat66_add_del_static_mapping(
+                local_ip_address=ep.ip6.bytes,
+                external_ip_address=ep.fip6.bytes,
+                vrf_id=0, is_add=0)
 
         for epg in epgs:
             # IP config on the BVI interfaces
             if epg != epgs[0] and epg != epgs[3]:
-                self.vapi.nat44_interface_add_del_feature(epg.bvi.sw_if_index,
-                                                          is_inside=1,
-                                                          is_add=0)
-                self.vapi.nat66_add_del_interface(epg.bvi.sw_if_index,
-                                                  is_inside=1,
-                                                  is_add=0)
+                flags = self.config_flags.NAT_IS_INSIDE
+                self.vapi.nat44_interface_add_del_feature(
+                    sw_if_index=epg.bvi.sw_if_index,
+                    flags=flags,
+                    is_add=0)
+                self.vapi.nat66_add_del_interface(
+                    is_add=0, flags=flags,
+                    sw_if_index=epg.bvi.sw_if_index)
 
         for recirc in recircs:
             self.vapi.nat44_interface_add_del_feature(
-                recirc.recirc.sw_if_index,
-                is_inside=0,
+                sw_if_index=recirc.recirc.sw_if_index,
                 is_add=0)
             self.vapi.nat66_add_del_interface(
-                recirc.recirc.sw_if_index,
-                is_inside=0,
-                is_add=0)
+                is_add=0,
+                sw_if_index=recirc.recirc.sw_if_index)
 
     def wait_for_ep_timeout(self, sw_if_index=None, ip=None, mac=None,
                             n_tries=100, s_time=1):
@@ -1732,7 +1743,7 @@ class TestGBP(VppTestCase):
                  UDP(sport=1234, dport=1234) /
                  Raw('\xa5' * 100))
 
-            rx = self.send_and_expect(self.pg2, p*65, self.pg0)
+            rx = self.send_and_expect(self.pg2, p * 65, self.pg0)
 
         for l in learnt:
             self.assertFalse(find_gbp_endpoint(self,
@@ -1755,7 +1766,7 @@ class TestGBP(VppTestCase):
                  UDP(sport=1234, dport=1234) /
                  Raw('\xa5' * 100))
 
-            rx = self.send_and_expect(self.pg2, p*65, self.pg0)
+            rx = self.send_and_expect(self.pg2, p * 65, self.pg0)
 
             self.assertTrue(find_gbp_endpoint(self,
                                               vx_tun_l2_1.sw_if_index,
@@ -1807,7 +1818,7 @@ class TestGBP(VppTestCase):
                  UDP(sport=1234, dport=1234) /
                  Raw('\xa5' * 100))
 
-            rx = self.send_and_expect(self.pg2, p*65, self.pg0)
+            rx = self.send_and_expect(self.pg2, p * 65, self.pg0)
 
             self.assertTrue(find_gbp_endpoint(self,
                                               vx_tun_l2_1.sw_if_index,
@@ -1840,7 +1851,7 @@ class TestGBP(VppTestCase):
                  UDP(sport=1234, dport=1234) /
                  Raw('\xa5' * 100))
 
-            rx = self.send_and_expect(self.pg2, p*65, self.pg0)
+            rx = self.send_and_expect(self.pg2, p * 65, self.pg0)
 
             self.assertTrue(find_gbp_endpoint(self,
                                               vx_tun_l2_1.sw_if_index,
@@ -1858,9 +1869,9 @@ class TestGBP(VppTestCase):
             [VppGbpContractRule(
                 VppEnum.vl_api_gbp_rule_action_t.GBP_API_RULE_PERMIT,
                 []),
-             VppGbpContractRule(
-                 VppEnum.vl_api_gbp_rule_action_t.GBP_API_RULE_PERMIT,
-                 [])],
+                VppGbpContractRule(
+                    VppEnum.vl_api_gbp_rule_action_t.GBP_API_RULE_PERMIT,
+                    [])],
             [ETH_P_IP, ETH_P_IPV6])
         c1.add_vpp_config()
 
@@ -1919,7 +1930,7 @@ class TestGBP(VppTestCase):
                  UDP(sport=1234, dport=1234) /
                  Raw('\xa5' * 100))
 
-            rx = self.send_and_expect(self.pg2, p*65, self.pg0)
+            rx = self.send_and_expect(self.pg2, p * 65, self.pg0)
 
             self.assertTrue(find_gbp_endpoint(self,
                                               vx_tun_l2_1.sw_if_index,
@@ -2339,7 +2350,7 @@ class TestGBP(VppTestCase):
                  UDP(sport=1234, dport=1234) /
                  Raw('\xa5' * 100))
 
-            rxs = self.send_and_expect(self.pg0, p*1, self.pg2)
+            rxs = self.send_and_expect(self.pg0, p * 1, self.pg2)
 
             for rx in rxs:
                 self.assertEqual(rx[IP].src, self.pg2.local_ip4)
@@ -2412,7 +2423,7 @@ class TestGBP(VppTestCase):
                  UDP(sport=1234, dport=1234) /
                  Raw('\xa5' * 100))
 
-            rxs = self.send_and_expect(self.pg0, p*65, self.pg2)
+            rxs = self.send_and_expect(self.pg0, p * 65, self.pg2)
 
             for rx in rxs:
                 self.assertEqual(rx[IP].src, self.pg2.local_ip4)
@@ -2551,7 +2562,7 @@ class TestGBP(VppTestCase):
                  UDP(sport=1234, dport=1234) /
                  Raw('\xa5' * 100))
 
-            rxs = self.send_and_expect(self.pg0, p*65, self.pg2)
+            rxs = self.send_and_expect(self.pg0, p * 65, self.pg2)
 
             for rx in rxs:
                 self.assertEqual(rx[IP].src, self.pg2.local_ip4)
@@ -2842,13 +2853,13 @@ class TestGBP(VppTestCase):
                                        sep1.ip4, sep1.epg.rd),
                  VppGbpContractNextHop(sep2.vmac, sep2.epg.bd,
                                        sep2.ip4, sep2.epg.rd)]),
-             VppGbpContractRule(
-                 VppEnum.vl_api_gbp_rule_action_t.GBP_API_RULE_REDIRECT,
-                 VppEnum.vl_api_gbp_hash_mode_t.GBP_API_HASH_MODE_SRC_IP,
-                 [VppGbpContractNextHop(sep3.vmac, sep3.epg.bd,
-                                        sep3.ip6, sep3.epg.rd),
-                  VppGbpContractNextHop(sep4.vmac, sep4.epg.bd,
-                                        sep4.ip6, sep4.epg.rd)])],
+                VppGbpContractRule(
+                    VppEnum.vl_api_gbp_rule_action_t.GBP_API_RULE_REDIRECT,
+                    VppEnum.vl_api_gbp_hash_mode_t.GBP_API_HASH_MODE_SRC_IP,
+                    [VppGbpContractNextHop(sep3.vmac, sep3.epg.bd,
+                                           sep3.ip6, sep3.epg.rd),
+                     VppGbpContractNextHop(sep4.vmac, sep4.epg.bd,
+                                           sep4.ip6, sep4.epg.rd)])],
             [ETH_P_IP, ETH_P_IPV6])
         c1.add_vpp_config()
 
@@ -2861,13 +2872,13 @@ class TestGBP(VppTestCase):
                                        sep1.ip4, sep1.epg.rd),
                  VppGbpContractNextHop(sep2.vmac, sep2.epg.bd,
                                        sep2.ip4, sep2.epg.rd)]),
-             VppGbpContractRule(
-                 VppEnum.vl_api_gbp_rule_action_t.GBP_API_RULE_REDIRECT,
-                 VppEnum.vl_api_gbp_hash_mode_t.GBP_API_HASH_MODE_SRC_IP,
-                 [VppGbpContractNextHop(sep3.vmac, sep3.epg.bd,
-                                        sep3.ip6, sep3.epg.rd),
-                  VppGbpContractNextHop(sep4.vmac, sep4.epg.bd,
-                                        sep4.ip6, sep4.epg.rd)])],
+                VppGbpContractRule(
+                    VppEnum.vl_api_gbp_rule_action_t.GBP_API_RULE_REDIRECT,
+                    VppEnum.vl_api_gbp_hash_mode_t.GBP_API_HASH_MODE_SRC_IP,
+                    [VppGbpContractNextHop(sep3.vmac, sep3.epg.bd,
+                                           sep3.ip6, sep3.epg.rd),
+                     VppGbpContractNextHop(sep4.vmac, sep4.epg.bd,
+                                           sep4.ip6, sep4.epg.rd)])],
             [ETH_P_IP, ETH_P_IPV6])
         c2.add_vpp_config()
 
@@ -2974,13 +2985,13 @@ class TestGBP(VppTestCase):
                                        sep1.ip4, sep1.epg.rd),
                  VppGbpContractNextHop(sep2.vmac, sep2.epg.bd,
                                        sep2.ip4, sep2.epg.rd)]),
-             VppGbpContractRule(
-                 VppEnum.vl_api_gbp_rule_action_t.GBP_API_RULE_REDIRECT,
-                 VppEnum.vl_api_gbp_hash_mode_t.GBP_API_HASH_MODE_SYMMETRIC,
-                 [VppGbpContractNextHop(sep3.vmac, sep3.epg.bd,
-                                        sep3.ip6, sep3.epg.rd),
-                  VppGbpContractNextHop(sep4.vmac, sep4.epg.bd,
-                                        sep4.ip6, sep4.epg.rd)])],
+                VppGbpContractRule(
+                    VppEnum.vl_api_gbp_rule_action_t.GBP_API_RULE_REDIRECT,
+                    VppEnum.vl_api_gbp_hash_mode_t.GBP_API_HASH_MODE_SYMMETRIC,
+                    [VppGbpContractNextHop(sep3.vmac, sep3.epg.bd,
+                                           sep3.ip6, sep3.epg.rd),
+                     VppGbpContractNextHop(sep4.vmac, sep4.epg.bd,
+                                           sep4.ip6, sep4.epg.rd)])],
             [ETH_P_IP, ETH_P_IPV6])
         c1.add_vpp_config()
 
@@ -2993,13 +3004,13 @@ class TestGBP(VppTestCase):
                                        sep1.ip4, sep1.epg.rd),
                  VppGbpContractNextHop(sep2.vmac, sep2.epg.bd,
                                        sep2.ip4, sep2.epg.rd)]),
-             VppGbpContractRule(
-                 VppEnum.vl_api_gbp_rule_action_t.GBP_API_RULE_REDIRECT,
-                 VppEnum.vl_api_gbp_hash_mode_t.GBP_API_HASH_MODE_SYMMETRIC,
-                 [VppGbpContractNextHop(sep3.vmac, sep3.epg.bd,
-                                        sep3.ip6, sep3.epg.rd),
-                  VppGbpContractNextHop(sep4.vmac, sep4.epg.bd,
-                                        sep4.ip6, sep4.epg.rd)])],
+                VppGbpContractRule(
+                    VppEnum.vl_api_gbp_rule_action_t.GBP_API_RULE_REDIRECT,
+                    VppEnum.vl_api_gbp_hash_mode_t.GBP_API_HASH_MODE_SYMMETRIC,
+                    [VppGbpContractNextHop(sep3.vmac, sep3.epg.bd,
+                                           sep3.ip6, sep3.epg.rd),
+                     VppGbpContractNextHop(sep4.vmac, sep4.epg.bd,
+                                           sep4.ip6, sep4.epg.rd)])],
             [ETH_P_IP, ETH_P_IPV6])
         c2.add_vpp_config()
 
@@ -3058,13 +3069,13 @@ class TestGBP(VppTestCase):
                                        sep1.ip4, sep1.epg.rd),
                  VppGbpContractNextHop(sep2.vmac, sep2.epg.bd,
                                        sep2.ip4, sep2.epg.rd)]),
-             VppGbpContractRule(
-                 VppEnum.vl_api_gbp_rule_action_t.GBP_API_RULE_REDIRECT,
-                 VppEnum.vl_api_gbp_hash_mode_t.GBP_API_HASH_MODE_SYMMETRIC,
-                 [VppGbpContractNextHop(sep3.vmac, sep3.epg.bd,
-                                        sep3.ip6, sep3.epg.rd),
-                  VppGbpContractNextHop(sep4.vmac, sep4.epg.bd,
-                                        sep4.ip6, sep4.epg.rd)])],
+                VppGbpContractRule(
+                    VppEnum.vl_api_gbp_rule_action_t.GBP_API_RULE_REDIRECT,
+                    VppEnum.vl_api_gbp_hash_mode_t.GBP_API_HASH_MODE_SYMMETRIC,
+                    [VppGbpContractNextHop(sep3.vmac, sep3.epg.bd,
+                                           sep3.ip6, sep3.epg.rd),
+                     VppGbpContractNextHop(sep4.vmac, sep4.epg.bd,
+                                           sep4.ip6, sep4.epg.rd)])],
             [ETH_P_IP, ETH_P_IPV6])
         c3.add_vpp_config()
 
@@ -3090,9 +3101,9 @@ class TestGBP(VppTestCase):
             [VppGbpContractRule(
                 VppEnum.vl_api_gbp_rule_action_t.GBP_API_RULE_PERMIT,
                 []),
-             VppGbpContractRule(
-                 VppEnum.vl_api_gbp_rule_action_t.GBP_API_RULE_PERMIT,
-                 [])],
+                VppGbpContractRule(
+                    VppEnum.vl_api_gbp_rule_action_t.GBP_API_RULE_PERMIT,
+                    [])],
             [ETH_P_IP, ETH_P_IPV6])
         c4.add_vpp_config()
 
@@ -3172,13 +3183,13 @@ class TestGBP(VppTestCase):
                                        sep1.ip4, sep1.epg.rd),
                  VppGbpContractNextHop(sep2.vmac, sep2.epg.bd,
                                        sep2.ip4, sep2.epg.rd)]),
-             VppGbpContractRule(
-                 VppEnum.vl_api_gbp_rule_action_t.GBP_API_RULE_REDIRECT,
-                VppEnum.vl_api_gbp_hash_mode_t.GBP_API_HASH_MODE_DST_IP,
-                 [VppGbpContractNextHop(sep3.vmac, sep3.epg.bd,
-                                        sep3.ip6, sep3.epg.rd),
-                  VppGbpContractNextHop(sep4.vmac, sep4.epg.bd,
-                                        sep4.ip6, sep4.epg.rd)])],
+                VppGbpContractRule(
+                    VppEnum.vl_api_gbp_rule_action_t.GBP_API_RULE_REDIRECT,
+                    VppEnum.vl_api_gbp_hash_mode_t.GBP_API_HASH_MODE_DST_IP,
+                    [VppGbpContractNextHop(sep3.vmac, sep3.epg.bd,
+                                           sep3.ip6, sep3.epg.rd),
+                     VppGbpContractNextHop(sep4.vmac, sep4.epg.bd,
+                                           sep4.ip6, sep4.epg.rd)])],
             [ETH_P_IP, ETH_P_IPV6])
         c5.add_vpp_config()
 
@@ -3473,9 +3484,9 @@ class TestGBP(VppTestCase):
             [VppGbpContractRule(
                 VppEnum.vl_api_gbp_rule_action_t.GBP_API_RULE_PERMIT,
                 []),
-             VppGbpContractRule(
-                 VppEnum.vl_api_gbp_rule_action_t.GBP_API_RULE_PERMIT,
-                 [])],
+                VppGbpContractRule(
+                    VppEnum.vl_api_gbp_rule_action_t.GBP_API_RULE_PERMIT,
+                    [])],
             [ETH_P_IP, ETH_P_IPV6])
         c1.add_vpp_config()
 
@@ -3487,9 +3498,9 @@ class TestGBP(VppTestCase):
             [VppGbpContractRule(
                 VppEnum.vl_api_gbp_rule_action_t.GBP_API_RULE_PERMIT,
                 []),
-             VppGbpContractRule(
-                 VppEnum.vl_api_gbp_rule_action_t.GBP_API_RULE_PERMIT,
-                 [])],
+                VppGbpContractRule(
+                    VppEnum.vl_api_gbp_rule_action_t.GBP_API_RULE_PERMIT,
+                    [])],
             [ETH_P_IP, ETH_P_IPV6])
         c2.add_vpp_config()
         c3 = VppGbpContract(
@@ -3497,9 +3508,9 @@ class TestGBP(VppTestCase):
             [VppGbpContractRule(
                 VppEnum.vl_api_gbp_rule_action_t.GBP_API_RULE_PERMIT,
                 []),
-             VppGbpContractRule(
-                 VppEnum.vl_api_gbp_rule_action_t.GBP_API_RULE_PERMIT,
-                 [])],
+                VppGbpContractRule(
+                    VppEnum.vl_api_gbp_rule_action_t.GBP_API_RULE_PERMIT,
+                    [])],
             [ETH_P_IP, ETH_P_IPV6])
         c3.add_vpp_config()
 
@@ -3629,9 +3640,9 @@ class TestGBP(VppTestCase):
             [VppGbpContractRule(
                 VppEnum.vl_api_gbp_rule_action_t.GBP_API_RULE_PERMIT,
                 []),
-             VppGbpContractRule(
-                 VppEnum.vl_api_gbp_rule_action_t.GBP_API_RULE_PERMIT,
-                 [])],
+                VppGbpContractRule(
+                    VppEnum.vl_api_gbp_rule_action_t.GBP_API_RULE_PERMIT,
+                    [])],
             [ETH_P_IP, ETH_P_IPV6])
         c4.add_vpp_config()
 

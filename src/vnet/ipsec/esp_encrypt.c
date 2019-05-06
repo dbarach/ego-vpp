@@ -112,19 +112,26 @@ esp_add_footer_and_icv (vlib_buffer_t * b, u8 block_size, u8 icv_sz)
 static_always_inline void
 esp_update_ip4_hdr (ip4_header_t * ip4, u16 len, int is_transport, int is_udp)
 {
-  ip_csum_t sum = ip4->checksum;
-  u16 old_len = 0;
+  ip_csum_t sum;
+  u16 old_len;
+
+  len = clib_net_to_host_u16 (len);
+  old_len = ip4->length;
 
   if (is_transport)
     {
       u8 prot = is_udp ? IP_PROTOCOL_UDP : IP_PROTOCOL_IPSEC_ESP;
-      old_len = ip4->length;
-      sum = ip_csum_update (sum, ip4->protocol, prot, ip4_header_t, protocol);
-      ip4->protocol = prot;
-    }
 
-  ip4->length = len = clib_net_to_host_u16 (len);
-  sum = ip_csum_update (ip4->checksum, old_len, len, ip4_header_t, length);
+      sum = ip_csum_update (ip4->checksum, ip4->protocol,
+			    prot, ip4_header_t, protocol);
+      ip4->protocol = prot;
+
+      sum = ip_csum_update (sum, old_len, len, ip4_header_t, length);
+    }
+  else
+    sum = ip_csum_update (ip4->checksum, old_len, len, ip4_header_t, length);
+
+  ip4->length = len;
   ip4->checksum = ip_csum_fold (sum);
 }
 
@@ -218,6 +225,14 @@ esp_process_ops (vlib_main_t * vm, vlib_node_runtime_t * node,
     }
 }
 
+typedef struct
+{
+  u32 salt;
+  u64 iv;
+} __clib_packed esp_gcm_nonce_t;
+
+STATIC_ASSERT_SIZEOF (esp_gcm_nonce_t, 12);
+
 always_inline uword
 esp_encrypt_inline (vlib_main_t * vm, vlib_node_runtime_t * node,
 		    vlib_frame_t * frame, int is_ip6, int is_tun)
@@ -228,6 +243,7 @@ esp_encrypt_inline (vlib_main_t * vm, vlib_node_runtime_t * node,
   u32 n_left = frame->n_vectors;
   vlib_buffer_t *bufs[VLIB_FRAME_SIZE], **b = bufs;
   u16 nexts[VLIB_FRAME_SIZE], *next = nexts;
+  esp_gcm_nonce_t nonces[VLIB_FRAME_SIZE], *nonce = nonces;
   u32 thread_index = vm->thread_index;
   u16 buffer_data_size = vlib_buffer_get_default_data_size (vm);
   u32 current_sa_index = ~0, current_sa_packets = 0;
@@ -241,7 +257,7 @@ esp_encrypt_inline (vlib_main_t * vm, vlib_node_runtime_t * node,
 
   while (n_left > 0)
     {
-      u32 sa_index0 = vnet_buffer (b[0])->ipsec.sad_index;
+      u32 sa_index0;
       dpo_id_t *dpo;
       esp_header_t *esp;
       u8 *payload, *next_hdr_ptr;
@@ -402,14 +418,16 @@ esp_encrypt_inline (vlib_main_t * vm, vlib_node_runtime_t * node,
 	      ip6_header_t *ip6 = (ip6_header_t *) (ip_hdr);
 	      *next_hdr_ptr = ip6->protocol;
 	      ip6->protocol = IP_PROTOCOL_IPSEC_ESP;
-	      ip6->payload_length = payload_len + hdr_len - l2_len - ip_len;
+	      ip6->payload_length =
+		clib_host_to_net_u16 (payload_len + hdr_len - l2_len -
+				      ip_len);
 	    }
 	  else
 	    {
 	      u16 len;
 	      ip4_header_t *ip4 = (ip4_header_t *) (ip_hdr);
 	      *next_hdr_ptr = ip4->protocol;
-	      len = payload_len + hdr_len + l2_len;
+	      len = payload_len + hdr_len - l2_len;
 	      if (udp)
 		{
 		  esp_update_ip4_hdr (ip4, len, /* is_transport */ 1, 1);
@@ -430,12 +448,35 @@ esp_encrypt_inline (vlib_main_t * vm, vlib_node_runtime_t * node,
 	  vnet_crypto_op_t *op;
 	  vec_add2_aligned (ptd->crypto_ops, op, 1, CLIB_CACHE_LINE_BYTES);
 	  vnet_crypto_op_init (op, sa0->crypto_enc_op_id);
-	  op->iv = payload - iv_sz;
 	  op->src = op->dst = payload;
-	  op->key = sa0->crypto_key.data;
+	  op->key_index = sa0->crypto_key_index;
 	  op->len = payload_len - icv_sz;
-	  op->flags = VNET_CRYPTO_OP_FLAG_INIT_IV;
 	  op->user_data = b - bufs;
+
+	  if (ipsec_sa_is_set_IS_AEAD (sa0))
+	    {
+	      /*
+	       * construct the AAD in a scratch space in front
+	       * of the IP header.
+	       */
+	      op->aad = payload - hdr_len - sizeof (esp_aead_t);
+
+	      esp_aad_fill (op, esp, sa0);
+
+	      op->tag = payload + op->len;
+	      op->tag_len = 16;
+
+	      u64 *iv = (u64 *) (payload - iv_sz);
+	      nonce->salt = sa0->salt;
+	      nonce->iv = *iv = clib_host_to_net_u64 (sa0->gcm_iv_counter++);
+	      op->iv = (u8 *) nonce;
+	      nonce++;
+	    }
+	  else
+	    {
+	      op->iv = payload - iv_sz;
+	      op->flags = VNET_CRYPTO_OP_FLAG_INIT_IV;
+	    }
 	}
 
       if (sa0->integ_op_id)
@@ -445,8 +486,7 @@ esp_encrypt_inline (vlib_main_t * vm, vlib_node_runtime_t * node,
 	  vnet_crypto_op_init (op, sa0->integ_op_id);
 	  op->src = payload - iv_sz - sizeof (esp_header_t);
 	  op->digest = payload + payload_len - icv_sz;
-	  op->key = sa0->integ_key.data;
-	  op->key_len = sa0->integ_key.len;
+	  op->key_index = sa0->integ_key_index;
 	  op->digest_len = icv_sz;
 	  op->len = payload_len - icv_sz + iv_sz + sizeof (esp_header_t);
 	  op->user_data = b - bufs;
