@@ -111,8 +111,8 @@ endif
 # +ganglia-devel if building the ganglia plugin
 
 RPM_DEPENDS += chrpath libffi-devel rpm-build
-
-SUSE_NAME= $(shell grep '^NAME=' /etc/os-release | cut -f2- -d= | sed -e 's/\"//g' | cut -d' ' -f2)
+# lowercase- replace spaces with dashes.
+SUSE_NAME= $(shell grep '^NAME=' /etc/os-release | cut -f2- -d= | sed -e 's/\"//g' | sed -e 's/ /-/' | awk '{print tolower($$0)}')
 SUSE_ID= $(shell grep '^VERSION_ID=' /etc/os-release | cut -f2- -d= | sed -e 's/\"//g' | cut -d' ' -f2)
 RPM_SUSE_BUILDTOOLS_DEPS = autoconf automake ccache check-devel chrpath
 RPM_SUSE_BUILDTOOLS_DEPS += clang cmake indent libtool make ninja python3-ply
@@ -126,7 +126,7 @@ RPM_SUSE_PYTHON_DEPS += python-rpm-macros python3-rpm-macros
 RPM_SUSE_PLATFORM_DEPS = distribution-release shadow rpm-build
 
 ifeq ($(OS_ID),opensuse)
-ifeq ($(SUSE_NAME),Tumbleweed)
+ifeq ($(SUSE_NAME),tumbleweed)
 	RPM_SUSE_DEVEL_DEPS = libboost_headers1_68_0-devel-1.68.0  libboost_thread1_68_0-devel-1.68.0 gcc
 	RPM_SUSE_PYTHON_DEPS += python3-ply python2-virtualenv
 endif
@@ -388,6 +388,7 @@ define test
 	  VPP_BUILD_DIR=$(BR)/build-$(2)-native \
 	  VPP_BIN=$(BR)/install-$(2)-native/vpp/bin/vpp \
 	  VPP_PLUGIN_PATH=$(call libexpand,$(libs),$(2),vpp_plugins) \
+	  VPP_TEST_PLUGIN_PATH=$(call libexpand,$(libs),$(2),vpp_api_test_plugins) \
 	  VPP_INSTALL_PATH=$(BR)/install-$(2)-native/ \
 	  LD_LIBRARY_PATH=$(call libexpand,$(libs),$(2),) \
 	  EXTENDED_TESTS=$(EXTENDED_TESTS) \
@@ -427,6 +428,9 @@ test-shell:
 
 test-shell-debug:
 	$(call test,vpp,vpp_debug,shell)
+
+test-shell-gcov:
+	$(call test,vpp,vpp_gcov,shell)
 
 test-dep:
 	@make -C test test-dep

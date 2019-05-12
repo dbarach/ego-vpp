@@ -286,6 +286,7 @@ class VppTestCase(unittest.TestCase):
         cls.set_debug_flags(d)
         cls.vpp_bin = os.getenv('VPP_BIN', "vpp")
         cls.plugin_path = os.getenv('VPP_PLUGIN_PATH')
+        cls.test_plugin_path = os.getenv('VPP_TEST_PLUGIN_PATH')
         cls.extern_plugin_path = os.getenv('EXTERN_PLUGINS')
         plugin_path = None
         if cls.plugin_path is not None:
@@ -325,6 +326,9 @@ class VppTestCase(unittest.TestCase):
             cls.vpp_cmdline.extend(cls.extra_vpp_punt_config)
         if plugin_path is not None:
             cls.vpp_cmdline.extend(["plugin_path", plugin_path])
+        if cls.test_plugin_path is not None:
+            cls.vpp_cmdline.extend(["test_plugin_path", cls.test_plugin_path])
+
         cls.logger.info("vpp_cmdline args: %s" % cls.vpp_cmdline)
         cls.logger.info("vpp_cmdline: %s" % " ".join(cls.vpp_cmdline))
 
@@ -399,6 +403,28 @@ class VppTestCase(unittest.TestCase):
             cls.sleep(0.8)
         if not ok:
             cls.logger.critical("Couldn't stat : {}".format(cls.stats_sock))
+
+    @classmethod
+    def wait_for_coredump(cls):
+        corefile = cls.tempdir + "/core"
+        if os.path.isfile(corefile):
+            cls.logger.error("Waiting for coredump to complete: %s", corefile)
+            curr_size = os.path.getsize(corefile)
+            deadline = time.time() + 60
+            ok = False
+            while time.time() < deadline:
+                cls.sleep(1)
+                size = curr_size
+                curr_size = os.path.getsize(corefile)
+                if size == curr_size:
+                    ok = True
+                    break
+            if not ok:
+                cls.logger.error("Timed out waiting for coredump to complete:"
+                                 " %s", corefile)
+            else:
+                cls.logger.error("Coredump complete: %s, size %d",
+                                 corefile, curr_size)
 
     @classmethod
     def setUpClass(cls):
@@ -529,8 +555,9 @@ class VppTestCase(unittest.TestCase):
                 del cls.vapi
             cls.vpp.poll()
             if cls.vpp.returncode is None:
+                cls.wait_for_coredump()
                 cls.logger.debug("Sending TERM to vpp")
-                cls.vpp.kill()
+                cls.vpp.terminate()
                 cls.logger.debug("Waiting for vpp to die")
                 cls.vpp.communicate()
             cls.logger.debug("Deleting class vpp attribute on %s",
@@ -733,8 +760,8 @@ class VppTestCase(unittest.TestCase):
         packet_len = len(packet) + 4
         extend = size - packet_len
         if extend > 0:
-            num = (extend / len(padding)) + 1
-            packet[Raw].load += (padding * num)[:extend]
+            num = (extend // len(padding)) + 1
+            packet[Raw].load += (padding * num)[:extend].encode("ascii")
 
     @classmethod
     def reset_packet_infos(cls):
