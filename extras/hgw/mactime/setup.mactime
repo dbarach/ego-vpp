@@ -1,0 +1,18 @@
+set term pag off
+loop create
+
+packet-generator new {
+    name x
+    limit 100000
+    size 128-128
+    interface loop0
+    node ethernet-input
+    data {
+        IP6: dead.babe.0001 -> dead.babe.0002
+        ICMP: db00::1 -> db00::2
+        incrementing 30
+    }
+}
+
+bin mactime_enable_disable loop0
+bin mactime_add_del_range name fucker mac de:ad:ba:be:00:01 allow-static data-quota 2M

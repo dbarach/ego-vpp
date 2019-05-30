@@ -36,6 +36,7 @@ vlib_node_registration_t mactime_tx_node;
 _(OK, "Permitted packets")			\
 _(STATIC_DROP, "Static drop packets")           \
 _(RANGE_DROP, "Range drop packets")             \
+_(QUOTA_DROP, "Data quota drop packets")	\
 _(DROP_10001, "Dropped UDP DST-port 10001")
 
 typedef enum
@@ -167,6 +168,24 @@ mactime_node_inline (vlib_main_t * vm,
 
 	  dp = pool_elt_at_index (mm->devices, device_index0);
 
+	  /* Known device, check for a traffic quota */
+          if (PREDICT_FALSE (dp->data_quota))
+            {
+              vlib_counter_t device_current_count;
+              vlib_get_combined_counter (&mm->allow_counters,
+                                         dp - mm->devices,
+                                         &device_current_count);
+              if (device_current_count.bytes >= dp->data_quota)
+                {
+		  next0 = MACTIME_NEXT_DROP;
+                  b0->error = node->errors[MACTIME_ERROR_QUOTA_DROP];
+		  vlib_increment_combined_counter
+		    (&mm->drop_counters, thread_index, dp - mm->devices, 1,
+		     len0);
+                  goto trace0;
+                }
+            }
+
 	  /* Static drop / allow? */
 	  if (PREDICT_FALSE
 	      (dp->flags &
@@ -184,7 +203,7 @@ mactime_node_inline (vlib_main_t * vm,
 	      else		/* note next0 set to allow */
 		{
                   /* Special-case mini-ACL for stupid Swann DVRs. */
-                  if (PREDICT_FALSE 
+                  if (PREDICT_FALSE
                       (dp->flags & MACTIME_DEVICE_FLAG_DROP_UDP_10001))
                     {
                       ip4_header_t *ip = (void *)(((u8 *) en0) + 14);
