@@ -121,7 +121,7 @@ class VPPValueError(ValueError):
     pass
 
 
-class VPP(object):
+class VPPApiClient(object):
     """VPP interface.
 
     This class provides the APIs to VPP.  The APIs are loaded
@@ -133,6 +133,7 @@ class VPP(object):
     provides a means to register a callback function to receive
     these messages in a background thread.
     """
+    apidir = None
     VPPApiError = VPPApiError
     VPPRuntimeError = VPPRuntimeError
     VPPValueError = VPPValueError
@@ -288,10 +289,7 @@ class VPP(object):
         :returns: A single directory name, or None if no such directory
             could be found.
         """
-        dirs = []
-
-        if 'VPP_API_DIR' in os.environ:
-            dirs.append(os.environ['VPP_API_DIR'])
+        dirs = [cls.apidir] if cls.apidir else []
 
         # perhaps we're in the 'src/scripts' or 'src/vpp-api/python' dir;
         # in which case, plot a course to likely places in the src tree
@@ -353,7 +351,7 @@ class VPP(object):
         # finally, try the location system packages typically install into
         dirs.append(os.path.sep.join(('', 'usr', 'share', 'vpp', 'api')))
 
-        # check the directories for existance; first one wins
+        # check the directories for existence; first one wins
         for dir in dirs:
             if os.path.isdir(dir):
                 return dir
@@ -467,6 +465,8 @@ class VPP(object):
                 target=self.thread_msg_handler)
             self.event_thread.daemon = True
             self.event_thread.start()
+        else:
+            self.event_thread = None
         return rv
 
     def connect(self, name, chroot_prefix=None, do_async=False, rx_qlen=32):
@@ -497,7 +497,8 @@ class VPP(object):
     def disconnect(self):
         """Detach from VPP."""
         rv = self.transport.disconnect()
-        self.message_queue.put("terminate event thread")
+        if self.event_thread is not None:
+            self.message_queue.put("terminate event thread")
         return rv
 
     def msg_handler_sync(self, msg):
@@ -713,5 +714,7 @@ class VPP(object):
             if self.event_callback:
                 self.event_callback(msgname, r)
 
+# Provide the old name for backward compatibility.
+VPP = VPPApiClient
 
 # vim: tabstop=8 expandtab shiftwidth=4 softtabstop=4

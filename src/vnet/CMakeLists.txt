@@ -58,6 +58,7 @@ list(APPEND VNET_HEADERS
   interface_funcs.h
   ip/ip4_to_ip6.h
   ip/ip6_to_ip4.h
+  ip/ip_types_api.h
   l3_types.h
   plugin/plugin.h
   pipeline.h
@@ -68,7 +69,10 @@ list(APPEND VNET_HEADERS
   util/refcount.h
 )
 
-list(APPEND VNET_API_FILES interface.api)
+list(APPEND VNET_API_FILES
+  interface.api
+  ip/ip_types.api
+)
 
 ##############################################################################
 # Policer infra
@@ -445,6 +449,7 @@ list(APPEND VNET_SOURCES
   ip/ping.c
   ip/punt_api.c
   ip/punt.c
+  ip/punt_node.c
 )
 
 list(APPEND VNET_MULTIARCH_SOURCES
@@ -455,7 +460,7 @@ list(APPEND VNET_MULTIARCH_SOURCES
   ip/ip6_reassembly.c
   ip/ip6_input.c
   ip/ip6_punt_drop.c
-  ip/punt.c
+  ip/punt_node.c
   ip/ip_in_out_acl.c
 )
 

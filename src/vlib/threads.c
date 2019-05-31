@@ -23,6 +23,8 @@
 #include <vlib/threads.h>
 #include <vlib/unix/cj.h>
 
+#include <vlib/stat_weak_inlines.h>
+
 DECLARE_CJ_GLOBAL_LOG;
 
 #define FRAME_QUEUE_NELTS 64
@@ -169,13 +171,7 @@ barrier_trace_release (f64 t_entry, f64 t_closed_total, f64 t_update_main)
 uword
 os_get_nthreads (void)
 {
-  u32 len;
-
-  len = vec_len (vlib_thread_stacks);
-  if (len == 0)
-    return 1;
-  else
-    return len;
+  return vec_len (vlib_thread_stacks);
 }
 
 void
@@ -299,11 +295,8 @@ vlib_thread_init (vlib_main_t * vm)
       pthread_setaffinity_np (pthread_self (), sizeof (cpu_set_t), &cpuset);
     }
 
-  /* as many threads as stacks... */
-  vec_validate_aligned (vlib_worker_threads, vec_len (vlib_thread_stacks) - 1,
-			CLIB_CACHE_LINE_BYTES);
-
-  /* Preallocate thread 0 */
+  /* Set up thread 0 */
+  vec_validate_aligned (vlib_worker_threads, 0, CLIB_CACHE_LINE_BYTES);
   _vec_len (vlib_worker_threads) = 1;
   w = vlib_worker_threads;
   w->thread_mheap = clib_mem_get_heap ();
@@ -358,8 +351,7 @@ vlib_thread_init (vlib_main_t * vm)
 
             avail_cpu = clib_bitmap_set(avail_cpu, c, 0);
           }));
-/* *INDENT-ON* */
-
+          /* *INDENT-ON* */
 	}
       else
 	{
@@ -381,9 +373,14 @@ vlib_thread_init (vlib_main_t * vm)
 
   tm->n_vlib_mains = n_vlib_mains;
 
+  /*
+   * Allocate the remaining worker threads, and thread stack vector slots
+   * from now on, calls to os_get_nthreads() will return the correct
+   * answer.
+   */
   vec_validate_aligned (vlib_worker_threads, first_index - 1,
 			CLIB_CACHE_LINE_BYTES);
-
+  vec_validate (vlib_thread_stacks, vec_len (vlib_worker_threads) - 1);
   return 0;
 }
 
@@ -877,8 +874,13 @@ start_workers (vlib_main_t * vm)
 	      clib_mem_set_heap (oldheap);
 	      vec_add1_aligned (vlib_mains, vm_clone, CLIB_CACHE_LINE_BYTES);
 
+	      /* Switch to the stats segment ... */
+	      void *oldheap = vlib_stats_push_heap (0);
 	      vm_clone->error_main.counters = vec_dup_aligned
 		(vlib_mains[0]->error_main.counters, CLIB_CACHE_LINE_BYTES);
+	      vlib_stats_pop_heap2 (vm_clone->error_main.counters,
+				    worker_thread_index, oldheap, 1);
+
 	      vm_clone->error_main.counters_last_clear = vec_dup_aligned
 		(vlib_mains[0]->error_main.counters_last_clear,
 		 CLIB_CACHE_LINE_BYTES);
@@ -1041,9 +1043,15 @@ vlib_worker_thread_node_refork (void)
   clib_memcpy_fast (&vm_clone->error_main, &vm->error_main,
 		    sizeof (vm->error_main));
   j = vec_len (vm->error_main.counters) - 1;
+
+  /* Switch to the stats segment ... */
+  void *oldheap = vlib_stats_push_heap (0);
   vec_validate_aligned (old_counters, j, CLIB_CACHE_LINE_BYTES);
-  vec_validate_aligned (old_counters_all_clear, j, CLIB_CACHE_LINE_BYTES);
   vm_clone->error_main.counters = old_counters;
+  vlib_stats_pop_heap2 (vm_clone->error_main.counters, vm_clone->thread_index,
+			oldheap, 0);
+
+  vec_validate_aligned (old_counters_all_clear, j, CLIB_CACHE_LINE_BYTES);
   vm_clone->error_main.counters_last_clear = old_counters_all_clear;
 
   nm_clone = &vm_clone->node_main;
@@ -1471,18 +1479,6 @@ vlib_worker_thread_barrier_sync_int (vlib_main_t * vm, const char *func_name)
 
 }
 
-void vlib_stat_segment_lock (void) __attribute__ ((weak));
-void
-vlib_stat_segment_lock (void)
-{
-}
-
-void vlib_stat_segment_unlock (void) __attribute__ ((weak));
-void
-vlib_stat_segment_unlock (void)
-{
-}
-
 void
 vlib_worker_thread_barrier_release (vlib_main_t * vm)
 {
@@ -1741,7 +1737,7 @@ vlib_worker_thread_fn (void *arg)
     vlib_worker_thread_barrier_check ();
 
   e = vlib_call_init_exit_functions
-    (vm, vm->worker_init_function_registrations, 1 /* call_once */ );
+    (vm, &vm->worker_init_function_registrations, 1 /* call_once */ );
   if (e)
     clib_error_report (e);
 

@@ -42,7 +42,6 @@
 #include <vlibmemory/api.h>
 #include <vnet/lisp-cp/lisp_types.h>
 #include <vnet/qos/qos_types.h>
-#include <vpp/oam/oam.h>
 
 #include <vnet/ethernet/ethernet.h>
 #include <vnet/ethernet/ethernet_types_api.h>
@@ -614,6 +613,8 @@ static void *vl_api_virtio_pci_create_t_print
 		format_ethernet_address, mp->mac_address);
   if (mp->features)
     s = format (s, "features 0x%llx ", clib_net_to_host_u64 (mp->features));
+  if (mp->gso_enabled)
+    s = format (s, "gso-enabled");
   FINISH;
 }
 
@@ -1097,26 +1098,6 @@ static void *vl_api_delete_subif_t_print
 
   s = format (0, "SCRIPT: delete_subif ");
   s = format (s, "sw_if_index %d ", ntohl (mp->sw_if_index));
-
-  FINISH;
-}
-
-static void *vl_api_oam_add_del_t_print
-  (vl_api_oam_add_del_t * mp, void *handle)
-{
-  u8 *s;
-
-  s = format (0, "SCRIPT: oam_add_del ");
-
-  if (mp->vrf_id)
-    s = format (s, "vrf %d ", ntohl (mp->vrf_id));
-
-  s = format (s, "src %U ", format_ip4_address, mp->src_address);
-
-  s = format (s, "dst %U ", format_ip4_address, mp->dst_address);
-
-  if (mp->is_add == 0)
-    s = format (s, "del ");
 
   FINISH;
 }
@@ -3423,13 +3404,17 @@ vl_api_set_punt_t_print (vl_api_set_punt_t * mp, void *handle)
 
   s = format (0, "SCRIPT: punt ");
 
-  if (mp->punt.ipv != (u8) ~ 0)
-    s = format (s, "ip %d ", mp->punt.ipv);
+  switch (clib_net_to_host_u32 (mp->punt.type))
+    {
+    case PUNT_API_TYPE_L4:
+      s = format (s, "%U", format_vl_api_address_family, mp->punt.punt.l4.af);
 
-  s = format (s, "protocol %d ", mp->punt.l4_protocol);
+      s = format (s, "protocol %d ", mp->punt.punt.l4.protocol);
 
-  if (mp->punt.l4_port != (u16) ~ 0)
-    s = format (s, "port %d ", ntohs (mp->punt.l4_port));
+      if (mp->punt.punt.l4.port != (u16) ~ 0)
+	s = format (s, "port %d ", ntohs (mp->punt.punt.l4.port));
+      break;
+    }
 
   if (!mp->is_add)
     s = format (s, "del ");
@@ -3799,7 +3784,6 @@ _(SW_INTERFACE_SET_UNNUMBERED, sw_interface_set_unnumbered)             \
 _(IP_NEIGHBOR_ADD_DEL, ip_neighbor_add_del)                             \
 _(CREATE_VLAN_SUBIF, create_vlan_subif)                                 \
 _(CREATE_SUBIF, create_subif)                                           \
-_(OAM_ADD_DEL, oam_add_del)                                             \
 _(RESET_FIB, reset_fib)                                                 \
 _(DHCP_PROXY_CONFIG, dhcp_proxy_config)                                 \
 _(DHCP_PROXY_SET_VSS, dhcp_proxy_set_vss)                               \
