@@ -275,10 +275,10 @@ static void vl_api_mactime_add_del_range_t_handler
 	      if (mp->allow)
 		dp->flags = MACTIME_DEVICE_FLAG_STATIC_ALLOW;
 	    }
-          if (mp->no_udp_10001)
-            dp->flags |= MACTIME_DEVICE_FLAG_DROP_UDP_10001;
+	  if (mp->no_udp_10001)
+	    dp->flags |= MACTIME_DEVICE_FLAG_DROP_UDP_10001;
 
-          dp->data_quota = data_quota;
+	  dp->data_quota = data_quota;
 
 	  /* Add the hash table entry */
 	  kv.value = dp - mm->devices;
@@ -296,26 +296,26 @@ static void vl_api_mactime_add_del_range_t_handler
 	      vec_add1 (dp->ranges, r[0]);
 	    }
 
-          if (vec_len (dp->ranges))
-            {
+	  if (vec_len (dp->ranges))
+	    {
 	      /* Set allow/drop based on msg flags */
 	      if (mp->drop)
 		dp->flags = MACTIME_DEVICE_FLAG_DYNAMIC_DROP;
 	      if (mp->allow)
 		dp->flags = MACTIME_DEVICE_FLAG_DYNAMIC_ALLOW;
-            }
-          else
-            {
-              /* no ranges, it's a static allow/drop */
-              if (mp->drop)
-                dp->flags = MACTIME_DEVICE_FLAG_STATIC_DROP;
-              if (mp->allow)
-                dp->flags = MACTIME_DEVICE_FLAG_STATIC_ALLOW;
-            }
-          if (mp->no_udp_10001)
-            dp->flags |= MACTIME_DEVICE_FLAG_DROP_UDP_10001;
+	    }
+	  else
+	    {
+	      /* no ranges, it's a static allow/drop */
+	      if (mp->drop)
+		dp->flags = MACTIME_DEVICE_FLAG_STATIC_DROP;
+	      if (mp->allow)
+		dp->flags = MACTIME_DEVICE_FLAG_STATIC_ALLOW;
+	    }
+	  if (mp->no_udp_10001)
+	    dp->flags |= MACTIME_DEVICE_FLAG_DROP_UDP_10001;
 
-          dp->data_quota = data_quota;
+	  dp->data_quota = data_quota;
 	}
     }
   else				/* delete case */
@@ -460,27 +460,27 @@ format_bytes_with_width (u8 * s, va_list * va)
   int width = va_arg (*va, int);
   f64 nbytes_f64;
   u8 *fmt;
-  char *suffix= "";
+  char *suffix = "";
 
   fmt = format (0, "%%%d.3f%%s%c", width, 0);
 
   if (nbytes > (1024ULL * 1024ULL * 1024ULL))
     {
-      nbytes_f64 = ((f64)nbytes) / (1024.0 * 1024.0 * 1024.0);
+      nbytes_f64 = ((f64) nbytes) / (1024.0 * 1024.0 * 1024.0);
       suffix = "G";
     }
   else if (nbytes > (1024ULL * 1024ULL))
     {
-      nbytes_f64 = ((f64)nbytes) / (1024.0 * 1024.0);
+      nbytes_f64 = ((f64) nbytes) / (1024.0 * 1024.0);
       suffix = "M";
     }
   else if (nbytes > 1024ULL)
     {
-      nbytes_f64 = ((f64)nbytes) / (1024.0);
+      nbytes_f64 = ((f64) nbytes) / (1024.0);
       suffix = "K";
     }
   else
-    nbytes_f64 = (f64)nbytes;
+    nbytes_f64 = (f64) nbytes;
 
   s = format (s, (char *) fmt, nbytes_f64, suffix);
   vec_free (fmt);
@@ -608,11 +608,11 @@ show_mactime_command_fn (vlib_main_t * vm,
       vlib_get_combined_counter (&mm->drop_counters, dp - mm->devices, &drop);
       vlib_cli_output (vm, "%-15s %18s %14s %10lld %U %10lld",
 		       dp->device_name, macstring, status_string,
-		       allow.packets, format_bytes_with_width, allow.bytes, 10,
-                       drop.packets);
+		       allow.packets, format_bytes_with_width, allow.bytes,
+		       10, drop.packets);
       if (dp->data_quota > 0)
-        vlib_cli_output (vm, "%-54s %s%U", " ", "Quota ",
-                         format_bytes_with_width, dp->data_quota, 10);
+	vlib_cli_output (vm, "%-54s %s%U", " ", "Quota ",
+			 format_bytes_with_width, dp->data_quota, 10);
       /* This is really only good for small N... */
       for (j = 0; j < vec_len (mm->arp_cache_copy); j++)
 	{

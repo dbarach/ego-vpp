@@ -16,7 +16,7 @@
 /** \file
     This file defines vpp mactime control-plane API messages
 */
-option version = "1.0.0";
+option version = "1.1.0";
 
 /** \brief api to enable or disable the time-based src mac filter on
     an interface
