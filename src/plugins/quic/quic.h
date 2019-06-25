@@ -31,7 +31,7 @@
  * 4 - timer events
  **/
 
-#define QUIC_DEBUG               2
+#define QUIC_DEBUG               0
 #define QUIC_DEBUG_LEVEL_CLIENT  0
 #define QUIC_DEBUG_LEVEL_SERVER  0
 
@@ -41,7 +41,7 @@
 
 
 #if QUIC_DEBUG
-#define QUIC_DBG(_lvl, _fmt, _args...)           \
+#define QUIC_DBG(_lvl, _fmt, _args...)   \
   if (_lvl <= QUIC_DEBUG)                \
     clib_warning (_fmt, ##_args)
 #else
@@ -112,7 +112,6 @@ typedef struct quic_main_
   quic_worker_ctx_t *wrk_ctx;
   clib_bihash_16_8_t connection_hash;	/* quicly connection id -> conn handle */
   f64 tstamp_ticks_per_clock;
-  u32 fake_app_listener_index;	/* ugly hack for accept cb */
 
   /*
    * Config

@@ -32,18 +32,10 @@ session_send_evt_to_thread (void *data, void *args, u32 thread_index,
   session_event_t *evt;
   svm_msg_q_msg_t msg;
   svm_msg_q_t *mq;
-  u32 tries = 0, max_tries;
 
   mq = session_main_get_vpp_event_queue (thread_index);
-  while (svm_msg_q_try_lock (mq))
-    {
-      max_tries = vlib_get_current_process (vlib_get_main ())? 1e6 : 3;
-      if (tries++ == max_tries)
-	{
-	  SESSION_DBG ("failed to enqueue evt");
-	  return -1;
-	}
-    }
+  if (PREDICT_FALSE (svm_msg_q_lock (mq)))
+    return -1;
   if (PREDICT_FALSE (svm_msg_q_ring_is_full (mq, SESSION_MQ_IO_EVT_RING)))
     {
       svm_msg_q_unlock (mq);
@@ -168,6 +160,7 @@ session_alloc (u32 thread_index)
   clib_memset (s, 0, sizeof (*s));
   s->session_index = s - wrk->sessions;
   s->thread_index = thread_index;
+  s->app_index = APP_INVALID_INDEX;
   return s;
 }
 
@@ -452,11 +445,14 @@ u32
 session_tx_fifo_dequeue_drop (transport_connection_t * tc, u32 max_bytes)
 {
   session_t *s = session_get (tc->s_index, tc->thread_index);
+  u32 rv;
+
+  rv = svm_fifo_dequeue_drop (s->tx_fifo, max_bytes);
 
   if (svm_fifo_needs_tx_ntf (s->tx_fifo, max_bytes))
     session_dequeue_notify (s);
 
-  return svm_fifo_dequeue_drop (s->tx_fifo, max_bytes);
+  return rv;
 }
 
 static inline int
@@ -877,13 +873,13 @@ session_stream_accept_notify (transport_connection_t * tc)
  */
 int
 session_stream_accept (transport_connection_t * tc, u32 listener_index,
-		       u8 notify)
+		       u32 thread_index, u8 notify)
 {
   session_t *s;
   int rv;
 
   s = session_alloc_for_connection (tc);
-  s->listener_index = listener_index;
+  s->listener_handle = ((u64) thread_index << 32) | (u64) listener_index;
   s->session_state = SESSION_STATE_CREATED;
 
   if ((rv = app_worker_init_accepted (s)))

@@ -131,7 +131,6 @@ typedef enum session_flags_
 {
   SESSION_F_RX_EVT = 1,
   SESSION_F_PROXY = (1 << 1),
-  SESSION_F_QUIC_STREAM = (1 << 2),
 } session_flags_t;
 
 typedef struct session_
@@ -167,7 +166,7 @@ typedef struct session_
   union
   {
     /** Parent listener session index if the result of an accept */
-    u32 listener_index;
+    session_handle_t listener_handle;
 
     /** App listener index in app's listener pool if a listener */
     u32 al_index;

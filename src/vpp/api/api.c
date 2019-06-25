@@ -60,6 +60,7 @@
 
 #include <vpp/api/vpe_msg_enum.h>
 #include <vpp/api/types.h>
+#include <vlibapi/api_types_inlines.h>
 
 #define vl_typedefs		/* define message structures */
 #include <vpp/api/vpe_all_api_h.h>
@@ -539,7 +540,7 @@ vpe_api_hookup (vlib_main_t * vm)
    */
   am->is_mp_safe[VL_API_CONTROL_PING] = 1;
   am->is_mp_safe[VL_API_CONTROL_PING_REPLY] = 1;
-  am->is_mp_safe[VL_API_IP_ADD_DEL_ROUTE] = 1;
+  am->is_mp_safe[VL_API_IP_ROUTE_ADD_DEL] = 1;
   am->is_mp_safe[VL_API_GET_NODE_GRAPH] = 1;
 
   /*

@@ -2062,6 +2062,13 @@ tcp_output_handle_packet (tcp_connection_t * tc0, vlib_buffer_t * b0,
       return;
     }
 
+  /* If next_index is not drop use it */
+  if (tc0->next_node_index)
+    {
+      *next0 = tc0->next_node_index;
+      vnet_buffer (b0)->tcp.next_node_opaque = tc0->next_node_opaque;
+    }
+
   vnet_buffer (b0)->sw_if_index[VLIB_TX] = tc0->c_fib_index;
   vnet_buffer (b0)->sw_if_index[VLIB_RX] = 0;
 

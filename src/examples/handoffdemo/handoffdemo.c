@@ -1,5 +1,7 @@
 /*
- * Copyright (c) 2016 Cisco and/or its affiliates.
+ * handoffdemo.c - skeleton vpp engine plug-in
+ *
+ * Copyright (c) <current-year> <your-organization>
  * Licensed under the Apache License, Version 2.0 (the "License");
  * you may not use this file except in compliance with the License.
  * You may obtain a copy of the License at:
@@ -12,15 +14,26 @@
  * See the License for the specific language governing permissions and
  * limitations under the License.
  */
-/**
- * @file
- * @brief L2-GRE over IPSec errors.
+
+#include <vnet/vnet.h>
+#include <vnet/plugin/plugin.h>
+#include <vpp/app/version.h>
+#include <handoffdemo/handoffdemo.h>
+
+handoffdemo_main_t handoffdemo_main;
+
+/* *INDENT-OFF* */
+VLIB_PLUGIN_REGISTER () =
+{
+  .version = VPP_BUILD_VER,
+  .description = "handoff demo plugin",
+};
+/* *INDENT-ON* */
+
+/*
+ * fd.io coding-style-patch-verification: ON
+ *
+ * Local Variables:
+ * eval: (c-set-style "gnu")
+ * End:
  */
-
-
-ipsec_gre_error (NONE, "no error")
-ipsec_gre_error (UNKNOWN_PROTOCOL, "unknown protocol")
-ipsec_gre_error (UNSUPPORTED_VERSION, "unsupported version")
-ipsec_gre_error (PKTS_DECAP, "GRE input packets decapsulated")
-ipsec_gre_error (PKTS_ENCAP, "GRE output packets encapsulated")
-ipsec_gre_error (NO_SUCH_TUNNEL, "GRE input packets dropped due to missing tunnel")

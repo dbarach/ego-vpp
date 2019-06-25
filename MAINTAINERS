@@ -28,6 +28,11 @@ M:	Dave Barach <dave@barachs.net>
 F:	build-root/Makefile
 F:	build-data/
 
+Link Bonding
+I:	bonding
+M:	Steven Luong <sluong@cisco.com>
+F:	src/vnet/bonding/
+
 Doxygen
 I:	doxygen
 M:	Chris Luke <chrisy@flirble.org>
@@ -72,6 +77,15 @@ VNET Device Drivers
 I:	devices
 M:	Damjan Marion <damarion@cisco.com>
 F:	src/vnet/devices/
+
+VNET TAP Drivers
+I:      tap
+M:      Damjan Marion <damarion@cisco.com>
+M:      Steven Luong <sluong@cisco.com>
+M:      Mohsin Kazmi <sykazmi@cisco.com>
+F:      src/vnet/devices/tap/
+F:      src/vnet/devices/virtio/node.c
+F:      src/vnet/devices/virtio/device.c
 
 VNET Feature Arcs
 I:	feature
@@ -290,6 +304,11 @@ I:	srv6-as
 M:	Francois Clad <fclad@cisco.com>
 F:	src/plugins/srv6-as/
 
+Plugin - Link Aggregation Control Protocol
+I:	lacp
+M:	Steven Luong <sluong@cisco.com>
+F:	src/plugins/lacp/
+
 Plugin - Load Balancer
 I:	lb
 M:	Pfister <ppfister@cisco.com>
@@ -313,6 +332,7 @@ M:	Dave Barach <dave@barachs.net>
 F:	src/plugins/nsim/
 
 Test Infrastructure
+I:	tests
 M:	Klement Sekera <ksekera@cisco.com>
 M:	Paul Vinciguerra <pvinci@vinciconsulting.com>
 F:	test/
@@ -342,6 +362,11 @@ I:	perftool
 M:	Dave Barach <dave@barachs.net>
 F:	src/tools/perftool/
 
+Plugin - vmxnet3 device driver
+I:	vmxnet3
+M:	Steven Luong <sluong@cisco.com>
+F:	src/plugins/vmxnet3/
+
 Binary API Compiler
 I:	vppapigen
 M:	Ole Troan <otroan@employees.org>
@@ -352,6 +377,14 @@ I:	rdma
 M:	Benoît Ganne <bganne@cisco.com>
 M:	Damjan Marion <damarion@cisco.com>
 F:	src/plugins/rdma/
+
+Plugin - QUIC protocol
+I:	quic
+M:	Aloys Augustin <aloaugus@cisco.com>
+M:	Nathan Skrzypczak <nathan.skrzypczak@gmail.com>
+M:	Dave Wallace <dwallacelf@gmail.com>
+M:	Florin Coras <fcoras@cisco.com>
+F:	src/plugins/quic/
 
 libmemif
 I:	libmemif
@@ -368,6 +401,12 @@ I:	stats
 M:	Ole Troan <ot@cisco.com>
 F:	src/vpp/stats/
 F:	src/vpp-api/client/stat_client.[ch]
+
+VPP Object Model
+I:	vom
+M:	Neale Ranns <nranns@cisco.com>
+M:	Mohsin Kazmi <sykazmi@cisco.com>
+F:	extras/vom/vom/
 
 THE REST
 I:	misc
