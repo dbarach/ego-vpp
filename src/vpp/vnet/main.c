@@ -419,16 +419,19 @@ vlib_app_num_thread_stacks_needed (void)
 
 static clib_error_t *
 restart_isc_dhcp_server_command_fn (vlib_main_t * vm,
-                                    unformat_input_t * input, 
+                                    unformat_input_t * input,
                                     vlib_cli_command_t * cmd)
 {
-  int rv __attribute__((unused));
-  /* Wait three seconds... */
-  vlib_process_suspend (vm, 3.0);
-  
-  rv = system ("/usr/sbin/service isc-dhcp-server restart");
-  
-  vlib_cli_output (vm, "Restarted the isc-dhcp-server...");
+  int rv;
+
+  /* Wait a while... */
+  vlib_process_suspend (vm, 2.0);
+
+  /* And restart it */
+  if ((rv = system ("/usr/sbin/service isc-dhcp-server restart")) < 0)
+      clib_unix_warning ("service restart failure...");
+
+  vlib_cli_output (vm, "Restarted the isc-dhcp-server, status %d...", rv);
   return 0;
 }
 
@@ -442,15 +445,15 @@ VLIB_CLI_COMMAND (restart_isc_dhcp_server_command, static) = {
 
 static clib_error_t *
 restart_dora_tunnels_command_fn (vlib_main_t * vm,
-                                 unformat_input_t * input, 
+                                 unformat_input_t * input,
                                  vlib_cli_command_t * cmd)
 {
   int rv __attribute__((unused));
   /* Wait three seconds... */
   vlib_process_suspend (vm, 3.0);
-  
+
   rv = system ("/usr/sbin/service dora restart");
-  
+
   vlib_cli_output (vm, "Restarted the dora tunnel service...");
   return 0;
 }
