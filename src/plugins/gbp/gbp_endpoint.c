@@ -101,6 +101,16 @@ gbp_endpoint_is_external (const gbp_endpoint_t * ge)
   return (! !(ge->ge_fwd.gef_flags & GBP_ENDPOINT_FLAG_EXTERNAL));
 }
 
+int
+gbp_endpoint_is_learnt (const gbp_endpoint_t * ge)
+{
+  if (0 == vec_len (ge->ge_locs))
+    return 0;
+
+  /* DP is the highest source so if present it will be first */
+  return (ge->ge_locs[0].gel_src == GBP_ENDPOINT_SRC_DP);
+}
+
 static void
 gbp_endpoint_extract_key_mac_itf (const clib_bihash_kv_16_8_t * key,
 				  mac_address_t * mac, u32 * sw_if_index)
@@ -759,6 +769,7 @@ gbb_endpoint_fwd_recalc (gbp_endpoint_t * ge)
 	     * is applied
 	     */
 	    gbp_policy_dpo_add_or_lock (fib_proto_to_dpo (pfx->fp_proto),
+					grd->grd_scope,
 					gg->gg_sclass, ~0, &policy_dpo);
 
 	    fib_table_entry_special_dpo_add (fib_index, pfx,

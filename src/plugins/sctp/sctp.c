@@ -12,8 +12,12 @@
  * See the License for the specific language governing permissions and
  * limitations under the License.
  */
-#include <vnet/sctp/sctp.h>
-#include <vnet/sctp/sctp_debug.h>
+
+#include <vnet/plugin/plugin.h>
+#include <vpp/app/version.h>
+
+#include <sctp/sctp.h>
+#include <sctp/sctp_debug.h>
 
 sctp_main_t sctp_main;
 
@@ -899,7 +903,7 @@ sctp_main_enable (vlib_main_t * vm)
 }
 
 clib_error_t *
-sctp_enable_disable (vlib_main_t * vm, u8 is_en)
+sctp_transport_enable_disable (vlib_main_t * vm, u8 is_en)
 {
   if (is_en)
     {
@@ -940,9 +944,9 @@ sctp_update_time (f64 now, u8 thread_index)
   sctp_flush_frames_to_output (thread_index);
 }
 
-/* *INDENT OFF* */
-const static transport_proto_vft_t sctp_proto = {
-  .enable = sctp_enable_disable,
+/* *INDENT-OFF* */
+static const transport_proto_vft_t sctp_proto = {
+  .enable = sctp_transport_enable_disable,
   .start_listen = sctp_session_bind,
   .stop_listen = sctp_session_unbind,
   .connect = sctp_session_open,
@@ -958,42 +962,87 @@ const static transport_proto_vft_t sctp_proto = {
   .format_connection = format_sctp_session,
   .format_listener = format_sctp_listener_session,
   .format_half_open = format_sctp_half_open,
-  .tx_type = TRANSPORT_TX_DEQUEUE,
-  .service_type = TRANSPORT_SERVICE_VC,
+  .transport_options = {
+    .tx_type = TRANSPORT_TX_DEQUEUE,
+    .service_type = TRANSPORT_SERVICE_VC,
+  },
 };
+/* *INDENT-ON* */
 
-/* *INDENT ON* */
+clib_error_t *
+sctp_enable_disable (vlib_main_t * vm, u8 is_en)
+{
+  sctp_main_t *sm = vnet_get_sctp_main ();
+  ip_main_t *im = &ip_main;
+  ip_protocol_info_t *pi;
+  vlib_node_t *node;
+
+  if (!sm->is_init && is_en)
+    {
+      node = vlib_get_node_by_name (vm, (u8 *) "sctp4-established");
+      sm->sctp4_established_phase_node_index = node->index;
+
+      node = vlib_get_node_by_name (vm, (u8 *) "sctp6-established");
+      sm->sctp6_established_phase_node_index = node->index;
+
+      sm->is_init = 1;
+
+      /* Register with IP for header parsing */
+      pi = ip_get_protocol_info (im, IP_PROTOCOL_SCTP);
+      if (pi == 0)
+	return clib_error_return (0, "SCTP protocol info AWOL");
+      pi->format_header = format_sctp_header;
+      pi->unformat_pg_edit = unformat_pg_sctp_header;
+
+      /* Register as transport with session layer */
+      transport_register_protocol (TRANSPORT_PROTO_SCTP, &sctp_proto,
+				   FIB_PROTOCOL_IP4, sctp4_output_node.index);
+      transport_register_protocol (TRANSPORT_PROTO_SCTP, &sctp_proto,
+				   FIB_PROTOCOL_IP6, sctp6_output_node.index);
+    }
+
+  sctp_transport_enable_disable (vm, is_en);
+  return 0;
+}
+
+static u8 *
+sctp_format_buffer_opaque_helper (const vlib_buffer_t * b, u8 * s)
+{
+  sctp_buffer_opaque_t *o = sctp_buffer_opaque (b);
+
+  s = format (s,
+	      "sctp.connection_index: %d, sctp.sid: %d, sctp.ssn: %d, "
+	      "sctp.tsn: %d, sctp.hdr_offset: %d",
+	      o->sctp.connection_index,
+	      (u32) (o->sctp.sid),
+	      (u32) (o->sctp.ssn),
+	      (u32) (o->sctp.tsn), (u32) (o->sctp.hdr_offset));
+  vec_add1 (s, '\n');
+
+  s = format
+    (s, "sctp.data_offset: %d, sctp.data_len: %d, sctp.subconn_idx: %d, "
+     "sctp.flags: 0x%x",
+     (u32) (o->sctp.data_offset),
+     (u32) (o->sctp.data_len),
+     (u32) (o->sctp.subconn_idx), (u32) (o->sctp.flags));
+  vec_add1 (s, '\n');
+  return s;
+}
 
 clib_error_t *
 sctp_init (vlib_main_t * vm)
 {
-  sctp_main_t *tm = vnet_get_sctp_main ();
-  ip_main_t *im = &ip_main;
-  ip_protocol_info_t *pi;
-  vlib_node_t *node = vlib_get_node_by_name (vm, (u8 *) "sctp4-established");
-  tm->sctp4_established_phase_node_index = node->index;
-
-  node = vlib_get_node_by_name (vm, (u8 *) "sctp6-established");
-  tm->sctp6_established_phase_node_index = node->index;
+  sctp_main_t *sm = vnet_get_sctp_main ();
 
   /* Session layer, and by implication SCTP, are disabled by default */
-  tm->is_enabled = 0;
+  sm->is_enabled = 0;
+  sm->is_init = 0;
 
-  /* Register with IP for header parsing */
-  pi = ip_get_protocol_info (im, IP_PROTOCOL_SCTP);
-  if (pi == 0)
-    return clib_error_return (0, "SCTP protocol info AWOL");
-  pi->format_header = format_sctp_header;
-  pi->unformat_pg_edit = unformat_pg_sctp_header;
+  /* initialize binary API */
+  sctp_plugin_api_hookup (vm);
 
-  /* Register as transport with session layer */
-  transport_register_protocol (TRANSPORT_PROTO_SCTP, &sctp_proto,
-			       FIB_PROTOCOL_IP4, sctp4_output_node.index);
-  transport_register_protocol (TRANSPORT_PROTO_SCTP, &sctp_proto,
-			       FIB_PROTOCOL_IP6, sctp6_output_node.index);
-
-  sctp_api_reference ();
-
+  vnet_register_format_buffer_opaque_helper
+    (sctp_format_buffer_opaque_helper);
   return 0;
 }
 
@@ -1019,6 +1068,54 @@ VLIB_CLI_COMMAND (show_tcp_punt_command, static) =
   .path = "show sctp punt",
   .short_help = "show sctp punt",
   .function = show_sctp_punt_fn,
+};
+/* *INDENT-ON* */
+
+static clib_error_t *
+sctp_fn (vlib_main_t * vm, unformat_input_t * input,
+	 vlib_cli_command_t * cmd_arg)
+{
+  unformat_input_t _line_input, *line_input = &_line_input;
+  clib_error_t *error;
+  u8 is_en;
+
+  if (!unformat_user (input, unformat_line_input, line_input))
+    return clib_error_return (0, "expected enable | disable");
+
+  while (unformat_check_input (line_input) != UNFORMAT_END_OF_INPUT)
+    {
+      if (unformat (line_input, "enable"))
+	is_en = 1;
+      else if (unformat (line_input, "disable"))
+	is_en = 0;
+      else
+	{
+	  error = clib_error_return (0, "unknown input `%U'",
+				     format_unformat_error, line_input);
+	  unformat_free (line_input);
+	  return error;
+	}
+    }
+
+  unformat_free (line_input);
+
+  return sctp_enable_disable (vm, is_en);
+}
+
+/* *INDENT-OFF* */
+VLIB_CLI_COMMAND (show_sctp_command, static) =
+{
+  .path = "sctp",
+  .short_help = "sctp [enable | disable]",
+  .function = sctp_fn,
+};
+
+/* *INDENT-OFF* */
+VLIB_PLUGIN_REGISTER () =
+{
+  .version = VPP_BUILD_VER,
+  .description = "Stream Control Transmission Protocol (SCTP)",
+  .default_disabled = 1,
 };
 /* *INDENT-ON* */
 

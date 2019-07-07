@@ -149,6 +149,7 @@ def fib_interface_ip_prefix(test, address, length, sw_if_index):
         prefix = IPv6Network("%s/%d" % (text_type(address), length),
                              strict=False)
 
+    # TODO: refactor this to VppIpPrefix.__eq__
     for a in addrs:
         if a.sw_if_index == sw_if_index and \
            a.prefix == prefix:
@@ -426,6 +427,8 @@ class VppIpRoute(VppObject):
         self.table_id = table_id
         self.prefix = VppIpPrefix(dest_addr, dest_addr_len)
         self.register = register
+        self.stats_index = None
+        self.modified = False
 
         self.encoded_paths = []
         for path in self.paths:
@@ -442,6 +445,7 @@ class VppIpRoute(VppObject):
         self.encoded_paths = []
         for path in self.paths:
             self.encoded_paths.append(path.encode())
+        self.modified = True
 
         self._test.vapi.ip_route_add_del(route={'table_id': self.table_id,
                                                 'prefix': self.prefix.encode(),
@@ -466,14 +470,26 @@ class VppIpRoute(VppObject):
             self._test.registry.register(self, self._test.logger)
 
     def remove_vpp_config(self):
-        self._test.vapi.ip_route_add_del(route={'table_id': self.table_id,
-                                                'prefix': self.prefix.encode(),
-                                                'n_paths': len(
-                                                    self.encoded_paths),
-                                                'paths': self.encoded_paths,
-                                                },
-                                         is_add=0,
-                                         is_multipath=0)
+        # there's no need to issue different deletes for modified routes
+        # we do this only to test the two different ways to delete routes
+        # eiter by passing all the paths to remove and mutlipath=1 or
+        # passing no paths and multipath=0
+        if self.modified:
+            self._test.vapi.ip_route_add_del(
+                route={'table_id': self.table_id,
+                       'prefix': self.prefix.encode(),
+                       'n_paths': len(
+                           self.encoded_paths),
+                       'paths': self.encoded_paths},
+                is_add=0,
+                is_multipath=1)
+        else:
+            self._test.vapi.ip_route_add_del(
+                route={'table_id': self.table_id,
+                       'prefix': self.prefix.encode(),
+                       'n_paths': 0},
+                is_add=0,
+                is_multipath=0)
 
     def query_vpp_config(self):
         return find_route(self._test,
@@ -482,10 +498,11 @@ class VppIpRoute(VppObject):
                           self.table_id)
 
     def object_id(self):
-        return ("%d:%s/%d"
-                % (self.table_id,
-                   self.prefix.address,
-                   self.prefix.len))
+        return ("%s:table-%d-%s/%d" % (
+            'ip6-route' if self.prefix.addr.version == 6 else 'ip-route',
+                self.table_id,
+                self.prefix.address,
+                self.prefix.len))
 
     def get_stats_to(self):
         c = self._test.statistics.get_counter("/net/route/to")
@@ -721,7 +738,7 @@ class VppMplsRoute(VppObject):
                                self.local_label, self.eos_bit)
 
     def object_id(self):
-        return ("%d:%s/%d"
+        return ("mpls-route-%d:%s/%d"
                 % (self.table_id,
                    self.local_label,
                    20 + self.eos_bit))

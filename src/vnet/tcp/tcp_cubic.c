@@ -106,6 +106,18 @@ cubic_congestion (tcp_connection_t * tc)
 }
 
 static void
+cubic_loss (tcp_connection_t * tc)
+{
+  cubic_data_t *cd = (cubic_data_t *) tcp_cc_data (tc);
+
+  tc->ssthresh = clib_max (tc->cwnd * beta_cubic, 2 * tc->snd_mss);
+  tc->cwnd = tcp_loss_wnd (tc);
+  cd->t_start = cubic_time (tc->c_thread_index);
+  cd->K = 0;
+  cd->w_max = 0;
+}
+
+static void
 cubic_recovered (tcp_connection_t * tc)
 {
   cubic_data_t *cd = (cubic_data_t *) tcp_cc_data (tc);
@@ -130,7 +142,7 @@ cubic_cwnd_accumulate (tcp_connection_t * tc, u32 thresh, u32 bytes_acked)
 }
 
 static void
-cubic_rcv_ack (tcp_connection_t * tc)
+cubic_rcv_ack (tcp_connection_t * tc, tcp_rate_sample_t * rs)
 {
   cubic_data_t *cd = (cubic_data_t *) tcp_cc_data (tc);
   u64 w_cubic, w_aimd;
@@ -217,6 +229,7 @@ const static tcp_cc_algorithm_t tcp_cubic = {
   .name = "cubic",
   .unformat_cfg = cubic_unformat_config,
   .congestion = cubic_congestion,
+  .loss = cubic_loss,
   .recovered = cubic_recovered,
   .rcv_ack = cubic_rcv_ack,
   .rcv_cong_ack = newreno_rcv_cong_ack,

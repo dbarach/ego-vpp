@@ -11,6 +11,7 @@ class TestSCTP(VppTestCase):
 
     @classmethod
     def setUpClass(cls):
+        cls.extra_vpp_plugin_config.append("plugin sctp_plugin.so { enable }")
         super(TestSCTP, cls).setUpClass()
 
     @classmethod
@@ -20,6 +21,7 @@ class TestSCTP(VppTestCase):
     def setUp(self):
         super(TestSCTP, self).setUp()
         self.vapi.session_enable_disable(is_enabled=1)
+        self.vapi.cli("sctp enable")
         self.create_loopback_interfaces(2)
 
         table_id = 0

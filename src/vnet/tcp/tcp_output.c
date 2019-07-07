@@ -344,7 +344,7 @@ tcp_make_established_options (tcp_connection_t * tc, tcp_options_t * opts)
   if (tcp_opts_tstamp (&tc->rcv_opts))
     {
       opts->flags |= TCP_OPTS_FLAG_TSTAMP;
-      opts->tsval = tcp_time_now_w_thread (tc->c_thread_index);
+      opts->tsval = tcp_tstamp (tc);
       opts->tsecr = tc->tsval_recent;
       len += TCP_OPTION_LEN_TIMESTAMP;
     }
@@ -422,6 +422,12 @@ tcp_update_burst_snd_vars (tcp_connection_t * tc)
 		     &tc->snd_opts);
 
   tcp_update_rcv_wnd (tc);
+
+  if (tc->flags & TCP_CONN_RATE_SAMPLE)
+    tc->flags |= TCP_CONN_TRACK_BURST;
+
+  if (tc->snd_una == tc->snd_nxt)
+    tcp_cc_event (tc, TCP_CC_EVT_START_TX);
 }
 
 void
@@ -502,6 +508,11 @@ tcp_make_ack_i (tcp_connection_t * tc, vlib_buffer_t * b, tcp_state_t state,
 
   tcp_options_write ((u8 *) (th + 1), snd_opts);
   vnet_buffer (b)->tcp.connection_index = tc->c_c_index;
+
+  if (wnd == 0)
+    tcp_zero_rwnd_sent_on (tc);
+  else
+    tcp_zero_rwnd_sent_off (tc);
 }
 
 /**
@@ -1129,8 +1140,17 @@ u32
 tcp_session_push_header (transport_connection_t * tconn, vlib_buffer_t * b)
 {
   tcp_connection_t *tc = (tcp_connection_t *) tconn;
+
+  if (tc->flags & TCP_CONN_TRACK_BURST)
+    {
+      tcp_bt_check_app_limited (tc);
+      tcp_bt_track_tx (tc);
+      tc->flags &= ~TCP_CONN_TRACK_BURST;
+    }
+
   tcp_push_hdr_i (tc, b, tc->snd_nxt, /* compute opts */ 0, /* burst */ 1,
 		  /* update_snd_nxt */ 1);
+
   tc->snd_una_max = seq_max (tc->snd_nxt, tc->snd_una_max);
   tcp_validate_txf_size (tc, tc->snd_una_max - tc->snd_una);
   /* If not tracking an ACK, start tracking */
@@ -1251,6 +1271,28 @@ tcp_timer_delack_handler (u32 index)
   tc = tcp_connection_get (index, thread_index);
   tc->timers[TCP_TIMER_DELACK] = TCP_TIMER_HANDLE_INVALID;
   tcp_send_ack (tc);
+}
+
+/**
+ * Send Window Update ACK,
+ * ensuring that it will be sent once, if RWND became non-zero,
+ * after zero RWND has been advertised in ACK before
+ */
+void
+tcp_send_window_update_ack (tcp_connection_t * tc)
+{
+  tcp_worker_ctx_t *wrk = tcp_get_worker (tc->c_thread_index);
+  u32 win;
+
+  if (tcp_zero_rwnd_sent (tc))
+    {
+      win = tcp_window_to_advertise (tc, tc->state);
+      if (win > 0)
+	{
+	  tcp_zero_rwnd_sent_off (tc);
+	  tcp_program_ack (wrk, tc);
+	}
+    }
 }
 
 /**
@@ -1418,7 +1460,11 @@ tcp_prepare_retransmit_segment (tcp_worker_ctx_t * wrk,
     return 0;
 
   if (tcp_in_fastrecovery (tc))
-    tc->snd_rxt_bytes += n_bytes;
+    {
+      tc->snd_rxt_bytes += n_bytes;
+      if (tc->flags & TCP_CONN_RATE_SAMPLE)
+	tcp_bt_track_rxt (tc, start, start + n_bytes);
+    }
 
 done:
   TCP_EVT_DBG (TCP_EVT_CC_RTX, tc, offset, n_bytes);
@@ -1429,26 +1475,22 @@ done:
  * Reset congestion control, switch cwnd to loss window and try again.
  */
 static void
-tcp_rxt_timeout_cc (tcp_connection_t * tc)
+tcp_cc_init_rxt_timeout (tcp_connection_t * tc)
 {
   TCP_EVT_DBG (TCP_EVT_CC_EVT, tc, 6);
   tc->prev_ssthresh = tc->ssthresh;
   tc->prev_cwnd = tc->cwnd;
 
-  /* Cleanly recover cc (also clears up fast retransmit) */
+  /* Clear fast recovery state if needed */
   if (tcp_in_fastrecovery (tc))
-    {
-      /* TODO be less aggressive about this */
-      scoreboard_clear (&tc->sack_sb);
-      tcp_cc_fastrecovery_exit (tc);
-    }
-  else
-    tc->rcv_dupacks = 0;
+    tcp_cc_fastrecovery_clear (tc);
+
+  /* Let cc algo decide loss cwnd and ssthresh */
+  tcp_cc_loss (tc);
 
   /* Start again from the beginning */
-  tc->cc_algo->congestion (tc);
-  tc->cwnd = tcp_loss_wnd (tc);
   tc->snd_congestion = tc->snd_nxt;
+  tc->rcv_dupacks = 0;
   tc->rtt_ts = 0;
   tc->cwnd_acc_bytes = 0;
   tcp_connection_tx_pacer_reset (tc, tc->cwnd, 2 * tc->snd_mss);
@@ -1534,11 +1576,15 @@ tcp_timer_retransmit_handler_i (u32 index, u8 is_syn)
        * to first un-acked byte  */
       tc->rto_boff += 1;
 
+      /* TODO be less aggressive about clearing scoreboard */
+      scoreboard_clear (&tc->sack_sb);
+
       /* First retransmit timeout */
       if (tc->rto_boff == 1)
-	tcp_rxt_timeout_cc (tc);
-      else
-	scoreboard_clear (&tc->sack_sb);
+	tcp_cc_init_rxt_timeout (tc);
+
+      if (tc->flags & TCP_CONN_RATE_SAMPLE)
+	tcp_bt_flush_samples (tc);
 
       /* If we've sent beyond snd_congestion, update it */
       tc->snd_congestion = seq_max (tc->snd_nxt, tc->snd_congestion);
@@ -1559,7 +1605,7 @@ tcp_timer_retransmit_handler_i (u32 index, u8 is_syn)
 
       /* For first retransmit, record timestamp (Eifel detection RFC3522) */
       if (tc->rto_boff == 1)
-	tc->snd_rxt_ts = tcp_time_now_w_thread (tc->c_thread_index);
+	tc->snd_rxt_ts = tcp_tstamp (tc);
 
       tcp_enqueue_to_output (wrk, b, bi, tc->c_is_ip4);
       tcp_retransmit_timer_force_update (tc);

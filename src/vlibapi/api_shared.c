@@ -70,7 +70,7 @@ vl_msg_api_trace (api_main_t * am, vl_api_trace_t * tp, void *msg)
   u8 *msg_copy;
   u32 length;
   trace_cfg_t *cfgp;
-  u16 msg_id = ntohs (*((u16 *) msg));
+  u16 msg_id = clib_net_to_host_u16 (*((u16 *) msg));
   msgbuf_t *header = (msgbuf_t *) (((u8 *) msg) - offsetof (msgbuf_t, data));
 
   cfgp = am->api_trace_cfg + msg_id;
@@ -395,7 +395,7 @@ always_inline void
 msg_handler_internal (api_main_t * am,
 		      void *the_msg, int trace_it, int do_it, int free_it)
 {
-  u16 id = ntohs (*((u16 *) the_msg));
+  u16 id = clib_net_to_host_u16 (*((u16 *) the_msg));
   u8 *(*print_fp) (void *, void *);
 
   if (id < vec_len (am->msg_handlers) && am->msg_handlers[id])
@@ -466,7 +466,7 @@ vl_msg_api_handler_with_vm_node (api_main_t * am,
 				 void *the_msg, vlib_main_t * vm,
 				 vlib_node_runtime_t * node)
 {
-  u16 id = ntohs (*((u16 *) the_msg));
+  u16 id = clib_net_to_host_u16 (*((u16 *) the_msg));
   u8 *(*handler) (void *, void *, void *);
   u8 *(*print_fp) (void *, void *);
   int is_mp_safe = 1;
@@ -617,7 +617,7 @@ void
 vl_msg_api_cleanup_handler (void *the_msg)
 {
   api_main_t *am = &api_main;
-  u16 id = ntohs (*((u16 *) the_msg));
+  u16 id = clib_net_to_host_u16 (*((u16 *) the_msg));
 
   if (PREDICT_FALSE (id >= vec_len (am->msg_cleanup_handlers)))
     {
@@ -638,7 +638,7 @@ vl_msg_api_replay_handler (void *the_msg)
 {
   api_main_t *am = &api_main;
 
-  u16 id = ntohs (*((u16 *) the_msg));
+  u16 id = clib_net_to_host_u16 (*((u16 *) the_msg));
 
   if (PREDICT_FALSE (id >= vec_len (am->msg_handlers)))
     {
@@ -992,6 +992,46 @@ vl_msg_pop_heap (void *oldheap)
   pthread_mutex_unlock (&am->vlib_rp->mutex);
 }
 
+int
+vl_api_to_api_string (u32 len, const char *buf, vl_api_string_t * str)
+{
+  clib_memcpy_fast (str->buf, buf, len);
+  str->length = htonl (len);
+  return len + sizeof (u32);
+}
+
+int
+vl_api_vec_to_api_string (const u8 * vec, vl_api_string_t * str)
+{
+  u32 len = vec_len (vec);
+  clib_memcpy (str->buf, vec, len);
+  str->length = htonl (len);
+  return len + sizeof (u32);
+}
+
+/* Return a pointer to the API string (not nul terminated */
+u8 *
+vl_api_from_api_string (vl_api_string_t * astr)
+{
+  return astr->buf;
+}
+
+u32
+vl_api_string_len (vl_api_string_t * astr)
+{
+  return clib_net_to_host_u32 (astr->length);
+}
+
+/*
+ * Returns a new vector. Remember to free it after use.
+ */
+u8 *
+vl_api_from_api_to_vec (vl_api_string_t * astr)
+{
+  u8 *v = 0;
+  vec_add (v, astr->buf, clib_net_to_host_u32 (astr->length));
+  return v;
+}
 
 /*
  * fd.io coding-style-patch-verification: ON

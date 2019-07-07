@@ -8,27 +8,23 @@ import signal
 from framework import VppTestCase, VppTestRunner, running_extended_tests, \
     Worker
 from vpp_ip_route import VppIpTable, VppIpRoute, VppRoutePath
-from threading import Event
 
 
 class QUICAppWorker(Worker):
     """ QUIC Test Application Worker """
     process = None
 
-    def __init__(self, build_dir, appname, args, logger, env={}, event=None):
+    def __init__(self, build_dir, appname, args, logger, env={}):
         app = "%s/vpp/bin/%s" % (build_dir, appname)
         self.args = [app] + args
-        self.event = event
         super(QUICAppWorker, self).__init__(self.args, logger, env)
 
     def run(self):
         super(QUICAppWorker, self).run()
-        if self.event:
-            self.event.set()
 
     def teardown(self, logger, timeout):
         if self.process is None:
-           return False
+            return False
         try:
             logger.debug("Killing worker process (pid %d)" % self.process.pid)
             os.killpg(os.getpgid(self.process.pid), signal.SIGKILL)
@@ -102,40 +98,49 @@ class QUICTestCase(VppTestCase):
 
 class QUICEchoInternalTestCase(QUICTestCase):
     """QUIC Echo Internal Test Case"""
+
     def setUp(self):
         super(QUICEchoInternalTestCase, self).setUp()
-        self.client_args = "uri %s fifo-size 64 test-bytes appns client" % self.uri
+        self.client_args = "uri %s fifo-size 64 test-bytes appns client" \
+            % self.uri
         self.server_args = "uri %s fifo-size 64 appns server" % self.uri
 
     def server(self, *args):
-        error = self.vapi.cli("test echo server %s %s" % (self.server_args, ' '.join(args)))
+        error = self.vapi.cli(
+            "test echo server %s %s" %
+            (self.server_args, ' '.join(args)))
         if error:
             self.logger.critical(error)
             self.assertNotIn("failed", error)
 
     def client(self, *args):
-        error = self.vapi.cli("test echo client %s %s" % (self.client_args, ' '.join(args)))
+        error = self.vapi.cli(
+            "test echo client %s %s" %
+            (self.client_args, ' '.join(args)))
         if error:
             self.logger.critical(error)
             self.assertNotIn("failed", error)
+
 
 class QUICEchoInternalTransferTestCase(QUICEchoInternalTestCase):
     """QUIC Echo Internal Transfer Test Case"""
     @unittest.skipUnless(running_extended_tests, "part of extended tests")
     def test_quic_internal_transfer(self):
         self.server()
-        self.client("no-output", "mbytes", "10")
+        self.client("no-output", "mbytes", "2")
+
 
 class QUICEchoInternalSerialTestCase(QUICEchoInternalTestCase):
     """QUIC Echo Internal Serial Transfer Test Case"""
     @unittest.skipUnless(running_extended_tests, "part of extended tests")
     def test_quic_serial_internal_transfer(self):
         self.server()
-        self.client("no-output", "mbytes", "10")
-        self.client("no-output", "mbytes", "10")
-        self.client("no-output", "mbytes", "10")
-        self.client("no-output", "mbytes", "10")
-        self.client("no-output", "mbytes", "10")
+        self.client("no-output", "mbytes", "2")
+        self.client("no-output", "mbytes", "2")
+        self.client("no-output", "mbytes", "2")
+        self.client("no-output", "mbytes", "2")
+        self.client("no-output", "mbytes", "2")
+
 
 class QUICEchoInternalMStreamTestCase(QUICEchoInternalTestCase):
     """QUIC Echo Internal MultiStream Test Case"""
@@ -151,38 +156,59 @@ class QUICEchoExternalTestCase(QUICTestCase):
 
     def setUp(self):
         super(QUICEchoExternalTestCase, self).setUp()
-        common_args = ["uri", self.uri, "fifo-size", "64", "test-bytes:assert", "socket-name", self.api_sock]
-        self.server_echo_test_args = common_args + ["server", "appns", "server", "quic-setup", self.quic_setup]
-        self.client_echo_test_args = common_args + ["client", "appns", "client", "quic-setup", self.quic_setup]
-        self.event = Event()
+        common_args = [
+            "uri",
+            self.uri,
+            "fifo-size",
+            "64",
+            "test-bytes:assert",
+            "socket-name",
+            self.api_sock]
+        self.server_echo_test_args = common_args + \
+            ["server", "appns", "server", "quic-setup", self.quic_setup]
+        self.client_echo_test_args = common_args + \
+            ["client", "appns", "client", "quic-setup", self.quic_setup]
 
     def server(self, *args):
         _args = self.server_echo_test_args + list(args)
-        self.worker_server = QUICAppWorker(self.build_dir, "quic_echo",
-                                           _args, self.logger, event=self.event)
+        self.worker_server = QUICAppWorker(
+            self.build_dir,
+            "quic_echo",
+            _args,
+            self.logger)
         self.worker_server.start()
         self.sleep(self.pre_test_sleep)
 
     def client(self, *args):
         _args = self.client_echo_test_args + list(args)
         # self.client_echo_test_args += "use-svm-api"
-        self.worker_client = QUICAppWorker(self.build_dir, "quic_echo",
-                                           _args, self.logger, event=self.event)
+        self.worker_client = QUICAppWorker(
+            self.build_dir,
+            "quic_echo",
+            _args,
+            self.logger)
         self.worker_client.start()
-        self.event.wait(self.timeout)
+        self.worker_client.join()
+        self.worker_server.join()
         self.sleep(self.post_test_sleep)
 
     def validate_external_test_results(self):
-        self.logger.info("Client worker result is `%s'" % self.worker_client.result)
+        self.logger.info(
+            "Client worker result is `%s'" %
+            self.worker_client.result)
         server_result = self.worker_server.result
         client_result = self.worker_client.result
         server_kill_error = False
         if self.worker_server.result is None:
-            server_kill_error = self.worker_server.teardown(self.logger, self.timeout)
+            server_kill_error = self.worker_server.teardown(
+                self.logger, self.timeout)
         if self.worker_client.result is None:
             self.worker_client.teardown(self.logger, self.timeout)
-        self.assertIsNone(server_result, "Wrong server worker return code")
-        self.assertIsNotNone(client_result, "Timeout! Client worker did not finish in %ss" % self.timeout)
+        self.assertEqual(server_result, 0, "Wrong server worker return code")
+        self.assertIsNotNone(
+            client_result,
+            "Timeout! Client worker did not finish in %ss" %
+            self.timeout)
         self.assertEqual(client_result, 0, "Wrong client worker return code")
         self.assertFalse(server_kill_error, "Server kill errored")
 
@@ -195,15 +221,17 @@ class QUICEchoExternalTransferTestCase(QUICEchoExternalTestCase):
         self.client()
         self.validate_external_test_results()
 
+
 class QUICEchoExternalServerStreamTestCase(QUICEchoExternalTestCase):
     """QUIC Echo External Transfer Server Stream Test Case"""
     quic_setup = "serverstream"
 
     @unittest.skipUnless(running_extended_tests, "part of extended tests")
     def test_quic_external_transfer_server_stream(self):
-        self.server("nclients", "1/1", "send", "1Kb", "recv", "0")
-        self.client("nclients" ,"1/1", "send", "0", "recv", "1Kb")
+        self.server("TX=1Kb", "RX=0")
+        self.client("TX=0", "RX=1Kb")
         self.validate_external_test_results()
+
 
 class QUICEchoExternalServerStreamWorkersTestCase(QUICEchoExternalTestCase):
     """QUIC Echo External Transfer Server Stream MultiWorker Test Case"""
@@ -211,8 +239,8 @@ class QUICEchoExternalServerStreamWorkersTestCase(QUICEchoExternalTestCase):
 
     @unittest.skipUnless(running_extended_tests, "part of extended tests")
     def test_quic_external_transfer_server_stream_multi_workers(self):
-        self.server("nclients", "4/4", "send", "1Kb", "recv", "0")
-        self.client("nclients", "4/4", "send", "0", "recv", "1Kb")
+        self.server("nclients", "4/4", "TX=1Kb", "RX=0")
+        self.client("nclients", "4/4", "TX=0", "RX=1Kb")
         self.validate_external_test_results()
 
 

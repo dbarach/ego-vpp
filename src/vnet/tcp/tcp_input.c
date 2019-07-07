@@ -508,7 +508,7 @@ tcp_update_rtt (tcp_connection_t * tc, u32 ack)
    * seq_lt (tc->snd_una, ack). This is a condition for calling update_rtt */
   else if (tcp_opts_tstamp (&tc->rcv_opts) && tc->rcv_opts.tsecr)
     {
-      u32 now = tcp_time_now_w_thread (tc->c_thread_index);
+      u32 now = tcp_tstamp (tc);
       mrtt = clib_max (now - tc->rcv_opts.tsecr, 1);
     }
 
@@ -1185,12 +1185,10 @@ tcp_cc_recovery_exit (tcp_connection_t * tc)
 
 #ifndef CLIB_MARCH_VARIANT
 void
-tcp_cc_fastrecovery_exit (tcp_connection_t * tc)
+tcp_cc_fastrecovery_clear (tcp_connection_t * tc)
 {
-  tc->cc_algo->recovered (tc);
   tc->snd_rxt_bytes = 0;
   tc->rcv_dupacks = 0;
-  tc->snd_rxt_bytes = 0;
   tc->rtt_ts = 0;
 
   tcp_fastrecovery_off (tc);
@@ -1213,8 +1211,9 @@ tcp_cc_congestion_undo (tcp_connection_t * tc)
     }
   else if (tcp_in_fastrecovery (tc))
     {
-      tcp_cc_fastrecovery_exit (tc);
+      tcp_cc_fastrecovery_clear (tc);
     }
+  tcp_cc_undo_recovery (tc);
   ASSERT (tc->rto_boff == 0);
   TCP_EVT_DBG (TCP_EVT_CC_EVT, tc, 5);
 }
@@ -1255,7 +1254,10 @@ tcp_cc_recover (tcp_connection_t * tc)
   if (tcp_in_recovery (tc))
     tcp_cc_recovery_exit (tc);
   else if (tcp_in_fastrecovery (tc))
-    tcp_cc_fastrecovery_exit (tc);
+    {
+      tcp_cc_recovered (tc);
+      tcp_cc_fastrecovery_clear (tc);
+    }
 
   ASSERT (tc->rto_boff == 0);
   ASSERT (!tcp_in_cong_recovery (tc));
@@ -1264,12 +1266,12 @@ tcp_cc_recover (tcp_connection_t * tc)
 }
 
 static void
-tcp_cc_update (tcp_connection_t * tc, vlib_buffer_t * b)
+tcp_cc_update (tcp_connection_t * tc, tcp_rate_sample_t * rs)
 {
   ASSERT (!tcp_in_cong_recovery (tc) || tcp_is_lost_fin (tc));
 
   /* Congestion avoidance */
-  tcp_cc_rcv_ack (tc);
+  tcp_cc_rcv_ack (tc, rs);
 
   /* If a cumulative ack, make sure dupacks is 0 */
   tc->rcv_dupacks = 0;
@@ -1376,7 +1378,8 @@ tcp_do_fastretransmits (tcp_worker_ctx_t * wrk)
  * One function to rule them all ... and in the darkness bind them
  */
 static void
-tcp_cc_handle_event (tcp_connection_t * tc, u32 is_dack)
+tcp_cc_handle_event (tcp_connection_t * tc, tcp_rate_sample_t * rs,
+		     u32 is_dack)
 {
   u32 rxt_delivered;
 
@@ -1402,7 +1405,7 @@ tcp_cc_handle_event (tcp_connection_t * tc, u32 is_dack)
       if (tc->rcv_dupacks > TCP_DUPACK_THRESHOLD && !tc->bytes_acked)
 	{
 	  ASSERT (tcp_in_fastrecovery (tc));
-	  tc->cc_algo->rcv_cong_ack (tc, TCP_CC_DUPACK);
+	  tcp_cc_rcv_cong_ack (tc, TCP_CC_DUPACK, rs);
 	  return;
 	}
       else if (tcp_should_fastrecover (tc))
@@ -1421,7 +1424,7 @@ tcp_cc_handle_event (tcp_connection_t * tc, u32 is_dack)
 	    }
 
 	  tcp_cc_init_congestion (tc);
-	  tc->cc_algo->rcv_cong_ack (tc, TCP_CC_DUPACK);
+	  tcp_cc_rcv_cong_ack (tc, TCP_CC_DUPACK, rs);
 
 	  if (tcp_opts_sack_permitted (&tc->rcv_opts))
 	    {
@@ -1447,7 +1450,7 @@ tcp_cc_handle_event (tcp_connection_t * tc, u32 is_dack)
       else if (!tc->bytes_acked
 	       || (tc->bytes_acked && !tcp_in_cong_recovery (tc)))
 	{
-	  tc->cc_algo->rcv_cong_ack (tc, TCP_CC_DUPACK);
+	  tcp_cc_rcv_cong_ack (tc, TCP_CC_DUPACK, rs);
 	  return;
 	}
       else
@@ -1502,7 +1505,7 @@ partial_ack:
 	}
 
       /* Treat as congestion avoidance ack */
-      tcp_cc_rcv_ack (tc);
+      tcp_cc_rcv_ack (tc, rs);
       return;
     }
 
@@ -1520,7 +1523,7 @@ partial_ack:
   /* Post RTO timeout don't try anything fancy */
   if (tcp_in_recovery (tc))
     {
-      tcp_cc_rcv_ack (tc);
+      tcp_cc_rcv_ack (tc, rs);
       transport_add_tx_event (&tc->connection);
       return;
     }
@@ -1557,7 +1560,7 @@ partial_ack:
 	tc->snd_rxt_bytes = 0;
     }
 
-  tc->cc_algo->rcv_cong_ack (tc, TCP_CC_PARTIALACK);
+  tcp_cc_rcv_cong_ack (tc, TCP_CC_PARTIALACK, rs);
 
   /*
    * Since this was a partial ack, try to retransmit some more data
@@ -1573,6 +1576,7 @@ tcp_rcv_ack (tcp_worker_ctx_t * wrk, tcp_connection_t * tc, vlib_buffer_t * b,
 	     tcp_header_t * th, u32 * error)
 {
   u32 prev_snd_wnd, prev_snd_una;
+  tcp_rate_sample_t rs = { 0 };
   u8 is_dack;
 
   TCP_EVT_DBG (TCP_EVT_CC_STAT, tc);
@@ -1602,7 +1606,7 @@ tcp_rcv_ack (tcp_worker_ctx_t * wrk, tcp_connection_t * tc, vlib_buffer_t * b,
       TCP_EVT_DBG (TCP_EVT_ACK_RCV_ERR, tc, 1,
 		   vnet_buffer (b)->tcp.ack_number);
       if (tcp_in_fastrecovery (tc) && tc->rcv_dupacks == TCP_DUPACK_THRESHOLD)
-	tcp_cc_handle_event (tc, 1);
+	tcp_cc_handle_event (tc, 0, 1);
       /* Don't drop yet */
       return 0;
     }
@@ -1630,6 +1634,9 @@ process_ack:
       tcp_update_rtt (tc, vnet_buffer (b)->tcp.ack_number);
     }
 
+  if (tc->flags & TCP_CONN_RATE_SAMPLE)
+    tcp_bt_sample_delivery_rate (tc, &rs);
+
   TCP_EVT_DBG (TCP_EVT_ACK_RCVD, tc);
 
   /*
@@ -1638,7 +1645,7 @@ process_ack:
 
   if (tcp_ack_is_cc_event (tc, b, prev_snd_wnd, prev_snd_una, &is_dack))
     {
-      tcp_cc_handle_event (tc, is_dack);
+      tcp_cc_handle_event (tc, &rs, is_dack);
       if (!tcp_in_cong_recovery (tc))
 	{
 	  *error = TCP_ERROR_ACK_OK;
@@ -1653,7 +1660,7 @@ process_ack:
   /*
    * Update congestion control (slow start/congestion avoidance)
    */
-  tcp_cc_update (tc, b);
+  tcp_cc_update (tc, &rs);
   *error = TCP_ERROR_ACK_OK;
   return 0;
 }
@@ -1693,6 +1700,10 @@ static void
 tcp_rcv_fin (tcp_worker_ctx_t * wrk, tcp_connection_t * tc, vlib_buffer_t * b,
 	     u32 * error)
 {
+  /* Reject out-of-order fins */
+  if (vnet_buffer (b)->tcp.seq_end != tc->rcv_nxt)
+    return;
+
   /* Account for the FIN and send ack */
   tc->rcv_nxt += 1;
   tcp_program_ack (wrk, tc);
@@ -2839,7 +2850,8 @@ tcp46_rcv_process_inline (vlib_main_t * vm, vlib_node_runtime_t * node,
 	    break;
 
 	  /* Still have outstanding tx data */
-	  if (transport_max_tx_dequeue (&tc0->connection))
+	  max_dequeue = transport_max_tx_dequeue (&tc0->connection);
+	  if (max_dequeue > tc0->burst_acked)
 	    break;
 
 	  tcp_send_fin (tc0);
