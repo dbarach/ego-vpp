@@ -578,29 +578,7 @@ mactime_api_hookup (vat_main_t * vam)
 #undef _
 }
 
-clib_error_t *
-vat_plugin_register (vat_main_t * vam)
-{
-  mactime_test_main_t *sm = &mactime_test_main;
-  u8 *name;
-
-  sm->vat_main = vam;
-
-  /* Ask the vpp engine for the first assigned message-id */
-  name = format (0, "mactime_%08x%c", api_version, 0);
-  sm->msg_id_base = vl_client_get_first_plugin_msg_id ((char *) name);
-
-  if (sm->msg_id_base != (u16) ~ 0)
-    mactime_api_hookup (vam);
-
-  vec_free (name);
-
-  /* US EDT */
-  sm->timezone_offset = -5.0;
-  clib_timebase_init (&sm->timebase, sm->timezone_offset,
-                      CLIB_TIMEBASE_DAYLIGHT_USA);
-  return 0;
-}
+VAT_PLUGIN_REGISTER (mactime);
 
 /*
  * fd.io coding-style-patch-verification: ON
