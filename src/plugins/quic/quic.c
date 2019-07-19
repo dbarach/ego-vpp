@@ -30,6 +30,8 @@
 #include <picotls/openssl.h>
 #include <picotls/pembase64.h>
 
+#include <quic/quic_crypto.h>
+
 static quic_main_t quic_main;
 static void quic_update_timer (quic_ctx_t * ctx);
 
@@ -1493,7 +1495,7 @@ quic_connect (transport_endpoint_cfg_t * tep)
   QUIC_DBG (2, "Called quic_connect");
   session_endpoint_cfg_t *sep = (session_endpoint_cfg_t *) tep;
   sep = (session_endpoint_cfg_t *) tep;
-  if (sep->transport_opts)
+  if (sep->port == 0)		/* TODO add mask on transport_opts */
     return quic_connect_new_stream (sep);
   else
     return quic_connect_new_connection (sep);
@@ -1632,32 +1634,30 @@ format_quic_ctx (u8 * s, va_list * args)
 {
   quic_ctx_t *ctx = va_arg (*args, quic_ctx_t *);
   u32 verbose = va_arg (*args, u32);
+  u8 *str = 0;
 
   if (!ctx)
     return s;
-  s = format (s, "[#%d][Q] ", ctx->c_thread_index);
+  str = format (str, "[#%d][Q] ", ctx->c_thread_index);
 
-  if (!quic_ctx_is_listener (ctx))
-    {
-      s = format (s, "%s Session: ", quic_ctx_is_stream (ctx) ?
-		  "Stream" : "Quic");
-      if (verbose)
-	s = format (s, "app %d wrk %d", ctx->parent_app_id,
-		    ctx->parent_app_wrk_id);
-    }
+  if (quic_ctx_is_listener (ctx))
+    str = format (str, "Listener, UDP %ld", ctx->udp_session_handle);
+  else if (quic_ctx_is_stream (ctx))
+    str = format (str, "Stream %ld conn %d",
+		  ctx->c_quic_ctx_id.stream->stream_id,
+		  ctx->c_quic_ctx_id.quic_connection_ctx_id);
+  else				/* connection */
+    str = format (str, "Conn %d UDP %d", ctx->c_c_index,
+		  ctx->udp_session_handle);
+
+  str = format (str, " app %d wrk %d", ctx->parent_app_id,
+		ctx->parent_app_wrk_id);
+
+  if (verbose == 1)
+    s = format (s, "%-50s%-15d", str, ctx->c_quic_ctx_id.conn_state);
   else
-    {
-      if (ctx->c_is_ip4)
-	s = format (s, "%U:%d->%U:%d", format_ip4_address, &ctx->c_lcl_ip4,
-		    clib_net_to_host_u16 (ctx->c_lcl_port),
-		    format_ip4_address, &ctx->c_rmt_ip4,
-		    clib_net_to_host_u16 (ctx->c_rmt_port));
-      else
-	s = format (s, "%U:%d->%U:%d", format_ip6_address, &ctx->c_lcl_ip6,
-		    clib_net_to_host_u16 (ctx->c_lcl_port),
-		    format_ip6_address, &ctx->c_rmt_ip6,
-		    clib_net_to_host_u16 (ctx->c_rmt_port));
-    }
+    s = format (s, "%s\n", str);
+  vec_free (str);
   return s;
 }
 
@@ -1668,8 +1668,7 @@ format_quic_connection (u8 * s, va_list * args)
   u32 thread_index = va_arg (*args, u32);
   u32 verbose = va_arg (*args, u32);
   quic_ctx_t *ctx = quic_ctx_get (qc_index, thread_index);
-  if (ctx)
-    s = format (s, "%-50U", format_quic_ctx, ctx, verbose);
+  s = format (s, "%U", format_quic_ctx, ctx, verbose);
   return s;
 }
 
@@ -1677,8 +1676,10 @@ static u8 *
 format_quic_half_open (u8 * s, va_list * args)
 {
   u32 qc_index = va_arg (*args, u32);
-  quic_ctx_t *ctx = quic_ctx_get (qc_index, vlib_get_thread_index ());
-  s = format (s, "[QUIC] half-open app %u", ctx->parent_app_id);
+  u32 thread_index = va_arg (*args, u32);
+  quic_ctx_t *ctx = quic_ctx_get (qc_index, thread_index);
+  s =
+    format (s, "[#%d][Q] half-open app %u", thread_index, ctx->parent_app_id);
   return s;
 }
 
@@ -1687,13 +1688,10 @@ static u8 *
 format_quic_listener (u8 * s, va_list * args)
 {
   u32 tci = va_arg (*args, u32);
+  u32 thread_index = va_arg (*args, u32);
   u32 verbose = va_arg (*args, u32);
-  quic_ctx_t *ctx = quic_ctx_get (tci, vlib_get_thread_index ());
-  if (ctx)
-    {
-      ASSERT (quic_ctx_is_listener (ctx));
-      s = format (s, "%-50U", format_quic_ctx, ctx, verbose);
-    }
+  quic_ctx_t *ctx = quic_ctx_get (tci, thread_index);
+  s = format (s, "%U", format_quic_ctx, ctx, verbose);
   return s;
 }
 
@@ -2481,7 +2479,7 @@ static const transport_proto_vft_t quic_proto = {
 static clib_error_t *
 quic_init (vlib_main_t * vm)
 {
-  u32 add_segment_size = (4096ULL << 20) - 1, segment_size = 512 << 20;
+  u32 segment_size = 256 << 20;
   vlib_thread_main_t *vtm = vlib_get_thread_main ();
   tw_timer_wheel_1t_3w_1024sl_ov_t *tw;
   vnet_app_attach_args_t _a, *a = &_a;
@@ -2500,7 +2498,7 @@ quic_init (vlib_main_t * vm)
   a->options = options;
   a->name = format (0, "quic");
   a->options[APP_OPTIONS_SEGMENT_SIZE] = segment_size;
-  a->options[APP_OPTIONS_ADD_SEGMENT_SIZE] = add_segment_size;
+  a->options[APP_OPTIONS_ADD_SEGMENT_SIZE] = segment_size;
   a->options[APP_OPTIONS_RX_FIFO_SIZE] = fifo_size;
   a->options[APP_OPTIONS_TX_FIFO_SIZE] = fifo_size;
   a->options[APP_OPTIONS_FLAGS] = APP_OPTIONS_FLAGS_IS_BUILTIN;
@@ -2543,7 +2541,40 @@ quic_init (vlib_main_t * vm)
 
 VLIB_INIT_FUNCTION (quic_init);
 
+static clib_error_t *
+quic_plugin_crypto_command_fn (vlib_main_t * vm,
+			       unformat_input_t * input,
+			       vlib_cli_command_t * cmd)
+{
+  while (unformat_check_input (input) != UNFORMAT_END_OF_INPUT)
+    {
+      if (unformat (input, "vpp"))
+	{
+	  quic_tlsctx.cipher_suites = vpp_crypto_cipher_suites;
+	  return 0;
+	}
+      else if (unformat (input, "picotls"))
+	{
+	  quic_tlsctx.cipher_suites = ptls_openssl_cipher_suites;
+	  return 0;
+	}
+      else
+	return clib_error_return (0, "unknown input '%U'",
+				  format_unformat_error, input);
+    }
+
+  return clib_error_return (0, "unknown input '%U'",
+			    format_unformat_error, input);
+}
+
 /* *INDENT-OFF* */
+VLIB_CLI_COMMAND(quic_plugin_crypto_command, static)=
+{
+	.path = "quic set crypto api",
+	.short_help = "quic set crypto api [picotls, vpp]",
+	.function = quic_plugin_crypto_command_fn,
+};
+
 VLIB_PLUGIN_REGISTER () =
 {
   .version = VPP_BUILD_VER,

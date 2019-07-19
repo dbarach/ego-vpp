@@ -98,10 +98,14 @@ ipsec_tun_protect_db_add (ipsec_main_t * im, const ipsec_tun_protect_t * itp)
       if (ip46_address_is_ip4 (&itp->itp_crypto.dst))
         {
           ipsec4_tunnel_key_t key = {
-            .remote_ip = itp->itp_crypto.dst.ip4.as_u32,
+            .remote_ip = itp->itp_crypto.dst.ip4,
             .spi = clib_host_to_net_u32 (sa->spi),
           };
           hash_set (im->tun4_protect_by_key, key.as_u64, res.as_u64);
+          if (1 == hash_elts(im->tun4_protect_by_key))
+            udp_register_dst_port (vlib_get_main(),
+                                   UDP_DST_PORT_ipsec,
+                                   ipsec4_tun_input_node.index, 1);
         }
       else
         {
@@ -127,10 +131,14 @@ ipsec_tun_protect_db_remove (ipsec_main_t * im,
       if (ip46_address_is_ip4 (&itp->itp_crypto.dst))
         {
           ipsec4_tunnel_key_t key = {
-            .remote_ip = itp->itp_crypto.dst.ip4.as_u32,
+            .remote_ip = itp->itp_crypto.dst.ip4,
             .spi = clib_host_to_net_u32 (sa->spi),
           };
           hash_unset (im->tun4_protect_by_key, &key);
+          if (0 == hash_elts(im->tun4_protect_by_key))
+            udp_unregister_dst_port (vlib_get_main(),
+                                     UDP_DST_PORT_ipsec,
+                                     1);
         }
       else
         {
@@ -191,6 +199,7 @@ static void
 ipsec_tun_protect_unconfig (ipsec_main_t * im, ipsec_tun_protect_t * itp)
 {
   ipsec_sa_t *sa;
+  index_t sai;
 
   ipsec_tun_protect_feature_set (itp, 0);
 
@@ -199,9 +208,16 @@ ipsec_tun_protect_unconfig (ipsec_main_t * im, ipsec_tun_protect_t * itp)
   ({
     ipsec_sa_unset_IS_PROTECT (sa);
   }));
-  /* *INDENT-ON* */
 
   ipsec_tun_protect_db_remove (im, itp);
+
+  ipsec_sa_unlock(itp->itp_out_sa);
+
+  FOR_EACH_IPSEC_PROTECT_INPUT_SAI(itp, sai,
+  ({
+    ipsec_sa_unlock(sai);
+  }));
+  /* *INDENT-ON* */
 }
 
 index_t
@@ -229,7 +245,7 @@ ipsec_tun_protect_update (u32 sw_if_index, u32 sa_out, u32 * sas_in)
 
   vec_foreach_index (ii, sas_in)
   {
-    sas_in[ii] = ipsec_get_sa_index_by_sa_id (sas_in[ii]);
+    sas_in[ii] = ipsec_sa_find_and_lock (sas_in[ii]);
     if (~0 == sas_in[ii])
       {
 	rv = VNET_API_ERROR_INVALID_VALUE;
@@ -237,7 +253,7 @@ ipsec_tun_protect_update (u32 sw_if_index, u32 sa_out, u32 * sas_in)
       }
   }
 
-  sa_out = ipsec_get_sa_index_by_sa_id (sa_out);
+  sa_out = ipsec_sa_find_and_lock (sa_out);
 
   if (~0 == sa_out)
     {
@@ -351,10 +367,10 @@ ipsec_tun_protect_del (u32 sw_if_index)
 
   pool_put (ipsec_protect_pool, itp);
 
-  /* if (0 == hash_elts (im->tun4_protect_by_key)) */
-  /*   ip4_unregister_protocol (IP_PROTOCOL_IPSEC_ESP); */
-  /* if (0 == hash_elts (im->tun6_protect_by_key)) */
-  /*   ip6_unregister_protocol (IP_PROTOCOL_IPSEC_ESP); */
+  if (0 == hash_elts (im->tun4_protect_by_key))
+    ip4_unregister_protocol (IP_PROTOCOL_IPSEC_ESP);
+  if (0 == hash_elts (im->tun6_protect_by_key))
+    ip6_unregister_protocol (IP_PROTOCOL_IPSEC_ESP);
 
   return (0);
 }

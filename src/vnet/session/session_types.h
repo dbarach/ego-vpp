@@ -19,6 +19,9 @@
 #include <svm/svm_fifo.h>
 #include <vnet/session/transport_types.h>
 
+#define SESSION_INVALID_INDEX ((u32)~0)
+#define SESSION_INVALID_HANDLE ((u64)~0)
+
 #define foreach_session_endpoint_fields				\
   foreach_transport_endpoint_cfg_fields				\
   _(u8, transport_proto)					\
@@ -127,7 +130,7 @@ typedef enum
   SESSION_STATE_OPENED,
   SESSION_STATE_TRANSPORT_CLOSING,
   SESSION_STATE_CLOSING,
-  SESSION_STATE_CLOSED_WAITING,
+  SESSION_STATE_APP_CLOSED,
   SESSION_STATE_TRANSPORT_CLOSED,
   SESSION_STATE_CLOSED,
   SESSION_STATE_N_STATES,

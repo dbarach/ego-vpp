@@ -218,6 +218,8 @@ help:
 	@echo " wipe-doxygen        - wipe all generated documentation"
 	@echo " checkfeaturelist    - check FEATURE.yaml according to schema"
 	@echo " featurelist         - dump feature list in markdown"
+	@echo " json-api-files      - (re)-generate json api files"
+	@echo " json-api-files-debug - (re)-generate json api files for debug target"
 	@echo " docs                 - Build the Sphinx documentation"
 	@echo " docs-venv         - Build the virtual environment for the Sphinx docs"
 	@echo " docs-clean        - Remove the generated files from the Sphinx docs"
@@ -534,6 +536,12 @@ dpdk-install-dev:
 install-ext-deps:
 	make -C build/external install-$(PKG)
 
+json-api-files:
+	$(WS_ROOT)/src/tools/vppapigen/generate_json.py
+
+json-api-files-debug:
+	$(WS_ROOT)/src/tools/vppapigen/generate_json.py --debug-target
+
 ctags: ctags.files
 	@ctags --totals --tag-relative -L $<
 	@rm $<
@@ -594,7 +602,7 @@ docs: $(DOCS_DIR)
 docs-clean:
 	@($(SPHINX_SCRIPTS_DIR)/sphinx-make.sh clean)
 
-verify: install-dep $(BR)/.deps.ok install-ext-deps
+pkg-verify: install-dep $(BR)/.deps.ok install-ext-deps
 	$(call banner,"Building for PLATFORM=vpp using gcc")
 	@make -C build-root PLATFORM=vpp TAG=vpp wipe-all install-packages
 	$(call banner,"Building sample-plugin")
@@ -605,6 +613,12 @@ verify: install-dep $(BR)/.deps.ok install-ext-deps
 	@make -C build-root PLATFORM=vpp TAG=vpp vom-install
 	$(call banner,"Building $(PKG) packages")
 	@make pkg-$(PKG)
+ifeq ($(OS_ID),ubuntu)
+	$(call banner,"Building VOM $(PKG) package")
+	@make vom-pkg-deb
+endif
+
+verify: pkg-verify
 ifeq ($(OS_ID)-$(OS_VERSION_ID),ubuntu-18.04)
 	$(call banner,"Running tests")
 	@make COMPRESS_FAILED_TEST_LOGS=yes RETRIES=3 test
