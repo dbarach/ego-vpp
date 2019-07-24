@@ -665,6 +665,8 @@ static void *vl_api_bond_create_t_print
     s = format (s, "mode %U ", format_bond_mode, mp->mode);
   if (mp->lb)
     s = format (s, "lb %U ", format_bond_load_balance, mp->lb);
+  if (mp->numa_only)
+    s = format (s, "numa-only is set in lacp mode");
   if (mp->id != ~0)
     s = format (s, "id %u ", ntohl (mp->id));
   FINISH;
@@ -3773,6 +3775,18 @@ static void *vl_api_qos_record_enable_disable_t_print
   FINISH;
 }
 
+#define foreach_no_print_function               \
+_(memclnt_keepalive_reply)
+
+#define _(f)                                    \
+static void * vl_api_ ## f ## _t_print          \
+  (vl_api_ ## f ## _t * mp, void * handle)      \
+{                                               \
+  return handle;                                \
+}
+foreach_no_print_function;
+#undef _
+
 #define foreach_custom_print_no_arg_function                            \
 _(lisp_eid_table_vni_dump)                                              \
 _(lisp_map_resolver_dump)                                               \
@@ -3789,7 +3803,7 @@ static void * vl_api_ ## f ## _t_print                                  \
   s = format (0, "SCRIPT: " #f );                                       \
   FINISH;                                                               \
 }
-foreach_custom_print_no_arg_function
+foreach_custom_print_no_arg_function;
 #undef _
 #define foreach_custom_print_function                                   \
 _(CREATE_LOOPBACK, create_loopback)                                     \
@@ -3991,8 +4005,10 @@ _(DNS_RESOLVE_NAME, dns_resolve_name)					\
 _(DNS_RESOLVE_IP, dns_resolve_ip)					\
 _(SESSION_RULE_ADD_DEL, session_rule_add_del)                           \
 _(OUTPUT_ACL_SET_INTERFACE, output_acl_set_interface)                   \
-_(QOS_RECORD_ENABLE_DISABLE, qos_record_enable_disable)
-  void
+_(QOS_RECORD_ENABLE_DISABLE, qos_record_enable_disable)			\
+_(MEMCLNT_KEEPALIVE_REPLY, memclnt_keepalive_reply)
+
+void
 vl_msg_api_custom_dump_configure (api_main_t * am)
 {
 #define _(n,f) am->msg_print_handlers[VL_API_##n]       \
