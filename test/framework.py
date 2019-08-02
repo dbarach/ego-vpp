@@ -762,7 +762,7 @@ class VppTestCase(unittest.TestCase):
         cls._captures = []
 
     @classmethod
-    def create_pg_interfaces(cls, interfaces):
+    def create_pg_interfaces(cls, interfaces, gso=0, gso_size=0):
         """
         Create packet-generator interfaces.
 
@@ -772,7 +772,7 @@ class VppTestCase(unittest.TestCase):
         """
         result = []
         for i in interfaces:
-            intf = VppPGInterface(cls, i)
+            intf = VppPGInterface(cls, i, gso, gso_size)
             setattr(cls, intf.name, intf)
             result.append(intf)
         cls.pg_interfaces = result
@@ -973,8 +973,6 @@ class VppTestCase(unittest.TestCase):
     def assert_packet_checksums_valid(self, packet,
                                       ignore_zero_udp_checksums=True):
         received = packet.__class__(scapy.compat.raw(packet))
-        self.logger.debug(
-            ppp("Verifying packet checksums for packet:", received))
         udp_layers = ['UDP', 'UDPerror']
         checksum_fields = ['cksum', 'chksum']
         checksums = []

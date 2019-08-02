@@ -13300,6 +13300,7 @@ api_create_vhost_user_if (vat_main_t * vam)
   u8 disable_mrg_rxbuf = 0;
   u8 disable_indirect_desc = 0;
   u8 *tag = 0;
+  u8 enable_gso = 0;
   int ret;
 
   /* Shut up coverity */
@@ -13321,6 +13322,8 @@ api_create_vhost_user_if (vat_main_t * vam)
 	disable_mrg_rxbuf = 1;
       else if (unformat (i, "disable_indirect_desc"))
 	disable_indirect_desc = 1;
+      else if (unformat (i, "gso"))
+	enable_gso = 1;
       else if (unformat (i, "tag %s", &tag))
 	;
       else
@@ -13345,6 +13348,7 @@ api_create_vhost_user_if (vat_main_t * vam)
   mp->is_server = is_server;
   mp->disable_mrg_rxbuf = disable_mrg_rxbuf;
   mp->disable_indirect_desc = disable_indirect_desc;
+  mp->enable_gso = enable_gso;
   clib_memcpy (mp->sock_filename, file_name, vec_len (file_name));
   vec_free (file_name);
   if (custom_dev_instance != ~0)
@@ -13375,6 +13379,7 @@ api_modify_vhost_user_if (vat_main_t * vam)
   u32 custom_dev_instance = ~0;
   u8 sw_if_index_set = 0;
   u32 sw_if_index = (u32) ~ 0;
+  u8 enable_gso = 0;
   int ret;
 
   while (unformat_check_input (i) != UNFORMAT_END_OF_INPUT)
@@ -13391,6 +13396,8 @@ api_modify_vhost_user_if (vat_main_t * vam)
 	;
       else if (unformat (i, "server"))
 	is_server = 1;
+      else if (unformat (i, "gso"))
+	enable_gso = 1;
       else
 	break;
     }
@@ -13418,6 +13425,7 @@ api_modify_vhost_user_if (vat_main_t * vam)
 
   mp->sw_if_index = ntohl (sw_if_index);
   mp->is_server = is_server;
+  mp->enable_gso = enable_gso;
   clib_memcpy (mp->sock_filename, file_name, vec_len (file_name));
   vec_free (file_name);
   if (custom_dev_instance != ~0)
@@ -19749,12 +19757,24 @@ api_pg_create_interface (vat_main_t * vam)
   unformat_input_t *input = vam->input;
   vl_api_pg_create_interface_t *mp;
 
-  u32 if_id = ~0;
+  u32 if_id = ~0, gso_size = 0;
+  u8 gso_enabled = 0;
   int ret;
   while (unformat_check_input (input) != UNFORMAT_END_OF_INPUT)
     {
       if (unformat (input, "if_id %d", &if_id))
 	;
+      else if (unformat (input, "gso-enabled"))
+	{
+	  gso_enabled = 1;
+	  if (unformat (input, "gso-size %u", &gso_size))
+	    ;
+	  else
+	    {
+	      errmsg ("missing gso-size");
+	      return -99;
+	    }
+	}
       else
 	break;
     }
@@ -19768,6 +19788,7 @@ api_pg_create_interface (vat_main_t * vam)
   M (PG_CREATE_INTERFACE, mp);
   mp->context = 0;
   mp->interface_id = ntohl (if_id);
+  mp->gso_enabled = gso_enabled;
 
   S (mp);
   W (ret);
@@ -21373,8 +21394,8 @@ api_qos_record_enable_disable (vat_main_t * vam)
 
   M (QOS_RECORD_ENABLE_DISABLE, mp);
 
-  mp->sw_if_index = ntohl (sw_if_index);
-  mp->input_source = qs;
+  mp->record.sw_if_index = ntohl (sw_if_index);
+  mp->record.input_source = qs;
   mp->enable = enable;
 
   S (mp);
@@ -22113,11 +22134,11 @@ _(l2_interface_vlan_tag_rewrite,                                        \
   "[translate-2-[1|2]] [push_dot1q 0] tag1 <nn> tag2 <nn>")             \
 _(create_vhost_user_if,                                                 \
         "socket <filename> [server] [renumber <dev_instance>] "         \
-        "[disable_mrg_rxbuf] [disable_indirect_desc] "                  \
+        "[disable_mrg_rxbuf] [disable_indirect_desc] [gso] "            \
         "[mac <mac_address>]")                                          \
 _(modify_vhost_user_if,                                                 \
         "<intfc> | sw_if_index <nn> socket <filename>\n"                \
-        "[server] [renumber <dev_instance>]")                           \
+        "[server] [renumber <dev_instance>] [gso]")                     \
 _(delete_vhost_user_if, "<intfc> | sw_if_index <nn>")                   \
 _(sw_interface_vhost_user_dump, "")                                     \
 _(show_version, "")                                                     \
@@ -22324,7 +22345,7 @@ _(ipfix_classify_table_dump, "")                                        \
 _(sw_interface_span_enable_disable, "[l2] [src <intfc> | src_sw_if_index <id>] [disable | [[dst <intfc> | dst_sw_if_index <id>] [both|rx|tx]]]") \
 _(sw_interface_span_dump, "[l2]")                                           \
 _(get_next_index, "node-name <node-name> next-node-name <node-name>")   \
-_(pg_create_interface, "if_id <nn>")                                    \
+_(pg_create_interface, "if_id <nn> [gso-enabled gso-size <size>]")      \
 _(pg_capture, "if_id <nnn> pcap <file_name> count <nnn> [disable]")     \
 _(pg_enable_disable, "[stream <id>] disable")                           \
 _(ip_source_and_port_range_check_add_del,                               \

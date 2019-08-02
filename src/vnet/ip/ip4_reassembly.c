@@ -1202,7 +1202,8 @@ VLIB_REGISTER_NODE (ip4_reass_node_feature) = {
 VNET_FEATURE_INIT (ip4_reassembly_feature, static) = {
     .arc_name = "ip4-unicast",
     .node_name = "ip4-reassembly-feature",
-    .runs_before = VNET_FEATURES ("ip4-lookup"),
+    .runs_before = VNET_FEATURES ("ip4-lookup",
+                                  "ipsec4-input-feature"),
     .runs_after = 0,
 };
 /* *INDENT-ON* */

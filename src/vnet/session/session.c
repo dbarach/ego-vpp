@@ -118,6 +118,31 @@ session_send_rpc_evt_to_thread (u32 thread_index, void *fp, void *rpc_args)
     }
 }
 
+void
+session_add_self_custom_tx_evt (transport_connection_t * tc, u8 has_prio)
+{
+  session_t *s;
+
+  s = session_get (tc->s_index, tc->thread_index);
+  ASSERT (s->thread_index == vlib_get_thread_index ());
+  if (!(s->flags & SESSION_F_CUSTOM_TX))
+    {
+      s->flags |= SESSION_F_CUSTOM_TX;
+      if (svm_fifo_set_event (s->tx_fifo))
+	{
+	  session_worker_t *wrk;
+	  session_evt_elt_t *elt;
+	  wrk = session_main_get_worker (tc->thread_index);
+	  if (has_prio)
+	    elt = session_evt_alloc_new (wrk);
+	  else
+	    elt = session_evt_alloc_old (wrk);
+	  elt->evt.session_index = tc->s_index;
+	  elt->evt.event_type = SESSION_IO_EVT_TX;
+	}
+    }
+}
+
 static void
 session_program_transport_close (session_t * s)
 {
@@ -130,11 +155,10 @@ session_program_transport_close (session_t * s)
   if (vlib_thread_is_main_w_barrier () || thread_index == s->thread_index)
     {
       wrk = session_main_get_worker (s->thread_index);
-      elt = session_evt_elt_alloc (wrk);
+      elt = session_evt_alloc_ctrl (wrk);
       clib_memset (&elt->evt, 0, sizeof (session_event_t));
       elt->evt.session_handle = session_handle (s);
       elt->evt.event_type = SESSION_CTRL_EVT_CLOSE;
-      session_evt_add_pending_disconnects (wrk, elt);
     }
   else
     session_send_ctrl_evt_to_thread (s, SESSION_CTRL_EVT_CLOSE);
@@ -691,17 +715,32 @@ typedef struct _session_switch_pool_args
   u32 new_session_index;
 } session_switch_pool_args_t;
 
+/**
+ * Notify old thread of the session pool switch
+ */
 static void
 session_switch_pool (void *cb_args)
 {
   session_switch_pool_args_t *args = (session_switch_pool_args_t *) cb_args;
+  app_worker_t *app_wrk;
   session_t *s;
+
   ASSERT (args->thread_index == vlib_get_thread_index ());
   s = session_get (args->session_index, args->thread_index);
   s->tx_fifo->master_session_index = args->new_session_index;
   s->tx_fifo->master_thread_index = args->new_thread_index;
   transport_cleanup (session_get_transport_proto (s), s->connection_index,
 		     s->thread_index);
+
+  app_wrk = app_worker_get_if_valid (s->app_wrk_index);
+  if (app_wrk)
+    {
+      session_handle_t new_sh;
+      new_sh = session_make_handle (args->new_session_index,
+				    args->new_thread_index);
+      app_worker_migrate_notify (app_wrk, s, new_sh);
+    }
+
   session_free (s);
   clib_mem_free (cb_args);
 }
@@ -793,13 +832,14 @@ session_transport_delete_notify (transport_connection_t * tc)
     case SESSION_STATE_ACCEPTING:
     case SESSION_STATE_TRANSPORT_CLOSING:
     case SESSION_STATE_CLOSING:
+    case SESSION_STATE_TRANSPORT_CLOSED:
       /* If transport finishes or times out before we get a reply
        * from the app, mark transport as closed and wait for reply
        * before removing the session. Cleanup session table in advance
        * because transport will soon be closed and closed sessions
        * are assumed to have been removed from the lookup table */
       session_lookup_del_session (s);
-      s->session_state = SESSION_STATE_TRANSPORT_CLOSED;
+      s->session_state = SESSION_STATE_TRANSPORT_DELETED;
       session_cleanup_notify (s, SESSION_CLEANUP_TRANSPORT);
       svm_fifo_dequeue_drop_all (s->tx_fifo);
       break;
@@ -815,7 +855,7 @@ session_transport_delete_notify (transport_connection_t * tc)
       svm_fifo_dequeue_drop_all (s->tx_fifo);
       session_program_transport_close (s);
       break;
-    case SESSION_STATE_TRANSPORT_CLOSED:
+    case SESSION_STATE_TRANSPORT_DELETED:
       break;
     case SESSION_STATE_CLOSED:
       session_cleanup_notify (s, SESSION_CLEANUP_TRANSPORT);
@@ -858,11 +898,10 @@ session_transport_closed_notify (transport_connection_t * tc)
    * a transport close, only mark the session transport as closed */
   else if (s->session_state <= SESSION_STATE_CLOSING)
     {
-      session_lookup_del_session (s);
       s->session_state = SESSION_STATE_TRANSPORT_CLOSED;
     }
-  /* In all closing states but transport closed switch to closed */
-  else if (s->session_state != SESSION_STATE_TRANSPORT_CLOSED)
+  /* If app also closed, switch to closed */
+  else if (s->session_state == SESSION_STATE_APP_CLOSED)
     s->session_state = SESSION_STATE_CLOSED;
 
   app_wrk = app_worker_get_if_valid (s->app_wrk_index);
@@ -1118,7 +1157,8 @@ session_close (session_t * s)
     {
       /* Session will only be removed once both app and transport
        * acknowledge the close */
-      if (s->session_state == SESSION_STATE_TRANSPORT_CLOSED)
+      if (s->session_state == SESSION_STATE_TRANSPORT_CLOSED
+	  || s->session_state == SESSION_STATE_TRANSPORT_DELETED)
 	session_program_transport_close (s);
       return;
     }
@@ -1139,8 +1179,10 @@ session_transport_close (session_t * s)
 {
   if (s->session_state >= SESSION_STATE_APP_CLOSED)
     {
-      /* If transport is already closed, just free the session */
-      if (s->session_state >= SESSION_STATE_TRANSPORT_CLOSED)
+      if (s->session_state == SESSION_STATE_TRANSPORT_CLOSED)
+	s->session_state = SESSION_STATE_CLOSED;
+      /* If transport is already deleted, just free the session */
+      else if (s->session_state >= SESSION_STATE_TRANSPORT_DELETED)
 	session_free_w_fifos (s);
       return;
     }
@@ -1376,11 +1418,9 @@ session_manager_main_enable (vlib_main_t * vm)
   for (i = 0; i < num_threads; i++)
     {
       wrk = &smm->wrk[i];
+      wrk->ctrl_head = clib_llist_make_head (wrk->event_elts, evt_list);
       wrk->new_head = clib_llist_make_head (wrk->event_elts, evt_list);
       wrk->old_head = clib_llist_make_head (wrk->event_elts, evt_list);
-      wrk->postponed_head = clib_llist_make_head (wrk->event_elts, evt_list);
-      wrk->disconnects_head = clib_llist_make_head (wrk->event_elts,
-						    evt_list);
       wrk->vm = vlib_mains[i];
       wrk->last_vlib_time = vlib_time_now (vlib_mains[i]);
 

@@ -1032,7 +1032,8 @@ class VppPapiProvider(object):
                            client_id='',
                            is_add=1,
                            set_broadcast_flag=1,
-                           want_dhcp_events=0):
+                           want_dhcp_events=0,
+                           dscp=0):
         return self.api(
             self.papi.dhcp_client_config,
             {
@@ -1043,6 +1044,7 @@ class VppPapiProvider(object):
                     'id': client_id,
                     'want_dhcp_event': want_dhcp_events,
                     'set_broadcast_flag': set_broadcast_flag,
+                    'dscp': dscp,
                     'pid': os.getpid()}
             })
 
@@ -2124,28 +2126,6 @@ class VppPapiProvider(object):
     def gbp_vxlan_tunnel_dump(self):
         """ GBP VXLAN tunnel add/del """
         return self.api(self.papi.gbp_vxlan_tunnel_dump, {})
-
-    def qos_egress_map_update(self, id, outputs):
-        """ QOS egress map update """
-        return self.api(self.papi.qos_egress_map_update,
-                        {'map_id': id,
-                         'rows': outputs})
-
-    def qos_egress_map_delete(self, id):
-        """ QOS egress map delete """
-        return self.api(self.papi.qos_egress_map_delete,
-                        {'map_id': id})
-
-    def qos_mark_enable_disable(self, sw_if_index,
-                                output_source,
-                                map_id,
-                                enable):
-        """ QOS Mark Enable/Disable """
-        return self.api(self.papi.qos_mark_enable_disable,
-                        {'map_id': map_id,
-                         'sw_if_index': sw_if_index,
-                         'output_source': output_source,
-                         'enable': enable})
 
     def igmp_enable_disable(self, sw_if_index, enable, host):
         """ Enable/disable IGMP on a given interface """

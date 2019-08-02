@@ -83,28 +83,6 @@ typedef enum quic_ctx_flags_
   QUIC_F_IS_LISTENER = (1 << 1),
 } quic_ctx_flags_t;
 
-/* *INDENT-OFF* */
-typedef struct quic_ctx_id_
-{
-  union { /** QUIC ctx case */
-    struct {
-      quicly_conn_t *conn;
-      u32 listener_ctx_id;
-      u32 client_opaque;
-      u8 *srv_hostname;
-      u8 conn_state;
-      u8 udp_is_ip4;
-    };
-    struct { /** STREAM ctx case */
-      quicly_stream_t *stream;
-      u32 quic_connection_ctx_id;
-    };
-  };
-} quic_ctx_id_t;
-/* *INDENT-ON* */
-
-STATIC_ASSERT (sizeof (quic_ctx_id_t) <= 42, "ctx id must be less than 42");
-
 /* This structure is used to implement the concept of VPP connection for QUIC.
  * We create one per connection and one per stream. */
 typedef struct quic_ctx_
@@ -112,7 +90,22 @@ typedef struct quic_ctx_
   union
   {
     transport_connection_t connection;
-    quic_ctx_id_t c_quic_ctx_id;
+    struct
+    {	      /** QUIC ctx case */
+      quicly_conn_t *conn;
+      u32 listener_ctx_id;
+      u32 client_opaque;
+      u8 *srv_hostname;
+      u8 conn_state;
+      u8 udp_is_ip4;
+      u8 _qctx_end_marker;	/* Leave this at the end */
+    };
+    struct
+    {	      /** STREAM ctx case */
+      quicly_stream_t *stream;
+      u32 quic_connection_ctx_id;
+      u8 _sctx_end_marker;	/* Leave this at the end */
+    };
   };
   session_handle_t udp_session_handle;
   u32 timer_handle;
@@ -120,6 +113,30 @@ typedef struct quic_ctx_
   u32 parent_app_id;
   u8 flags;
 } quic_ctx_t;
+
+/* Make sure our custom fields don't overlap with the fields we use in
+   .connection
+*/
+STATIC_ASSERT (offsetof (quic_ctx_t, _qctx_end_marker) <=
+	       TRANSPORT_CONN_ID_LEN,
+	       "connection data must be less than TRANSPORT_CONN_ID_LEN bytes");
+STATIC_ASSERT (offsetof (quic_ctx_t, _sctx_end_marker) <=
+	       TRANSPORT_CONN_ID_LEN,
+	       "connection data must be less than TRANSPORT_CONN_ID_LEN bytes");
+
+typedef enum quic_crypto_engine_
+{
+  CRYPTO_ENGINE_VPP,
+  CRYPTO_ENGINE_PICOTLS,
+} quic_crypto_engine_t;
+
+/* single-entry session cache */
+typedef struct quic_session_cache_
+{
+  ptls_encrypt_ticket_t super;
+  uint8_t id[32];
+  ptls_iovec_t data;
+} quic_session_cache_t;
 
 typedef struct quic_stream_data_
 {
@@ -143,6 +160,10 @@ typedef struct quic_main_
   quic_worker_ctx_t *wrk_ctx;
   clib_bihash_16_8_t connection_hash;	/* quicly connection id -> conn handle */
   f64 tstamp_ticks_per_clock;
+
+  ptls_cipher_suite_t ***quic_ciphers;	/* available ciphers by crypto engine */
+  u8 default_cipher;
+  quic_session_cache_t session_cache;
 
   /*
    * Config

@@ -34,8 +34,8 @@ enum ip_ecn : u8 {
 
 /* DSCP code points - RFC 2474
    https://tools.ietf.org/html/rfc2474
+   Values other than these RFC defined values are accepted.
 */
-
 enum ip_dscp : u8 {
   IP_API_DSCP_CS0 =  0,
   IP_API_DSCP_CS1 = 8,
@@ -105,4 +105,15 @@ typedef ip6_prefix {
 typedef ip4_prefix {
   vl_api_ip4_address_t address;
   u8 len;
+};
+
+/** \brief A context for matching prefixes against.  (Think ip prefix list.)
+    The meaning (exact match / want subnets) of an unset matcher is left to the implementer.
+    @param le - le mut be <= to prefix.len. Default: 255 (not set).
+    @param ge - ge must be greater than le and <= max_size of prefix. Default: 255 (not set).
+
+*/
+typedef prefix_matcher {
+  u8 le; /* [default=255] */
+  u8 ge; /* [default=255] */
 };

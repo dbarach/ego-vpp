@@ -133,6 +133,7 @@ typedef enum
   SESSION_STATE_CLOSING,
   SESSION_STATE_APP_CLOSED,
   SESSION_STATE_TRANSPORT_CLOSED,
+  SESSION_STATE_TRANSPORT_DELETED,
   SESSION_STATE_CLOSED,
   SESSION_STATE_N_STATES,
 } session_state_t;
@@ -141,6 +142,7 @@ typedef enum session_flags_
 {
   SESSION_F_RX_EVT = 1,
   SESSION_F_PROXY = (1 << 1),
+  SESSION_F_CUSTOM_TX = (1 << 2),
 } session_flags_t;
 
 typedef struct session_
@@ -271,6 +273,12 @@ session_parse_handle (session_handle_t handle, u32 * index,
 {
   *index = session_index_from_handle (handle);
   *thread_index = session_thread_from_handle (handle);
+}
+
+static inline session_handle_t
+session_make_handle (u32 session_index, u32 thread_index)
+{
+  return (((u64) thread_index << 32) | (u64) session_index);
 }
 
 typedef enum

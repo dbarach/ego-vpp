@@ -1920,6 +1920,8 @@ static void *vl_api_create_vhost_user_if_t_print
     s = format (s, "disable_indirect_desc ");
   if (mp->tag[0])
     s = format (s, "tag %s", mp->tag);
+  if (mp->enable_gso)
+    s = format (s, "gso");
 
   FINISH;
 }
@@ -1937,6 +1939,8 @@ static void *vl_api_modify_vhost_user_if_t_print
     s = format (s, "server ");
   if (mp->renumber)
     s = format (s, "renumber %d ", ntohl (mp->custom_dev_instance));
+  if (mp->enable_gso)
+    s = format (s, "gso");
 
   FINISH;
 }
@@ -2761,6 +2765,8 @@ static void *vl_api_pg_create_interface_t_print
 
   s = format (0, "SCRIPT: pg_create_interface ");
   s = format (0, "if_id %d", ntohl (mp->interface_id));
+  s = format (0, "gso-enabled %u", mp->gso_enabled);
+  s = format (0, "gso-size %u", ntohl (mp->gso_size));
 
   FINISH;
 }
@@ -3765,9 +3771,9 @@ static void *vl_api_qos_record_enable_disable_t_print
   u8 *s;
 
   s = format (0, "SCRIPT: qos_record_enable_disable ");
-  s = format (s, "sw_if_index %d ", ntohl (mp->sw_if_index));
+  s = format (s, "sw_if_index %d ", ntohl (mp->record.sw_if_index));
   s = format (s, "input_source %U ", format_qos_source,
-	      ntohl (mp->input_source));
+	      mp->record.input_source);
 
   if (!mp->enable)
     s = format (s, "disable ");

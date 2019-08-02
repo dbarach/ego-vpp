@@ -434,7 +434,7 @@ uword
 unformat_fib_route_path (unformat_input_t * input, va_list * args)
 {
     fib_route_path_t *rpath = va_arg (*args, fib_route_path_t *);
-    u32 *payload_proto = va_arg (*args, u32*);
+    dpo_proto_t *payload_proto = va_arg (*args, void*);
     u32 weight, preference, udp_encap_id, fi;
     mpls_label_t out_label;
     vnet_main_t *vnm;
@@ -536,6 +536,10 @@ unformat_fib_route_path (unformat_input_t * input, va_list * args)
         else if (unformat (input, "resolve-via-attached"))
         {
             rpath->frp_flags |= FIB_ROUTE_PATH_RESOLVE_VIA_ATTACHED;
+        }
+        else if (unformat (input, "pop-pw-cw"))
+        {
+            rpath->frp_flags |= FIB_ROUTE_PATH_POP_PW_CW;
         }
         else if (unformat (input,
                            "ip4-lookup-in-table %d",
