@@ -213,7 +213,6 @@ tcp_half_open_connection_cleanup (tcp_connection_t * tc)
   /* Make sure this is the owning thread */
   if (tc->c_thread_index != vlib_get_thread_index ())
     return 1;
-  tcp_timer_reset (tc, TCP_TIMER_ESTABLISH_AO);
   tcp_timer_reset (tc, TCP_TIMER_RETRANSMIT_SYN);
   tcp_half_open_connection_del (tc);
   return 0;
@@ -670,6 +669,8 @@ tcp_connection_init_vars (tcp_connection_t * tc)
 
   if (tc->flags & TCP_CONN_RATE_SAMPLE)
     tcp_bt_init (tc);
+
+  tc->start_ts = tcp_time_now_us (tc->c_thread_index);
 }
 
 static int
@@ -864,6 +865,27 @@ format_tcp_congestion (u8 * s, va_list * args)
 }
 
 static u8 *
+format_tcp_stats (u8 * s, va_list * args)
+{
+  tcp_connection_t *tc = va_arg (*args, tcp_connection_t *);
+  u32 indent = format_get_indent (s);
+  s = format (s, "in segs %lu dsegs %lu bytes %lu dupacks %u\n",
+	      tc->segs_in, tc->data_segs_in, tc->bytes_in, tc->dupacks_in);
+  s = format (s, "%Uout segs %lu dsegs %lu bytes %lu dupacks %u\n",
+	      format_white_space, indent, tc->segs_out,
+	      tc->data_segs_out, tc->bytes_out, tc->dupacks_out);
+  s = format (s, "%Ufr %u tr %u rxt segs %lu bytes %lu duration %.3f\n",
+	      format_white_space, indent, tc->fr_occurences,
+	      tc->tr_occurences, tc->segs_retrans, tc->bytes_retrans,
+	      tcp_time_now_us (tc->c_thread_index) - tc->start_ts);
+  s = format (s, "%Uerr wnd data below %u above %u ack below %u above %u",
+	      format_white_space, indent, tc->errors.below_data_wnd,
+	      tc->errors.above_data_wnd, tc->errors.below_ack_wnd,
+	      tc->errors.above_ack_wnd);
+  return s;
+}
+
+static u8 *
 format_tcp_vars (u8 * s, va_list * args)
 {
   tcp_connection_t *tc = va_arg (*args, tcp_connection_t *);
@@ -896,6 +918,7 @@ format_tcp_vars (u8 * s, va_list * args)
     {
       s = format (s, " sboard: %U\n", format_tcp_scoreboard, &tc->sack_sb,
 		  tc);
+      s = format (s, " stats: %U\n", format_tcp_stats, tc);
     }
   if (vec_len (tc->snd_sacks))
     s = format (s, " sacks tx: %U\n", format_tcp_sacks, tc);
@@ -1265,55 +1288,6 @@ tcp_connection_tx_pacer_reset (tcp_connection_t * tc, u32 window,
 }
 
 static void
-tcp_timer_keep_handler (u32 conn_index)
-{
-  u32 thread_index = vlib_get_thread_index ();
-  tcp_connection_t *tc;
-
-  tc = tcp_connection_get (conn_index, thread_index);
-  tc->timers[TCP_TIMER_KEEP] = TCP_TIMER_HANDLE_INVALID;
-
-  tcp_connection_close (tc);
-}
-
-static void
-tcp_timer_establish_handler (u32 conn_index)
-{
-  tcp_connection_t *tc;
-
-  tc = tcp_connection_get (conn_index, vlib_get_thread_index ());
-  /* note: the connection may have already disappeared */
-  if (PREDICT_FALSE (tc == 0))
-    return;
-  ASSERT (tc->state == TCP_STATE_SYN_RCVD);
-  tc->timers[TCP_TIMER_ESTABLISH] = TCP_TIMER_HANDLE_INVALID;
-  tcp_connection_set_state (tc, TCP_STATE_CLOSED);
-  tcp_connection_timers_reset (tc);
-  /* Start cleanup. Do NOT delete the session until we do the connection
-   * cleanup. Otherwise, we end up with a dangling session index in the
-   * tcp connection. */
-  tcp_timer_update (tc, TCP_TIMER_WAITCLOSE, TCP_CLEANUP_TIME);
-}
-
-static void
-tcp_timer_establish_ao_handler (u32 conn_index)
-{
-  tcp_connection_t *tc;
-
-  tc = tcp_half_open_connection_get (conn_index);
-  if (!tc)
-    return;
-
-  ASSERT (tc->state == TCP_STATE_SYN_SENT);
-  /* Notify app if we haven't tried to clean this up already */
-  if (!(tc->flags & TCP_CONN_HALF_OPEN_DONE))
-    session_stream_connect_notify (&tc->connection, 1 /* fail */ );
-
-  tc->timers[TCP_TIMER_ESTABLISH_AO] = TCP_TIMER_HANDLE_INVALID;
-  tcp_connection_cleanup (tc);
-}
-
-static void
 tcp_timer_waitclose_handler (u32 conn_index)
 {
   u32 thread_index = vlib_get_thread_index ();
@@ -1322,6 +1296,7 @@ tcp_timer_waitclose_handler (u32 conn_index)
   tc = tcp_connection_get (conn_index, thread_index);
   if (!tc)
     return;
+
   tc->timers[TCP_TIMER_WAITCLOSE] = TCP_TIMER_HANDLE_INVALID;
 
   switch (tc->state)
@@ -1388,11 +1363,8 @@ static timer_expiration_handler *timer_expiration_handlers[TCP_N_TIMERS] =
     tcp_timer_retransmit_handler,
     tcp_timer_delack_handler,
     tcp_timer_persist_handler,
-    tcp_timer_keep_handler,
     tcp_timer_waitclose_handler,
     tcp_timer_retransmit_syn_handler,
-    tcp_timer_establish_handler,
-    tcp_timer_establish_ao_handler,
 };
 /* *INDENT-ON* */
 

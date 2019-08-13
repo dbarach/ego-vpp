@@ -3725,6 +3725,7 @@ class TestGBP(VppTestCase):
 
         #
         # learn a remote EP in EPG 221
+        #   packets coming from unknown remote EPs will be leant & redirected
         #
         vx_tun_l3 = VppGbpVxlanTunnel(
             self, 444, rd1.rd_id,
@@ -3735,13 +3736,19 @@ class TestGBP(VppTestCase):
         c4 = VppGbpContract(
             self, 402, epg_221.sclass, epg_220.sclass, acl_index,
             [VppGbpContractRule(
-                VppEnum.vl_api_gbp_rule_action_t.GBP_API_RULE_PERMIT,
+                VppEnum.vl_api_gbp_rule_action_t.GBP_API_RULE_REDIRECT,
                 VppEnum.vl_api_gbp_hash_mode_t.GBP_API_HASH_MODE_SRC_IP,
-                []),
+                [VppGbpContractNextHop(sep1.vmac, sep1.epg.bd,
+                                       sep1.ip4, sep1.epg.rd),
+                 VppGbpContractNextHop(sep2.vmac, sep2.epg.bd,
+                                       sep2.ip4, sep2.epg.rd)]),
                 VppGbpContractRule(
-                    VppEnum.vl_api_gbp_rule_action_t.GBP_API_RULE_PERMIT,
+                    VppEnum.vl_api_gbp_rule_action_t.GBP_API_RULE_REDIRECT,
                     VppEnum.vl_api_gbp_hash_mode_t.GBP_API_HASH_MODE_SRC_IP,
-                    [])],
+                    [VppGbpContractNextHop(sep3.vmac, sep3.epg.bd,
+                                           sep3.ip6, sep3.epg.rd),
+                     VppGbpContractNextHop(sep4.vmac, sep4.epg.bd,
+                                           sep4.ip6, sep4.epg.rd)])],
             [ETH_P_IP, ETH_P_IPV6])
         c4.add_vpp_config()
 
@@ -3756,7 +3763,14 @@ class TestGBP(VppTestCase):
              UDP(sport=1234, dport=1234) /
              Raw('\xa5' * 100))
 
-        rx = self.send_and_expect(self.pg7, [p], self.pg0)
+        # unknown remote EP to local EP redirected
+        rxs = self.send_and_expect(self.pg7, [p], sep1.itf)
+
+        for rx in rxs:
+            self.assertEqual(rx[Ether].src, routed_src_mac)
+            self.assertEqual(rx[Ether].dst, sep1.mac)
+            self.assertEqual(rx[IP].src, "10.0.0.88")
+            self.assertEqual(rx[IP].dst, ep1.ip4.address)
 
         # endpoint learnt via the parent GBP-vxlan interface
         self.assertTrue(find_gbp_endpoint(self,
@@ -3774,7 +3788,14 @@ class TestGBP(VppTestCase):
              UDP(sport=1234, dport=1234) /
              Raw('\xa5' * 100))
 
-        rx = self.send_and_expect(self.pg7, [p], self.pg0)
+        # unknown remote EP to local EP redirected (ipv6)
+        rxs = self.send_and_expect(self.pg7, [p], sep3.itf)
+
+        for rx in rxs:
+            self.assertEqual(rx[Ether].src, routed_src_mac)
+            self.assertEqual(rx[Ether].dst, sep3.mac)
+            self.assertEqual(rx[IPv6].src, "2001:10::88")
+            self.assertEqual(rx[IPv6].dst, ep1.ip6.address)
 
         # endpoint learnt via the parent GBP-vxlan interface
         self.assertTrue(find_gbp_endpoint(self,
@@ -3846,6 +3867,271 @@ class TestGBP(VppTestCase):
             self.assertEqual(rx[Ether].dst, sep3.mac)
             self.assertEqual(rx[IPv6].src, ep1.ip6.address)
             self.assertEqual(rx[IPv6].dst, "2001:10::88")
+
+        #
+        # redirect to programmed remote SEP in EPG 320
+        #
+
+        # gbp vxlan tunnel for the remote SEP
+        vx_tun_l3_sep = VppGbpVxlanTunnel(
+            self, 555, rd1.rd_id,
+            VppEnum.vl_api_gbp_vxlan_tunnel_mode_t.GBP_VXLAN_TUNNEL_MODE_L3,
+            self.pg2.local_ip4)
+        vx_tun_l3_sep.add_vpp_config()
+
+        # remote SEP
+        sep5 = VppGbpEndpoint(self, vx_tun_l3_sep,
+                              epg_320, None,
+                              "12.0.0.10", "13.0.0.10",
+                              "4001:10::10", "5001:10::10",
+                              ep_flags.GBP_API_ENDPOINT_FLAG_REMOTE,
+                              self.pg7.local_ip4,
+                              self.pg7.remote_ip4,
+                              mac=None)
+        sep5.add_vpp_config()
+
+        #
+        # redirect from local l3out to remote (known, then unknown) SEP
+        #
+
+        # add local l3out
+        # the external bd
+        self.loop4.set_mac(self.router_mac)
+        VppIpInterfaceBind(self, self.loop4, t4).add_vpp_config()
+        VppIpInterfaceBind(self, self.loop4, t6).add_vpp_config()
+        ebd = VppBridgeDomain(self, 100)
+        ebd.add_vpp_config()
+        gebd = VppGbpBridgeDomain(self, ebd, rd1, self.loop4, None, None)
+        gebd.add_vpp_config()
+        # the external epg
+        eepg = VppGbpEndpointGroup(self, 888, 765, rd1, gebd,
+                                   None, gebd.bvi,
+                                   "10.1.0.128",
+                                   "2001:10:1::128",
+                                   VppGbpEndpointRetention(2))
+        eepg.add_vpp_config()
+        # add subnets to BVI
+        VppIpInterfaceAddress(
+            self,
+            gebd.bvi,
+            "10.1.0.128",
+            24).add_vpp_config()
+        VppIpInterfaceAddress(
+            self,
+            gebd.bvi,
+            "2001:10:1::128",
+            64).add_vpp_config()
+        # ... which are L3-out subnets
+        VppGbpSubnet(self, rd1, "10.1.0.0", 24,
+                     VppEnum.vl_api_gbp_subnet_type_t.GBP_API_SUBNET_L3_OUT,
+                     sclass=765).add_vpp_config()
+        VppGbpSubnet(self, rd1, "2001:10:1::128", 64,
+                     VppEnum.vl_api_gbp_subnet_type_t.GBP_API_SUBNET_L3_OUT,
+                     sclass=765).add_vpp_config()
+        # external endpoints
+        VppL2Vtr(self, self.vlan_100, L2_VTR_OP.L2_POP_1).add_vpp_config()
+        eep1 = VppGbpEndpoint(self, self.vlan_100, eepg, None, "10.1.0.1",
+                              "11.1.0.1", "2001:10:1::1", "3001:10:1::1",
+                              ep_flags.GBP_API_ENDPOINT_FLAG_EXTERNAL)
+        eep1.add_vpp_config()
+        VppL2Vtr(self, self.vlan_101, L2_VTR_OP.L2_POP_1).add_vpp_config()
+        eep2 = VppGbpEndpoint(self, self.vlan_101, eepg, None, "10.1.0.2",
+                              "11.1.0.2", "2001:10:1::2", "3001:10:1::2",
+                              ep_flags.GBP_API_ENDPOINT_FLAG_EXTERNAL)
+        eep2.add_vpp_config()
+
+        # external subnets reachable though eep1 and eep2 respectively
+        VppIpRoute(self, "10.220.0.0", 24,
+                   [VppRoutePath(eep1.ip4.address, eep1.epg.bvi.sw_if_index)],
+                   table_id=t4.table_id).add_vpp_config()
+        VppGbpSubnet(self, rd1, "10.220.0.0", 24,
+                     VppEnum.vl_api_gbp_subnet_type_t.GBP_API_SUBNET_L3_OUT,
+                     sclass=4220).add_vpp_config()
+        VppIpRoute(self, "10:220::", 64,
+                   [VppRoutePath(eep1.ip6.address, eep1.epg.bvi.sw_if_index)],
+                   table_id=t6.table_id).add_vpp_config()
+        VppGbpSubnet(self, rd1, "10:220::", 64,
+                     VppEnum.vl_api_gbp_subnet_type_t.GBP_API_SUBNET_L3_OUT,
+                     sclass=4220).add_vpp_config()
+        VppIpRoute(self, "10.221.0.0", 24,
+                   [VppRoutePath(eep2.ip4.address, eep2.epg.bvi.sw_if_index)],
+                   table_id=t4.table_id).add_vpp_config()
+        VppGbpSubnet(self, rd1, "10.221.0.0", 24,
+                     VppEnum.vl_api_gbp_subnet_type_t.GBP_API_SUBNET_L3_OUT,
+                     sclass=4221).add_vpp_config()
+        VppIpRoute(self, "10:221::", 64,
+                   [VppRoutePath(eep2.ip6.address, eep2.epg.bvi.sw_if_index)],
+                   table_id=t6.table_id).add_vpp_config()
+        VppGbpSubnet(self, rd1, "10:221::", 64,
+                     VppEnum.vl_api_gbp_subnet_type_t.GBP_API_SUBNET_L3_OUT,
+                     sclass=4221).add_vpp_config()
+
+        # packets from 1 external subnet to the other
+        p = [(Ether(src=eep1.mac, dst=self.router_mac) /
+              Dot1Q(vlan=100) /
+              IP(src="10.220.0.17", dst="10.221.0.65") /
+              UDP(sport=1234, dport=1234) /
+              Raw('\xa5' * 100)),
+             (Ether(src=eep1.mac, dst=self.router_mac) /
+              Dot1Q(vlan=100) /
+              IPv6(src="10:220::17", dst="10:221::65") /
+              UDP(sport=1234, dport=1234) /
+              Raw('\xa5' * 100))]
+
+        # packets should be dropped in absence of contract
+        self.send_and_assert_no_replies(self.pg0, p)
+
+        # contract redirecting to sep5
+        VppGbpContract(
+            self, 402, 4220, 4221, acl_index,
+            [VppGbpContractRule(
+                VppEnum.vl_api_gbp_rule_action_t.GBP_API_RULE_REDIRECT,
+                VppEnum.vl_api_gbp_hash_mode_t.GBP_API_HASH_MODE_DST_IP,
+                [VppGbpContractNextHop(sep5.vmac, sep5.epg.bd,
+                                       sep5.ip4, sep5.epg.rd)]),
+                VppGbpContractRule(
+                    VppEnum.vl_api_gbp_rule_action_t.GBP_API_RULE_REDIRECT,
+                    VppEnum.vl_api_gbp_hash_mode_t.GBP_API_HASH_MODE_DST_IP,
+                    [VppGbpContractNextHop(sep5.vmac, sep5.epg.bd,
+                                           sep5.ip6, sep5.epg.rd)])],
+            [ETH_P_IP, ETH_P_IPV6]).add_vpp_config()
+
+        rxs = self.send_and_expect(self.pg0, p, self.pg7)
+
+        for rx, tx in zip(rxs, p):
+            self.assertEqual(rx[Ether].src, self.pg7.local_mac)
+            self.assertEqual(rx[Ether].dst, self.pg7.remote_mac)
+            self.assertEqual(rx[IP].src, self.pg7.local_ip4)
+            self.assertEqual(rx[IP].dst, self.pg7.remote_ip4)
+            # this should use the programmed remote leaf TEP
+            self.assertEqual(rx[VXLAN].vni, 555)
+            self.assertEqual(rx[VXLAN].gpid, 4220)
+            self.assertTrue(rx[VXLAN].flags.G)
+            self.assertTrue(rx[VXLAN].flags.Instance)
+            # redirect policy has been applied
+            self.assertTrue(rx[VXLAN].gpflags.A)
+            self.assertTrue(rx[VXLAN].gpflags.D)
+            rxip = rx[VXLAN][Ether].payload
+            txip = tx[Dot1Q].payload
+            self.assertEqual(rxip.src, txip.src)
+            self.assertEqual(rxip.dst, txip.dst)
+
+        # remote SEP: it is now an unknown remote SEP and should go
+        # to spine proxy
+        sep5.remove_vpp_config()
+
+        rxs = self.send_and_expect(self.pg0, p, self.pg7)
+
+        for rx, tx in zip(rxs, p):
+            self.assertEqual(rx[Ether].src, self.pg7.local_mac)
+            self.assertEqual(rx[Ether].dst, self.pg7.remote_mac)
+            self.assertEqual(rx[IP].src, self.pg7.local_ip4)
+            self.assertEqual(rx[IP].dst, self.pg7.remote_ip4)
+            # this should use the spine proxy TEP
+            self.assertEqual(rx[VXLAN].vni, epg_320.bd.uu_fwd.vni)
+            self.assertEqual(rx[VXLAN].gpid, 4220)
+            self.assertTrue(rx[VXLAN].flags.G)
+            self.assertTrue(rx[VXLAN].flags.Instance)
+            # redirect policy has been applied
+            self.assertTrue(rx[VXLAN].gpflags.A)
+            self.assertTrue(rx[VXLAN].gpflags.D)
+            rxip = rx[VXLAN][Ether].payload
+            txip = tx[Dot1Q].payload
+            self.assertEqual(rxip.src, txip.src)
+            self.assertEqual(rxip.dst, txip.dst)
+
+        #
+        # redirect remote EP to remote SEP
+        #
+
+        # remote SEP known again
+        sep5.add_vpp_config()
+
+        # contract to redirect to learnt SEP
+        VppGbpContract(
+            self, 402, epg_221.sclass, epg_222.sclass, acl_index,
+            [VppGbpContractRule(
+                VppEnum.vl_api_gbp_rule_action_t.GBP_API_RULE_REDIRECT,
+                VppEnum.vl_api_gbp_hash_mode_t.GBP_API_HASH_MODE_DST_IP,
+                [VppGbpContractNextHop(sep5.vmac, sep5.epg.bd,
+                                       sep5.ip4, sep5.epg.rd)]),
+                VppGbpContractRule(
+                    VppEnum.vl_api_gbp_rule_action_t.GBP_API_RULE_REDIRECT,
+                    VppEnum.vl_api_gbp_hash_mode_t.GBP_API_HASH_MODE_DST_IP,
+                    [VppGbpContractNextHop(sep5.vmac, sep5.epg.bd,
+                                           sep5.ip6, sep5.epg.rd)])],
+            [ETH_P_IP, ETH_P_IPV6]).add_vpp_config()
+
+        # packets from unknown EP 221 to known EP in EPG 222
+        # should be redirected to known remote SEP
+        base = (Ether(src=self.pg7.remote_mac, dst=self.pg7.local_mac) /
+                IP(src=self.pg7.remote_ip4, dst=self.pg7.local_ip4) /
+                UDP(sport=1234, dport=48879) /
+                VXLAN(vni=444, gpid=441, flags=0x88) /
+                Ether(src="00:22:22:22:22:44", dst=str(self.router_mac)))
+        p = [(base /
+              IP(src="10.0.1.100", dst=ep3.ip4.address) /
+              UDP(sport=1234, dport=1234) /
+              Raw('\xa5' * 100)),
+             (base /
+              IPv6(src="2001:10::100", dst=ep3.ip6.address) /
+              UDP(sport=1234, dport=1234) /
+              Raw('\xa5' * 100))]
+
+        # unknown remote EP to local EP redirected to known remote SEP
+        rxs = self.send_and_expect(self.pg7, p, self.pg7)
+
+        for rx, tx in zip(rxs, p):
+            self.assertEqual(rx[Ether].src, self.pg7.local_mac)
+            self.assertEqual(rx[Ether].dst, self.pg7.remote_mac)
+            self.assertEqual(rx[IP].src, self.pg7.local_ip4)
+            self.assertEqual(rx[IP].dst, self.pg7.remote_ip4)
+            # this should use the programmed remote leaf TEP
+            self.assertEqual(rx[VXLAN].vni, 555)
+            self.assertEqual(rx[VXLAN].gpid, epg_221.sclass)
+            self.assertTrue(rx[VXLAN].flags.G)
+            self.assertTrue(rx[VXLAN].flags.Instance)
+            # redirect policy has been applied
+            self.assertTrue(rx[VXLAN].gpflags.A)
+            self.assertFalse(rx[VXLAN].gpflags.D)
+            rxip = rx[VXLAN][Ether].payload
+            txip = tx[VXLAN][Ether].payload
+            self.assertEqual(rxip.src, txip.src)
+            self.assertEqual(rxip.dst, txip.dst)
+
+        # endpoint learnt via the parent GBP-vxlan interface
+        self.assertTrue(find_gbp_endpoint(self,
+                                          vx_tun_l3._sw_if_index,
+                                          ip="10.0.1.100"))
+        self.assertTrue(find_gbp_endpoint(self,
+                                          vx_tun_l3._sw_if_index,
+                                          ip="2001:10::100"))
+
+        # remote SEP: it is now an unknown remote SEP and should go
+        # to spine proxy
+        sep5.remove_vpp_config()
+
+        # remote EP (coming from spine proxy) to local EP redirected to
+        # known remote SEP
+        rxs = self.send_and_expect(self.pg7, p, self.pg7)
+
+        for rx, tx in zip(rxs, p):
+            self.assertEqual(rx[Ether].src, self.pg7.local_mac)
+            self.assertEqual(rx[Ether].dst, self.pg7.remote_mac)
+            self.assertEqual(rx[IP].src, self.pg7.local_ip4)
+            self.assertEqual(rx[IP].dst, self.pg7.remote_ip4)
+            # this should use the spine proxy TEP
+            self.assertEqual(rx[VXLAN].vni, epg_320.bd.uu_fwd.vni)
+            self.assertEqual(rx[VXLAN].gpid, epg_221.sclass)
+            self.assertTrue(rx[VXLAN].flags.G)
+            self.assertTrue(rx[VXLAN].flags.Instance)
+            # redirect policy has been applied
+            self.assertTrue(rx[VXLAN].gpflags.A)
+            self.assertFalse(rx[VXLAN].gpflags.D)
+            rxip = rx[VXLAN][Ether].payload
+            txip = tx[VXLAN][Ether].payload
+            self.assertEqual(rxip.src, txip.src)
+            self.assertEqual(rxip.dst, txip.dst)
 
         #
         # cleanup

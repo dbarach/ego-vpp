@@ -235,7 +235,7 @@ session_delete (session_t * s)
 
   /* Delete from the main lookup table. */
   if ((rv = session_lookup_del_session (s)))
-    clib_warning ("hash delete error, rv %d", rv);
+    clib_warning ("session %u hash delete rv %d", s->session_index, rv);
 
   session_free_w_fifos (s);
 }
@@ -565,6 +565,38 @@ session_enqueue_notify (session_t * s)
   return session_enqueue_notify_inline (s);
 }
 
+static void
+session_enqueue_notify_rpc (void *arg)
+{
+  u32 session_index = pointer_to_uword (arg);
+  session_t *s;
+
+  s = session_get_if_valid (session_index, vlib_get_thread_index ());
+  if (!s)
+    return;
+
+  session_enqueue_notify (s);
+}
+
+/**
+ * Like session_enqueue_notify, but can be called from a thread that does not
+ * own the session.
+ */
+void
+session_enqueue_notify_thread (session_handle_t sh)
+{
+  u32 thread_index = session_thread_from_handle (sh);
+  u32 session_index = session_index_from_handle (sh);
+
+  /*
+   * Pass session index (u32) as opposed to handle (u64) in case pointers
+   * are not 64-bit.
+   */
+  session_send_rpc_evt_to_thread (thread_index,
+				  session_enqueue_notify_rpc,
+				  uword_to_pointer (session_index, void *));
+}
+
 int
 session_dequeue_notify (session_t * s)
 {
@@ -739,6 +771,9 @@ session_switch_pool (void *cb_args)
       new_sh = session_make_handle (args->new_session_index,
 				    args->new_thread_index);
       app_worker_migrate_notify (app_wrk, s, new_sh);
+
+      /* Trigger app read on the new thread */
+      session_enqueue_notify_thread (new_sh);
     }
 
   session_free (s);

@@ -260,6 +260,9 @@ tls_notify_app_connected (tls_ctx_t * ctx, u8 is_failed)
   return 0;
 
 failed:
+  /* Free app session pre-allocated when transport was established */
+  session_free (session_get (ctx->c_s_index, ctx->c_thread_index));
+  ctx->no_app_session = 1;
   tls_disconnect (ctx->tls_ctx_handle, vlib_get_thread_index ());
   return app_worker_connect_notify (app_wrk, 0, ctx->parent_app_api_context);
 }
@@ -342,7 +345,6 @@ tls_ctx_app_close (tls_ctx_t * ctx)
 void
 tls_ctx_free (tls_ctx_t * ctx)
 {
-  vec_free (ctx->srv_hostname);
   tls_vfts[ctx->tls_ctx_engine].ctx_free (ctx);
 }
 
@@ -355,7 +357,12 @@ tls_ctx_handshake_is_over (tls_ctx_t * ctx)
 void
 tls_session_reset_callback (session_t * s)
 {
-  clib_warning ("called...");
+  tls_ctx_t *ctx;
+
+  ctx = tls_ctx_get (s->opaque);
+  session_transport_reset_notify (&ctx->connection);
+  session_transport_closed_notify (&ctx->connection);
+  tls_disconnect_transport (ctx);
 }
 
 int
@@ -404,6 +411,7 @@ tls_session_accept_callback (session_t * tls_session)
   tls_session->opaque = ctx_handle;
   ctx->tls_session_handle = session_handle (tls_session);
   ctx->listener_ctx_index = tls_listener->opaque;
+  ctx->c_flags |= TRANSPORT_CONNECTION_F_NO_LOOKUP;
 
   /* Preallocate app session. Avoids allocating a session post handshake
    * on tls_session rx and potentially invalidating the session pool */
@@ -462,6 +470,7 @@ tls_session_connected_callback (u32 tls_app_index, u32 ho_ctx_index,
 
   ctx->c_thread_index = vlib_get_thread_index ();
   ctx->tls_ctx_handle = ctx_handle;
+  ctx->c_flags |= TRANSPORT_CONNECTION_F_NO_LOOKUP;
 
   TLS_DBG (1, "TCP connect for %u returned %u. New connection [%u]%x",
 	   ho_ctx_index, is_fail, vlib_get_thread_index (),
@@ -480,6 +489,20 @@ tls_session_connected_callback (u32 tls_app_index, u32 ho_ctx_index,
   return tls_ctx_init_client (ctx);
 }
 
+static void
+tls_app_session_cleanup (session_t * s, session_cleanup_ntf_t ntf)
+{
+  tls_ctx_t *ctx;
+
+  if (ntf == SESSION_CLEANUP_TRANSPORT)
+    return;
+
+  ctx = tls_ctx_get (s->opaque);
+  if (!ctx->no_app_session)
+    session_transport_delete_notify (&ctx->connection);
+  tls_ctx_free (ctx);
+}
+
 /* *INDENT-OFF* */
 static session_cb_vft_t tls_app_cb_vft = {
   .session_accept_callback = tls_session_accept_callback,
@@ -489,6 +512,7 @@ static session_cb_vft_t tls_app_cb_vft = {
   .add_segment_callback = tls_add_segment_callback,
   .del_segment_callback = tls_del_segment_callback,
   .builtin_app_rx_callback = tls_app_rx_callback,
+  .session_cleanup_callback = tls_app_session_cleanup,
 };
 /* *INDENT-ON* */
 

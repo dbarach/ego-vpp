@@ -71,11 +71,8 @@ format_function_t format_tcp_rcv_sacks;
   _(RETRANSMIT, "RETRANSMIT")           \
   _(DELACK, "DELAYED ACK")              \
   _(PERSIST, "PERSIST")                 \
-  _(KEEP, "KEEP")                       \
   _(WAITCLOSE, "WAIT CLOSE")            \
   _(RETRANSMIT_SYN, "RETRANSMIT SYN")   \
-  _(ESTABLISH, "ESTABLISH")		\
-  _(ESTABLISH_AO, "ESTABLISH_AO")	\
 
 typedef enum _tcp_timers
 {
@@ -98,7 +95,6 @@ extern timer_expiration_handler tcp_timer_retransmit_syn_handler;
 #define TCP_TO_TIMER_TICK       TCP_TICK*10	/* Period for converting from TCP
 						 * ticks to timer units */
 #define TCP_DELACK_TIME         1	/* 0.1s */
-#define TCP_ESTABLISH_TIME      750	/* 75s */
 #define TCP_SYN_RCVD_TIME	600	/* 60s */
 #define TCP_2MSL_TIME           300	/* 30s */
 #define TCP_CLOSEWAIT_TIME	20	/* 2s */
@@ -113,6 +109,7 @@ extern timer_expiration_handler tcp_timer_retransmit_syn_handler;
 #define TCP_RTO_SYN_RETRIES 3	/* SYN retries without doubling RTO */
 #define TCP_RTO_INIT 1 * THZ	/* Initial retransmit timer */
 #define TCP_RTO_BOFF_MAX 8	/* Max number of retries before reset */
+#define TCP_ESTABLISH_TIME (60 * THZ)	/* Connection establish timeout */
 
 /** TCP connection flags */
 #define foreach_tcp_connection_flag             \
@@ -300,6 +297,17 @@ typedef enum tcp_cc_event_
   TCP_CC_EVT_START_TX,
 } tcp_cc_event_t;
 
+/*
+ * As per RFC4898 tcpEStatsStackSoftErrors
+ */
+typedef struct tcp_errors_
+{
+  u32 below_data_wnd;	/**< All data in seg is below snd_una */
+  u32 above_data_wnd;	/**< Some data in segment is above snd_wnd */
+  u32 below_ack_wnd;	/**< Acks for data below snd_una */
+  u32 above_ack_wnd;	/**< Acks for data not sent */
+} tcp_errors_t;
+
 typedef struct _tcp_connection
 {
   CLIB_CACHE_LINE_ALIGN_MARK (cacheline0);
@@ -309,7 +317,10 @@ typedef struct _tcp_connection
   u16 flags;			/**< Connection flags (see tcp_conn_flags_e) */
   u32 timers[TCP_N_TIMERS];	/**< Timer handles into timer wheel */
 
-  /* TODO RFC4898 */
+  u64 segs_in;		/** RFC4022/4898 tcpHCInSegs/tcpEStatsPerfSegsIn */
+  u64 bytes_in;		/** RFC4898 tcpEStatsPerfHCDataOctetsIn */
+  u64 segs_out;		/** RFC4898 tcpEStatsPerfSegsOut */
+  u64 bytes_out;	/** RFC4898 tcpEStatsPerfHCDataOctetsOut */
 
   /** Send sequence variables RFC793 */
   u32 snd_una;		/**< oldest unacknowledged sequence number */
@@ -319,6 +330,9 @@ typedef struct _tcp_connection
   u32 snd_wl2;		/**< ack number used for last snd.wnd update */
   u32 snd_nxt;		/**< next seq number to be sent */
   u16 snd_mss;		/**< Effective send max seg (data) size */
+
+  u64 data_segs_in;	/** RFC4898 tcpEStatsPerfDataSegsIn */
+  u64 data_segs_out;	/** RFC4898 tcpEStatsPerfDataSegsOut */
 
   /** Receive sequence variables RFC793 */
   u32 rcv_nxt;		/**< next sequence number expected */
@@ -342,8 +356,10 @@ typedef struct _tcp_connection
   sack_block_t *snd_sacks_fl;	/**< Vector for building new list */
   sack_scoreboard_t sack_sb;	/**< SACK "scoreboard" that tracks holes */
 
-  u16 rcv_dupacks;	/**< Number of DUPACKs received */
+  u16 rcv_dupacks;	/**< Number of recent DUPACKs received */
+  u32 dupacks_in;	/**< RFC4898 tcpEStatsStackDupAcksIn*/
   u8 pending_dupacks;	/**< Number of DUPACKs to be sent */
+  u32 dupacks_out;	/**< RFC4898 tcpEStatsPathDupAcksOut */
 
   /* Congestion control */
   u32 cwnd;		/**< Congestion window */
@@ -360,6 +376,12 @@ typedef struct _tcp_connection
   u32 tx_fifo_size;	/**< Tx fifo size. Used to constrain cwnd */
   tcp_cc_algorithm_t *cc_algo;	/**< Congestion control algorithm */
   u8 cc_data[TCP_CC_DATA_SZ];	/**< Congestion control algo private data */
+
+  u32 fr_occurences;	/**< fast-retransmit occurrences RFC4898
+			     tcpEStatsStackFastRetran */
+  u32 tr_occurences;	/**< timer-retransmit occurrences */
+  u64 bytes_retrans;	/**< RFC4898 tcpEStatsPerfOctetsRetrans */
+  u64 segs_retrans;	/**< RFC4898 tcpEStatsPerfSegsRetrans*/
 
   /* RTT and RTO */
   u32 rto;		/**< Retransmission timeout */
@@ -382,9 +404,12 @@ typedef struct _tcp_connection
   f64 delivered_time;		/**< Time last bytes were acked */
   tcp_byte_tracker_t *bt;	/**< Tx byte tracker */
 
+  tcp_errors_t errors;	/**< Soft connection errors */
+
+  f64 start_ts;		/**< Timestamp when connection initialized */
   u32 last_fib_check;	/**< Last time we checked fib route for peer */
   u16 mss;		/**< Our max seg size that includes options */
-  u32 timestamp_delta;
+  u32 timestamp_delta;	/**< Offset for timestamp */
 } tcp_connection_t;
 
 /* *INDENT-OFF* */
@@ -429,7 +454,7 @@ tcp_cong_recovery_off (tcp_connection_t * tc)
   tcp_fastrecovery_first_off (tc);
 }
 
-#define tcp_zero_rwnd_sent(tc) (tc)->flags &= TCP_CONN_ZERO_RWND_SENT
+#define tcp_zero_rwnd_sent(tc) ((tc)->flags & TCP_CONN_ZERO_RWND_SENT)
 #define tcp_zero_rwnd_sent_on(tc) (tc)->flags |= TCP_CONN_ZERO_RWND_SENT
 #define tcp_zero_rwnd_sent_off(tc) (tc)->flags &= ~TCP_CONN_ZERO_RWND_SENT
 

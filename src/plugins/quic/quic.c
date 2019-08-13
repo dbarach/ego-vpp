@@ -44,7 +44,7 @@ quic_ctx_alloc (u32 thread_index)
 
   memset (ctx, 0, sizeof (quic_ctx_t));
   ctx->c_thread_index = thread_index;
-  QUIC_DBG (1, "Allocated quic_ctx %u on thread %u",
+  QUIC_DBG (3, "Allocated quic_ctx %u on thread %u",
 	    ctx - qm->ctx_pool[thread_index], thread_index);
   return ctx - qm->ctx_pool[thread_index];
 }
@@ -141,7 +141,7 @@ quic_get_quicly_ctx_from_ctx (quic_ctx_t * ctx)
 }
 
 static quicly_context_t *
-quic_get_quicly_ctx_from_udp (u32 udp_session_handle)
+quic_get_quicly_ctx_from_udp (u64 udp_session_handle)
 {
   session_t *udp_session;
   application_t *app;
@@ -634,8 +634,7 @@ quic_accept_stream (void *s)
 			     SVM_FIFO_WANT_DEQ_NOTIF_IF_FULL |
 			     SVM_FIFO_WANT_DEQ_NOTIF_IF_EMPTY);
 
-  rv = app_worker_accept_notify (app_wrk, stream_session);
-  if (rv)
+  if ((rv = app_worker_accept_notify (app_wrk, stream_session)))
     {
       QUIC_DBG (1, "failed to notify accept worker app");
       session_free_w_fifos (stream_session);
@@ -876,6 +875,7 @@ quic_store_quicly_ctx (application_t * app, u8 is_client)
 
   quicly_ctx_data_t *quicly_ctx_data =
     clib_mem_alloc (sizeof (quicly_ctx_data_t));
+  clib_memset (quicly_ctx_data, 0, sizeof (*quicly_ctx_data));	/* picotls depends on this */
   quicly_ctx = &quicly_ctx_data->quicly_ctx;
   ptls_context_t *ptls_ctx = &quicly_ctx_data->ptls_ctx;
   ptls_ctx->random_bytes = ptls_openssl_random_bytes;
@@ -1130,6 +1130,7 @@ quic_proto_on_close (u32 ctx_index, u32 thread_index)
       quicly_stream_t *stream = ctx->stream;
       quicly_reset_stream (stream, QUIC_APP_ERROR_CLOSE_NOTIFY);
       quic_send_packets (ctx);
+      return;
     }
 
   switch (ctx->conn_state)
@@ -1355,6 +1356,7 @@ quic_on_client_connected (quic_ctx_t * ctx)
   app_worker_t *app_wrk;
   u32 ctx_id = ctx->c_c_index;
   u32 thread_index = ctx->c_thread_index;
+  int rv;
 
   app_wrk = app_worker_get_if_valid (ctx->parent_app_wrk_id);
   if (!app_wrk)
@@ -1381,9 +1383,10 @@ quic_on_client_connected (quic_ctx_t * ctx)
     }
 
   quic_session->session_state = SESSION_STATE_CONNECTING;
-  if (app_worker_connect_notify (app_wrk, quic_session, ctx->client_opaque))
+  if ((rv = app_worker_connect_notify (app_wrk, quic_session,
+				       ctx->client_opaque)))
     {
-      QUIC_DBG (1, "failed to notify app");
+      QUIC_DBG (1, "failed to notify app %d", rv);
       quic_proto_on_close (ctx_id, thread_index);
       return -1;
     }
@@ -1402,6 +1405,7 @@ quic_receive_connection (void *arg)
   quic_ctx_t *temp_ctx, *new_ctx;
   clib_bihash_kv_16_8_t kv;
   quicly_conn_t *conn;
+  session_t *udp_session;
 
   temp_ctx = arg;
   new_ctx_id = quic_ctx_alloc (thread_index);
@@ -1426,7 +1430,12 @@ quic_receive_connection (void *arg)
   new_ctx->timer_handle = QUIC_TIMER_HANDLE_INVALID;
   quic_update_timer (new_ctx);
 
-  /*  Trigger read on this connection ? */
+  /*  Trigger write on this connection if necessary */
+  udp_session = session_get_from_handle (new_ctx->udp_session_handle);
+  if (svm_fifo_max_dequeue (udp_session->tx_fifo))
+    if (session_send_io_evt_to_thread (udp_session->tx_fifo,
+				       SESSION_IO_EVT_TX))
+      QUIC_DBG (4, "Cannot send TX event");
 }
 
 static void
@@ -1455,60 +1464,6 @@ quic_transfer_connection (u32 ctx_index, u32 dest_thread)
   /*  Send connection to destination thread */
   session_send_rpc_evt_to_thread (dest_thread, quic_receive_connection,
 				  (void *) temp_ctx);
-}
-
-static void
-quic_transfer_connection_rpc (void *arg)
-{
-  u64 arg_int = (u64) arg;
-  u32 ctx_index, dest_thread;
-
-  ctx_index = (u32) (arg_int >> 32);
-  dest_thread = (u32) (arg_int & UINT32_MAX);
-  quic_transfer_connection (ctx_index, dest_thread);
-}
-
-/*
- * This assumes that the connection is not yet associated to a session
- * So currently it only works on the client side when receiving the first packet
- * from the server
- */
-static void
-quic_move_connection_to_thread (u32 ctx_index, u32 owner_thread,
-				u32 to_thread,
-				quicly_decoded_packet_t * packet)
-{
-  clib_bihash_kv_16_8_t kv;
-  clib_bihash_16_8_t *h;
-
-  if (owner_thread == UINT32_MAX)
-    {
-      QUIC_DBG (3, "Connection already moving to right thread");
-      return;
-    }
-
-  /* Mark connection as moving in the conn map */
-  h = &quic_main.connection_hash;
-  quic_make_connection_key (&kv, &packet->cid.dest.plaintext);
-  if (clib_bihash_search_16_8 (h, &kv, &kv) != 0)
-    {
-      QUIC_DBG (0, "Bug: conn to move not found");
-      return;
-    }
-  kv.value |= (u64) UINT32_MAX << 32;
-  if (clib_bihash_add_del_16_8
-      (&quic_main.connection_hash, &kv, /* is_add */ 1))
-    {
-      QUIC_DBG (0, "Bug: cannot update conn in lookup hash");
-      return;
-    }
-
-  /* Send rpc to owner thread to move conn */
-  QUIC_DBG (2, "Requesting transfer of conn %u from thread %u", ctx_index,
-	    owner_thread);
-  u64 arg = ((u64) ctx_index) << 32 | to_thread;
-  session_send_rpc_evt_to_thread (owner_thread, quic_transfer_connection_rpc,
-				  (void *) arg);
 }
 
 static int
@@ -1575,11 +1530,11 @@ quic_session_connected_callback (u32 quic_app_index, u32 ctx_index,
   QUIC_DBG (2, "Registering conn with id %lu %lu", kv.key[0], kv.key[1]);
   clib_bihash_add_del_16_8 (&quic_main.connection_hash, &kv, 1 /* is_add */ );
 
-  quic_send_packets (ctx);
-
   /*  UDP stack quirk? preemptively transfer connection if that happens */
   if (udp_session->thread_index != thread_index)
     quic_transfer_connection (ctx_index, udp_session->thread_index);
+  else
+    quic_send_packets (ctx);
 
   return ret;
 }
@@ -1594,6 +1549,36 @@ static void
 quic_session_reset_callback (session_t * s)
 {
   clib_warning ("UDP session reset???");
+}
+
+static void
+quic_session_migrate_callback (session_t * s, session_handle_t new_sh)
+{
+  /*
+   * TODO we need better way to get the connection from the session
+   * This will become possible once we stop storing the app id in the UDP
+   * session opaque
+   */
+  u32 thread_index = vlib_get_thread_index ();
+  u64 old_session_handle = session_handle (s);
+  u32 new_thread = session_thread_from_handle (new_sh);
+  quic_ctx_t *ctx;
+
+  QUIC_DBG (1, "Session %x migrated to %lx", s->session_index, new_sh);
+  /* *INDENT-OFF* */
+  pool_foreach (ctx, quic_main.ctx_pool[thread_index],
+    ({
+      if (ctx->udp_session_handle == old_session_handle)
+        {
+          /*  Right ctx found, move associated conn */
+          QUIC_DBG (5, "Found right ctx: %x", ctx->c_c_index);
+          ctx->udp_session_handle = new_sh;
+          quic_transfer_connection (ctx->c_c_index, new_thread);
+          return;
+        }
+    }));
+  /* *INDENT-ON* */
+  QUIC_DBG (0, "BUG: Connection to migrate not found");
 }
 
 int
@@ -1654,7 +1639,6 @@ quic_del_segment_callback (u32 client_index, u64 seg_handle)
   /* No-op for builtin */
   return 0;
 }
-
 
 static int
 quic_custom_app_rx_callback (transport_connection_t * tc)
@@ -1824,8 +1808,7 @@ quic_create_quic_session (quic_ctx_t * ctx)
       return rv;
     }
   app_wrk = app_worker_get (quic_session->app_wrk_index);
-  rv = app_worker_accept_notify (app_wrk, quic_session);
-  if (rv)
+  if ((rv = app_worker_accept_notify (app_wrk, quic_session)))
     {
       QUIC_DBG (1, "failed to notify accept worker app");
       return rv;
@@ -1993,9 +1976,9 @@ quic_app_rx_callback (session_t * udp_session)
 	    }
 	  else if (ctx_index != UINT32_MAX)
 	    {
-	      /*  Connection found but on wrong thread, ask move */
-	      quic_move_connection_to_thread (ctx_index, ctx_thread,
-					      thread_index, &packet);
+	      /* Connection found but on wrong thread, just wait for
+	       * session_migrate_callback to be called */
+	      return 0;
 	    }
 	  else if ((packet.octets.base[0] & QUICLY_PACKET_TYPE_BITMASK) ==
 		   QUICLY_PACKET_TYPE_INITIAL)
@@ -2080,6 +2063,7 @@ static session_cb_vft_t quic_app_cb_vft = {
   .session_disconnect_callback = quic_session_disconnect_callback,
   .session_connected_callback = quic_session_connected_callback,
   .session_reset_callback = quic_session_reset_callback,
+  .session_migrate_callback = quic_session_migrate_callback,
   .add_segment_callback = quic_add_segment_callback,
   .del_segment_callback = quic_del_segment_callback,
   .builtin_app_rx_callback = quic_app_rx_callback,
