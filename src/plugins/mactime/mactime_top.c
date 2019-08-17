@@ -11,42 +11,6 @@
 #include <vnet/api_errno.h>
 #include <svm/queue.h>
 
-/* BEGIN HEADER FILE $$$$ FIXME */
-
-typedef struct
-{
-  uint64_t current_epoch;
-  stat_segment_shared_header_t *shared_header;
-  stat_segment_directory_entry_t *directory_vector;
-  ssize_t memory_size;
-} my_stat_client_main_t;
-
-typedef struct
-{
-  uint64_t epoch;
-} stat_segment_access_t;
-
-static void
-stat_segment_access_start (stat_segment_access_t * sa,
-			   my_stat_client_main_t * sm)
-{
-  stat_segment_shared_header_t *shared_header = sm->shared_header;
-  sa->epoch = shared_header->epoch;
-  while (shared_header->in_progress != 0)
-    ;
-}
-
-static int
-stat_segment_access_end (stat_segment_access_t * sa, my_stat_client_main_t * sm)
-{
-  stat_segment_shared_header_t *shared_header = sm->shared_header;
-
-  if (shared_header->epoch != sa->epoch || shared_header->in_progress)
-    return 1;
-  return 0;
-}
-/* END HEADER FILE $$$$ FIXME */
-
 /* Declare message IDs */
 #include <mactime/mactime_msg_enum.h>
 
@@ -80,7 +44,7 @@ typedef struct
   u32 my_table_epoch;
 
   /* Stat segment variables */
-  my_stat_client_main_t *stat_client_main;
+  stat_client_main_t *stat_client_main;
   u8 **pattern1, **pattern2;
   u32 *ls_result1, *ls_result2;
   vlib_counter_t *allow_counters;
@@ -229,7 +193,7 @@ static void scrape_stats_segment (mt_main_t *mm)
   u64 *offset_vector;
   mactime_device_t *dev;
   stat_segment_access_t sa;
-  my_stat_client_main_t *sm = mm->stat_client_main;
+  stat_client_main_t *sm = mm->stat_client_main;
   stat_segment_directory_entry_t *ep;
   int need_update2 = 0;
   static u32 *pool_indices;
@@ -511,7 +475,7 @@ int main (int argc, char **argv)
       exit (1);
     }
 
-  mm->stat_client_main = (my_stat_client_main_t *) &stat_client_main;
+  mm->stat_client_main = (stat_client_main_t *) &stat_client_main;
 
   /* US EDT - $$$ FIXME */
   clib_time_init (&mm->clib_time);
