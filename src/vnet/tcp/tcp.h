@@ -417,6 +417,7 @@ struct _tcp_cc_algorithm
   void (*recovered) (tcp_connection_t * tc);
   void (*undo_recovery) (tcp_connection_t * tc);
   void (*event) (tcp_connection_t *tc, tcp_cc_event_t evt);
+  u64 (*get_pacing_rate) (tcp_connection_t *tc);
 };
 /* *INDENT-ON* */
 
@@ -704,6 +705,8 @@ void tcp_connection_cleanup (tcp_connection_t * tc);
 void tcp_connection_del (tcp_connection_t * tc);
 int tcp_half_open_connection_cleanup (tcp_connection_t * tc);
 tcp_connection_t *tcp_connection_alloc (u8 thread_index);
+tcp_connection_t *tcp_connection_alloc_w_base (u8 thread_index,
+					       tcp_connection_t * base);
 void tcp_connection_free (tcp_connection_t * tc);
 void tcp_connection_reset (tcp_connection_t * tc);
 int tcp_configure_v4_source_address_range (vlib_main_t * vm,
@@ -1051,6 +1054,18 @@ tcp_cc_event (tcp_connection_t * tc, tcp_cc_event_t evt)
 {
   if (tc->cc_algo->event)
     tc->cc_algo->event (tc, evt);
+}
+
+static inline u64
+tcp_cc_get_pacing_rate (tcp_connection_t * tc)
+{
+  if (tc->cc_algo->get_pacing_rate)
+    return tc->cc_algo->get_pacing_rate (tc);
+
+  f64 srtt = clib_min ((f64) tc->srtt * TCP_TICK, tc->mrtt_us);
+  /* TODO should constrain to interface's max throughput but
+   * we don't have link speeds for sw ifs ..*/
+  return (tc->cwnd / srtt);
 }
 
 always_inline void

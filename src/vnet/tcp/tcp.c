@@ -73,7 +73,6 @@ tcp_add_del_adjacency (tcp_connection_t * tc, u8 is_add)
 static void
 tcp_cc_init (tcp_connection_t * tc)
 {
-  tc->cc_algo = tcp_cc_algo_get (tcp_cfg.cc_algo);
   tc->cc_algo->init (tc);
 }
 
@@ -136,6 +135,7 @@ tcp_connection_bind (u32 session_index, transport_endpoint_t * lcl)
   listener->c_s_index = session_index;
   listener->c_fib_index = lcl->fib_index;
   listener->state = TCP_STATE_LISTEN;
+  listener->cc_algo = tcp_cc_algo_get (tcp_cfg.cc_algo);
 
   tcp_connection_timers_init (listener);
 
@@ -306,6 +306,19 @@ tcp_connection_alloc (u8 thread_index)
   return tc;
 }
 
+tcp_connection_t *
+tcp_connection_alloc_w_base (u8 thread_index, tcp_connection_t * base)
+{
+  tcp_main_t *tm = vnet_get_tcp_main ();
+  tcp_connection_t *tc;
+
+  pool_get (tm->connections[thread_index], tc);
+  clib_memcpy_fast (tc, base, sizeof (*tc));
+  tc->c_c_index = tc - tm->connections[thread_index];
+  tc->c_thread_index = thread_index;
+  return tc;
+}
+
 void
 tcp_connection_free (tcp_connection_t * tc)
 {
@@ -462,6 +475,18 @@ tcp_session_cleanup (u32 conn_index, u32 thread_index)
   tc = tcp_connection_get (conn_index, thread_index);
   tcp_connection_set_state (tc, TCP_STATE_CLOSED);
   tcp_connection_cleanup (tc);
+}
+
+static void
+tcp_session_reset (u32 conn_index, u32 thread_index)
+{
+  tcp_connection_t *tc;
+  tc = tcp_connection_get (conn_index, thread_index);
+  session_transport_closed_notify (&tc->connection);
+  tcp_send_reset (tc);
+  tcp_connection_timers_reset (tc);
+  tcp_connection_set_state (tc, TCP_STATE_CLOSED);
+  tcp_timer_update (tc, TCP_TIMER_WAITCLOSE, tcp_cfg.cleanup_time);
 }
 
 /**
@@ -738,6 +763,7 @@ tcp_session_open (transport_endpoint_cfg_t * rmt)
   tc->c_is_ip4 = rmt->is_ip4;
   tc->c_proto = TRANSPORT_PROTO_TCP;
   tc->c_fib_index = rmt->fib_index;
+  tc->cc_algo = tcp_cc_algo_get (tcp_cfg.cc_algo);
   /* The other connection vars will be initialized after SYN ACK */
   tcp_connection_timers_init (tc);
 
@@ -1244,6 +1270,7 @@ const static transport_proto_vft_t tcp_proto = {
   .connect = tcp_session_open,
   .close = tcp_session_close,
   .cleanup = tcp_session_cleanup,
+  .reset = tcp_session_reset,
   .send_mss = tcp_session_send_mss,
   .send_space = tcp_session_send_space,
   .update_time = tcp_update_time,
@@ -1263,17 +1290,11 @@ const static transport_proto_vft_t tcp_proto = {
 void
 tcp_connection_tx_pacer_update (tcp_connection_t * tc)
 {
-  f64 srtt;
-  u64 rate;
-
   if (!transport_connection_is_tx_paced (&tc->connection))
     return;
 
-  srtt = clib_min ((f64) tc->srtt * TCP_TICK, tc->mrtt_us);
-  /* TODO should constrain to interface's max throughput but
-   * we don't have link speeds for sw ifs ..*/
-  rate = tc->cwnd / srtt;
-  transport_connection_tx_pacer_update (&tc->connection, rate);
+  transport_connection_tx_pacer_update (&tc->connection,
+					tcp_cc_get_pacing_rate (tc));
 }
 
 void

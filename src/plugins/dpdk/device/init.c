@@ -207,6 +207,7 @@ dpdk_lib_init (dpdk_main_t * dm)
   int i;
   clib_error_t *error;
   vlib_main_t *vm = vlib_get_main ();
+  vnet_main_t *vnm = vnet_get_main ();
   vlib_thread_main_t *tm = vlib_get_thread_main ();
   vnet_device_main_t *vdm = &vnet_device_main;
   vnet_sw_interface_t *sw;
@@ -739,6 +740,23 @@ dpdk_lib_init (dpdk_main_t * dm)
 	if (xd->flags & DPDK_DEVICE_FLAG_TX_OFFLOAD && hi != NULL)
 	  hi->flags |= VNET_HW_INTERFACE_FLAG_SUPPORTS_TX_L4_CKSUM_OFFLOAD;
 
+    if (devconf->tso == DPDK_DEVICE_TSO_ON)
+    {
+      if (xd->flags & DPDK_DEVICE_FLAG_TX_OFFLOAD && hi != NULL)
+      {
+        /*tcp_udp checksum must be enabled*/
+        if (hi->flags & VNET_HW_INTERFACE_FLAG_SUPPORTS_TX_L4_CKSUM_OFFLOAD)
+        {
+          hi->flags |= VNET_HW_INTERFACE_FLAG_SUPPORTS_GSO;
+          vnm->interface_main.gso_interface_count++;
+          xd->port_conf.txmode.offloads |= DEV_TX_OFFLOAD_TCP_TSO |
+                                   DEV_TX_OFFLOAD_UDP_TSO;
+        }
+        else
+          return clib_error_return (0, "TSO: TCP/UDP checksum offload must be enabled");
+      }
+    }
+
       dpdk_device_setup (xd);
 
       if (vec_len (xd->errors))
@@ -915,7 +933,8 @@ dpdk_bind_devices_to_uio (dpdk_config_main_t * conf)
       ;
     /* all Intel QAT devices VFs */
     else if (d->vendor_id == 0x8086 && d->device_class == PCI_CLASS_PROCESSOR_CO &&
-        (d->device_id == 0x0443 || d->device_id == 0x37c9 || d->device_id == 0x19e3))
+        (d->device_id == 0x0443 || d->device_id == 0x18a1 || d->device_id == 0x19e3 ||
+        d->device_id == 0x37c9 || d->device_id == 0x6f55))
       ;
     /* Cisco VIC */
     else if (d->vendor_id == 0x1137 &&
@@ -1023,6 +1042,7 @@ dpdk_device_config (dpdk_config_main_t * conf, vlib_pci_addr_t pci_addr,
 
   devconf->pci_addr.as_u32 = pci_addr.as_u32;
   devconf->hqos_enabled = 0;
+  devconf->tso = DPDK_DEVICE_TSO_DEFAULT;
 #if 0
   dpdk_device_config_hqos_default (&devconf->hqos);
 #endif
@@ -1070,6 +1090,14 @@ dpdk_device_config (dpdk_config_main_t * conf, vlib_pci_addr_t pci_addr,
       else if (unformat (input, "hqos"))
 	{
 	  devconf->hqos_enabled = 1;
+	}
+      else if (unformat (input, "tso on"))
+	{
+	  devconf->tso = DPDK_DEVICE_TSO_ON;
+	}
+      else if (unformat (input, "tso off"))
+	{
+	  devconf->tso = DPDK_DEVICE_TSO_OFF;
 	}
       else
 	{
@@ -1376,6 +1404,9 @@ dpdk_config (vlib_main_t * vm, unformat_input_t * input)
 		conf->default_devconf.vlan_strip_offload > 0)
 		devconf->vlan_strip_offload =
 			conf->default_devconf.vlan_strip_offload;
+
+	/* copy tso config from default device */
+	_(tso)
 
     /* add DPDK EAL whitelist/blacklist entry */
     if (num_whitelisted > 0 && devconf->is_blacklisted == 0)
