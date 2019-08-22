@@ -33,7 +33,6 @@
 #include <vnet/fib/fib_table.h>
 #include <vnet/ip/ip_types_api.h>
 
-#define vl_api_nat44_lb_addr_port_t_endian vl_noop_handler
 #define vl_api_nat44_add_del_lb_static_mapping_t_endian vl_noop_handler
 #define vl_api_nat44_nat44_lb_static_mapping_details_t_endian vl_noop_handler
 
@@ -1864,7 +1863,7 @@ vl_api_nat44_user_session_dump_t_handler (vl_api_nat44_user_session_dump_t *
   if (sm->num_workers > 1)
     tsm =
       vec_elt_at_index (sm->per_thread_data,
-			sm->worker_in2out_cb (&ip, ukey.fib_index));
+			sm->worker_in2out_cb (&ip, ukey.fib_index, 0));
   else
     tsm = vec_elt_at_index (sm->per_thread_data, sm->num_workers);
   if (clib_bihash_search_8_8 (&tsm->user_hash, &key, &value))

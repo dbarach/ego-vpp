@@ -661,11 +661,11 @@ avf_op_config_vsi_queues (vlib_main_t * vm, avf_device_t * ad)
 		     i, rxq->max_pkt_size, rxq->ring_len,
 		     rxq->databuffer_size, rxq->dma_ring_addr);
 
-      avf_txq_t *q = vec_elt_at_index (ad->txqs, i);
       txq->vsi_id = ad->vsi_id;
+      txq->queue_id = i;
       if (i < vec_len (ad->txqs))
 	{
-	  txq->queue_id = i;
+	  avf_txq_t *q = vec_elt_at_index (ad->txqs, i);
 	  txq->ring_len = q->size;
 	  txq->dma_ring_addr = avf_dma_addr (vm, ad, (void *) q->descs);
 	}
@@ -693,7 +693,8 @@ avf_op_config_irq_map (vlib_main_t * vm, avf_device_t * ad)
 
   imi->vecmap[0].vector_id = 1;
   imi->vecmap[0].vsi_id = ad->vsi_id;
-  imi->vecmap[0].rxq_map = 1;
+  imi->vecmap[0].rxq_map = (1 << ad->n_rx_queues) - 1;
+  imi->vecmap[0].txq_map = (1 << ad->n_tx_queues) - 1;
 
   avf_log_debug (ad, "config_irq_map: vsi_id %u vector_id %u rxq_map %u",
 		 ad->vsi_id, imi->vecmap[0].vector_id,
@@ -856,8 +857,8 @@ avf_device_init (vlib_main_t * vm, avf_main_t * am, avf_device_t * ad,
 
   avf_adminq_init (vm, ad);
 
-  /* request more queues only if we need them */
-  if ((error = avf_request_queues (vm, ad, tm->n_vlib_mains)))
+  if ((error = avf_request_queues (vm, ad, clib_max (tm->n_vlib_mains,
+						     args->rxq_num))))
     {
       /* we failed to get more queues, but still we want to proceed */
       clib_error_free (error);

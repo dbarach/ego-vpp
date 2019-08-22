@@ -633,6 +633,7 @@ list(APPEND VNET_SOURCES
   tcp/tcp_newreno.c
   tcp/tcp_cubic.c
   tcp/tcp_bt.c
+  tcp/tcp_debug.c
   tcp/tcp.c
 )
 
@@ -1028,24 +1029,6 @@ list(APPEND VNET_HEADERS
 )
 
 list(APPEND VNET_API_FILES span/span.api)
-
-##############################################################################
-# DNS proxy, API
-##############################################################################
-list(APPEND VNET_SOURCES
-  dns/dns.c
-  dns/dns.h
-  dns/dns_packet.h
-  dns/reply_node.c
-  dns/request_node.c
-  dns/resolver_process.c
-)
-
-list(APPEND VNET_HEADERS
-  dns/dns.h
-)
-
-list(APPEND VNET_API_FILES dns/dns.api)
 
 ##############################################################################
 # Packet generator
