@@ -91,7 +91,7 @@ autoreply define mactime_add_del_range
 /** @brief a time range, in fp seconds since Sunday midnight
  */
 
-typeonly define mactime_time_range
+typedef mactime_time_range
 {
   f64 start;
   f64 end;
