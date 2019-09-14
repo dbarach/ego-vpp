@@ -1,27 +1,27 @@
 comment { Old Linksys box yields a constant IP address }
 set int mac address GigabitEthernet3/0/0 48:f8:b3:e0:85:1a
-set dhcp client intfc GigabitEthernet3/0/0 hostname vppn2
+set dhcp client intfc GigabitEthernet3/0/0 hostname vppn1
 set int state GigabitEthernet3/0/0 up
 
 loop cre
 set int l2 bridge loop0 1 bvi
 set int ip address loop0 192.168.1.1/24
 set int state loop0 up
- 
-set int l2 bridge TenGigabitEthernet6/0/0 1
-set int state TenGigabitEthernet6/0/0 up 
-set int l2 bridge TenGigabitEthernet6/0/1 1
-set int state TenGigabitEthernet6/0/1 up 
-set int l2 bridge TenGigabitEthernet8/0/0 1
-set int state TenGigabitEthernet8/0/0 up 
-set int l2 bridge TenGigabitEthernet8/0/1 1
-set int state TenGigabitEthernet8/0/1 up 
+
+set int l2 bridge GigabitEthernet0/14/0 1
+set int state GigabitEthernet0/14/0 up
+set int l2 bridge GigabitEthernet0/14/1 1
+set int state GigabitEthernet0/14/1 up
+set int l2 bridge GigabitEthernet0/14/2 1
+set int state GigabitEthernet0/14/2 up
+set int l2 bridge GigabitEthernet0/14/3 1
+set int state GigabitEthernet0/14/3 up
 
 comment { dhcp server and host-stack access }
-create tap host-if-name lstack host-ip4-addr 192.168.1.2/24 host-ip4-gw 192.168.1.1 
+create tap host-if-name lstack host-ip4-addr 192.168.1.2/24 host-ip4-gw 192.168.1.1
 set int l2 bridge tap0 1
 set int state tap0 up
- 
+
 nat44 add interface address GigabitEthernet3/0/0
 set interface nat44 in loop0 out GigabitEthernet3/0/0
 
@@ -30,28 +30,28 @@ nat44 add static mapping local 192.168.1.2 22432 external GigabitEthernet3/0/0 2
 service restart isc-dhcp-server
 service restart dora
 
-comment { nat44 add identity mapping external GigabitEthernet3/0/0 udp 53053 }
-comment { bin dns_name_server_add_del 8.8.8.8 }
-comment { bin dns_enable_disable }
+uncomment { nat44 add identity mapping external GigabitEthernet3/0/0 udp 53053 }
+uncomment { bin dns_name_server_add_del 8.8.8.8 }
+uncomment { bin dns_enable_disable }
 
-bin mactime_add_del_range name peg-maybe-new-iphone mac 10:ae:60:59:5b:0c drop-static
+bin mactime_add_del_range name peg-maybe-new-iphone mac 10:ae:60:59:5b:0c allow-static
 bin mactime_add_del_range name unknown-apple mac 01:00:5e:7f:ff:fa drop-static
 bin mactime_add_del_range name alarm mac 00:d0:2d:5e:86:85 allow-static
-bin mactime_add_del_range name cisco-vpn mac f8:0b:cb:38:76:44 allow-static
+bin mactime_add_del_range name cisco-vpn mac a8:b4:56:e1:b8:3e allow-static
 bin mactime_add_del_range name dave-ipad mac ac:cf:5c:30:5b:fb allow-static
 bin mactime_add_del_range name dave-iphone mac c0:cc:f8:74:a5:e9 allow-static
-bin mactime_add_del_range name dave-mac mac c4:b3:01:d7:fa:5f  allow-static
+bin mactime_add_del_range name dave-mac mac c4:b3:01:d7:fa:5f allow-static
+bin mactime_add_del_range name dbarach-cl mac 0c:9d:92:c0:8a:6c allow-static
 bin mactime_add_del_range name dbarach-haz mac 90:e2:ba:3d:f6:7a allow-static
 bin mactime_add_del_range name dbarach-ivy mac 70:54:d2:c4:2b:4d allow-static
 bin mactime_add_del_range name indoor-dvr mac ec:71:db:41:fd:36 allow-static no-udp-10001
 bin mactime_add_del_range name kate-ipad mac 4c:b1:99:4b:c0:a0 drop-range Mon - Fri 7:59 - 18:01
 bin mactime_add_del_range name kate-iphone mac 98:ca:33:73:85:1d drop-range Mon - Fri 7:59 - 18:01
 bin mactime_add_del_range name old-ipad mac c8:bc:c8:5a:ba:f3 drop-range Mon - Fri 7:59 - 18:01
-bin mactime_add_del_range name outdoor-dvr mac 00:02:6F:9B:D7:73 allow-static no-udp-10001
-bin mactime_add_del_range name peg-iphone mac fc:e9:98:d9:76:bf drop-range Mon - Fri 7:59 - 18:01
+bin mactime_add_del_range name peg-iphone mac fc:e9:98:d9:76:bf allow-static
 bin mactime_add_del_range name peg-mac mac 8C:85:90:13:7E:05 allow-static
 bin mactime_add_del_range name printer mac 9c:30:5b:27:80:d8 allow-static
-bin mactime_add_del_range name roku mac 08:05:81:e7:87:e1 drop-range Mon - Fri 7:59 - 18:01
+bin mactime_add_del_range name roku mac d8:31:34:dc:e4:bb allow-static
 bin mactime_add_del_range name thermostat mac 00:11:f6:a0:1f:74 allow-static
 bin mactime_add_del_range name weather-station mac 00:1D:0A:00:6E:C7 allow-static
 bin mactime_add_del_range name wifi-ap mac 88:DC:96:54:77:F2 allow-static
@@ -63,7 +63,7 @@ bin mactime_add_del_range name ip4-igmp mac 01:00:5e:00:00:16 allow-static
 bin mactime_add_del_range name ip4-llmnr mac 01:00:5e:00:00:fb allow-static
 bin mactime_add_del_range name ip4-llmnr2 mac 01:00:5e:00:00:fc allow-static
 
-bin mactime_enable_disable TenGigabitEthernet6/0/0
-bin mactime_enable_disable TenGigabitEthernet6/0/1
-bin mactime_enable_disable TenGigabitEthernet8/0/0
-bin mactime_enable_disable TenGigabitEthernet8/0/1
+bin mactime_enable_disable GigabitEthernet0/14/0
+bin mactime_enable_disable GigabitEthernet0/14/1
+bin mactime_enable_disable GigabitEthernet0/14/2
+bin mactime_enable_disable GigabitEthernet0/14/3
