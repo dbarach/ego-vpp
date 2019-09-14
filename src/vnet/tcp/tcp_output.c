@@ -76,19 +76,6 @@ tcp_window_compute_scale (u32 window)
 }
 
 /**
- * Update max segment size we're able to process.
- *
- * The value is constrained by our interface's MTU and IP options. It is
- * also what we advertise to our peer.
- */
-void
-tcp_update_rcv_mss (tcp_connection_t * tc)
-{
-  /* TODO find our iface MTU */
-  tc->mss = tcp_cfg.default_mtu - sizeof (tcp_header_t);
-}
-
-/**
  * TCP's initial window
  */
 always_inline u32
@@ -135,7 +122,10 @@ tcp_update_rcv_wnd (tcp_connection_t * tc)
    */
   available_space = transport_max_rx_enqueue (&tc->connection);
   if (PREDICT_FALSE (available_space < tc->rcv_opts.mss))
-    available_space = 0;
+    {
+      tc->rcv_wnd = 0;
+      return;
+    }
 
   /*
    * Use the above and what we know about what we've previously advertised
@@ -263,16 +253,16 @@ tcp_options_write (u8 * data, tcp_options_t * opts)
 }
 
 static int
-tcp_make_syn_options (tcp_options_t * opts, u8 wnd_scale)
+tcp_make_syn_options (tcp_connection_t * tc, tcp_options_t * opts)
 {
   u8 len = 0;
 
   opts->flags |= TCP_OPTS_FLAG_MSS;
-  opts->mss = tcp_cfg.default_mtu;	/*XXX discover that */
+  opts->mss = tc->mss;
   len += TCP_OPTION_LEN_MSS;
 
   opts->flags |= TCP_OPTS_FLAG_WSCALE;
-  opts->wscale = wnd_scale;
+  opts->wscale = tc->rcv_wscale;
   len += TCP_OPTION_LEN_WINDOW_SCALE;
 
   opts->flags |= TCP_OPTS_FLAG_TSTAMP;
@@ -379,7 +369,7 @@ tcp_make_options (tcp_connection_t * tc, tcp_options_t * opts,
     case TCP_STATE_SYN_RCVD:
       return tcp_make_synack_options (tc, opts);
     case TCP_STATE_SYN_SENT:
-      return tcp_make_syn_options (opts, tc->rcv_wscale);
+      return tcp_make_syn_options (tc, opts);
     default:
       clib_warning ("State not handled! %d", state);
       return 0;
@@ -422,29 +412,6 @@ tcp_update_burst_snd_vars (tcp_connection_t * tc)
     tcp_cc_event (tc, TCP_CC_EVT_START_TX);
 }
 
-void
-tcp_init_mss (tcp_connection_t * tc)
-{
-  u16 default_min_mss = 536;
-  tcp_update_rcv_mss (tc);
-
-  /* TODO cache mss and consider PMTU discovery */
-  tc->snd_mss = clib_min (tc->rcv_opts.mss, tc->mss);
-
-  if (tc->snd_mss < 45)
-    {
-      /* Assume that at least the min default mss works */
-      tc->snd_mss = default_min_mss;
-      tc->rcv_opts.mss = default_min_mss;
-    }
-
-  /* We should have enough space for 40 bytes of options */
-  ASSERT (tc->snd_mss > 45);
-
-  /* If we use timestamp option, account for it */
-  if (tcp_opts_tstamp (&tc->rcv_opts))
-    tc->snd_mss -= TCP_OPTION_LEN_TIMESTAMP;
-}
 #endif /* CLIB_MARCH_VARIANT */
 
 static void *
@@ -542,7 +509,7 @@ tcp_make_syn (tcp_connection_t * tc, vlib_buffer_t * b)
 
   /* Make and write options */
   clib_memset (&snd_opts, 0, sizeof (snd_opts));
-  tcp_opts_len = tcp_make_syn_options (&snd_opts, tc->rcv_wscale);
+  tcp_opts_len = tcp_make_syn_options (tc, &snd_opts);
   tcp_hdr_opts_len = tcp_opts_len + sizeof (tcp_header_t);
 
   th = vlib_buffer_push_tcp (b, tc->c_lcl_port, tc->c_rmt_port, tc->iss,
@@ -1218,19 +1185,19 @@ tcp_timer_delack_handler (u32 index)
 }
 
 /**
- * Send Window Update ACK,
- * ensuring that it will be sent once, if RWND became non-zero,
- * after zero RWND has been advertised in ACK before
+ * Send window update ack
+ *
+ * Ensures that it will be sent only once, after a zero rwnd has been
+ * advertised in a previous ack, and only if rwnd has grown beyond a
+ * configurable value.
  */
 void
 tcp_send_window_update_ack (tcp_connection_t * tc)
 {
-  u32 win;
-
   if (tcp_zero_rwnd_sent (tc))
     {
-      win = tcp_window_to_advertise (tc, tc->state);
-      if (win > 0)
+      tcp_update_rcv_wnd (tc);
+      if (tc->rcv_wnd >= tcp_cfg.rwnd_min_update_ack * tc->snd_mss)
 	{
 	  tcp_zero_rwnd_sent_off (tc);
 	  tcp_program_ack (tc);
@@ -2159,7 +2126,29 @@ tcp_output_push_ip (vlib_main_t * vm, vlib_buffer_t * b0,
       b0->flags |= VNET_BUFFER_F_OFFLOAD_TCP_CKSUM;
       vnet_buffer (b0)->l3_hdr_offset = (u8 *) ih0 - b0->data;
       vnet_buffer (b0)->l4_hdr_offset = (u8 *) th0 - b0->data;
+      b0->flags |=
+	VNET_BUFFER_F_L3_HDR_OFFSET_VALID | VNET_BUFFER_F_L4_HDR_OFFSET_VALID;
       th0->checksum = 0;
+    }
+}
+
+always_inline void
+tcp_check_if_gso (tcp_connection_t * tc, vlib_buffer_t * b)
+{
+  if (PREDICT_TRUE (!(b->flags & VLIB_BUFFER_TOTAL_LENGTH_VALID)))
+    return;
+  u16 data_len =
+    b->current_length + b->total_length_not_including_first_buffer -
+    sizeof (tcp_header_t) - tc->snd_opts_len;
+
+  if (data_len > tc->snd_mss)
+    {
+      ASSERT ((b->flags & VNET_BUFFER_F_L3_HDR_OFFSET_VALID) != 0);
+      ASSERT ((b->flags & VNET_BUFFER_F_L4_HDR_OFFSET_VALID) != 0);
+      b->flags |= VNET_BUFFER_F_GSO;
+      vnet_buffer2 (b)->gso_l4_hdr_sz =
+	sizeof (tcp_header_t) + tc->snd_opts_len;
+      vnet_buffer2 (b)->gso_size = tc->snd_mss;
     }
 }
 
@@ -2173,6 +2162,10 @@ tcp_output_handle_packet (tcp_connection_t * tc0, vlib_buffer_t * b0,
     {
       *next0 = tc0->next_node_index;
       vnet_buffer (b0)->tcp.next_node_opaque = tc0->next_node_opaque;
+    }
+  else
+    {
+      *next0 = TCP_OUTPUT_NEXT_IP_LOOKUP;
     }
 
   vnet_buffer (b0)->sw_if_index[VLIB_TX] = tc0->c_fib_index;
@@ -2232,18 +2225,49 @@ tcp46_output_inline (vlib_main_t * vm, vlib_node_runtime_t * node,
 	CLIB_PREFETCH (b[3]->data, 2 * CLIB_CACHE_LINE_BYTES, STORE);
       }
 
-      next[0] = next[1] = TCP_OUTPUT_NEXT_IP_LOOKUP;
-
       tc0 = tcp_connection_get (vnet_buffer (b[0])->tcp.connection_index,
 				thread_index);
       tc1 = tcp_connection_get (vnet_buffer (b[1])->tcp.connection_index,
 				thread_index);
 
-      tcp_output_push_ip (vm, b[0], tc0, is_ip4);
-      tcp_output_push_ip (vm, b[1], tc1, is_ip4);
+      if (PREDICT_TRUE (!tc0 + !tc1 == 0))
+	{
+	  tcp_output_push_ip (vm, b[0], tc0, is_ip4);
+	  tcp_output_push_ip (vm, b[1], tc1, is_ip4);
 
-      tcp_output_handle_packet (tc0, b[0], error_node, &next[0], is_ip4);
-      tcp_output_handle_packet (tc1, b[1], error_node, &next[1], is_ip4);
+	  tcp_check_if_gso (tc0, b[0]);
+	  tcp_check_if_gso (tc1, b[1]);
+
+	  tcp_output_handle_packet (tc0, b[0], error_node, &next[0], is_ip4);
+	  tcp_output_handle_packet (tc1, b[1], error_node, &next[1], is_ip4);
+	}
+      else
+	{
+	  if (tc0 != 0)
+	    {
+	      tcp_output_push_ip (vm, b[0], tc0, is_ip4);
+	      tcp_check_if_gso (tc0, b[0]);
+	      tcp_output_handle_packet (tc0, b[0], error_node, &next[0],
+					is_ip4);
+	    }
+	  else
+	    {
+	      b[0]->error = error_node->errors[TCP_ERROR_INVALID_CONNECTION];
+	      next[0] = TCP_OUTPUT_NEXT_DROP;
+	    }
+	  if (tc1 != 0)
+	    {
+	      tcp_output_push_ip (vm, b[1], tc1, is_ip4);
+	      tcp_check_if_gso (tc1, b[1]);
+	      tcp_output_handle_packet (tc1, b[1], error_node, &next[1],
+					is_ip4);
+	    }
+	  else
+	    {
+	      b[1]->error = error_node->errors[TCP_ERROR_INVALID_CONNECTION];
+	      next[1] = TCP_OUTPUT_NEXT_DROP;
+	    }
+	}
 
       b += 2;
       next += 2;
@@ -2259,12 +2283,20 @@ tcp46_output_inline (vlib_main_t * vm, vlib_node_runtime_t * node,
 	  CLIB_PREFETCH (b[1]->data, 2 * CLIB_CACHE_LINE_BYTES, STORE);
 	}
 
-      next[0] = TCP_OUTPUT_NEXT_IP_LOOKUP;
       tc0 = tcp_connection_get (vnet_buffer (b[0])->tcp.connection_index,
 				thread_index);
 
-      tcp_output_push_ip (vm, b[0], tc0, is_ip4);
-      tcp_output_handle_packet (tc0, b[0], error_node, &next[0], is_ip4);
+      if (PREDICT_TRUE (tc0 != 0))
+	{
+	  tcp_output_push_ip (vm, b[0], tc0, is_ip4);
+	  tcp_check_if_gso (tc0, b[0]);
+	  tcp_output_handle_packet (tc0, b[0], error_node, &next[0], is_ip4);
+	}
+      else
+	{
+	  b[0]->error = error_node->errors[TCP_ERROR_INVALID_CONNECTION];
+	  next[0] = TCP_OUTPUT_NEXT_DROP;
+	}
 
       b += 1;
       next += 1;

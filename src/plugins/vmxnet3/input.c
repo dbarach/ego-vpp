@@ -290,7 +290,7 @@ vmxnet3_device_input_inline (vlib_main_t * vm, vlib_node_runtime_t * node,
 	{
 	  ASSERT (!(rxd->flags & VMXNET3_RXF_BTYPE));
 	  /* start segment */
-	  if ((vd->lro_enable) &&
+	  if (vd->gso_enable &&
 	      (rx_comp->flags & VMXNET3_RXCF_CT) == VMXNET3_RXCOMP_TYPE_LRO)
 	    {
 	      vmxnet3_rx_comp_ext *lro = (vmxnet3_rx_comp_ext *) rx_comp;
@@ -437,7 +437,7 @@ vmxnet3_device_input_inline (vlib_main_t * vm, vlib_node_runtime_t * node,
       vlib_increment_combined_counter
 	(vnm->interface_main.combined_sw_if_counters +
 	 VNET_INTERFACE_COUNTER_RX, thread_index,
-	 vd->hw_if_index, n_rx_packets, n_rx_bytes);
+	 vd->sw_if_index, n_rx_packets, n_rx_bytes);
     }
 
   error = vmxnet3_rxq_refill_ring0 (vm, vd, rxq);

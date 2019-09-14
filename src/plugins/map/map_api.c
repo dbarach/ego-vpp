@@ -53,8 +53,8 @@ vl_api_map_add_domain_t_handler (vl_api_map_add_domain_t * mp)
   int rv = 0;
   u32 index;
   u8 flags = 0;
-  u8 *vtag = 0;
-  vtag = vl_api_from_api_to_vec (&mp->tag);
+
+  u8 *tag = format (0, "%s", mp->tag);
   rv =
     map_create_domain ((ip4_address_t *) & mp->ip4_prefix.address,
 		       mp->ip4_prefix.len,
@@ -62,9 +62,8 @@ vl_api_map_add_domain_t_handler (vl_api_map_add_domain_t * mp)
 		       mp->ip6_prefix.len,
 		       (ip6_address_t *) & mp->ip6_src.address,
 		       mp->ip6_src.len, mp->ea_bits_len, mp->psid_offset,
-		       mp->psid_length, &index, ntohs (mp->mtu), flags, vtag);
-  vec_free (vtag);
-
+		       mp->psid_length, &index, ntohs (mp->mtu), flags, tag);
+  vec_free (tag);
   /* *INDENT-OFF* */
   REPLY_MACRO2(VL_API_MAP_ADD_DOMAIN_REPLY,
   ({
@@ -121,9 +120,10 @@ vl_api_map_domain_dump_t_handler (vl_api_map_domain_dump_t * mp)
   ({
     map_domain_index = d - mm->domains;
     de = vec_elt_at_index(mm->domain_extras, map_domain_index);
+    int tag_len = clib_min(ARRAY_LEN(rmp->tag), vec_len(de->tag) + 1);
 
     /* Make sure every field is initiated (or don't skip the clib_memset()) */
-    rmp = vl_msg_api_alloc (sizeof (*rmp) + vec_len(de->tag));
+    rmp = vl_msg_api_alloc (sizeof (*rmp) + tag_len);
 
     rmp->_vl_msg_id = htons(VL_API_MAP_DOMAIN_DETAILS + mm->msg_id_base);
     rmp->context = mp->context;
@@ -139,8 +139,8 @@ vl_api_map_domain_dump_t_handler (vl_api_map_domain_dump_t * mp)
     rmp->psid_length = d->psid_length;
     rmp->flags = d->flags;
     rmp->mtu = htons(d->mtu);
-
-    vl_api_vec_to_api_string (de->tag, &rmp->tag );
+    memcpy(rmp->tag, de->tag, tag_len-1);
+    rmp->tag[tag_len-1] = '\0';
 
     vl_api_send_msg (reg, (u8 *) rmp);
   }));

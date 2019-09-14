@@ -463,6 +463,14 @@ dpdk_lib_init (dpdk_main_t * dm)
 	    case VNET_DPDK_PMD_IXGBEVF:
 	    case VNET_DPDK_PMD_I40EVF:
 	      xd->port_type = VNET_DPDK_PORT_TYPE_ETH_VF;
+	      if (dm->conf->no_tx_checksum_offload == 0)
+		{
+	          xd->port_conf.txmode.offloads |= DEV_TX_OFFLOAD_TCP_CKSUM;
+	          xd->port_conf.txmode.offloads |= DEV_TX_OFFLOAD_UDP_CKSUM;
+		  xd->flags |=
+		    DPDK_DEVICE_FLAG_TX_OFFLOAD |
+		    DPDK_DEVICE_FLAG_INTEL_PHDR_CKSUM;
+		}
 	      break;
 
 	    case VNET_DPDK_PMD_THUNDERX:
@@ -1380,6 +1388,7 @@ dpdk_config (vlib_main_t * vm, unformat_input_t * input)
       vec_insert (conf->eal_init_args, 2, 3);
       conf->eal_init_args[3] = (u8 *) "-n";
       tmp = format (0, "%d", conf->nchannels);
+      vec_terminate_c_string (tmp);
       conf->eal_init_args[4] = tmp;
     }
 
@@ -1472,6 +1481,8 @@ dpdk_config (vlib_main_t * vm, unformat_input_t * input)
   for (i = 1; i < vec_len (conf->eal_init_args); i++)
     conf->eal_init_args_str = format (conf->eal_init_args_str, "%s ",
 				      conf->eal_init_args[i]);
+
+  vec_terminate_c_string (conf->eal_init_args_str);
 
   dpdk_log_warn ("EAL init args: %s", conf->eal_init_args_str);
   ret = rte_eal_init (vec_len (conf->eal_init_args),

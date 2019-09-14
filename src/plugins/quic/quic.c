@@ -33,6 +33,7 @@
 
 static quic_main_t quic_main;
 static void quic_update_timer (quic_ctx_t * ctx);
+static int quic_on_client_connected (quic_ctx_t * ctx);
 
 static u32
 quic_ctx_alloc (u32 thread_index)
@@ -595,6 +596,22 @@ quic_accept_stream (void *s)
 
   qctx = quic_get_conn_ctx (stream->conn);
 
+  /* Might need to signal that the connection is ready if the first thing the
+   * server does is open a stream */
+  if (qctx->conn_state == QUIC_CONN_STATE_HANDSHAKE)
+    {
+      if (quicly_connection_is_ready (qctx->conn))
+	{
+	  qctx->conn_state = QUIC_CONN_STATE_READY;
+	  if (quicly_is_client (qctx->conn))
+	    {
+	      quic_on_client_connected (qctx);
+	      /* ctx might be invalidated */
+	      qctx = quic_get_conn_ctx (stream->conn);
+	    }
+	}
+    }
+
   stream_session = session_alloc (qctx->c_thread_index);
   QUIC_DBG (2, "ACCEPTED stream_session 0x%lx ctx %u",
 	    session_handle (stream_session), sctx_id);
@@ -652,9 +669,7 @@ quic_on_stream_open (quicly_stream_open_t * self, quicly_stream_t * stream)
   /* Notify accept on parent qsession, but only if this is not a locally
    * initiated stream */
   if (!quicly_stream_is_self_initiated (stream))
-    {
-      quic_accept_stream (stream);
-    }
+    quic_accept_stream (stream);
   return 0;
 }
 
@@ -1070,16 +1085,12 @@ quic_connect_new_connection (session_endpoint_cfg_t * sep)
   ctx->client_opaque = sep->opaque;
   ctx->c_flags |= TRANSPORT_CONNECTION_F_NO_LOOKUP;
   if (sep->hostname)
-    {
-      ctx->srv_hostname = format (0, "%v", sep->hostname);
-      vec_terminate_c_string (ctx->srv_hostname);
-    }
+    ctx->srv_hostname = format (0, "%v", sep->hostname);
   else
-    {
-      /*  needed by quic for crypto + determining client / server */
-      ctx->srv_hostname =
-	format (0, "%U", format_ip46_address, &sep->ip, sep->is_ip4);
-    }
+    /*  needed by quic for crypto + determining client / server */
+    ctx->srv_hostname =
+      format (0, "%U", format_ip46_address, &sep->ip, sep->is_ip4);
+  vec_terminate_c_string (ctx->srv_hostname);
 
   clib_memcpy (&cargs->sep, sep, sizeof (session_endpoint_cfg_t));
   cargs->sep.transport_proto = TRANSPORT_PROTO_UDPC;
@@ -1393,6 +1404,11 @@ quic_on_client_connected (quic_ctx_t * ctx)
 
   /*  If the app opens a stream in its callback it may invalidate ctx */
   ctx = quic_ctx_get (ctx_id, thread_index);
+  /*
+   * app_worker_connect_notify() might have reallocated pool, reload
+   * quic_session pointer
+   */
+  quic_session = session_get (ctx->c_s_index, thread_index);
   quic_session->session_state = SESSION_STATE_LISTENING;
 
   return 0;
@@ -1986,10 +2002,10 @@ quic_process_one_rx_packet (u64 udp_session_handle,
 	    {
 	      /*  Right ctx found, create conn & remove from pool */
 	      quic_create_connection(*ctx_index_ptr, sa, salen, packet_ctx->packet);
-	      pool_put (opening_ctx_pool, ctx_index_ptr);
 	      *max_packet = packet_n + 1;
 	      packet_ctx->thread_index = thread_index;
 	      packet_ctx->ctx_index = *ctx_index_ptr;
+	      pool_put (opening_ctx_pool, ctx_index_ptr);
 	      goto updateOffset;
 	    }
 	}));
@@ -2250,6 +2266,7 @@ VLIB_PLUGIN_REGISTER () =
 {
   .version = VPP_BUILD_VER,
   .description = "Quic transport protocol",
+  .default_disabled = 1,
 };
 /* *INDENT-ON* */
 

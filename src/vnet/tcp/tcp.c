@@ -268,6 +268,8 @@ tcp_connection_cleanup (tcp_connection_t * tc)
       tcp_cc_cleanup (tc);
       vec_free (tc->snd_sacks);
       vec_free (tc->snd_sacks_fl);
+      vec_free (tc->rcv_opts.sacks);
+      pool_free (tc->sack_sb.holes);
 
       if (tc->flags & TCP_CONN_RATE_SAMPLE)
 	tcp_bt_cleanup (tc);
@@ -638,6 +640,47 @@ tcp_generate_random_iss (tcp_connection_t * tc)
 }
 
 /**
+ * Initialize max segment size we're able to process.
+ *
+ * The value is constrained by the output interface's MTU and by the size
+ * of the IP and TCP headers (see RFC6691). It is also what we advertise
+ * to our peer.
+ */
+static void
+tcp_init_rcv_mss (tcp_connection_t * tc)
+{
+  u8 ip_hdr_len;
+
+  ip_hdr_len = tc->c_is_ip4 ? sizeof (ip4_header_t) : sizeof (ip6_header_t);
+  tc->mss = tcp_cfg.default_mtu - sizeof (tcp_header_t) - ip_hdr_len;
+}
+
+static void
+tcp_init_mss (tcp_connection_t * tc)
+{
+  u16 default_min_mss = 536;
+
+  tcp_init_rcv_mss (tc);
+
+  /* TODO consider PMTU discovery */
+  tc->snd_mss = clib_min (tc->rcv_opts.mss, tc->mss);
+
+  if (tc->snd_mss < 45)
+    {
+      /* Assume that at least the min default mss works */
+      tc->snd_mss = default_min_mss;
+      tc->rcv_opts.mss = default_min_mss;
+    }
+
+  /* We should have enough space for 40 bytes of options */
+  ASSERT (tc->snd_mss > 45);
+
+  /* If we use timestamp option, account for it */
+  if (tcp_opts_tstamp (&tc->rcv_opts))
+    tc->snd_mss -= TCP_OPTION_LEN_TIMESTAMP;
+}
+
+/**
  * Initialize connection send variables.
  */
 void
@@ -651,6 +694,7 @@ tcp_init_snd_vars (tcp_connection_t * tc)
    */
   tcp_set_time_now (tcp_get_worker (vlib_get_thread_index ()));
 
+  tcp_init_rcv_mss (tc);
   tc->iss = tcp_generate_random_iss (tc);
   tc->snd_una = tc->iss;
   tc->snd_nxt = tc->iss + 1;
@@ -1097,9 +1141,9 @@ format_tcp_scoreboard (u8 * s, va_list * args)
 
   s = format (s, "sacked_bytes %u last_sacked_bytes %u lost_bytes %u\n",
 	      sb->sacked_bytes, sb->last_sacked_bytes, sb->lost_bytes);
-  s = format (s, "%Ulast_bytes_delivered %u high_sacked %u snd_una_adv %u\n",
+  s = format (s, "%Ulast_bytes_delivered %u high_sacked %u is_reneging %u\n",
 	      format_white_space, indent, sb->last_bytes_delivered,
-	      sb->high_sacked - tc->iss, sb->snd_una_adv);
+	      sb->high_sacked - tc->iss, sb->is_reneging);
   s = format (s, "%Ucur_rxt_hole %u high_rxt %u rescue_rxt %u",
 	      format_white_space, indent, sb->cur_rxt_hole,
 	      sb->high_rxt - tc->iss, sb->rescue_rxt - tc->iss);
@@ -1123,6 +1167,8 @@ static transport_connection_t *
 tcp_session_get_transport (u32 conn_index, u32 thread_index)
 {
   tcp_connection_t *tc = tcp_connection_get (conn_index, thread_index);
+  if (PREDICT_FALSE (!tc))
+    return 0;
   return &tc->connection;
 }
 
@@ -1131,6 +1177,17 @@ tcp_half_open_session_get_transport (u32 conn_index)
 {
   tcp_connection_t *tc = tcp_half_open_connection_get (conn_index);
   return &tc->connection;
+}
+
+static u16
+tcp_session_cal_goal_size (tcp_connection_t * tc)
+{
+  u16 goal_size = tc->snd_mss;
+
+  goal_size = TCP_MAX_GSO_SZ - tc->snd_mss % TCP_MAX_GSO_SZ;
+  goal_size = clib_min (goal_size, tc->snd_wnd / 2);
+
+  return goal_size;
 }
 
 /**
@@ -1149,6 +1206,11 @@ tcp_session_send_mss (transport_connection_t * trans_conn)
    * in a segment. This also makes sure that options are updated according to
    * the current state of the connection. */
   tcp_update_burst_snd_vars (tc);
+
+  if (PREDICT_FALSE (tc->is_tso))
+    {
+      return tcp_session_cal_goal_size (tc);
+    }
 
   return tc->snd_mss;
 }
@@ -1541,10 +1603,11 @@ tcp_configuration_init (void)
   tcp_cfg.max_rx_fifo = 32 << 20;
   tcp_cfg.min_rx_fifo = 4 << 10;
 
-  tcp_cfg.default_mtu = 1460;
+  tcp_cfg.default_mtu = 1500;
   tcp_cfg.initial_cwnd_multiplier = 0;
   tcp_cfg.enable_tx_pacing = 1;
   tcp_cfg.cc_algo = TCP_CC_NEWRENO;
+  tcp_cfg.rwnd_min_update_ack = 1;
 
   /* Time constants defined as timer tick (100ms) multiples */
   tcp_cfg.delack_time = 1;	/* 0.1s */
@@ -1636,6 +1699,7 @@ unformat_tcp_cc_algo_cfg (unformat_input_t * input, va_list * va)
 static clib_error_t *
 tcp_config_fn (vlib_main_t * vm, unformat_input_t * input)
 {
+  uword memory_size;
   while (unformat_check_input (input) != UNFORMAT_END_OF_INPUT)
     {
       if (unformat (input, "preallocated-connections %d",
@@ -1648,14 +1712,17 @@ tcp_config_fn (vlib_main_t * vm, unformat_input_t * input)
 			 &tcp_cfg.buffer_fail_fraction))
 	;
       else if (unformat (input, "max-rx-fifo %U", unformat_memory_size,
-			 &tcp_cfg.max_rx_fifo))
-	;
+			 &memory_size))
+	tcp_cfg.max_rx_fifo = memory_size;
       else if (unformat (input, "min-rx-fifo %U", unformat_memory_size,
-			 &tcp_cfg.min_rx_fifo))
+			 &memory_size))
+	tcp_cfg.min_rx_fifo = memory_size;
+      else if (unformat (input, "mtu %u", &tcp_cfg.default_mtu))
 	;
-      else if (unformat (input, "mtu %d", &tcp_cfg.default_mtu))
+      else if (unformat (input, "rwnd-min-update-ack %d",
+			 &tcp_cfg.rwnd_min_update_ack))
 	;
-      else if (unformat (input, "initial-cwnd-multiplier %d",
+      else if (unformat (input, "initial-cwnd-multiplier %u",
 			 &tcp_cfg.initial_cwnd_multiplier))
 	;
       else if (unformat (input, "no-tx-pacing"))
@@ -1665,19 +1732,19 @@ tcp_config_fn (vlib_main_t * vm, unformat_input_t * input)
 	;
       else if (unformat (input, "%U", unformat_tcp_cc_algo_cfg))
 	;
-      else if (unformat (input, "closewait-time %d", &tcp_cfg.closewait_time))
+      else if (unformat (input, "closewait-time %u", &tcp_cfg.closewait_time))
 	tcp_cfg.closewait_time /= TCP_TIMER_TICK;
-      else if (unformat (input, "timewait-time %d", &tcp_cfg.timewait_time))
+      else if (unformat (input, "timewait-time %u", &tcp_cfg.timewait_time))
 	tcp_cfg.timewait_time /= TCP_TIMER_TICK;
-      else if (unformat (input, "finwait1-time %d", &tcp_cfg.finwait1_time))
+      else if (unformat (input, "finwait1-time %u", &tcp_cfg.finwait1_time))
 	tcp_cfg.finwait1_time /= TCP_TIMER_TICK;
-      else if (unformat (input, "finwait2-time %d", &tcp_cfg.finwait2_time))
+      else if (unformat (input, "finwait2-time %u", &tcp_cfg.finwait2_time))
 	tcp_cfg.finwait2_time /= TCP_TIMER_TICK;
-      else if (unformat (input, "lastack-time %d", &tcp_cfg.lastack_time))
+      else if (unformat (input, "lastack-time %u", &tcp_cfg.lastack_time))
 	tcp_cfg.lastack_time /= TCP_TIMER_TICK;
-      else if (unformat (input, "closing-time %d", &tcp_cfg.closing_time))
+      else if (unformat (input, "closing-time %u", &tcp_cfg.closing_time))
 	tcp_cfg.closing_time /= TCP_TIMER_TICK;
-      else if (unformat (input, "cleanup-time %d", &tcp_cfg.cleanup_time))
+      else if (unformat (input, "cleanup-time %u", &tcp_cfg.cleanup_time))
 	tcp_cfg.cleanup_time /= TCP_TIMER_TICK;
       else
 	return clib_error_return (0, "unknown input `%U'",
@@ -2078,7 +2145,7 @@ tcp_scoreboard_replay (u8 * s, tcp_connection_t * tc, u8 verbose)
       /* Push segments */
       tcp_rcv_sacks (dummy_tc, next_ack);
       if (has_new_ack)
-	dummy_tc->snd_una = next_ack + dummy_tc->sack_sb.snd_una_adv;
+	dummy_tc->snd_una = next_ack;
 
       if (verbose)
 	s = format (s, "result: %U", format_tcp_scoreboard,

@@ -63,6 +63,7 @@ session_send_evt_to_thread (void *data, void *args, u32 thread_index,
       break;
     case SESSION_IO_EVT_BUILTIN_TX:
     case SESSION_CTRL_EVT_CLOSE:
+    case SESSION_CTRL_EVT_RESET:
       evt->session_handle = session_handle ((session_t *) data);
       break;
     default:
@@ -92,10 +93,10 @@ session_send_io_evt_to_thread_custom (void *data, u32 thread_index,
 int
 session_send_ctrl_evt_to_thread (session_t * s, session_evt_type_t evt_type)
 {
-  /* only event supported for now is disconnect */
-  ASSERT (evt_type == SESSION_CTRL_EVT_CLOSE);
-  return session_send_evt_to_thread (s, 0, s->thread_index,
-				     SESSION_CTRL_EVT_CLOSE);
+  /* only events supported are disconnect and reset */
+  ASSERT (evt_type == SESSION_CTRL_EVT_CLOSE
+	  || evt_type == SESSION_CTRL_EVT_RESET);
+  return session_send_evt_to_thread (s, 0, s->thread_index, evt_type);
 }
 
 void
@@ -125,6 +126,7 @@ session_add_self_custom_tx_evt (transport_connection_t * tc, u8 has_prio)
 
   s = session_get (tc->s_index, tc->thread_index);
   ASSERT (s->thread_index == vlib_get_thread_index ());
+  ASSERT (s->session_state < SESSION_STATE_TRANSPORT_DELETED);
   if (!(s->flags & SESSION_F_CUSTOM_TX))
     {
       s->flags |= SESSION_F_CUSTOM_TX;
@@ -602,6 +604,8 @@ session_dequeue_notify (session_t * s)
 {
   app_worker_t *app_wrk;
 
+  svm_fifo_clear_deq_ntf (s->tx_fifo);
+
   app_wrk = app_worker_get_if_valid (s->app_wrk_index);
   if (PREDICT_FALSE (!app_wrk))
     return -1;
@@ -613,8 +617,6 @@ session_dequeue_notify (session_t * s)
   if (PREDICT_FALSE (s->tx_fifo->n_subscribers))
     return session_notify_subscribers (app_wrk->app_index, s,
 				       s->tx_fifo, SESSION_IO_EVT_TX);
-
-  svm_fifo_clear_deq_ntf (s->tx_fifo);
 
   return 0;
 }
@@ -1691,6 +1693,8 @@ session_config_fn (vlib_main_t * vm, unformat_input_t * input)
       else if (unformat (input, "evt_qs_seg_size %U", unformat_memory_size,
 			 &smm->evt_qs_segment_size))
 	;
+      else if (unformat (input, "enable"))
+	vnet_session_enable_disable (vm, 1 /* is_en */ );
       else
 	return clib_error_return (0, "unknown input `%U'",
 				  format_unformat_error, input);

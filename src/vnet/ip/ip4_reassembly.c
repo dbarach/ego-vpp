@@ -405,9 +405,6 @@ ip4_reass_drop_all (vlib_main_t * vm, vlib_node_runtime_t * node,
 		  to_next[0] = bi;
 		  to_next += 1;
 		  n_left_to_next -= 1;
-		  vlib_validate_buffer_enqueue_x1 (vm, node, next_index,
-						   to_next, n_left_to_next,
-						   bi, next_index);
 		}
 	    }
 	  vlib_put_next_frame (vm, node, next_index, n_left_to_next);
@@ -1529,7 +1526,7 @@ ip4_reass_walk_expired (vlib_main_t * vm,
 }
 
 /* *INDENT-OFF* */
-VLIB_REGISTER_NODE (ip4_reass_expire_node, static) = {
+VLIB_REGISTER_NODE (ip4_reass_expire_node) = {
     .function = ip4_reass_walk_expired,
     .type = VLIB_NODE_TYPE_PROCESS,
     .name = "ip4-reassembly-expire-walk",

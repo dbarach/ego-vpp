@@ -235,8 +235,11 @@ tso_alloc_tx_bufs (vlib_main_t * vm,
 		   vlib_buffer_t * b0, u32 n_bytes_b0, u16 l234_sz,
 		   u16 gso_size)
 {
+  u16 size =
+    clib_min (gso_size, vlib_buffer_get_default_data_size (vm) - l234_sz);
+
   /* rounded-up division */
-  u16 n_bufs = (n_bytes_b0 - l234_sz + (gso_size - 1)) / gso_size;
+  u16 n_bufs = (n_bytes_b0 - l234_sz + (size - 1)) / size;
   u16 n_alloc;
 
   ASSERT (n_bufs > 0);
@@ -503,8 +506,7 @@ vnet_interface_output_node_inline_gso (vlib_main_t * vm,
 
   si = vnet_get_sw_interface (vnm, rt->sw_if_index);
   hi = vnet_get_sup_hw_interface (vnm, rt->sw_if_index);
-  if (!(si->flags & (VNET_SW_INTERFACE_FLAG_ADMIN_UP |
-		     VNET_SW_INTERFACE_FLAG_BOND_SLAVE)) ||
+  if (!(si->flags & VNET_SW_INTERFACE_FLAG_ADMIN_UP) ||
       !(hi->flags & VNET_HW_INTERFACE_FLAG_LINK_UP))
     {
       vlib_simple_counter_main_t *cm;
@@ -1315,7 +1317,7 @@ interface_tx_node_fn (vlib_main_t * vm, vlib_node_runtime_t * node,
 }
 
 /* *INDENT-OFF* */
-VLIB_REGISTER_NODE (interface_tx, static) = {
+VLIB_REGISTER_NODE (interface_tx) = {
   .function = interface_tx_node_fn,
   .name = "interface-tx",
   .vector_size = sizeof (u32),

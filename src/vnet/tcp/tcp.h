@@ -31,6 +31,7 @@
 #define TCP_FIB_RECHECK_PERIOD	1 * THZ	/**< Recheck every 1s */
 #define TCP_MAX_OPTION_SPACE 40
 #define TCP_CC_DATA_SZ 24
+#define TCP_MAX_GSO_SZ 65536
 
 #define TCP_DUPACK_THRESHOLD 	3
 #define TCP_IW_N_SEGMENTS 	10
@@ -165,13 +166,13 @@ typedef struct _sack_scoreboard
   u32 sacked_bytes;			/**< Number of bytes sacked in sb */
   u32 last_sacked_bytes;		/**< Number of bytes last sacked */
   u32 last_bytes_delivered;		/**< Sack bytes delivered to app */
-  u32 snd_una_adv;			/**< Bytes to add to snd_una */
   u32 high_sacked;			/**< Highest byte sacked (fack) */
   u32 high_rxt;				/**< Highest retransmitted sequence */
   u32 rescue_rxt;			/**< Rescue sequence number */
   u32 lost_bytes;			/**< Bytes lost as per RFC6675 */
   u32 last_lost_bytes;			/**< Number of bytes last lost */
   u32 cur_rxt_hole;			/**< Retransmitting from this hole */
+  u8 is_reneging;
 
 #if TCP_SCOREBOARD_TRACE
   scoreboard_trace_elt_t *trace;
@@ -304,6 +305,7 @@ typedef struct _tcp_connection
   transport_connection_t connection;  /**< Common transport data. First! */
 
   u8 state;			/**< TCP state as per tcp_state_t */
+  u8 is_tso;	  /** is connection could use tso */
   u16 flags;			/**< Connection flags (see tcp_conn_flags_e) */
   u32 timers[TCP_N_TIMERS];	/**< Timer handles into timer wheel */
 
@@ -524,6 +526,10 @@ typedef struct tcp_configuration_
   /** Default congestion control algorithm type */
   tcp_cc_algorithm_type_e cc_algo;
 
+  /** Min rwnd, as number of snd_mss segments, for update ack to be sent after
+   * a zero rwnd advertisement */
+  u32 rwnd_min_update_ack;
+
   /** Delayed ack time (disabled) */
   u16 delack_time;
 
@@ -743,7 +749,6 @@ void tcp_send_reset (tcp_connection_t * tc);
 void tcp_send_syn (tcp_connection_t * tc);
 void tcp_send_synack (tcp_connection_t * tc);
 void tcp_send_fin (tcp_connection_t * tc);
-void tcp_init_mss (tcp_connection_t * tc);
 void tcp_update_burst_snd_vars (tcp_connection_t * tc);
 void tcp_update_rto (tcp_connection_t * tc);
 void tcp_flush_frame_to_output (tcp_worker_ctx_t * wrk, u8 is_ip4);

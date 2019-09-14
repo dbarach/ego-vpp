@@ -663,9 +663,9 @@ static void *vl_api_bond_create_t_print
     s = format (s, "mac-address %U ",
 		format_ethernet_address, mp->mac_address);
   if (mp->mode)
-    s = format (s, "mode %U ", format_bond_mode, mp->mode);
+    s = format (s, "mode %U ", format_bond_mode, ntohl (mp->mode));
   if (mp->lb)
-    s = format (s, "lb %U ", format_bond_load_balance, mp->lb);
+    s = format (s, "lb %U ", format_bond_load_balance, ntohl (mp->lb));
   if (mp->numa_only)
     s = format (s, "numa-only is set in lacp mode");
   if (mp->id != ~0)
@@ -696,6 +696,18 @@ static void *vl_api_bond_enslave_t_print
     s = format (s, "passive ");
   if (mp->is_long_timeout)
     s = format (s, "long-timeout ");
+
+  FINISH;
+}
+
+static void *vl_api_sw_interface_set_bond_weight_t_print
+  (vl_api_sw_interface_set_bond_weight_t * mp, void *handle)
+{
+  u8 *s;
+
+  s = format (0, "SCRIPT: sw_interface_set_bond_weight ");
+  s = format (s, "sw_if_index %u ", ntohl (mp->sw_if_index));
+  s = format (s, "weight %u ", ntohl (mp->weight));
 
   FINISH;
 }
@@ -3774,6 +3786,7 @@ _(BOND_CREATE, bond_create)                                             \
 _(BOND_DELETE, bond_delete)                                             \
 _(BOND_ENSLAVE, bond_enslave)                                           \
 _(BOND_DETACH_SLAVE, bond_detach_slave)                                 \
+_(SW_INTERFACE_SET_BOND_WEIGHT, sw_interface_set_bond_weight)           \
 _(SW_INTERFACE_SLAVE_DUMP, sw_interface_slave_dump)                     \
 _(SW_INTERFACE_BOND_DUMP, sw_interface_bond_dump)                       \
 _(SW_INTERFACE_RX_PLACEMENT_DUMP, sw_interface_rx_placement_dump)       \

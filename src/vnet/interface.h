@@ -676,7 +676,7 @@ typedef enum vnet_sw_interface_flags_t_
 
   VNET_SW_INTERFACE_FLAG_UNNUMBERED = (1 << 3),
 
-  VNET_SW_INTERFACE_FLAG_BOND_SLAVE = (1 << 4),
+  __VNET_SW_INTERFACE_FLAG_UNUSED2 = (1 << 4),
 
   /* Interface does not appear in CLI/API */
   VNET_SW_INTERFACE_FLAG_HIDDEN = (1 << 5),
@@ -892,6 +892,18 @@ void vnet_register_format_buffer_opaque_helper
 
 void vnet_register_format_buffer_opaque2_helper
   (vnet_buffer_opquae_formatter_t fn);
+
+typedef struct
+{
+  u8 *filename;
+  int enable;
+  int status;
+  u32 packets_to_capture;
+  vlib_rx_or_tx_t rxtx;
+  u32 sw_if_index;
+} vnet_pcap_dispatch_trace_args_t;
+
+int vnet_pcap_dispatch_trace_configure (vnet_pcap_dispatch_trace_args_t *);
 
 #endif /* included_vnet_interface_h */
 

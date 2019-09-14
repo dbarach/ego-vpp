@@ -18,6 +18,7 @@
  */
 
 #include <vat/vat.h>
+#include <vlib/pci/pci.h>
 #include <vpp/api/types.h>
 #include <vppinfra/socket.h>
 #include <vlibapi/api.h>
@@ -974,8 +975,7 @@ static void vl_api_sw_interface_details_t_handler
   (vl_api_sw_interface_details_t * mp)
 {
   vat_main_t *vam = &vat_main;
-  u8 *s = format (0, "%s%c",
-		  vl_api_from_api_string (&mp->interface_name), 0);
+  u8 *s = format (0, "%s%c", mp->interface_name, 0);
 
   hash_set_mem (vam->sw_if_index_by_interface_name, s,
 		ntohl (mp->sw_if_index));
@@ -1027,7 +1027,7 @@ static void vl_api_sw_interface_details_t_handler_json
   vat_json_object_add_bytes (node, "l2_address", mp->l2_address,
 			     sizeof (mp->l2_address));
   vat_json_object_add_string_copy (node, "interface_name",
-				   mp->interface_name.buf);
+				   mp->interface_name);
   vat_json_object_add_uint (node, "flags", mp->flags);
   vat_json_object_add_uint (node, "link_duplex", mp->link_duplex);
   vat_json_object_add_uint (node, "link_speed", mp->link_speed);
@@ -1324,30 +1324,10 @@ static void vl_api_show_version_reply_t_handler
 
   if (retval >= 0)
     {
-      u8 *s = 0;
-      char *p = (char *) &mp->program;
-
-      s = vl_api_from_api_to_vec ((vl_api_string_t *) p);
-      errmsg ("        program: %v\n", s);
-      vec_free (s);
-
-      p +=
-	vl_api_string_len ((vl_api_string_t *) p) + sizeof (vl_api_string_t);
-      s = vl_api_from_api_to_vec ((vl_api_string_t *) p);
-      errmsg ("        version: %v\n", s);
-      vec_free (s);
-
-      p +=
-	vl_api_string_len ((vl_api_string_t *) p) + sizeof (vl_api_string_t);
-      s = vl_api_from_api_to_vec ((vl_api_string_t *) p);
-      errmsg ("     build date: %v\n", s);
-      vec_free (s);
-
-      p +=
-	vl_api_string_len ((vl_api_string_t *) p) + sizeof (vl_api_string_t);
-      s = vl_api_from_api_to_vec ((vl_api_string_t *) p);
-      errmsg ("build directory: %v\n", s);
-      vec_free (s);
+      errmsg ("        program: %s", mp->program);
+      errmsg ("        version: %s", mp->version);
+      errmsg ("     build date: %s", mp->build_date);
+      errmsg ("build directory: %s", mp->build_directory);
     }
   vam->retval = retval;
   vam->result_ready = 1;
@@ -1361,22 +1341,11 @@ static void vl_api_show_version_reply_t_handler_json
 
   vat_json_init_object (&node);
   vat_json_object_add_int (&node, "retval", ntohl (mp->retval));
-  char *p = (char *) &mp->program;
-  vat_json_object_add_string_copy (&node, "program",
-				   vl_api_from_api_string ((vl_api_string_t *)
-							   p));
-  p += vl_api_string_len ((vl_api_string_t *) p) + sizeof (u32);
-  vat_json_object_add_string_copy (&node, "version",
-				   vl_api_from_api_string ((vl_api_string_t *)
-							   p));
-  p += vl_api_string_len ((vl_api_string_t *) p) + sizeof (u32);
-  vat_json_object_add_string_copy (&node, "build_date",
-				   vl_api_from_api_string ((vl_api_string_t *)
-							   p));
-  p += vl_api_string_len ((vl_api_string_t *) p) + sizeof (u32);
+  vat_json_object_add_string_copy (&node, "program", mp->program);
+  vat_json_object_add_string_copy (&node, "version", mp->version);
+  vat_json_object_add_string_copy (&node, "build_date", mp->build_date);
   vat_json_object_add_string_copy (&node, "build_directory",
-				   vl_api_from_api_string ((vl_api_string_t *)
-							   p));
+				   mp->build_directory);
 
   vat_json_print (vam->ofp, &node);
   vat_json_free (&node);
@@ -2031,6 +2000,49 @@ static void vl_api_bond_detach_slave_reply_t_handler_json
   vam->result_ready = 1;
 }
 
+static int
+api_sw_interface_set_bond_weight (vat_main_t * vam)
+{
+  unformat_input_t *i = vam->input;
+  vl_api_sw_interface_set_bond_weight_t *mp;
+  u32 sw_if_index = ~0;
+  u32 weight = 0;
+  u8 weight_enter = 0;
+  int ret;
+
+  while (unformat_check_input (i) != UNFORMAT_END_OF_INPUT)
+    {
+      if (unformat (i, "%U", api_unformat_sw_if_index, vam, &sw_if_index))
+	;
+      else if (unformat (i, "sw_if_index %d", &sw_if_index))
+	;
+      else if (unformat (i, "weight %u", &weight))
+	weight_enter = 1;
+      else
+	break;
+    }
+
+  if (sw_if_index == ~0)
+    {
+      errmsg ("missing interface name or sw_if_index");
+      return -99;
+    }
+  if (weight_enter == 0)
+    {
+      errmsg ("missing valid weight");
+      return -99;
+    }
+
+  /* Construct the API message */
+  M (SW_INTERFACE_SET_BOND_WEIGHT, mp);
+  mp->sw_if_index = ntohl (sw_if_index);
+  mp->weight = ntohl (weight);
+
+  S (mp);
+  W (ret);
+  return ret;
+}
+
 static void vl_api_sw_interface_bond_details_t_handler
   (vl_api_sw_interface_bond_details_t * mp)
 {
@@ -2039,8 +2051,8 @@ static void vl_api_sw_interface_bond_details_t_handler
   print (vam->ofp,
 	 "%-16s %-12d %-12U %-13U %-14u %-14u",
 	 mp->interface_name, ntohl (mp->sw_if_index),
-	 format_bond_mode, mp->mode, format_bond_load_balance, mp->lb,
-	 ntohl (mp->active_slaves), ntohl (mp->slaves));
+	 format_bond_mode, ntohl (mp->mode), format_bond_load_balance,
+	 ntohl (mp->lb), ntohl (mp->active_slaves), ntohl (mp->slaves));
 }
 
 static void vl_api_sw_interface_bond_details_t_handler_json
@@ -2060,8 +2072,8 @@ static void vl_api_sw_interface_bond_details_t_handler_json
   vat_json_object_add_uint (node, "sw_if_index", ntohl (mp->sw_if_index));
   vat_json_object_add_string_copy (node, "interface_name",
 				   mp->interface_name);
-  vat_json_object_add_uint (node, "mode", mp->mode);
-  vat_json_object_add_uint (node, "load_balance", mp->lb);
+  vat_json_object_add_uint (node, "mode", ntohl (mp->mode));
+  vat_json_object_add_uint (node, "load_balance", ntohl (mp->lb));
   vat_json_object_add_uint (node, "active_slaves", ntohl (mp->active_slaves));
   vat_json_object_add_uint (node, "slaves", ntohl (mp->slaves));
 }
@@ -2096,8 +2108,9 @@ static void vl_api_sw_interface_slave_details_t_handler
   vat_main_t *vam = &vat_main;
 
   print (vam->ofp,
-	 "%-25s %-12d %-12d %d", mp->interface_name,
-	 ntohl (mp->sw_if_index), mp->is_passive, mp->is_long_timeout);
+	 "%-25s %-12d %-7d %-12d %-10d %-10d", mp->interface_name,
+	 ntohl (mp->sw_if_index), mp->is_passive, mp->is_long_timeout,
+	 ntohl (mp->weight), mp->is_local_numa);
 }
 
 static void vl_api_sw_interface_slave_details_t_handler_json
@@ -2119,6 +2132,8 @@ static void vl_api_sw_interface_slave_details_t_handler_json
 				   mp->interface_name);
   vat_json_object_add_uint (node, "passive", mp->is_passive);
   vat_json_object_add_uint (node, "long_timeout", mp->is_long_timeout);
+  vat_json_object_add_uint (node, "weight", ntohl (mp->weight));
+  vat_json_object_add_uint (node, "is_local_numa", mp->is_local_numa);
 }
 
 static int
@@ -2149,8 +2164,9 @@ api_sw_interface_slave_dump (vat_main_t * vam)
     }
 
   print (vam->ofp,
-	 "\n%-25s %-12s %-12s %s",
-	 "slave interface name", "sw_if_index", "passive", "long_timeout");
+	 "\n%-25s %-12s %-7s %-12s %-10s %-10s",
+	 "slave interface name", "sw_if_index", "passive", "long_timeout",
+	 "weight", "local numa");
 
   /* Get list of bond interfaces */
   M (SW_INTERFACE_SLAVE_DUMP, mp);
@@ -5072,6 +5088,7 @@ _(sw_interface_set_vxlan_bypass_reply)                  \
 _(sw_interface_set_geneve_bypass_reply)                 \
 _(sw_interface_set_vxlan_gpe_bypass_reply)              \
 _(sw_interface_set_l2_bridge_reply)                     \
+_(sw_interface_set_bond_weight_reply)                   \
 _(bridge_domain_add_del_reply)                          \
 _(sw_interface_set_l2_xconnect_reply)                   \
 _(l2fib_add_del_reply)                                  \
@@ -5274,6 +5291,7 @@ _(BOND_CREATE_REPLY, bond_create_reply)	   			        \
 _(BOND_DELETE_REPLY, bond_delete_reply)			  	        \
 _(BOND_ENSLAVE_REPLY, bond_enslave_reply)				\
 _(BOND_DETACH_SLAVE_REPLY, bond_detach_slave_reply)			\
+_(SW_INTERFACE_SET_BOND_WEIGHT_REPLY, sw_interface_set_bond_weight_reply) \
 _(SW_INTERFACE_BOND_DETAILS, sw_interface_bond_details)                 \
 _(SW_INTERFACE_SLAVE_DETAILS, sw_interface_slave_details)               \
 _(IP_ROUTE_ADD_DEL_REPLY, ip_route_add_del_reply)			\
@@ -7560,16 +7578,9 @@ api_tap_delete_v2 (vat_main_t * vam)
 }
 
 uword
-unformat_pci_addr (unformat_input_t * input, va_list * args)
+unformat_vlib_pci_addr (unformat_input_t * input, va_list * args)
 {
-  struct pci_addr_t
-  {
-    u16 domain;
-    u8 bus;
-    u8 slot:5;
-    u8 function:3;
-  } *addr;
-  addr = va_arg (*args, struct pci_addr_t *);
+  vlib_pci_addr_t *addr = va_arg (*args, vlib_pci_addr_t *);
   u32 x[4];
 
   if (!unformat (input, "%x:%x:%x.%x", &x[0], &x[1], &x[2], &x[3]))
@@ -7604,7 +7615,7 @@ api_virtio_pci_create (vat_main_t * vam)
 	{
 	  random_mac = 0;
 	}
-      else if (unformat (i, "pci-addr %U", unformat_pci_addr, &pci_addr))
+      else if (unformat (i, "pci-addr %U", unformat_vlib_pci_addr, &pci_addr))
 	;
       else if (unformat (i, "features 0x%llx", &features))
 	;
@@ -7726,8 +7737,8 @@ api_bond_create (vat_main_t * vam)
 
   mp->use_custom_mac = custom_mac;
 
-  mp->mode = mode;
-  mp->lb = lb;
+  mp->mode = htonl (mode);
+  mp->lb = htonl (lb);
   mp->id = htonl (id);
   mp->numa_only = numa_only;
 
@@ -20367,7 +20378,7 @@ api_sw_interface_tag_add_del (vat_main_t * vam)
   mp->sw_if_index = ntohl (sw_if_index);
   mp->is_add = enable;
   if (enable)
-    vl_api_to_api_string (strlen ((char *) tag), (char *) tag, &mp->tag);
+    strncpy ((char *) mp->tag, (char *) tag, ARRAY_LEN (mp->tag) - 1);
   vec_free (tag);
 
   S (mp);
@@ -21756,13 +21767,14 @@ _(sw_interface_virtio_pci_dump, "")                                     \
 _(bond_create,                                                          \
   "[hw-addr <mac-addr>] {round-robin | active-backup | "                \
   "broadcast | {lacp | xor} [load-balance { l2 | l23 | l34 }]} "        \
-  "[id <if-id>]")                                                       \
+  "[id <if-id>]")							\
 _(bond_delete,                                                          \
   "<vpp-if-name> | sw_if_index <id>")                                   \
 _(bond_enslave,                                                         \
-  "sw_if_index <n> bond <sw_if_index> [is_passive] [is_long_timeout]")	\
+  "sw_if_index <n> bond <sw_if_index> [is_passive] [is_long_timeout]")  \
 _(bond_detach_slave,                                                    \
   "sw_if_index <n>")							\
+ _(sw_interface_set_bond_weight, "<intfc> | sw_if_index <nn> weight <value>") \
 _(sw_interface_bond_dump, "")                                           \
 _(sw_interface_slave_dump,                                              \
   "<vpp-if-name> | sw_if_index <id>")                                   \
