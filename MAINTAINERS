@@ -73,6 +73,11 @@ I:	bfd
 M:	Klement Sekera <ksekera@cisco.com>
 F:	src/vnet/bfd/
 
+VNET Classifier
+I:	classify
+M:	Dave Barach <dave@barachs.net>
+F:	src/vnet/classify
+
 VNET Device Drivers
 I:	devices
 M:	Damjan Marion <damarion@cisco.com>
@@ -149,6 +154,11 @@ I:	crypto
 M:	Damjan Marion <damarion@cisco.com>
 M:	Neale Ranns <nranns@cisco.com>
 F:	src/vnet/crypto/
+
+VNET COP
+I:	cop
+M:	Dave Barach <dave@barachs.net>
+F:	src/vnet/cop/
 
 Crypto IA32 Plugin
 I:	crypto-ia32
@@ -309,6 +319,11 @@ Plugin - http_static
 I:	http_static
 M:	Dave Barach <dbarach@cisco.com>
 F:	src/plugins/http_static/
+
+Plugin - builtinurl
+I:	builtinurl
+M:	Dave Barach <dbarach@cisco.com>
+F:	src/plugins/builtinurl/
 
 Plugin - Group Based Policy (GBP)
 I:	gbp

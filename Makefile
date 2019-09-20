@@ -101,7 +101,7 @@ else
 	RPM_DEPENDS += yum-utils
 	RPM_DEPENDS += openssl-devel
 	RPM_DEPENDS += python-devel python36-ply
-	RPM_DEPENDS += python36-devel python36-pip
+	RPM_DEPENDS += python3-devel python3-pip
 	RPM_DEPENDS += python-virtualenv python36-jsonschema
 	RPM_DEPENDS += devtoolset-7
 	RPM_DEPENDS += cmake3
@@ -623,6 +623,8 @@ endif
 
 verify: pkg-verify
 ifeq ($(OS_ID)-$(OS_VERSION_ID),ubuntu-18.04)
+	$(call banner,"Testing vppapigen")
+	@src/tools/vppapigen/test_vppapigen.py
 	$(call banner,"Running tests")
 	@make COMPRESS_FAILED_TEST_LOGS=yes RETRIES=3 test
 endif

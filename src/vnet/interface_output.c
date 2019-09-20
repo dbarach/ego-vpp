@@ -43,6 +43,7 @@
 #include <vnet/ip/ip6.h>
 #include <vnet/udp/udp_packet.h>
 #include <vnet/feature/feature.h>
+#include <vnet/classify/trace_classify.h>
 
 typedef struct
 {
@@ -813,13 +814,29 @@ static_always_inline void vnet_interface_pcap_tx_trace
   else
     sw_if_index = ~0;
 
+  vnet_main_t *vnm = vnet_get_main ();
   n_left_from = frame->n_vectors;
   from = vlib_frame_vector_args (frame);
 
   while (n_left_from > 0)
     {
+      int classify_filter_result;
       u32 bi0 = from[0];
       vlib_buffer_t *b0 = vlib_get_buffer (vm, bi0);
+      from++;
+      n_left_from--;
+
+      if (vec_len (vnm->classify_filter_table_indices))
+	{
+	  classify_filter_result =
+	    vnet_is_packet_traced_inline
+	    (b0, vnm->classify_filter_table_indices[0],
+	     0 /* full classify */ );
+	  if (classify_filter_result)
+	    pcap_add_buffer (&vlib_global_main.pcap[VLIB_TX].pcap_main, vm,
+			     bi0, 512);
+	  continue;
+	}
 
       if (sw_if_index_from_buffer)
 	sw_if_index = vnet_buffer (b0)->sw_if_index[VLIB_TX];
@@ -828,8 +845,6 @@ static_always_inline void vnet_interface_pcap_tx_trace
 	  vlib_global_main.pcap[VLIB_TX].pcap_sw_if_index == sw_if_index)
 	pcap_add_buffer (&vlib_global_main.pcap[VLIB_TX].pcap_main, vm, bi0,
 			 512);
-      from++;
-      n_left_from--;
     }
 }
 
@@ -1192,8 +1207,19 @@ pcap_drop_trace (vlib_main_t * vm,
 
 	  /*
 	   * Typically, we'll need to rewind the buffer
+	   * if l2_hdr_offset is valid, make sure to rewind to the start of
+	   * the L2 header. This may not be the buffer start in case we pop-ed
+	   * vlan tags.
+	   * Otherwise, rewind to buffer start and hope for the best.
 	   */
-	  if (b0->current_data > 0)
+	  if (b0->flags & VNET_BUFFER_F_L2_HDR_OFFSET_VALID)
+	    {
+	      if (b0->current_data > vnet_buffer (b0)->l2_hdr_offset)
+		vlib_buffer_advance (b0,
+				     vnet_buffer (b0)->l2_hdr_offset -
+				     b0->current_data);
+	    }
+	  else if (b0->current_data > 0)
 	    vlib_buffer_advance (b0, (word) - b0->current_data);
 
 	  pcap_add_buffer (&im->pcap_main, vm, bi0, 512);

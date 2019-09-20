@@ -8,6 +8,7 @@ import keyword
 import logging
 import binascii
 import os
+import sys
 
 log = logging.getLogger('vppapigen')
 
@@ -21,10 +22,15 @@ sys.dont_write_bytecode = True
 # Global dictionary of new types (including enums)
 global_types = {}
 
+seen_imports = {}
+
 
 def global_type_add(name, obj):
     '''Add new type to the dictionary of types '''
     type_name = 'vl_api_' + name + '_t'
+    if type_name in global_types:
+        raise KeyError("Attempted redefinition of {!r} with {!r}.".format(
+            name, obj))
     global_types[type_name] = obj
 
 
@@ -78,6 +84,16 @@ class VPPAPILexer(object):
 
     t_ignore_LINE_COMMENT = '//.*'
 
+    def t_FALSE(self, t):
+        r'false'
+        t.value = False
+        return t
+
+    def t_TRUE(self, t):
+        r'false'
+        t.value = True
+        return t
+
     def t_NUM(self, t):
         r'0[xX][0-9a-fA-F]+|-?\d+\.?\d*'
         base = 16 if t.value.startswith('0x') else 10
@@ -129,6 +145,33 @@ def crc_block_combine(block, crc):
     return binascii.crc32(s, crc) & 0xffffffff
 
 
+def vla_is_last_check(name, block):
+    vla = False
+    for i, b in enumerate(block):
+        if isinstance(b, Array) and b.vla:
+            vla = True
+            if i + 1 < len(block):
+                raise ValueError(
+                    'VLA field "{}" must be the last field in message "{}"'
+                    .format(b.fieldname, name))
+        elif b.fieldtype.startswith('vl_api_'):
+            if global_types[b.fieldtype].vla:
+                vla = True
+                if i + 1 < len(block):
+                    raise ValueError(
+                        'VLA field "{}" must be the last '
+                        'field in message "{}"'
+                        .format(b.fieldname, name))
+        elif b.fieldtype == 'string' and b.length == 0:
+            vla = True
+            if i + 1 < len(block):
+                raise ValueError(
+                    'VLA field "{}" must be the last '
+                    'field in message "{}"'
+                    .format(b.fieldname, name))
+    return vla
+
+
 class Service():
     def __init__(self, caller, reply, events=None, stream=False):
         self.caller = caller
@@ -150,35 +193,30 @@ class Typedef():
                 self.manual_print = True
             elif f == 'manual_endian':
                 self.manual_endian = True
+
         global_type_add(name, self)
 
-        self.vla = False
-
-        for i, b in enumerate(block):
-            if isinstance(b, Array):
-                if b.length == 0:
-                    self.vla = True
-                    if i + 1 < len(block):
-                        raise ValueError(
-                            'VLA field "{}" must be the last '
-                            'field in message "{}"'
-                            .format(b.fieldname, name))
-            elif b.fieldtype == 'string':
-                self.vla = True
-                if i + 1 < len(block):
-                    raise ValueError(
-                        'VLA field "{}" must be the last '
-                        'field in message "{}"'
-                        .format(b.fieldname, name))
+        self.vla = vla_is_last_check(name, block)
 
     def __repr__(self):
         return self.name + str(self.flags) + str(self.block)
 
 
 class Using():
-    def __init__(self, name, alias):
+    def __init__(self, name, flags, alias):
         self.name = name
         self.vla = False
+        self.block = []
+        self.manual_print = True
+        self.manual_endian = True
+
+        self.manual_print = False
+        self.manual_endian = False
+        for f in flags:
+            if f == 'manual_print':
+                self.manual_print = True
+            elif f == 'manual_endian':
+                self.manual_endian = True
 
         if isinstance(alias, Array):
             a = {'type': alias.fieldtype,
@@ -194,13 +232,22 @@ class Using():
 
 
 class Union():
-    def __init__(self, name, block):
+    def __init__(self, name, flags, block):
         self.type = 'Union'
         self.manual_print = False
         self.manual_endian = False
         self.name = name
+
+        for f in flags:
+            if f == 'manual_print':
+                self.manual_print = True
+            elif f == 'manual_endian':
+                self.manual_endian = True
+
         self.block = block
         self.crc = str(block).encode()
+        self.vla = vla_is_last_check(name, block)
+
         global_type_add(name, self)
 
     def __repr__(self):
@@ -228,28 +275,12 @@ class Define():
             elif f == 'autoreply':
                 self.autoreply = True
 
-        for i, b in enumerate(block):
+        for b in block:
             if isinstance(b, Option):
                 if b[1] == 'singular' and b[2] == 'true':
                     self.singular = True
                 block.remove(b)
-
-            if isinstance(b, Array) and b.vla and i + 1 < len(block):
-                raise ValueError(
-                    'VLA field "{}" must be the last field in message "{}"'
-                    .format(b.fieldname, name))
-            elif b.fieldtype.startswith('vl_api_'):
-                if (global_types[b.fieldtype].vla and i + 1 < len(block)):
-                    raise ValueError(
-                        'VLA field "{}" must be the last '
-                        'field in message "{}"'
-                        .format(b.fieldname, name))
-            elif b.fieldtype == 'string' and b.length == 0:
-                if i + 1 < len(block):
-                    raise ValueError(
-                        'VLA field "{}" must be the last '
-                        'field in message "{}"'
-                        .format(b.fieldname, name))
+        self.vla = vla_is_last_check(name, block)
 
     def __repr__(self):
         return self.name + str(self.flags) + str(self.block)
@@ -278,28 +309,45 @@ class Enum():
 
 
 class Import():
+
+    def __new__(cls, *args, **kwargs):
+        if args[0] not in seen_imports:
+            instance = super().__new__(cls)
+            instance._initialized = False
+            seen_imports[args[0]] = instance
+
+        return seen_imports[args[0]]
+
     def __init__(self, filename):
-        self.filename = filename
-
-        # Deal with imports
-        parser = VPPAPI(filename=filename)
-        dirlist = dirlist_get()
-        f = filename
-        for dir in dirlist:
-            f = os.path.join(dir, filename)
-            if os.path.exists(f):
-                break
-
-        with open(f, encoding='utf-8') as fd:
-            self.result = parser.parse_file(fd, None)
+        if self._initialized:
+            return
+        else:
+            self.filename = filename
+            # Deal with imports
+            parser = VPPAPI(filename=filename)
+            dirlist = dirlist_get()
+            f = filename
+            for dir in dirlist:
+                f = os.path.join(dir, filename)
+                if os.path.exists(f):
+                    break
+            if sys.version[0] == '2':
+                with open(f) as fd:
+                    self.result = parser.parse_file(fd, None)
+            else:
+                with open(f, encoding='utf-8') as fd:
+                    self.result = parser.parse_file(fd, None)
+            self._initialized = True
 
     def __repr__(self):
         return self.filename
 
 
 class Option():
-    def __init__(self, option):
+    def __init__(self, option, value):
+        self.type = 'Option'
         self.option = option
+        self.value = value
         self.crc = str(option).encode()
 
     def __repr__(self):
@@ -524,9 +572,17 @@ class VPPAPIParser(object):
         '''typedef : TYPEDEF ID '{' block_statements_opt '}' ';' '''
         p[0] = Typedef(p[2], [], p[4])
 
+    def p_typedef_flist(self, p):
+        '''typedef : flist TYPEDEF ID '{' block_statements_opt '}' ';' '''
+        p[0] = Typedef(p[3], p[1], p[5])
+
     def p_typedef_alias(self, p):
         '''typedef : TYPEDEF declaration '''
-        p[0] = Using(p[2].fieldname, p[2])
+        p[0] = Using(p[2].fieldname, [], p[2])
+
+    def p_typedef_alias_flist(self, p):
+        '''typedef : flist TYPEDEF declaration '''
+        p[0] = Using(p[3].fieldname, p[1], p[3])
 
     def p_block_statements_opt(self, p):
         '''block_statements_opt : block_statements '''
@@ -620,7 +676,7 @@ class VPPAPIParser(object):
 
     def p_option(self, p):
         '''option : OPTION ID '=' assignee ';' '''
-        p[0] = Option([p[1], p[2], p[4]])
+        p[0] = Option(p[2], p[4])
 
     def p_assignee(self, p):
         '''assignee : NUM
@@ -653,7 +709,11 @@ class VPPAPIParser(object):
 
     def p_union(self, p):
         '''union : UNION ID '{' block_statements_opt '}' ';' '''
-        p[0] = Union(p[2], p[4])
+        p[0] = Union(p[2], [], p[4])
+
+    def p_union_flist(self, p):
+        '''union : flist UNION ID '{' block_statements_opt '}' ';' '''
+        p[0] = Union(p[3], p[1], p[5])
 
     # Error rule for syntax errors
     def p_error(self, p):
@@ -693,7 +753,6 @@ class VPPAPI(object):
         s['Service'] = []
         s['types'] = []
         s['Import'] = []
-        s['Alias'] = {}
         crc = 0
         for o in objs:
             tname = o.__class__.__name__
@@ -713,10 +772,9 @@ class VPPAPI(object):
                         s['Service'].append(o2)
             elif (isinstance(o, Enum) or
                   isinstance(o, Typedef) or
+                  isinstance(o, Using) or
                   isinstance(o, Union)):
                 s['types'].append(o)
-            elif isinstance(o, Using):
-                s['Alias'][o.name] = o.alias
             else:
                 if tname not in s:
                     raise ValueError('Unknown class type: {} {}'
@@ -802,9 +860,11 @@ class VPPAPI(object):
                                   isinstance(o, Using)):
                 continue
             if isinstance(o, Import):
-                self.process_imports(o.result, True, result)
+                result.append(o)
+                result = self.process_imports(o.result, True, result)
             else:
                 result.append(o)
+        return result
 
 
 # Add message ids to each message.
@@ -894,8 +954,12 @@ def main():
 
     # Build a list of objects. Hash of lists.
     result = []
-    parser.process_imports(parsed_objects, False, result)
-    s = parser.process(result)
+
+    if args.output_module == 'C':
+        s = parser.process(parsed_objects)
+    else:
+        result = parser.process_imports(parsed_objects, False, result)
+        s = parser.process(result)
 
     # Add msg_id field
     s['Define'] = add_msg_id(s['Define'])
