@@ -498,6 +498,7 @@ typedef enum vnet_hw_interface_flags_t_
    that packets flow over. */
 typedef struct vnet_hw_interface_t
 {
+  CLIB_CACHE_LINE_ALIGN_MARK (cacheline0);
   /* Interface name. */
   u8 *name;
 
@@ -579,7 +580,10 @@ typedef struct vnet_hw_interface_t
   /* numa node that hardware device connects to */
   u8 numa_node;
 
-  u8 padding[3];
+  /* trace */
+  i32 n_trace;
+
+  u32 trace_classify_table_index;
 } vnet_hw_interface_t;
 
 extern vnet_device_class_t vnet_local_interface_device_class;
@@ -843,12 +847,11 @@ typedef struct
 
   vnet_hw_interface_nodes_t *deleted_hw_interface_nodes;
 
-  /* pcap drop tracing */
-  int drop_pcap_enable;
-  pcap_main_t pcap_main;
-  u8 *pcap_filename;
-  u32 pcap_sw_if_index;
-  u32 pcap_pkts_to_capture;
+  /*
+   * pcap drop tracing
+   * Only the drop filter hash lives here. See ../src/vlib/main.h for
+   * the rest of the variables.
+   */
   uword *pcap_drop_filter_hash;
 
   /* Buffer metadata format helper functions */
@@ -899,7 +902,10 @@ typedef struct
   int enable;
   int status;
   u32 packets_to_capture;
-  vlib_rx_or_tx_t rxtx;
+  u32 max_bytes_per_pkt;
+  u8 rx_enable;
+  u8 tx_enable;
+  u8 drop_enable;
   u32 sw_if_index;
   int filter;
 } vnet_pcap_dispatch_trace_args_t;

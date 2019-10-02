@@ -15,13 +15,13 @@
 
 /**
  * @file
- * @brief IPv6 Reassembly.
+ * @brief IPv6 shallow virtual reassembly.
  *
- * This file contains the source code for IPv6 reassembly.
+ * This file contains the source code for IPv6 shallow virtual reassembly.
  */
 
-#ifndef __included_ip6_reassembly_h__
-#define __included_ip6_reassembly_h__
+#ifndef __included_ip6_sv_reass_h__
+#define __included_ip6_sv_reass_h__
 
 #include <vnet/api_errno.h>
 #include <vnet/vnet.h>
@@ -29,20 +29,23 @@
 /**
  * @brief set ip6 reassembly configuration
  */
-vnet_api_error_t ip6_reass_set (u32 timeout_ms, u32 max_reassemblies,
-				u32 max_reassembly_length,
-				u32 expire_walk_interval_ms);
+vnet_api_error_t ip6_sv_reass_set (u32 timeout_ms, u32 max_reassemblies,
+				   u32 max_reassembly_length,
+				   u32 expire_walk_interval_ms);
 
 /**
  * @brief get ip6 reassembly configuration
  */
-vnet_api_error_t ip6_reass_get (u32 * timeout_ms, u32 * max_reassemblies,
-				u32 * expire_walk_interval_ms);
+vnet_api_error_t ip6_sv_reass_get (u32 * timeout_ms, u32 * max_reassemblies,
+				   u32 * max_reassembly_length,
+				   u32 * expire_walk_interval_ms);
 
-vnet_api_error_t ip6_reass_enable_disable (u32 sw_if_index,
-					   u8 enable_disable);
+vnet_api_error_t ip6_sv_reass_enable_disable (u32 sw_if_index,
+					      u8 enable_disable);
 
-#endif /* __included_ip6_reassembly_h */
+int ip6_sv_reass_enable_disable_with_refcnt (u32 sw_if_index, int is_enable);
+
+#endif /* __included_ip6_sv_reass_h */
 
 /*
  * fd.io coding-style-patch-verification: ON

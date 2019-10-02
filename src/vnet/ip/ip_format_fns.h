@@ -20,8 +20,7 @@ static inline u8 *format_vl_api_ip6_address_t (u8 * s, va_list * args);
 static inline u8 *format_vl_api_ip4_address_t (u8 * s, va_list * args);
 
 #include <vnet/ip/format.h>
-#define vl_typedefs
-#include <vnet/ip/ip_types.api.h>
+#include <vnet/ip/ip_types.api_types.h>
 
 static inline u8 *
 format_vl_api_ip6_address_t (u8 * s, va_list * args)
@@ -87,6 +86,18 @@ static inline u8 *
 format_vl_api_address_with_prefix_t (u8 * s, va_list * args)
 {
   return format_vl_api_prefix_t (s, args);
+}
+
+static inline u8 *
+format_vl_api_ip4_address_with_prefix_t (u8 * s, va_list * args)
+{
+        return format_vl_api_ip4_prefix_t (s, args);
+}
+
+static inline u8 *
+format_vl_api_ip6_address_with_prefix_t (u8 * s, va_list * args)
+{
+        return format_vl_api_ip6_prefix_t (s, args);
 }
 
 #endif

@@ -20,7 +20,6 @@
 #include <vnet/dhcp/dhcp6_pd_client_dp.h>
 #include <vnet/ip/ip.h>
 #include <vnet/ip/ip6.h>
-#include <vnet/ip/ip6_neighbor.h>
 #include <float.h>
 #include <math.h>
 #include <string.h>
@@ -703,30 +702,7 @@ cp_ip6_address_add_del_now (ip6_address_info_t * address_info, u8 is_add)
 	    clib_warning ("Failed adding IPv6 address: %U",
 			  format_clib_error, error);
 	  else
-            {
-              int error;
-              address_info->configured_in_data_plane = 1;
-
-              /* $$$$ assume /64 */
-              memset (addr.as_u8 + 12, 0, 4);
-
-              error = ip6_neighbor_ra_prefix (vm,
-                                              address_info->sw_if_index,
-                                              &addr /* prefix_addr */,
-                                              address_info->prefix_length,
-                                              0 /* use_default */,
-                                              86400 /* val_lifetime */,
-                                              86400 /* pref_lifetime */,
-                                              0 /* no_advertise */,
-                                              0 /* off_link */,
-                                              0 /* no_autoconfig */,
-                                              0 /* no_onlink */,
-                                              0 /* is_no */);
-              if (error)
-                clib_warning ("ra_prefix error %d", error);
-              clib_warning ("ra autoconfig complete sw_if_index %d",
-                            address_info->sw_if_index);
-            }
+	    address_info->configured_in_data_plane = 1;
 	}
       else
 	{

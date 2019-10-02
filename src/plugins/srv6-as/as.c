@@ -575,7 +575,6 @@ VLIB_INIT_FUNCTION (srv6_as_init);
 VLIB_PLUGIN_REGISTER () = {
   .version = VPP_BUILD_VER,
   .description = "Static Segment Routing for IPv6 (SRv6) Proxy",
-  .default_disabled = 1,
 };
 /* *INDENT-ON* */
 

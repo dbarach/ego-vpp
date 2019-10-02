@@ -524,6 +524,29 @@ Plugin - SCTP
 I:	sctp
 F:	src/plugins/sctp/
 
+Cisco Discovery Protocol
+I:	cdp
+F:	src/plugins/cdp/
+
+Source VRF Select
+I:	svs
+M:	Neale Ranns <nranns@cisco.com>
+F:	src/plugins/svs/
+
+LAN Emulation
+I:	l2e
+M:	Neale Ranns <nranns@cisco.com>
+F:	src/plugins/l2e/
+
+IPv6 Connection Tracker
+I:	ct6
+M:	Dave Barach <dave@barachs.net>
+F:	src/plugins/ct6
+
+Steal The NIC
+I:	stn
+F:	src/plugins/stn
+
 THE REST
 I:	misc
 C:	Contact vpp-dev Mailing List <vpp-dev@fd.io>

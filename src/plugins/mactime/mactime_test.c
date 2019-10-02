@@ -26,29 +26,8 @@
 uword vat_unformat_sw_if_index (unformat_input_t * input, va_list * args);
 
 /* Declare message IDs */
-#include <mactime/mactime_msg_enum.h>
-
-/* define message structures */
-#define vl_typedefs
-#include <mactime/mactime_all_api_h.h>
-#undef vl_typedefs
-
-/* declare message handlers for each api */
-
-#define vl_endianfun		/* define message structures */
-#include <mactime/mactime_all_api_h.h>
-#undef vl_endianfun
-
-/* instantiate all the print functions we know about */
-#define vl_print(handle, ...)
-#define vl_printfun
-#include <mactime/mactime_all_api_h.h>
-#undef vl_printfun
-
-/* Get the API version number. */
-#define vl_api_version(n,v) static u32 api_version=(v);
-#include <mactime/mactime_all_api_h.h>
-#undef vl_api_version
+#include <mactime/mactime.api_enum.h>
+#include <mactime/mactime.api_types.h>
 
 typedef struct
 {
@@ -71,100 +50,6 @@ mactime_test_main_t mactime_test_main;
 
 #define __plugin_msg_base mactime_test_main.msg_id_base
 #include <vlibapi/vat_helper_macros.h>
-
-#define foreach_standard_reply_retval_handler   \
-_(mactime_enable_disable_reply)                 \
-_(mactime_add_del_range_reply)
-
-#define _(n)                                            \
-    static void vl_api_##n##_t_handler                  \
-    (vl_api_##n##_t * mp)                               \
-    {                                                   \
-        vat_main_t * vam = mactime_test_main.vat_main;   \
-        i32 retval = ntohl(mp->retval);                 \
-        if (vam->async_mode) {                          \
-            vam->async_errors += (retval < 0);          \
-        } else {                                        \
-            vam->retval = retval;                       \
-            vam->result_ready = 1;                      \
-        }                                               \
-    }
-foreach_standard_reply_retval_handler;
-#undef _
-
-static void vl_api_mactime_dump_reply_t_handler
-(vl_api_mactime_dump_reply_t *mp)
-{
-  vat_main_t * vam = mactime_test_main.vat_main;
-  i32 retval = ntohl(mp->retval);
-
-  /* This isn't an error... */
-  if (retval == VNET_API_ERROR_NO_CHANGE)
-    retval = 0;
-
-  if (retval == 0)
-    mactime_test_main.vpp_table_epoch = clib_net_to_host_u32 (mp->table_epoch);
-
-  if (vam->async_mode)
-    {
-      vam->async_errors += (retval < 0);
-    }
-  else
-    {
-      vam->retval = retval;
-      vam->result_ready = 1;
-    }
-}
-
-static void vl_api_mactime_details_t_handler
-(vl_api_mactime_details_t *mp)
-{
-  mactime_test_main_t *tm = &mactime_test_main;
-  mactime_device_t *dev;
-  int i;
-  clib_timebase_range_t *rp;
-  uword *p;
-
-  if (tm->device_by_device_name == 0)
-    tm->device_by_device_name = hash_create_string (0, sizeof (uword));
-
-  p = hash_get_mem (tm->device_by_device_name, mp->device_name);
-  if (p)
-    dev = pool_elt_at_index (tm->devices, p[0]);
-  else
-    {
-      u8 *hash_name_copy = format (0, "%s%c", mp->device_name, 0);
-      pool_get (tm->devices, dev);
-      memset (dev, 0, sizeof (*dev));
-      dev->device_name = vec_dup (hash_name_copy);
-      hash_set_mem (tm->device_by_device_name, hash_name_copy, dev - tm->devices);
-    }
-
-  clib_memcpy_fast (dev->mac_address, mp->mac_address,
-                    sizeof (dev->mac_address));
-  dev->data_quota = clib_net_to_host_u64 (mp->data_quota);
-  dev->data_used_in_range = clib_net_to_host_u64 (mp->data_used_in_range);
-  dev->flags = clib_net_to_host_u32 (mp->flags);
-  dev->pool_index = clib_net_to_host_u32 (mp->pool_index);
-  vec_reset_length (dev->ranges);
-  for (i = 0; i < clib_net_to_host_u32 (mp->nranges); i++)
-    {
-      vec_add2 (dev->ranges, rp, 1);
-      rp->start = mp->ranges[i].start;
-      rp->end = mp->ranges[i].end;
-    }
-  vec_reset_length (dev->device_name);
-}
-
-/*
- * Table of message reply handlers, must include boilerplate handlers
- * we just generated
- */
-#define foreach_vpe_api_reply_msg                               \
-_(MACTIME_ENABLE_DISABLE_REPLY, mactime_enable_disable_reply)   \
-_(MACTIME_ADD_DEL_RANGE_REPLY, mactime_add_del_range_reply)	\
-_(MACTIME_DETAILS, mactime_details)                             \
-_(MACTIME_DUMP_REPLY, mactime_dump_reply)
 
 static int
 api_mactime_enable_disable (vat_main_t * vam)
@@ -540,45 +425,15 @@ api_mactime_add_del_range (vat_main_t * vam)
   return ret;
 }
 
-/*
- * List of messages that the api test plugin sends,
- * and that the data plane plugin processes
- */
-#define foreach_vpe_api_msg                     \
-_(mactime_enable_disable, "<intfc> [disable]")  \
-_(mactime_add_del_range,                        \
-  "name <devname> mac <mac-addr> allow drop\n"  \
-  "allow-range Mon - Fri 9:00 - 17:00")	        \
-_(mactime_dump, "[force][verbose]")
-
-static void
-mactime_api_hookup (vat_main_t * vam)
+/* We shouldn't get these... */
+static void vl_api_mactime_details_t_handler
+(vl_api_mactime_details_t *mp)
 {
-  mactime_test_main_t *sm = &mactime_test_main;
-  /* Hook up handlers for replies from the data plane plug-in */
-#define _(N,n)                                                  \
-    vl_msg_api_set_handlers((VL_API_##N + sm->msg_id_base),     \
-                           #n,                                  \
-                           vl_api_##n##_t_handler,              \
-                           vl_noop_handler,                     \
-                           vl_api_##n##_t_endian,               \
-                           vl_api_##n##_t_print,                \
-                           sizeof(vl_api_##n##_t), 1);
-  foreach_vpe_api_reply_msg;
-#undef _
-
-  /* API messages we can send */
-#define _(n,h) hash_set_mem (vam->function_by_name, #n, api_##n);
-  foreach_vpe_api_msg;
-#undef _
-
-  /* Help strings */
-#define _(n,h) hash_set_mem (vam->help_by_name, #n, h);
-  foreach_vpe_api_msg;
-#undef _
+  clib_warning ("WARNING: stub called...");
 }
 
-VAT_PLUGIN_REGISTER (mactime);
+
+#include <mactime/mactime.api_test.c>
 
 /*
  * fd.io coding-style-patch-verification: ON

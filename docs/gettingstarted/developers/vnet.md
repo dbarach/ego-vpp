@@ -470,24 +470,37 @@ This should be of significant value when developing new vpp graph
 nodes. If new code mispositions b->current_data, it will be completely
 obvious from looking at the dispatch trace in wireshark.
 
-## pcap rx and tx tracing
+## pcap rx, tx, and drop tracing
 
-vpp also supports rx and tx packet capture in pcap format, through the
-"pcap rx trace" and "pcap tx trace" debug CLI commands
+vpp also supports rx, tx, and drop packet capture in pcap format,
+through the "pcap trace" debug CLI command.
 
-This command is used to start or stop a packet capture, or show
-the status of packet capture. Note that both "pcap rx trace" and
-"pcap tx trace" are implemented. The command syntax is identical,
-simply substitute rx for tx as needed.
+This command is used to start or stop a packet capture, or show the
+status of packet capture. Each of "pcap trace rx", "pcap trace tx",
+and "pcap trace drop" is implemented.  Supply one or more of "rx",
+"tx", and "drop" to enable multiple simultaneous capture types.
 
 These commands have the following optional parameters:
 
-on|off- Used to start or stop a packet capture.
+- <b>rx</b> - trace received packets.
+
+- <b>tx</b> - trace transmitted packets.
+
+- <b>drop</b> - trace dropped packets.
 
 - <b>max _nnnn_</b> - file size, number of packet captures. Once
   <nnnn> packets have been received, the trace buffer buffer is flushed
   to the indicated file. Defaults to 1000. Can only be updated if packet
   capture is off.
+
+- <b>max-bytes-per-pkt _nnnn_</b> - maximum number of bytes to trace
+  on a per-paket basis. Must be >32 and less than 9000. Default value:
+  512.
+
+- <b>filter</b> - Use the pcap rx / tx / drop trace filter, which must
+  be configured. Use <b>classify filter pcap...</b> to configure the
+  filter. The filter will only be executed if the per-interface or
+  any-interface tests fail.
 
 - <b>intfc _interface_ | _any_</b> - Used to specify a given interface,
   or use '<em>any</em>' to run packet capture on all interfaces.
@@ -513,9 +526,10 @@ on|off- Used to start or stop a packet capture.
 
 ## packet trace capture filtering
 
-The "classify filter" debug CLI command constructs an arbitrary set of
-  packet classifier tables for use with "pcap rx | tx trace," and
-  (eventually) with the vpp packet tracer
+The "classify filter pcap | <interface-name> " debug CLI command
+constructs an arbitrary set of packet classifier tables for use with
+"pcap rx | tx | drop trace," and with the vpp packet tracer on a
+per-interrface basis.
 
 Packets which match a rule in the classifier table chain will be
 traced. The tables are automatically ordered so that matches in the
@@ -532,17 +546,24 @@ and match values. If a classifier table with a suitable mask already
 exists, the CLI command adds a match rule to the existing table.  If
 not, the CLI command add a new table and the indicated mask rule
 
-### Configure a simple classify filter
+### Configure a simple pcap classify filter
 
 ```
-    classify filter mask l3 ip4 src match l3 ip4 src 192.168.1.11"
+    classify filter pcap mask l3 ip4 src match l3 ip4 src 192.168.1.11"
     pcap rx trace on max 100 filter
 ```
 
-### Configure another fairly simple filter
+### Configure a simple interface packet-tracer filter
 
 ```
-   classify filter mask l3 ip4 src dst match l3 ip4 src 192.168.1.10 dst 192.168.2.10
+    classify filter GigabitEthernet3/0/0 mask l3 ip4 src match l3 ip4 src 192.168.1.11"
+    [device-driver debug CLI TBD]
+```
+
+### Configure another fairly simple pcap classify filter
+
+```
+   classify filter pcap mask l3 ip4 src dst match l3 ip4 src 192.168.1.10 dst 192.168.2.10
    pcap tx trace on max 100 filter
 ```
 

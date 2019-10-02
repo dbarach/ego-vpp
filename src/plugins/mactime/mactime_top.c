@@ -11,30 +11,9 @@
 #include <vnet/api_errno.h>
 #include <svm/queue.h>
 
-/* Declare message IDs */
-#include <mactime/mactime_msg_enum.h>
-
-/* Get the API version number */
-#define vl_api_version(n,v) static u32 api_version=(v);
-#include <mactime/mactime_all_api_h.h>
-#undef vl_api_version
-
-/* define message structures */
-#define vl_typedefs
-#include <mactime/mactime_all_api_h.h>
-#undef vl_typedefs
-
-/* declare message handlers for each api */
-
-#define vl_endianfun		/* define message structures */
-#include <mactime/mactime_all_api_h.h>
-#undef vl_endianfun
-
-/* instantiate all the print functions we know about */
-#define vl_print(handle, ...)
-#define vl_printfun
-#include <mactime/mactime_all_api_h.h>
-#undef vl_printfun
+/* define message IDs */
+#include <mactime/mactime.api_enum.h>
+#include <mactime/mactime.api_types.h>
 
 typedef struct
 {
@@ -126,6 +105,16 @@ static void vl_api_mactime_details_t_handler
       rp->end = mp->ranges[i].end;
     }
 }
+
+#define vl_print(handle, ...) fformat(handle, __VA_ARGS__)
+
+#define vl_endianfun
+#define vl_printfun
+#define vl_api_version(n,v) static u32 api_version = v;
+#include <mactime/mactime.api.h>
+#undef vl_api_version
+#undef vl_printfun
+#undef vl_endianfun
 
 static int
 connect_to_vpp (char *name)

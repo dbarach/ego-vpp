@@ -124,20 +124,20 @@ print_global_json_stats (echo_main_t * em)
 
   if (start_evt_missing)
     ECHO_FAIL (ECHO_FAIL_MISSING_START_EVENT,
-	       "Expected event %s to happen, but it did not!", start_evt);
+	       "Expected event %v to happen, but it did not!", start_evt);
 
   if (end_evt_missing)
     ECHO_FAIL (ECHO_FAIL_MISSING_END_EVENT,
-	       "Expected event %s to happen, but it did not!", end_evt);
+	       "Expected event %v to happen, but it did not!", end_evt);
 
   fformat (stdout, "vpp_echo JSON stats:\n{\n");
   fformat (stdout, "  \"role\": \"%s\",\n",
 	   em->i_am_master ? "server" : "client");
   fformat (stdout, "  \"time\": \"%.9f\",\n", deltat);
-  fformat (stdout, "  \"start_evt\": \"%s\",\n", start_evt);
+  fformat (stdout, "  \"start_evt\": \"%v\",\n", start_evt);
   fformat (stdout, "  \"start_evt_missing\": \"%s\",\n",
 	   start_evt_missing ? "True" : "False");
-  fformat (stdout, "  \"end_evt\": \"%s\",\n", end_evt);
+  fformat (stdout, "  \"end_evt\": \"%v\",\n", end_evt);
   fformat (stdout, "  \"end_evt_missing\": \"%s\",\n",
 	   end_evt_missing ? "True" : "False");
   fformat (stdout, "  \"rx_data\": %lld,\n", em->stats.rx_total);
@@ -176,17 +176,17 @@ print_global_stats (echo_main_t * em)
 
   if (start_evt_missing)
     ECHO_FAIL (ECHO_FAIL_MISSING_START_EVENT,
-	       "Expected event %s to happen, but it did not!", start_evt);
+	       "Expected event %v to happen, but it did not!", start_evt);
 
   if (end_evt_missing)
     ECHO_FAIL (ECHO_FAIL_MISSING_END_EVENT,
-	       "Expected event %s to happen, but it did not!", end_evt);
+	       "Expected event %v to happen, but it did not!", end_evt);
 
-  fformat (stdout, "Timing %s:%s\n", start_evt, end_evt);
+  fformat (stdout, "Timing %v:%v\n", start_evt, end_evt);
   if (start_evt_missing)
-    fformat (stdout, "Missing Start Timing Event (%s)!\n", start_evt);
+    fformat (stdout, "Missing Start Timing Event (%v)!\n", start_evt);
   if (end_evt_missing)
-    fformat (stdout, "Missing End Timing Event (%s)!\n", end_evt);
+    fformat (stdout, "Missing End Timing Event (%v)!\n", end_evt);
   fformat (stdout, "-------- TX --------\n");
   fformat (stdout, "%lld bytes (%lld mbytes, %lld gbytes) in %.6f seconds\n",
 	   em->stats.tx_total, em->stats.tx_total / (1ULL << 20),
@@ -399,7 +399,7 @@ echo_handle_data (echo_main_t * em, echo_session_t * s, u8 * rx_buf)
 static void *
 echo_data_thread_fn (void *arg)
 {
-  clib_mem_set_thread_index ();
+  clib_mem_set_thread_index ();	/* First thing to do in client thread */
   echo_main_t *em = &echo_main;
   u32 N = em->n_clients;
   u32 n = (N + em->n_rx_threads - 1) / em->n_rx_threads;
@@ -661,44 +661,83 @@ echo_process_rpcs (echo_main_t * em)
 {
   echo_rpc_msg_t *rpc;
   svm_msg_q_msg_t msg;
+  svm_msg_q_t *mq = em->rpc_msq_queue;
+
   while (em->state < STATE_DATA_DONE && !em->time_to_stop)
     {
-      if (svm_msg_q_sub (em->rpc_msq_queue, &msg, SVM_Q_TIMEDWAIT, 1))
-	continue;
-      rpc = svm_msg_q_msg_data (em->rpc_msq_queue, &msg);
+      svm_msg_q_lock (mq);
+      if (svm_msg_q_is_empty (mq) && svm_msg_q_timedwait (mq, 1))
+	{
+	  svm_msg_q_unlock (mq);
+	  continue;
+	}
+      svm_msg_q_sub_w_lock (mq, &msg);
+      rpc = svm_msg_q_msg_data (mq, &msg);
+      svm_msg_q_unlock (mq);
       ((echo_rpc_t) rpc->fp) (rpc->arg, rpc->opaque);
-      svm_msg_q_free_msg (em->rpc_msq_queue, &msg);
+      svm_msg_q_free_msg (mq, &msg);
     }
+}
+
+static inline int
+echo_mq_dequeue_batch (svm_msg_q_t * mq, svm_msg_q_msg_t * msg_vec,
+		       u32 n_max_msg)
+{
+  svm_msg_q_msg_t *msg;
+  u32 n_msgs;
+  int i;
+
+  n_msgs = clib_min (svm_msg_q_size (mq), n_max_msg);
+  for (i = 0; i < n_msgs; i++)
+    {
+      vec_add2 (msg_vec, msg, 1);
+      svm_msg_q_sub_w_lock (mq, msg);
+    }
+  return n_msgs;
 }
 
 static void *
 echo_mq_thread_fn (void *arg)
 {
-  clib_mem_set_thread_index ();
+  clib_mem_set_thread_index ();	/* First thing to do in client thread */
+  svm_msg_q_msg_t *msg_vec = 0;
   echo_main_t *em = &echo_main;
   session_event_t *e;
-  svm_msg_q_msg_t msg;
-  int rv;
+  svm_msg_q_msg_t *msg;
+  svm_msg_q_t *mq;
+  int i;
+
+  vec_validate (msg_vec, em->evt_q_size);
+  vec_reset_length (msg_vec);
   wait_for_state_change (em, STATE_ATTACHED, 0);
-  if (em->state < STATE_ATTACHED || !em->our_event_queue)
+  mq = em->our_event_queue;
+  if (em->state < STATE_ATTACHED || !mq)
     {
       ECHO_FAIL (ECHO_FAIL_APP_ATTACH, "Application failed to attach");
       pthread_exit (0);
     }
 
-  while (1)
+  while (em->state < STATE_DETACHED && !em->time_to_stop)
     {
-      if (!(rv = svm_msg_q_sub (em->our_event_queue,
-				&msg, SVM_Q_TIMEDWAIT, 1)))
+      svm_msg_q_lock (mq);
+      if (svm_msg_q_is_empty (mq) && svm_msg_q_timedwait (mq, 1))
 	{
-	  e = svm_msg_q_msg_data (em->our_event_queue, &msg);
-	  handle_mq_event (e);
-	  svm_msg_q_free_msg (em->our_event_queue, &msg);
+	  svm_msg_q_unlock (mq);
+	  continue;
 	}
-      if (rv == ETIMEDOUT
-	  && (em->time_to_stop || em->state == STATE_DETACHED))
-	break;
+      echo_mq_dequeue_batch (mq, msg_vec, ~0);
+      svm_msg_q_unlock (mq);
+
+      for (i = 0; i < vec_len (msg_vec); i++)
+	{
+	  msg = vec_elt_at_index (msg_vec, i);
+	  e = svm_msg_q_msg_data (mq, msg);
+	  handle_mq_event (e);
+	  svm_msg_q_free_msg (mq, msg);	/* No lock, single thread dequeuing */
+	}
+      vec_reset_length (msg_vec);
     }
+  vec_free (msg_vec);
   pthread_exit (0);
 }
 
@@ -744,8 +783,9 @@ print_usage_and_exit (void)
 	   "  use-svm-api         Use SVM API to connect to VPP\n"
 	   "  test-bytes[:assert] Check data correctness when receiving (assert fails on first error)\n"
 	   "  fifo-size N         Use N Kb fifos\n"
-	   "  rx-buf N            Use N Kb RX buffer\n"
-	   "  tx-buf N            Use N Kb TX test buffer\n"
+	   "  mq-size N           Use N event slots for vpp_echo <-> vpp events\n"
+	   "  rx-buf N[Kb|Mb|GB]  Use N[Kb|Mb|GB] RX buffer\n"
+	   "  tx-buf N[Kb|Mb|GB]  Use N[Kb|Mb|GB] TX test buffer\n"
 	   "  appns NAMESPACE     Use the namespace NAMESPACE\n"
 	   "  all-scope           all-scope option\n"
 	   "  local-scope         local-scope option\n"
@@ -841,10 +881,12 @@ echo_process_opts (int argc, char **argv)
 	em->use_sock_api = 0;
       else if (unformat (a, "fifo-size %d", &tmp))
 	em->fifo_size = tmp << 10;
-      else if (unformat (a, "rx-buf %d", &tmp))
-	em->rx_buf_size = tmp << 10;
-      else if (unformat (a, "tx-buf %d", &tmp))
-	em->rx_buf_size = tmp << 10;
+      else if (unformat (a, "rx-buf %U", unformat_data, &em->rx_buf_size))
+	;
+      else if (unformat (a, "tx-buf %U", unformat_data, &em->tx_buf_size))
+	;
+      else if (unformat (a, "mq-size %d", &em->evt_q_size))
+	;
       else if (unformat (a, "nclients %d", &em->n_clients))
 	{
 	  em->n_sessions = em->n_clients + 1;
@@ -969,6 +1011,7 @@ main (int argc, char **argv)
   em->time_to_stop = 0;
   em->i_am_master = 1;
   em->n_rx_threads = 4;
+  em->evt_q_size = 256;
   em->test_return_packets = RETURN_PACKETS_NOTEST;
   em->timing.start_event = ECHO_EVT_FIRST_QCONNECT;
   em->timing.end_event = ECHO_EVT_LAST_BYTE;

@@ -23,7 +23,6 @@
 VLIB_PLUGIN_REGISTER () = {
   .version = VPP_BUILD_VER,
   .description = "VMWare Vmxnet3 Device Driver",
-  .default_disabled = 1,
 };
 /* *INDENT-ON* */
 
