@@ -91,7 +91,7 @@ api_mactime_enable_disable (vat_main_t * vam)
 }
 
 #if VPP_API_TEST_BUILTIN
-extern u8 * format_bytes_with_width (u8 * s, va_list * va);
+extern u8 *format_bytes_with_width (u8 * s, va_list * va);
 #else
 u8 *
 format_bytes_with_width (u8 * s, va_list * va)
@@ -134,7 +134,8 @@ format_bytes_with_width (u8 * s, va_list * va)
 }
 #endif
 
-static u8 *format_device (u8 * s, va_list * args)
+static u8 *
+format_device (u8 * s, va_list * args)
 {
   mactime_device_t *dp = va_arg (*args, mactime_device_t *);
   mactime_test_main_t *mm = &mactime_test_main;
@@ -148,8 +149,8 @@ static u8 *format_device (u8 * s, va_list * args)
   if (dp == 0)
     {
       s = format (s, "%-15s %5s %18s %14s %10s %11s %13s",
-                  "Device Name", "Index", "Addresses", "Status",
-                  "AllowPkt", "AllowByte", "DropPkt");
+		  "Device Name", "Index", "Addresses", "Status",
+		  "AllowPkt", "AllowByte", "DropPkt");
       vec_add1 (s, '\n');
       return s;
     }
@@ -165,27 +166,27 @@ static u8 *format_device (u8 * s, va_list * args)
       start0 = r->start + mm->sunday_midnight;
       end0 = r->end + mm->sunday_midnight;
       if (verbose)
-        s = format (s, "  Range %d: %U - %U\n", j,
-                    format_clib_timebase_time, start0,
-                    format_clib_timebase_time, end0);
+	s = format (s, "  Range %d: %U - %U\n", j,
+		    format_clib_timebase_time, start0,
+		    format_clib_timebase_time, end0);
 
       if (now >= start0 && now <= end0)
-        {
-          if (dp->flags & MACTIME_DEVICE_FLAG_DYNAMIC_ALLOW)
-            current_status = 3;
-          else if (dp->flags & MACTIME_DEVICE_FLAG_DYNAMIC_ALLOW_QUOTA)
-            current_status = 5;
-          else
-            current_status = 2;
-          if (verbose)
-            {
-              s = format (s, "  Time in range %d:", j);
-              s = format (s, "     %U - %U\n",
-                          format_clib_timebase_time, start0,
-                          format_clib_timebase_time, end0);
-            }
-          goto print;
-        }
+	{
+	  if (dp->flags & MACTIME_DEVICE_FLAG_DYNAMIC_ALLOW)
+	    current_status = 3;
+	  else if (dp->flags & MACTIME_DEVICE_FLAG_DYNAMIC_ALLOW_QUOTA)
+	    current_status = 5;
+	  else
+	    current_status = 2;
+	  if (verbose)
+	    {
+	      s = format (s, "  Time in range %d:", j);
+	      s = format (s, "     %U - %U\n",
+			  format_clib_timebase_time, start0,
+			  format_clib_timebase_time, end0);
+	    }
+	  goto print;
+	}
     }
   if (verbose && j)
     s = format (s, "  No range match.\n");
@@ -200,7 +201,7 @@ static u8 *format_device (u8 * s, va_list * args)
   if (dp->flags & MACTIME_DEVICE_FLAG_DYNAMIC_ALLOW_QUOTA)
     current_status = 4;
 
- print:
+print:
   macstring = format (0, "%U", format_mac_address, dp->mac_address);
   switch (current_status)
     {
@@ -228,15 +229,14 @@ static u8 *format_device (u8 * s, va_list * args)
     }
 
   s = format (s, "%-15s %5d %18s %14s\n",
-              dp->device_name, dp->pool_index, macstring, status_string);
+	      dp->device_name, dp->pool_index, macstring, status_string);
   vec_free (macstring);
 
   if (dp->data_quota > 0)
     {
       s = format (s, "%-59s %s%U %s%U", " ", "Quota ",
-                  format_bytes_with_width, dp->data_quota, 10,
-                  "Use ", format_bytes_with_width,
-                  dp->data_used_in_range, 8);
+		  format_bytes_with_width, dp->data_quota, 10,
+		  "Use ", format_bytes_with_width, dp->data_used_in_range, 8);
       vec_add1 (s, '\n');
     }
   return s;
@@ -262,10 +262,11 @@ api_mactime_dump (vat_main_t * vam)
   while (unformat_check_input (i) != UNFORMAT_END_OF_INPUT)
     {
       if (unformat (i, "force"))
-        tm->vpp_table_epoch = 0;
+	tm->vpp_table_epoch = 0;
       else if (unformat (i, "verbose"))
-        verbose = 1;
-      else break;
+	verbose = 1;
+      else
+	break;
     }
 
   /* Construct the API message */
@@ -278,7 +279,7 @@ api_mactime_dump (vat_main_t * vam)
   /* Wait for a reply... */
   W (ret);
 
-  fformat (vam->ofp, "%U", format_device, 0 /* header */, 0 /* verbose */);
+  fformat (vam->ofp, "%U", format_device, 0 /* header */ , 0 /* verbose */ );
   /* *INDENT-OFF* */
   pool_foreach (dev, tm->devices,
   ({
@@ -424,12 +425,11 @@ api_mactime_add_del_range (vat_main_t * vam)
 }
 
 /* We shouldn't get these... */
-static void vl_api_mactime_details_t_handler
-(vl_api_mactime_details_t *mp)
+static void
+vl_api_mactime_details_t_handler (vl_api_mactime_details_t * mp)
 {
   clib_warning ("WARNING: stub called...");
 }
-
 
 #include <mactime/mactime.api_test.c>
 

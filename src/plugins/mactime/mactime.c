@@ -158,7 +158,8 @@ static void vl_api_mactime_enable_disable_t_handler
   REPLY_MACRO (VL_API_MACTIME_ENABLE_DISABLE_REPLY);
 }
 
-static void vl_api_mactime_dump_t_handler (vl_api_mactime_dump_t *mp)
+static void
+vl_api_mactime_dump_t_handler (vl_api_mactime_dump_t * mp)
 {
   vl_api_mactime_details_t *ep;
   vl_api_mactime_dump_reply_t *rmp;
@@ -275,9 +276,9 @@ static void vl_api_mactime_add_del_range_t_handler
    * Change the table epoch. Skip 0 so clients can code my_table_epoch = 0
    * to receive a full dump.
    */
-  mm->device_table_epoch ++;
-  if (PREDICT_FALSE(mm->device_table_epoch == 0))
-    mm->device_table_epoch ++;
+  mm->device_table_epoch++;
+  if (PREDICT_FALSE (mm->device_table_epoch == 0))
+    mm->device_table_epoch++;
 
   data_quota = clib_net_to_host_u64 (mp->data_quota);
 

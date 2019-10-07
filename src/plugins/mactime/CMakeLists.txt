@@ -23,17 +23,20 @@ add_vpp_plugin(mactime
   mactime_test.c
 )
 
-add_vpp_executable(mactime_top ENABLE_EXPORTS
-  SOURCES
-  mactime_top.c
+option(VPP_BUILD_MACTIME_TOP "Build mactime plugin 'top' tool" OFF)
+if(VPP_BUILD_MACTIME_TOP)
+  add_vpp_executable(mactime_top ENABLE_EXPORTS
+    SOURCES
+    mactime_top.c
 
-  DEPENDS api_headers
+    DEPENDS api_headers
 
-  LINK_LIBRARIES
-  vlibmemoryclient
-  vppapiclient
-  svm
-  vppinfra
-  Threads::Threads
-  rt m dl crypto
-)
+    LINK_LIBRARIES
+    vlibmemoryclient
+    vppapiclient
+    svm
+    vppinfra
+    Threads::Threads
+    rt m dl crypto
+    )
+endif()

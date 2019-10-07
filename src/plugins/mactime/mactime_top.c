@@ -47,9 +47,10 @@ mt_main_t mt_main;
 
 /* Indispensable for debugging in gdb... */
 
-u32 vl(void *x)
+u32
+vl (void *x)
 {
-    return vec_len(x);
+  return vec_len (x);
 }
 
 #define foreach_mactime_api_msg                 \
@@ -57,7 +58,7 @@ _(MACTIME_DUMP_REPLY, mactime_dump_reply)       \
 _(MACTIME_DETAILS, mactime_details)
 
 static void vl_api_mactime_dump_reply_t_handler
-(vl_api_mactime_dump_reply_t *mp)
+  (vl_api_mactime_dump_reply_t * mp)
 {
   mt_main_t *mm = &mt_main;
   i32 retval = clib_net_to_host_u32 (mp->retval);
@@ -66,8 +67,8 @@ static void vl_api_mactime_dump_reply_t_handler
   mm->result_ready = 1;
 }
 
-static void vl_api_mactime_details_t_handler
-(vl_api_mactime_details_t *mp)
+static void
+vl_api_mactime_details_t_handler (vl_api_mactime_details_t * mp)
 {
   mt_main_t *mm = &mt_main;
   mactime_device_t *dev;
@@ -75,7 +76,7 @@ static void vl_api_mactime_details_t_handler
   clib_timebase_range_t *rp;
   uword *p;
 
-  if (PREDICT_FALSE(mm->device_by_device_name == 0))
+  if (PREDICT_FALSE (mm->device_by_device_name == 0))
     mm->device_by_device_name = hash_create_string (0, sizeof (uword));
 
   p = hash_get_mem (mm->device_by_device_name, mp->device_name);
@@ -88,11 +89,11 @@ static void vl_api_mactime_details_t_handler
       memset (dev, 0, sizeof (*dev));
       dev->device_name = vec_dup (hash_name_copy);
       hash_set_mem (mm->device_by_device_name, hash_name_copy,
-                    dev - mm->devices);
+		    dev - mm->devices);
     }
 
   clib_memcpy_fast (dev->mac_address, mp->mac_address,
-                    sizeof (dev->mac_address));
+		    sizeof (dev->mac_address));
   dev->data_quota = clib_net_to_host_u64 (mp->data_quota);
   dev->data_used_in_range = clib_net_to_host_u64 (mp->data_used_in_range);
   dev->flags = clib_net_to_host_u32 (mp->flags);
@@ -153,7 +154,8 @@ connect_to_vpp (char *name)
   return 0;
 }
 
-static void dump_mactime_table (mt_main_t *mm)
+static void
+dump_mactime_table (mt_main_t * mm)
 {
   vl_api_mactime_dump_t *mp;
   u32 deadman_counter = 1000;
@@ -161,13 +163,14 @@ static void dump_mactime_table (mt_main_t *mm)
   /* Send the dump request */
   mp = vl_msg_api_alloc (sizeof (*mp));
   memset (mp, 0, sizeof (*mp));
-  mp->_vl_msg_id = clib_host_to_net_u16 (VL_API_MACTIME_DUMP + mm->msg_id_base);
+  mp->_vl_msg_id =
+    clib_host_to_net_u16 (VL_API_MACTIME_DUMP + mm->msg_id_base);
   mp->client_index = mm->my_client_index;
   mp->my_table_epoch = mm->my_table_epoch;
-  vl_msg_api_send_shmem (mm->vl_input_queue, (u8 *)&mp);
+  vl_msg_api_send_shmem (mm->vl_input_queue, (u8 *) & mp);
 
   /* Wait up to 1 second for vpp to reply */
-  while (deadman_counter -- && mm->result_ready == 0)
+  while (deadman_counter-- && mm->result_ready == 0)
     unix_sleep (1e-3);
 
   if (mm->retval && (mm->retval != VNET_API_ERROR_NO_CHANGE))
@@ -175,7 +178,8 @@ static void dump_mactime_table (mt_main_t *mm)
 
 }
 
-static void scrape_stats_segment (mt_main_t *mm)
+static void
+scrape_stats_segment (mt_main_t * mm)
 {
   vlib_counter_t **counters_by_thread;
   vlib_counter_t *counters;
@@ -196,7 +200,11 @@ static void scrape_stats_segment (mt_main_t *mm)
   }));
   /* *INDENT-ON* */
 
- again1:
+  /* Nothing to do... */
+  if (vec_len (pool_indices) == 0)
+    return;
+
+again1:
 
   /* Has directory been updated? */
   if (mm->ls_result1 == 0 || (sm->shared_header->epoch != sm->current_epoch))
@@ -221,12 +229,12 @@ static void scrape_stats_segment (mt_main_t *mm)
       mm->allow_counters[index].bytes = 0;
 
       for (j = 0; j < vec_len (counters_by_thread); j++)
-        {
-          counters = stat_segment_pointer (sm->shared_header,
-                                           offset_vector[j]);
-          mm->allow_counters[index].packets += counters[index].packets;
-          mm->allow_counters[index].bytes += counters[index].bytes;
-        }
+	{
+	  counters = stat_segment_pointer (sm->shared_header,
+					   offset_vector[j]);
+	  mm->allow_counters[index].packets += counters[index].packets;
+	  mm->allow_counters[index].bytes += counters[index].bytes;
+	}
     }
 
   /* Ugh, segment changed during access. Try again */
@@ -240,7 +248,7 @@ static void scrape_stats_segment (mt_main_t *mm)
       mm->ls_result2 = stat_segment_ls (mm->pattern2);
     }
 
- again2:
+again2:
   stat_segment_access_start (&sa, sm);
 
   ep = vec_elt_at_index (sm->directory_vector, mm->ls_result2[0]);
@@ -256,12 +264,12 @@ static void scrape_stats_segment (mt_main_t *mm)
       mm->drop_counters[index].bytes = 0;
 
       for (j = 0; j < vec_len (counters_by_thread); j++)
-        {
-          counters = stat_segment_pointer (sm->shared_header,
-                                           offset_vector[j]);
-          mm->drop_counters[index].packets += counters[index].packets;
-          mm->drop_counters[index].bytes += counters[index].bytes;
-        }
+	{
+	  counters = stat_segment_pointer (sm->shared_header,
+					   offset_vector[j]);
+	  mm->drop_counters[index].packets += counters[index].packets;
+	  mm->drop_counters[index].bytes += counters[index].bytes;
+	}
     }
   /* Ugh, segment changed during access. Try again */
   if (stat_segment_access_end (&sa, sm))
@@ -274,7 +282,7 @@ format_mac_address (u8 * s, va_list * args)
   u8 *a = va_arg (*args, u8 *);
 
   return format (s, "%02x:%02x:%02x:%02x:%02x:%02x",
-                 a[0], a[1], a[2], a[3], a[4], a[5]);
+		 a[0], a[1], a[2], a[3], a[4], a[5]);
 }
 
 static u8 *
@@ -317,7 +325,8 @@ format_bytes_with_width (u8 * s, va_list * va)
   return s;
 }
 
-static u8 *format_device (u8 * s, va_list * args)
+static u8 *
+format_device (u8 * s, va_list * args)
 {
   mactime_device_t *dp = va_arg (*args, mactime_device_t *);
   mt_main_t *mm = &mt_main;
@@ -331,8 +340,8 @@ static u8 *format_device (u8 * s, va_list * args)
   if (dp == 0)
     {
       s = format (s, "%-15s %5s %18s %14s %10s %11s %13s",
-                  "Device Name", "Index", "Addresses", "Status",
-                  "AllowPkt", "AllowByte", "DropPkt");
+		  "Device Name", "Index", "Addresses", "Status",
+		  "AllowPkt", "AllowByte", "DropPkt");
       vec_add1 (s, '\n');
       return s;
     }
@@ -351,27 +360,27 @@ static u8 *format_device (u8 * s, va_list * args)
       start0 = r->start + mm->sunday_midnight;
       end0 = r->end + mm->sunday_midnight;
       if (verbose)
-        s = format (s, "  Range %d: %U - %U\n", j,
-                    format_clib_timebase_time, start0,
-                    format_clib_timebase_time, end0);
+	s = format (s, "  Range %d: %U - %U\n", j,
+		    format_clib_timebase_time, start0,
+		    format_clib_timebase_time, end0);
 
       if (now >= start0 && now <= end0)
-        {
-          if (dp->flags & MACTIME_DEVICE_FLAG_DYNAMIC_ALLOW)
-            current_status = 3;
-          else if (dp->flags & MACTIME_DEVICE_FLAG_DYNAMIC_ALLOW_QUOTA)
-            current_status = 5;
-          else
-            current_status = 2;
-          if (verbose)
-            {
-              s = format (s, "  Time in range %d:", j);
-              s = format (s, "     %U - %U\n",
-                          format_clib_timebase_time, start0,
-                          format_clib_timebase_time, end0);
-            }
-          goto print;
-        }
+	{
+	  if (dp->flags & MACTIME_DEVICE_FLAG_DYNAMIC_ALLOW)
+	    current_status = 3;
+	  else if (dp->flags & MACTIME_DEVICE_FLAG_DYNAMIC_ALLOW_QUOTA)
+	    current_status = 5;
+	  else
+	    current_status = 2;
+	  if (verbose)
+	    {
+	      s = format (s, "  Time in range %d:", j);
+	      s = format (s, "     %U - %U\n",
+			  format_clib_timebase_time, start0,
+			  format_clib_timebase_time, end0);
+	    }
+	  goto print;
+	}
     }
   if (verbose && j)
     s = format (s, "  No range match.\n");
@@ -386,7 +395,7 @@ static u8 *format_device (u8 * s, va_list * args)
   if (dp->flags & MACTIME_DEVICE_FLAG_DYNAMIC_ALLOW_QUOTA)
     current_status = 4;
 
- print:
+print:
   macstring = format (0, "%U", format_mac_address, dp->mac_address);
   switch (current_status)
     {
@@ -414,29 +423,29 @@ static u8 *format_device (u8 * s, va_list * args)
     }
 
   s = format (s, "%-15s %5d %18s %14s %10lld %U %13lld\n",
-              dp->device_name, dp->pool_index, macstring, status_string,
-              mm->allow_counters[dp->pool_index].packets,
-              format_bytes_with_width,
-              mm->allow_counters[dp->pool_index].bytes, 10,
-              mm->drop_counters[dp->pool_index].packets);
+	      dp->device_name, dp->pool_index, macstring, status_string,
+	      mm->allow_counters[dp->pool_index].packets,
+	      format_bytes_with_width,
+	      mm->allow_counters[dp->pool_index].bytes, 10,
+	      mm->drop_counters[dp->pool_index].packets);
   vec_free (macstring);
 
   if (dp->data_quota > 0)
     {
       s = format (s, "%-59s %s%U %s%U", " ", "Quota ",
-                  format_bytes_with_width, dp->data_quota, 10,
-                  "Use ", format_bytes_with_width,
-                  dp->data_used_in_range, 8);
+		  format_bytes_with_width, dp->data_quota, 10,
+		  "Use ", format_bytes_with_width, dp->data_used_in_range, 8);
       vec_add1 (s, '\n');
     }
   return s;
 }
 
-static void print_device_table (mt_main_t *mm)
+static void
+print_device_table (mt_main_t * mm)
 {
   mactime_device_t *dev;
 
-  fformat (stdout, "%U", format_device, 0 /* header */, 0 /* verbose */);
+  fformat (stdout, "%U", format_device, 0 /* header */ , 0 /* verbose */ );
   /* *INDENT-OFF* */
   pool_foreach (dev, mm->devices,
   ({
@@ -445,12 +454,13 @@ static void print_device_table (mt_main_t *mm)
   /* *INDENT-ON* */
 }
 
-int main (int argc, char **argv)
+int
+main (int argc, char **argv)
 {
   mt_main_t *mm = &mt_main;
   extern stat_client_main_t stat_client_main;
 
-  clib_mem_init (0, 64<<20);
+  clib_mem_init (0, 64 << 20);
 
   if (connect_to_vpp ("mactime_top") < 0)
     {
@@ -458,27 +468,27 @@ int main (int argc, char **argv)
       exit (1);
     }
 
-  if (stat_segment_connect(argv[1]) < 0)
+  if (stat_segment_connect (argv[1]) < 0)
     {
       fformat (stderr, "stat segment connect error");
       exit (1);
     }
 
-  mm->stat_client_main = (stat_client_main_t *) &stat_client_main;
+  mm->stat_client_main = (stat_client_main_t *) & stat_client_main;
 
   /* US EDT - $$$ FIXME */
   clib_time_init (&mm->clib_time);
   mm->timezone_offset = -5.0;
   clib_timebase_init (&mm->timebase, mm->timezone_offset,
-                      CLIB_TIMEBASE_DAYLIGHT_USA);
+		      CLIB_TIMEBASE_DAYLIGHT_USA);
 
-  vec_add1(mm->pattern1, (u8 *) "^/mactime/allow");
-  vec_add1(mm->pattern2, (u8 *) "^/mactime/drop");
+  vec_add1 (mm->pattern1, (u8 *) "^/mactime/allow");
+  vec_add1 (mm->pattern2, (u8 *) "^/mactime/drop");
 
   while (1)
     {
-      dump_mactime_table(mm);
-      scrape_stats_segment(mm);
+      dump_mactime_table (mm);
+      scrape_stats_segment (mm);
       print_device_table (mm);
       unix_sleep (5.0);
     }
