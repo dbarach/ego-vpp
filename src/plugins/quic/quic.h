@@ -38,7 +38,7 @@
 #define QUIC_MAX_PACKET_SIZE 1280
 
 #define QUIC_INT_MAX  0x3FFFFFFFFFFFFFFF
-#define QUIC_FIFO_SIZE (64 << 10)
+#define QUIC_DEFAULT_FIFO_SIZE (64 << 10)
 #define QUIC_SEND_PACKET_VEC_SIZE 16
 
 /* Taken from quicly.c */
@@ -64,6 +64,16 @@
 #else
 #define QUIC_DBG(_lvl, _fmt, _args...)
 #endif
+
+extern vlib_node_registration_t quic_input_node;
+
+typedef enum
+{
+#define quic_error(n,s) QUIC_ERROR_##n,
+#include <plugins/quic/quic_error.def>
+#undef quic_error
+  QUIC_N_ERROR,
+} quic_error_t;
 
 typedef enum quic_ctx_conn_state_
 {
@@ -153,6 +163,21 @@ typedef struct quic_worker_ctx_
   u32 *opening_ctx_pool;
 } quic_worker_ctx_t;
 
+typedef struct quic_rx_packet_ctx_
+{
+  quicly_decoded_packet_t packet;
+  u8 data[QUIC_MAX_PACKET_SIZE];
+  u32 ctx_index;
+  u32 thread_index;
+} quic_rx_packet_ctx_t;
+
+typedef struct quicly_ctx_data_
+{
+  quicly_context_t quicly_ctx;
+  char cid_key[17];
+  ptls_context_t ptls_ctx;
+} quicly_ctx_data_t;
+
 typedef struct quic_main_
 {
   u32 app_index;
@@ -171,6 +196,9 @@ typedef struct quic_main_
   quicly_context_t quicly_ctx;
   ptls_handshake_properties_t hs_properties;
   quicly_cid_plaintext_t next_cid;
+
+  u64 udp_fifo_size;
+  u64 udp_fifo_prealloc;
 } quic_main_t;
 
 #endif /* __included_quic_h__ */

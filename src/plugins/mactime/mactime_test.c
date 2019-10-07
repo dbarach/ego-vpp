@@ -23,8 +23,6 @@
 #include <mactime/mactime_device.h>
 #include <vpp-api/client/stat_client.h>
 
-uword vat_unformat_sw_if_index (unformat_input_t * input, va_list * args);
-
 /* Declare message IDs */
 #include <mactime/mactime.api_enum.h>
 #include <mactime/mactime.api_types.h>
