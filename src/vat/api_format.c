@@ -1029,6 +1029,8 @@ static void vl_api_sw_interface_details_t_handler_json
 			     sizeof (mp->l2_address));
   vat_json_object_add_string_copy (node, "interface_name",
 				   mp->interface_name);
+  vat_json_object_add_string_copy (node, "interface_dev_type",
+				   mp->interface_dev_type);
   vat_json_object_add_uint (node, "flags", mp->flags);
   vat_json_object_add_uint (node, "link_duplex", mp->link_duplex);
   vat_json_object_add_uint (node, "link_speed", mp->link_speed);
@@ -5173,6 +5175,7 @@ _(l2_interface_pbb_tag_rewrite_reply)                   \
 _(set_punt_reply)                                       \
 _(feature_enable_disable_reply)				\
 _(sw_interface_tag_add_del_reply)			\
+_(sw_interface_add_del_mac_address_reply)		\
 _(hw_interface_set_mtu_reply)                           \
 _(p2p_ethernet_add_reply)                               \
 _(p2p_ethernet_del_reply)                               \
@@ -5481,6 +5484,7 @@ _(IP_TABLE_DETAILS, ip_table_details)                                   \
 _(IP_ROUTE_DETAILS, ip_route_details)                                   \
 _(FEATURE_ENABLE_DISABLE_REPLY, feature_enable_disable_reply)           \
 _(SW_INTERFACE_TAG_ADD_DEL_REPLY, sw_interface_tag_add_del_reply)     	\
+_(SW_INTERFACE_ADD_DEL_MAC_ADDRESS_REPLY, sw_interface_add_del_mac_address_reply) \
 _(L2_XCONNECT_DETAILS, l2_xconnect_details)                             \
 _(HW_INTERFACE_SET_MTU_REPLY, hw_interface_set_mtu_reply)               \
 _(IP_NEIGHBOR_DETAILS, ip_neighbor_details)                             \
@@ -12435,20 +12439,19 @@ api_geneve_add_del_tunnel (vat_main_t * vam)
 
   if (ipv6_set)
     {
-      clib_memcpy (mp->local_address, &src.ip6, sizeof (src.ip6));
-      clib_memcpy (mp->remote_address, &dst.ip6, sizeof (dst.ip6));
+      clib_memcpy (&mp->local_address.un.ip6, &src.ip6, sizeof (src.ip6));
+      clib_memcpy (&mp->remote_address.un.ip6, &dst.ip6, sizeof (dst.ip6));
     }
   else
     {
-      clib_memcpy (mp->local_address, &src.ip4, sizeof (src.ip4));
-      clib_memcpy (mp->remote_address, &dst.ip4, sizeof (dst.ip4));
+      clib_memcpy (&mp->local_address.un.ip4, &src.ip4, sizeof (src.ip4));
+      clib_memcpy (&mp->remote_address.un.ip4, &dst.ip4, sizeof (dst.ip4));
     }
   mp->encap_vrf_id = ntohl (encap_vrf_id);
   mp->decap_next_index = ntohl (decap_next_index);
   mp->mcast_sw_if_index = ntohl (mcast_sw_if_index);
   mp->vni = ntohl (vni);
   mp->is_add = is_add;
-  mp->is_ipv6 = ipv6_set;
 
   S (mp);
   W (ret);
@@ -12459,8 +12462,19 @@ static void vl_api_geneve_tunnel_details_t_handler
   (vl_api_geneve_tunnel_details_t * mp)
 {
   vat_main_t *vam = &vat_main;
-  ip46_address_t src = to_ip46 (mp->is_ipv6, mp->dst_address);
-  ip46_address_t dst = to_ip46 (mp->is_ipv6, mp->src_address);
+  ip46_address_t src = {.as_u64[0] = 0,.as_u64[1] = 0 };
+  ip46_address_t dst = {.as_u64[0] = 0,.as_u64[1] = 0 };
+
+  if (mp->src_address.af == ADDRESS_IP6)
+    {
+      clib_memcpy (&src.ip6, &mp->src_address.un.ip6, sizeof (ip6_address_t));
+      clib_memcpy (&dst.ip6, &mp->dst_address.un.ip6, sizeof (ip6_address_t));
+    }
+  else
+    {
+      clib_memcpy (&src.ip4, &mp->src_address.un.ip4, sizeof (ip4_address_t));
+      clib_memcpy (&dst.ip4, &mp->dst_address.un.ip4, sizeof (ip4_address_t));
+    }
 
   print (vam->ofp, "%11d%24U%24U%14d%18d%13d%19d",
 	 ntohl (mp->sw_if_index),
@@ -12476,6 +12490,7 @@ static void vl_api_geneve_tunnel_details_t_handler_json
 {
   vat_main_t *vam = &vat_main;
   vat_json_node_t *node = NULL;
+  bool is_ipv6;
 
   if (VAT_JSON_ARRAY != vam->json_tree.type)
     {
@@ -12486,29 +12501,29 @@ static void vl_api_geneve_tunnel_details_t_handler_json
 
   vat_json_init_object (node);
   vat_json_object_add_uint (node, "sw_if_index", ntohl (mp->sw_if_index));
-  if (mp->is_ipv6)
+  is_ipv6 = mp->src_address.af == ADDRESS_IP6;
+  if (is_ipv6)
     {
       struct in6_addr ip6;
 
-      clib_memcpy (&ip6, mp->src_address, sizeof (ip6));
+      clib_memcpy (&ip6, &mp->src_address.un.ip6, sizeof (ip6));
       vat_json_object_add_ip6 (node, "src_address", ip6);
-      clib_memcpy (&ip6, mp->dst_address, sizeof (ip6));
+      clib_memcpy (&ip6, &mp->dst_address.un.ip6, sizeof (ip6));
       vat_json_object_add_ip6 (node, "dst_address", ip6);
     }
   else
     {
       struct in_addr ip4;
 
-      clib_memcpy (&ip4, mp->src_address, sizeof (ip4));
+      clib_memcpy (&ip4, &mp->src_address.un.ip4, sizeof (ip4));
       vat_json_object_add_ip4 (node, "src_address", ip4);
-      clib_memcpy (&ip4, mp->dst_address, sizeof (ip4));
+      clib_memcpy (&ip4, &mp->dst_address.un.ip4, sizeof (ip4));
       vat_json_object_add_ip4 (node, "dst_address", ip4);
     }
   vat_json_object_add_uint (node, "encap_vrf_id", ntohl (mp->encap_vrf_id));
   vat_json_object_add_uint (node, "decap_next_index",
 			    ntohl (mp->decap_next_index));
   vat_json_object_add_uint (node, "vni", ntohl (mp->vni));
-  vat_json_object_add_uint (node, "is_ipv6", mp->is_ipv6 ? 1 : 0);
   vat_json_object_add_uint (node, "mcast_sw_if_index",
 			    ntohl (mp->mcast_sw_if_index));
 }
@@ -19999,6 +20014,54 @@ api_sw_interface_tag_add_del (vat_main_t * vam)
   return ret;
 }
 
+static int
+api_sw_interface_add_del_mac_address (vat_main_t * vam)
+{
+  unformat_input_t *i = vam->input;
+  vl_api_mac_address_t mac = { 0 };
+  vl_api_sw_interface_add_del_mac_address_t *mp;
+  u32 sw_if_index = ~0;
+  u8 is_add = 1;
+  u8 mac_set = 0;
+  int ret;
+
+  while (unformat_check_input (i) != UNFORMAT_END_OF_INPUT)
+    {
+      if (unformat (i, "%U", api_unformat_sw_if_index, vam, &sw_if_index))
+	;
+      else if (unformat (i, "sw_if_index %d", &sw_if_index))
+	;
+      else if (unformat (i, "%U", unformat_vl_api_mac_address, &mac))
+	mac_set++;
+      else if (unformat (i, "del"))
+	is_add = 0;
+      else
+	break;
+    }
+
+  if (sw_if_index == ~0)
+    {
+      errmsg ("missing interface name or sw_if_index");
+      return -99;
+    }
+
+  if (!mac_set)
+    {
+      errmsg ("missing MAC address");
+      return -99;
+    }
+
+  /* Construct the API message */
+  M (SW_INTERFACE_ADD_DEL_MAC_ADDRESS, mp);
+  mp->sw_if_index = ntohl (sw_if_index);
+  mp->is_add = is_add;
+  clib_memcpy (&mp->addr, &mac, sizeof (mac));
+
+  S (mp);
+  W (ret);
+  return ret;
+}
+
 static void vl_api_l2_xconnect_details_t_handler
   (vl_api_l2_xconnect_details_t * mp)
 {
@@ -21753,6 +21816,8 @@ _(feature_enable_disable, "arc_name <arc_name> "                        \
   "feature_name <feature_name> <intfc> | sw_if_index <nn> [disable]")	\
 _(sw_interface_tag_add_del, "<intfc> | sw_if_index <nn> tag <text>"	\
 "[disable]")                                                        	\
+_(sw_interface_add_del_mac_address, "<intfc> | sw_if_index <nn> "	\
+  "mac <mac-address> [del]")                                            \
 _(l2_xconnect_dump, "")                                             	\
 _(hw_interface_set_mtu, "<intfc> | hw_if_index <nn> mtu <nn>")        \
 _(ip_neighbor_dump, "[ip6] <intfc> | sw_if_index <nn>")                 \

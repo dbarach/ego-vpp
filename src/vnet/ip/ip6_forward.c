@@ -68,24 +68,21 @@ ip6_add_interface_prefix_routes (ip6_main_t * im,
   ip_lookup_main_t *lm = &im->lookup_main;
   ip_interface_prefix_t *if_prefix;
 
+  /* *INDENT-OFF* */
   ip_interface_prefix_key_t key = {
     .prefix = {
-	       .fp_len = address_length,
-	       .fp_proto = FIB_PROTOCOL_IP6,
-	       .fp_addr.ip6 = {
-			       .as_u64 = {
-					  address->as_u64[0] &
-					  im->fib_masks[address_length].
-					  as_u64[0],
-					  address->
-					  as_u64[1] &
-					  im->fib_masks[address_length].
-					  as_u64[1],
-					  },
-			       },
-	       },
+      .fp_len = address_length,
+      .fp_proto = FIB_PROTOCOL_IP6,
+      .fp_addr.ip6 = {
+        .as_u64 = {
+          address->as_u64[0] & im->fib_masks[address_length].as_u64[0],
+          address->as_u64[1] & im->fib_masks[address_length].as_u64[1],
+        },
+      },
+    },
     .sw_if_index = sw_if_index,
   };
+  /* *INDENT-ON* */
 
   /* If prefix already set on interface, just increment ref count & return */
   if_prefix = ip_get_interface_prefix (lm, &key);
@@ -178,24 +175,21 @@ ip6_del_interface_prefix_routes (ip6_main_t * im,
   ip_lookup_main_t *lm = &im->lookup_main;
   ip_interface_prefix_t *if_prefix;
 
+  /* *INDENT-OFF* */
   ip_interface_prefix_key_t key = {
     .prefix = {
-	       .fp_len = address_length,
-	       .fp_proto = FIB_PROTOCOL_IP6,
-	       .fp_addr.ip6 = {
-			       .as_u64 = {
-					  address->as_u64[0] &
-					  im->fib_masks[address_length].
-					  as_u64[0],
-					  address->
-					  as_u64[1] &
-					  im->fib_masks[address_length].
-					  as_u64[1],
-					  },
-			       },
-	       },
+      .fp_len = address_length,
+      .fp_proto = FIB_PROTOCOL_IP6,
+      .fp_addr.ip6 = {
+        .as_u64 = {
+          address->as_u64[0] & im->fib_masks[address_length].as_u64[0],
+          address->as_u64[1] & im->fib_masks[address_length].as_u64[1],
+        },
+      },
+    },
     .sw_if_index = sw_if_index,
   };
+  /* *INDENT-ON* */
 
   if_prefix = ip_get_interface_prefix (lm, &key);
   if (!if_prefix)
@@ -210,12 +204,11 @@ ip6_del_interface_prefix_routes (ip6_main_t * im,
   if (if_prefix->ref_count > 0)
     return;
 
-  /* length <= 30, delete glean route */
+  /* length <= 128, delete glean route */
   if (address_length <= 128)
     {
       /* remove glean route for prefix */
       fib_table_entry_delete (fib_index, &key.prefix, FIB_SOURCE_INTERFACE);
-
     }
 
   mhash_unset (&lm->prefix_to_if_prefix_index, &key, 0 /* old_value */ );
@@ -416,15 +409,19 @@ ip6_add_del_interface_address (vlib_main_t * vm,
 
   ip6_sw_interface_enable_disable (sw_if_index, !is_del);
 
-  if (is_del)
-    ip6_del_interface_routes (sw_if_index,
-			      im, ip6_af.fib_index, address, address_length);
-  else
-    ip6_add_interface_routes (vnm, sw_if_index,
-			      im, ip6_af.fib_index,
-			      pool_elt_at_index (lm->if_address_pool,
-						 if_address_index));
-
+  /* intf addr routes are added/deleted on admin up/down */
+  if (vnet_sw_interface_is_admin_up (vnm, sw_if_index))
+    {
+      if (is_del)
+	ip6_del_interface_routes (sw_if_index,
+				  im, ip6_af.fib_index, address,
+				  address_length);
+      else
+	ip6_add_interface_routes (vnm, sw_if_index,
+				  im, ip6_af.fib_index,
+				  pool_elt_at_index (lm->if_address_pool,
+						     if_address_index));
+    }
   {
     ip6_add_del_interface_address_callback_t *cb;
     vec_foreach (cb, im->add_del_interface_address_callbacks)
@@ -1014,11 +1011,10 @@ ip6_tcp_udp_icmp_compute_checksum (vlib_main_t * vm, vlib_buffer_t * p0,
 				   ip6_header_t * ip0, int *bogus_lengthp)
 {
   ip_csum_t sum0;
-  u16 sum16, payload_length_host_byte_order;
-  u32 i, n_this_buffer, n_bytes_left;
+  u16 payload_length_host_byte_order;
+  u32 i;
   u32 headers_size = sizeof (ip0[0]);
   u8 *data_this_buffer;
-  u8 length_odd;
 
   ASSERT (bogus_lengthp);
   *bogus_lengthp = 0;
@@ -1030,14 +1026,10 @@ ip6_tcp_udp_icmp_compute_checksum (vlib_main_t * vm, vlib_buffer_t * p0,
 
   for (i = 0; i < ARRAY_LEN (ip0->src_address.as_uword); i++)
     {
-      sum0 = ip_csum_with_carry (sum0,
-				 clib_mem_unaligned (&ip0->
-						     src_address.as_uword[i],
-						     uword));
-      sum0 =
-	ip_csum_with_carry (sum0,
-			    clib_mem_unaligned (&ip0->dst_address.as_uword[i],
-						uword));
+      sum0 = ip_csum_with_carry
+	(sum0, clib_mem_unaligned (&ip0->src_address.as_uword[i], uword));
+      sum0 = ip_csum_with_carry
+	(sum0, clib_mem_unaligned (&ip0->dst_address.as_uword[i], uword));
     }
 
   /* some icmp packets may come with a "router alert" hop-by-hop extension header (e.g., mldv2 packets)
@@ -1059,52 +1051,14 @@ ip6_tcp_udp_icmp_compute_checksum (vlib_main_t * vm, vlib_buffer_t * p0,
       headers_size += skip_bytes;
     }
 
-  n_bytes_left = n_this_buffer = payload_length_host_byte_order;
-
   if (p0)
-    {
-      u32 n_ip_bytes_this_buffer =
-	p0->current_length - (((u8 *) ip0 - p0->data) - p0->current_data);
-      if (n_this_buffer + headers_size > n_ip_bytes_this_buffer)
-	{
-	  n_this_buffer = p0->current_length > headers_size ?
-	    n_ip_bytes_this_buffer - headers_size : 0;
-	}
-    }
-
-  while (1)
-    {
-      sum0 = ip_incremental_checksum (sum0, data_this_buffer, n_this_buffer);
-      n_bytes_left -= n_this_buffer;
-      if (n_bytes_left == 0)
-	break;
-
-      ASSERT (p0->flags & VLIB_BUFFER_NEXT_PRESENT);
-      if (!(p0->flags & VLIB_BUFFER_NEXT_PRESENT))
-	{
-	  *bogus_lengthp = 1;
-	  return 0xfefe;
-	}
-
-      length_odd = (n_this_buffer & 1);
-
-      p0 = vlib_get_buffer (vm, p0->next_buffer);
-      data_this_buffer = vlib_buffer_get_current (p0);
-      n_this_buffer = clib_min (p0->current_length, n_bytes_left);
-
-      if (PREDICT_FALSE (length_odd))
-	{
-	  /* Prepend a 0 or the resulting checksum will be incorrect. */
-	  data_this_buffer--;
-	  n_this_buffer++;
-	  n_bytes_left++;
-	  data_this_buffer[0] = 0;
-	}
-    }
-
-  sum16 = ~ip_csum_fold (sum0);
-
-  return sum16;
+    return ip_calculate_l4_checksum (vm, p0, sum0,
+				     payload_length_host_byte_order,
+				     (u8 *) ip0, headers_size, NULL);
+  else
+    return ip_calculate_l4_checksum (vm, 0, sum0,
+				     payload_length_host_byte_order, NULL, 0,
+				     data_this_buffer);
 }
 
 u32

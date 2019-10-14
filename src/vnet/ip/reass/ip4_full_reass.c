@@ -185,6 +185,8 @@ typedef struct
   u32 fq_index;
   u32 fq_feature_index;
 
+  // reference count for enabling/disabling feature - per interface
+  u32 *feature_use_refcount_per_intf;
 } ip4_full_reass_main_t;
 
 extern ip4_full_reass_main_t ip4_full_reass_main;
@@ -233,6 +235,8 @@ typedef struct
   u32 fragment_first;
   u32 fragment_last;
   u32 total_data_len;
+  bool is_after_handoff;
+  ip4_header_t ip4_header;
 } ip4_full_reass_trace_t;
 
 extern vlib_node_registration_t ip4_full_reass_node;
@@ -272,7 +276,16 @@ format_ip4_full_reass_trace (u8 * s, va_list * args)
   u32 indent = 0;
   if (~0 != t->reass_id)
     {
-      s = format (s, "reass id: %u, op id: %u, ", t->reass_id, t->op_id);
+      if (t->is_after_handoff)
+	{
+	  s =
+	    format (s, "%U\n", format_ip4_header, &t->ip4_header,
+		    sizeof (t->ip4_header));
+	  indent = 2;
+	}
+      s =
+	format (s, "%Ureass id: %u, op id: %u, ", format_white_space, indent,
+		t->reass_id, t->op_id);
       indent = format_get_indent (s);
       s =
 	format (s,
@@ -320,7 +333,18 @@ ip4_full_reass_add_trace (vlib_main_t * vm, vlib_node_runtime_t * node,
 {
   vlib_buffer_t *b = vlib_get_buffer (vm, bi);
   vnet_buffer_opaque_t *vnb = vnet_buffer (b);
+  bool is_after_handoff = false;
+  if (vlib_buffer_get_trace_thread (b) != vm->thread_index)
+    {
+      is_after_handoff = true;
+    }
   ip4_full_reass_trace_t *t = vlib_add_trace (vm, node, b, sizeof (t[0]));
+  t->is_after_handoff = is_after_handoff;
+  if (t->is_after_handoff)
+    {
+      clib_memcpy (&t->ip4_header, vlib_buffer_get_current (b),
+		   clib_min (sizeof (t->ip4_header), b->current_length));
+    }
   if (reass)
     {
       t->reass_id = reass->id;
@@ -1448,6 +1472,7 @@ ip4_full_reass_init_function (vlib_main_t * vm)
   rm->fq_feature_index =
     vlib_frame_queue_main_init (ip4_full_reass_node_feature.index, 0);
 
+  rm->feature_use_refcount_per_intf = NULL;
   return error;
 }
 
@@ -1792,6 +1817,35 @@ VLIB_REGISTER_NODE (ip4_full_reass_feature_handoff_node) = {
   },
 };
 /* *INDENT-ON* */
+
+#ifndef CLIB_MARCH_VARIANT
+int
+ip4_full_reass_enable_disable_with_refcnt (u32 sw_if_index, int is_enable)
+{
+  ip4_full_reass_main_t *rm = &ip4_full_reass_main;
+  vec_validate (rm->feature_use_refcount_per_intf, sw_if_index);
+  if (is_enable)
+    {
+      if (!rm->feature_use_refcount_per_intf[sw_if_index])
+	{
+	  ++rm->feature_use_refcount_per_intf[sw_if_index];
+	  return vnet_feature_enable_disable ("ip4-unicast",
+					      "ip4-full-reassembly-feature",
+					      sw_if_index, 1, 0, 0);
+	}
+      ++rm->feature_use_refcount_per_intf[sw_if_index];
+    }
+  else
+    {
+      --rm->feature_use_refcount_per_intf[sw_if_index];
+      if (!rm->feature_use_refcount_per_intf[sw_if_index])
+	return vnet_feature_enable_disable ("ip4-unicast",
+					    "ip4-full-reassembly-feature",
+					    sw_if_index, 0, 0, 0);
+    }
+  return -1;
+}
+#endif
 
 /*
  * fd.io coding-style-patch-verification: ON

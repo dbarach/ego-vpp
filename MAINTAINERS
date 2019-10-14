@@ -268,6 +268,11 @@ M:	Dave Barach <dave@barachs.net>
 M:	Neale Ranns <nranns@cisco.com>
 F:	src/plugins/dhcp/
 
+VNET GENEVE
+I:	geneve
+M:	N/A
+F:	src/vnet/geneve/
+
 Plugin - Access Control List (ACL) Based Forwarding
 I:	abf
 M:	Neale Ranns <nranns@cisco.com>
@@ -517,7 +522,6 @@ F:	src/plugins/hs_apps/
 Python binding for the VPP API
 I:	papi
 M:	Ole Troan <ot@cisco.com>
-M:	Paul Vinciguerra <pvinci@vinciconsulting.com>
 F:	src/vpp-api/python
 
 Plugin - SCTP
@@ -546,6 +550,10 @@ F:	src/plugins/ct6
 Steal The NIC
 I:	stn
 F:	src/plugins/stn
+
+IOAM
+I:	ioam
+F:	src/plugins/ioam
 
 Awkward chained buffer geometry tool
 I:	oddbuf
