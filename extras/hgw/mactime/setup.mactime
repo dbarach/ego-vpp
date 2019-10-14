@@ -1,4 +1,11 @@
 set term pag off
+create tap host-if-name lstack host-ip4-addr 192.168.10.2/24
+set int ip address tap0 192.168.10.1/24
+set int state tap0 up
+
+http static server www-root /home/dbarach/dave-repo/vpp-web/public uri tcp://0.0.0.0/1234 cache-size 10m fifo-size 2048
+builtinurl enable
+
 loop create
 
 packet-generator new {
@@ -16,3 +23,4 @@ packet-generator new {
 
 bin mactime_enable_disable loop0
 bin mactime_add_del_range name fucker data-quota 2M mac de:ad:ba:be:00:01 allow-quota-range Mon - Fri 12:20 - 12:55
+bin mactime_add_del_range name sucker data-quota 2M mac de:ad:ba:be:00:02 allow-quota-range Mon - Fri 12:20 - 12:55
