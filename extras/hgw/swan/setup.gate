@@ -30,9 +30,9 @@ nat44 add static mapping local 192.168.1.2 22432 external GigabitEthernet3/0/0 2
 service restart isc-dhcp-server
 service restart dora
 
-uncomment { nat44 add identity mapping external GigabitEthernet3/0/0 udp 53053 }
-uncomment { bin dns_name_server_add_del 8.8.8.8 }
-uncomment { bin dns_enable_disable }
+nat44 add identity mapping external GigabitEthernet3/0/0 udp 53053
+bin dns_name_server_add_del 8.8.8.8
+ bin dns_enable_disable
 
 bin mactime_add_del_range name peg-maybe-new-iphone mac 10:ae:60:59:5b:0c allow-static
 bin mactime_add_del_range name unknown-apple mac 01:00:5e:7f:ff:fa drop-static
@@ -62,6 +62,9 @@ bin mactime_add_del_range name ip4-all-routers mac 01:00:5e:00:00:02 allow-stati
 bin mactime_add_del_range name ip4-igmp mac 01:00:5e:00:00:16 allow-static
 bin mactime_add_del_range name ip4-llmnr mac 01:00:5e:00:00:fb allow-static
 bin mactime_add_del_range name ip4-llmnr2 mac 01:00:5e:00:00:fc allow-static
+
+uncomment { http static server www-root /home/dbarach/vpp-web uri tcp://0.0.0.0/1954 cache-size 5m fifo-size 4096 }
+uncomment { builtinurl enable }
 
 bin mactime_enable_disable GigabitEthernet0/14/0
 bin mactime_enable_disable GigabitEthernet0/14/1
