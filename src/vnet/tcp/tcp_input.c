@@ -136,7 +136,7 @@ tcp_options_parse (tcp_header_t * th, tcp_options_t * to, u8 is_syn)
 
   /* Zero out all flags but those set in SYN */
   to->flags &= (TCP_OPTS_FLAG_SACK_PERMITTED | TCP_OPTS_FLAG_WSCALE
-		| TCP_OPTS_FLAG_TSTAMP | TCP_OPTION_MSS);
+		| TCP_OPTS_FLAG_TSTAMP | TCP_OPTS_FLAG_MSS);
 
   for (; opts_len > 0; opts_len -= opt_len, data += opt_len)
     {
@@ -945,8 +945,6 @@ scoreboard_clear (sack_scoreboard_t * sb)
   sb->sacked_bytes = 0;
   sb->last_sacked_bytes = 0;
   sb->last_bytes_delivered = 0;
-  sb->high_sacked = 0;
-  sb->high_rxt = 0;
   sb->lost_bytes = 0;
   sb->last_lost_bytes = 0;
   sb->cur_rxt_hole = TCP_INVALID_SACK_HOLE_INDEX;
@@ -1683,6 +1681,7 @@ tcp_rcv_fin (tcp_worker_ctx_t * wrk, tcp_connection_t * tc, vlib_buffer_t * b,
 
   /* Account for the FIN and send ack */
   tc->rcv_nxt += 1;
+  tc->flags |= TCP_CONN_FINRCVD;
   tcp_program_ack (tc);
   /* Enter CLOSE-WAIT and notify session. To avoid lingering
    * in CLOSE-WAIT, set timer (reuse WAITCLOSE). */
@@ -2595,7 +2594,9 @@ tcp46_syn_sent_inline (vlib_main_t * vm, vlib_node_runtime_t * node,
 	}
       else
 	{
-	  tcp_program_ack (new_tc0);
+	  /* Send ack now instead of programming it because connection was
+	   * just established and it's not optional. */
+	  tcp_send_ack (new_tc0);
 	}
 
     drop:

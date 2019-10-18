@@ -518,7 +518,6 @@ tcp_compute_checksum (tcp_connection_t * tc, vlib_buffer_t * b)
   return checksum;
 }
 
-
 /**
  * Prepare ACK
  */
@@ -675,51 +674,19 @@ tcp_enqueue_to_ip_lookup (tcp_worker_ctx_t * wrk, vlib_buffer_t * b, u32 bi,
     session_flush_frames_main_thread (wrk->vm);
 }
 
-always_inline void
-tcp_enqueue_to_output_i (tcp_worker_ctx_t * wrk, vlib_buffer_t * b, u32 bi,
-			 u8 is_ip4, u8 flush)
-{
-  u32 *to_next, next_index;
-  vlib_frame_t *f;
-
-  b->flags |= VNET_BUFFER_F_LOCALLY_ORIGINATED;
-  b->error = 0;
-
-  /* Decide where to send the packet */
-  next_index = is_ip4 ? tcp4_output_node.index : tcp6_output_node.index;
-  tcp_trajectory_add_start (b, 2);
-
-  /* Get frame to v4/6 output node */
-  f = wrk->tx_frames[!is_ip4];
-  if (!f)
-    {
-      f = vlib_get_frame_to_node (wrk->vm, next_index);
-      ASSERT (f);
-      wrk->tx_frames[!is_ip4] = f;
-    }
-  to_next = vlib_frame_vector_args (f);
-  to_next[f->n_vectors] = bi;
-  f->n_vectors += 1;
-  if (flush || f->n_vectors == VLIB_FRAME_SIZE)
-    {
-      vlib_put_frame_to_node (wrk->vm, next_index, f);
-      wrk->tx_frames[!is_ip4] = 0;
-    }
-}
-
 static void
 tcp_enqueue_to_output (tcp_worker_ctx_t * wrk, vlib_buffer_t * b, u32 bi,
 		       u8 is_ip4)
 {
-  tcp_enqueue_to_output_i (wrk, b, bi, is_ip4, 0);
+  session_type_t st;
+
+  b->flags |= VNET_BUFFER_F_LOCALLY_ORIGINATED;
+  b->error = 0;
+
+  st = session_type_from_proto_and_ip (TRANSPORT_PROTO_TCP, is_ip4);
+  session_add_pending_tx_buffer (st, wrk->vm->thread_index, bi);
 }
 
-static void
-tcp_enqueue_to_output_now (tcp_worker_ctx_t * wrk, vlib_buffer_t * b, u32 bi,
-			   u8 is_ip4)
-{
-  tcp_enqueue_to_output_i (wrk, b, bi, is_ip4, 1);
-}
 #endif /* CLIB_MARCH_VARIANT */
 
 static int
@@ -1016,21 +983,6 @@ tcp_send_synack (tcp_connection_t * tc)
 }
 
 /**
- * Flush tx frame populated by retransmits and timer pops
- */
-void
-tcp_flush_frame_to_output (tcp_worker_ctx_t * wrk, u8 is_ip4)
-{
-  if (wrk->tx_frames[!is_ip4])
-    {
-      u32 next_index;
-      next_index = is_ip4 ? tcp4_output_node.index : tcp6_output_node.index;
-      vlib_put_frame_to_node (wrk->vm, next_index, wrk->tx_frames[!is_ip4]);
-      wrk->tx_frames[!is_ip4] = 0;
-    }
-}
-
-/**
  * Flush ip lookup tx frames populated by timer pops
  */
 static void
@@ -1052,8 +1004,6 @@ tcp_flush_frame_to_ip_lookup (tcp_worker_ctx_t * wrk, u8 is_ip4)
 void
 tcp_flush_frames_to_output (tcp_worker_ctx_t * wrk)
 {
-  tcp_flush_frame_to_output (wrk, 1);
-  tcp_flush_frame_to_output (wrk, 0);
   tcp_flush_frame_to_ip_lookup (wrk, 1);
   tcp_flush_frame_to_ip_lookup (wrk, 0);
 }
@@ -1086,11 +1036,15 @@ tcp_send_fin (tcp_connection_t * tc)
       return;
     }
 
+  /* If we have non-dupacks programmed, no need to send them */
+  if ((tc->flags & TCP_CONN_SNDACK) && !tc->pending_dupacks)
+    tc->flags &= ~TCP_CONN_SNDACK;
+
   tcp_retransmit_timer_force_update (tc);
   b = vlib_get_buffer (vm, bi);
   tcp_init_buffer (vm, b);
   tcp_make_fin (tc, b);
-  tcp_enqueue_to_output_now (wrk, b, bi, tc->c_is_ip4);
+  tcp_enqueue_to_output (wrk, b, bi, tc->c_is_ip4);
   TCP_EVT (TCP_EVT_FIN_SENT, tc);
   /* Account for the FIN */
   tc->snd_nxt += 1;
@@ -1164,7 +1118,6 @@ tcp_push_hdr_i (tcp_connection_t * tc, vlib_buffer_t * b, u32 snd_nxt,
 
   tc->bytes_out += data_len;
   tc->data_segs_out += 1;
-
 
   th->checksum = tcp_compute_checksum (tc, b);
 
@@ -1883,6 +1836,13 @@ tcp_retransmit_should_retry_head (tcp_connection_t * tc,
   return (tx_adv_sack > (tc->snd_una - tc->prr_start) * rr);
 }
 
+static inline u8
+tcp_max_tx_deq (tcp_connection_t * tc)
+{
+  return (transport_max_tx_dequeue (&tc->connection)
+	  - (tc->snd_nxt - tc->snd_una));
+}
+
 #define scoreboard_rescue_rxt_valid(_sb, _tc)			\
     (seq_geq (_sb->rescue_rxt, _tc->snd_una) 			\
 	&& seq_leq (_sb->rescue_rxt, _tc->snd_congestion))
@@ -1932,7 +1892,8 @@ tcp_retransmit_sack (tcp_worker_ctx_t * wrk, tcp_connection_t * tc,
   sb = &tc->sack_sb;
 
   /* Check if snd_una is a lost retransmit */
-  if (seq_gt (sb->high_sacked, tc->snd_congestion)
+  if (pool_elts (sb->holes)
+      && seq_gt (sb->high_sacked, tc->snd_congestion)
       && tc->rxt_head != tc->snd_una
       && tcp_retransmit_should_retry_head (tc, sb))
     {
@@ -2144,8 +2105,13 @@ tcp_send_acks (tcp_connection_t * tc, u32 max_burst_size)
 
   if (!tc->pending_dupacks)
     {
-      tcp_send_ack (tc);
-      return 1;
+      if (tcp_in_cong_recovery (tc) || !tcp_max_tx_deq (tc)
+	  || tc->state != TCP_STATE_ESTABLISHED)
+	{
+	  tcp_send_ack (tc);
+	  return 1;
+	}
+      return 0;
     }
 
   /* If we're supposed to send dupacks but have no ooo data
@@ -2153,6 +2119,7 @@ tcp_send_acks (tcp_connection_t * tc, u32 max_burst_size)
   if (!vec_len (tc->snd_sacks))
     {
       tcp_send_ack (tc);
+      tc->pending_dupacks = 0;
       return 1;
     }
 
