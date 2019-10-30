@@ -887,7 +887,7 @@ session_transport_delete_notify (transport_connection_t * tc)
        * session is just removed because both transport and app have
        * confirmed the close*/
       session_lookup_del_session (s);
-      s->session_state = SESSION_STATE_CLOSED;
+      s->session_state = SESSION_STATE_TRANSPORT_DELETED;
       session_cleanup_notify (s, SESSION_CLEANUP_TRANSPORT);
       svm_fifo_dequeue_drop_all (s->tx_fifo);
       session_program_transport_ctrl_evt (s, SESSION_CTRL_EVT_CLOSE);
@@ -1282,8 +1282,9 @@ session_transport_cleanup (session_t * s)
 {
   /* Delete from main lookup table before we axe the the transport */
   session_lookup_del_session (s);
-  transport_cleanup (session_get_transport_proto (s), s->connection_index,
-		     s->thread_index);
+  if (s->session_state != SESSION_STATE_TRANSPORT_DELETED)
+    transport_cleanup (session_get_transport_proto (s), s->connection_index,
+		       s->thread_index);
   /* Since we called cleanup, no delete notification will come. So, make
    * sure the session is properly freed. */
   session_free_w_fifos (s);

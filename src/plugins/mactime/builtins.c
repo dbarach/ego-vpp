@@ -6,7 +6,7 @@
 
 static int
 handle_get_mactime (http_builtin_method_type_t reqtype,
-                    u8 * request, http_session_t * hs)
+		    u8 * request, http_session_t * hs)
 {
   mactime_main_t *mm = &mactime_main;
   mactime_device_t *dp;

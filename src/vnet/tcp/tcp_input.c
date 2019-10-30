@@ -890,6 +890,12 @@ scoreboard_next_rxt_hole (sack_scoreboard_t * sb,
       /* Rule (3): if hole not lost */
       else if (seq_lt (hole->start, sb->high_sacked))
 	{
+	  /* And we didn't already retransmit it */
+	  if (seq_leq (hole->end, sb->high_rxt))
+	    {
+	      sb->cur_rxt_hole = TCP_INVALID_SACK_HOLE_INDEX;
+	      return 0;
+	    }
 	  *snd_limited = 0;
 	  sb->cur_rxt_hole = scoreboard_hole_index (sb, hole);
 	}
@@ -2712,14 +2718,17 @@ tcp46_rcv_process_inline (vlib_main_t * vm, vlib_node_runtime_t * node,
 
       if (CLIB_DEBUG)
 	{
-	  tcp_connection_t *tmp;
-	  tmp = tcp_lookup_connection (tc0->c_fib_index, b0, thread_index,
-				       is_ip4);
-	  if (tmp->state != tc0->state)
+	  if (!(tc0->connection.flags & TRANSPORT_CONNECTION_F_NO_LOOKUP))
 	    {
-	      if (tc0->state != TCP_STATE_CLOSED)
-		clib_warning ("state changed");
-	      goto drop;
+	      tcp_connection_t *tmp;
+	      tmp = tcp_lookup_connection (tc0->c_fib_index, b0, thread_index,
+					   is_ip4);
+	      if (tmp->state != tc0->state)
+		{
+		  if (tc0->state != TCP_STATE_CLOSED)
+		    clib_warning ("state changed");
+		  goto drop;
+		}
 	    }
 	}
 

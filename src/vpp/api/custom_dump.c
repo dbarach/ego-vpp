@@ -1509,8 +1509,9 @@ static void *vl_api_l2tpv3_create_tunnel_t_print
   s = format (0, "SCRIPT: l2tpv3_create_tunnel ");
 
   s = format (s, "client_address %U our_address %U ",
-	      format_ip6_address, (ip6_address_t *) (mp->client_address),
-	      format_ip6_address, (ip6_address_t *) (mp->our_address));
+	      format_ip6_address,
+	      (ip6_address_t *) (mp->client_address.un.ip6),
+	      format_ip6_address, (ip6_address_t *) (mp->our_address.un.ip6));
   s = format (s, "local_session_id %d ", (mp->local_session_id));
   s = format (s, "remote_session_id %d ", (mp->remote_session_id));
   s = format (s, "local_cookie %lld ",
@@ -2556,10 +2557,10 @@ static void *vl_api_set_ipfix_exporter_t_print
   s = format (0, "SCRIPT: set_ipfix_exporter ");
 
   s = format (s, "collector-address %U ", format_ip4_address,
-	      (ip4_address_t *) mp->collector_address);
+	      (ip4_address_t *) mp->collector_address.un.ip4);
   s = format (s, "collector-port %d ", (mp->collector_port));
   s = format (s, "src-address %U ", format_ip4_address,
-	      (ip4_address_t *) mp->src_address);
+	      (ip4_address_t *) mp->src_address.un.ip4);
   s = format (s, "vrf-id %d ", (mp->vrf_id));
   s = format (s, "path-mtu %d ", (mp->path_mtu));
   s = format (s, "template-interval %d ", (mp->template_interval));
