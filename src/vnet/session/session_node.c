@@ -865,14 +865,22 @@ session_tx_fifo_read_and_snd_i (session_worker_t * wrk,
     }
 
   ctx->snd_mss = ctx->transport_vft->send_mss (ctx->tc);
+  if (PREDICT_FALSE (ctx->snd_mss == 0))
+    {
+      session_evt_add_old (wrk, elt);
+      return SESSION_TX_NO_DATA;
+    }
+
   ctx->snd_space = transport_connection_snd_space (ctx->tc,
 						   vm->clib_time.
 						   last_cpu_time,
 						   ctx->snd_mss);
 
-  if (ctx->snd_space == 0 || ctx->snd_mss == 0)
+  /* This flow queue is "empty" so it should be re-evaluated before
+   * the ones that have data to send. */
+  if (ctx->snd_space == 0)
     {
-      session_evt_add_old (wrk, elt);
+      session_evt_add_head_old (wrk, elt);
       return SESSION_TX_NO_DATA;
     }
 
@@ -898,7 +906,7 @@ session_tx_fifo_read_and_snd_i (session_worker_t * wrk,
     {
       if (n_bufs)
 	vlib_buffer_free (vm, wrk->tx_buffers, n_bufs);
-      session_evt_add_old (wrk, elt);
+      session_evt_add_head_old (wrk, elt);
       vlib_node_increment_counter (wrk->vm, node->node_index,
 				   SESSION_QUEUE_ERROR_NO_BUFFER, 1);
       return SESSION_TX_NO_BUFFERS;
@@ -1293,6 +1301,8 @@ session_queue_node_fn (vlib_main_t * vm, vlib_node_runtime_t * node,
    */
 
   new_he = pool_elt_at_index (wrk->event_elts, wrk->new_head);
+  old_he = pool_elt_at_index (wrk->event_elts, wrk->old_head);
+  old_ti = clib_llist_prev_index (old_he, evt_list);
 
   /* *INDENT-OFF* */
   clib_llist_foreach_safe (wrk->event_elts, evt_list, new_he, elt, ({
@@ -1314,25 +1324,31 @@ session_queue_node_fn (vlib_main_t * vm, vlib_node_runtime_t * node,
   /* *INDENT-ON* */
 
   /*
-   * Handle the old io events
+   * Handle the old io events, if we had any prior to processing the new ones
    */
 
-  old_he = pool_elt_at_index (wrk->event_elts, wrk->old_head);
-  old_ti = clib_llist_prev_index (old_he, evt_list);
-
-  while (n_tx_packets < VLIB_FRAME_SIZE
-	 && !clib_llist_is_empty (wrk->event_elts, evt_list, old_he))
+  if (old_ti != wrk->old_head)
     {
-      clib_llist_index_t ei;
-
-      clib_llist_pop_first (wrk->event_elts, evt_list, elt, old_he);
-      ei = clib_llist_entry_index (wrk->event_elts, elt);
-      session_event_dispatch_io (wrk, node, elt, thread_index, &n_tx_packets);
+      clib_llist_index_t ei, next_ei;
 
       old_he = pool_elt_at_index (wrk->event_elts, wrk->old_head);
-      if (ei == old_ti)
-	break;
-    };
+      ei = clib_llist_next_index (old_he, evt_list);
+
+      while (n_tx_packets < VLIB_FRAME_SIZE)
+	{
+	  elt = pool_elt_at_index (wrk->event_elts, ei);
+	  next_ei = clib_llist_next_index (elt, evt_list);
+	  clib_llist_remove (wrk->event_elts, evt_list, elt);
+
+	  session_event_dispatch_io (wrk, node, elt, thread_index,
+				     &n_tx_packets);
+
+	  if (ei == old_ti)
+	    break;
+
+	  ei = next_ei;
+	};
+    }
 
   if (vec_len (wrk->pending_tx_buffers))
     session_flush_pending_tx_buffers (wrk, node);
