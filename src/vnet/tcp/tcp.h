@@ -435,6 +435,7 @@ typedef struct _tcp_connection
   u32 last_fib_check;	/**< Last time we checked fib route for peer */
   u16 mss;		/**< Our max seg size that includes options */
   u32 timestamp_delta;	/**< Offset for timestamp */
+  u32 ipv6_flow_label;	/**< flow label for ipv6 header */
 } tcp_connection_t;
 
 /* *INDENT-OFF* */
@@ -881,7 +882,8 @@ tcp_bytes_out (const tcp_connection_t * tc)
   if (tcp_opts_sack_permitted (&tc->rcv_opts))
     return tc->sack_sb.sacked_bytes + tc->sack_sb.lost_bytes;
   else
-    return tc->rcv_dupacks * tc->snd_mss;
+    return clib_min (tc->rcv_dupacks * tc->snd_mss,
+		     tc->snd_nxt - tc->snd_una);
 }
 
 /**

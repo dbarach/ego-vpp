@@ -68,7 +68,7 @@ DEB_DEPENDS += lcov chrpath autoconf indent clang-format libnuma-dev
 DEB_DEPENDS += python-all python3-all python3-setuptools python-dev
 DEB_DEPENDS += python-virtualenv python-pip libffi6 check
 DEB_DEPENDS += libboost-all-dev libffi-dev python3-ply libmbedtls-dev
-DEB_DEPENDS += cmake ninja-build uuid-dev python3-jsonschema
+DEB_DEPENDS += cmake ninja-build uuid-dev python3-jsonschema python3-yaml yamllint
 ifeq ($(OS_VERSION_ID),14.04)
 	DEB_DEPENDS += libssl-dev
 else ifeq ($(OS_ID)-$(OS_VERSION_ID),debian-8)
@@ -89,6 +89,7 @@ RPM_DEPENDS += selinux-policy selinux-policy-devel
 RPM_DEPENDS += ninja-build
 RPM_DEPENDS += libuuid-devel
 RPM_DEPENDS += mbedtls-devel
+RPM_DEPENDS += yamllint
 
 ifeq ($(OS_ID),fedora)
 	RPM_DEPENDS += dnf-utils
@@ -185,8 +186,8 @@ help:
 	@echo " build                - build debug binaries"
 	@echo " build-release        - build release binaries"
 	@echo " build-coverity       - build coverity artifacts"
-	@echo " rebuild              - wipe and build debug binares"
-	@echo " rebuild-release      - wipe and build release binares"
+	@echo " rebuild              - wipe and build debug binaries"
+	@echo " rebuild-release      - wipe and build release binaries"
 	@echo " run                  - run debug binary"
 	@echo " run-release          - run release binary"
 	@echo " debug                - run debug binary with debugger"
@@ -235,7 +236,7 @@ help:
 	@echo " V=[0|1]                  - set build verbosity level"
 	@echo " STARTUP_CONF=<path>      - startup configuration file"
 	@echo "                            (e.g. /etc/vpp/startup.conf)"
-	@echo " STARTUP_DIR=<path>       - startup drectory (e.g. /etc/vpp)"
+	@echo " STARTUP_DIR=<path>       - startup directory (e.g. /etc/vpp)"
 	@echo "                            It also sets STARTUP_CONF if"
 	@echo "                            startup.conf file is present"
 	@echo " GDB=<path>               - gdb binary to use for debugging"
@@ -558,14 +559,26 @@ cscope: cscope.files
 
 checkstyle:
 	@build-root/scripts/checkstyle.sh
+	yamllint $(WS_ROOT)/src
 
 fixstyle:
 	@build-root/scripts/checkstyle.sh --fix
 
-featurelist:
+# necessary because Bug 1696324 - Update to python3.6 breaks PyYAML dependencies
+# Status:	CLOSED CANTFIX
+# https://bugzilla.redhat.com/show_bug.cgi?id=1696324
+centos-pyyaml:
+ifeq ($(OS_ID)-$(OS_VERSION_ID),centos-7)
+	@python3 -m pip install pyyaml
+endif
+ifeq ($(OS_ID)-$(OS_VERSION_ID),centos-8)
+	@sudo -E yum install $(CONFIRM) python3-pyyaml
+endif
+
+featurelist: centos-pyyaml
 	@build-root/scripts/fts.py --all --markdown
 
-checkfeaturelist:
+checkfeaturelist: centos-pyyaml
 	@build-root/scripts/fts.py --validate --git-status
 
 #
@@ -622,10 +635,13 @@ ifeq ($(OS_ID),ubuntu)
 	@make vom-pkg-deb
 endif
 
+MAKE_VERIFY_GATE_OS ?= ubuntu-18.04
 verify: pkg-verify
-ifeq ($(OS_ID)-$(OS_VERSION_ID),ubuntu-18.04)
+ifeq ($(OS_ID)-$(OS_VERSION_ID),$(MAKE_VERIFY_GATE_OS))
 	$(call banner,"Testing vppapigen")
 	@src/tools/vppapigen/test_vppapigen.py
 	$(call banner,"Running tests")
 	@make COMPRESS_FAILED_TEST_LOGS=yes RETRIES=3 test
+else
+	$(call banner,"Skipping tests. Tests under 'make verify' supported on $(MAKE_VERIFY_GATE_OS)")
 endif
