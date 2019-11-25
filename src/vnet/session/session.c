@@ -36,7 +36,8 @@ session_send_evt_to_thread (void *data, void *args, u32 thread_index,
   mq = session_main_get_vpp_event_queue (thread_index);
   if (PREDICT_FALSE (svm_msg_q_lock (mq)))
     return -1;
-  if (PREDICT_FALSE (svm_msg_q_ring_is_full (mq, SESSION_MQ_IO_EVT_RING)))
+  if (PREDICT_FALSE (svm_msg_q_is_full (mq)
+		     || svm_msg_q_ring_is_full (mq, SESSION_MQ_IO_EVT_RING)))
     {
       svm_msg_q_unlock (mq);
       return -2;
@@ -203,6 +204,32 @@ session_free (session_t * s)
     }
   SESSION_EVT (SESSION_EVT_FREE, s);
   pool_put (session_main.wrk[s->thread_index].sessions, s);
+}
+
+u8
+session_is_valid (u32 si, u8 thread_index)
+{
+  session_t *s;
+  transport_connection_t *tc;
+
+  s = pool_elt_at_index (session_main.wrk[thread_index].sessions, si);
+
+  if (!s)
+    return 1;
+
+  if (s->thread_index != thread_index || s->session_index != si)
+    return 0;
+
+  if (s->session_state == SESSION_STATE_TRANSPORT_DELETED
+      || s->session_state <= SESSION_STATE_LISTENING)
+    return 1;
+
+  tc = session_get_transport (s);
+  if (s->connection_index != tc->c_index
+      || s->thread_index != tc->thread_index || tc->s_index != si)
+    return 0;
+
+  return 1;
 }
 
 static void
@@ -1609,10 +1636,25 @@ session_manager_main_init (vlib_main_t * vm)
   smm->evt_qs_segment_size = 1 << 20;
 #endif
   smm->is_enabled = 0;
+  smm->session_enable_asap = 0;
+  return 0;
+}
+
+static clib_error_t *
+session_main_init (vlib_main_t * vm)
+{
+  session_main_t *smm = &session_main;
+  if (smm->session_enable_asap)
+    {
+      vlib_worker_thread_barrier_sync (vm);
+      vnet_session_enable_disable (vm, 1 /* is_en */ );
+      vlib_worker_thread_barrier_release (vm);
+    }
   return 0;
 }
 
 VLIB_INIT_FUNCTION (session_manager_main_init);
+VLIB_MAIN_LOOP_ENTER_FUNCTION (session_main_init);
 
 static clib_error_t *
 session_config_fn (vlib_main_t * vm, unformat_input_t * input)
@@ -1694,7 +1736,7 @@ session_config_fn (vlib_main_t * vm, unformat_input_t * input)
 			 &smm->evt_qs_segment_size))
 	;
       else if (unformat (input, "enable"))
-	vnet_session_enable_disable (vm, 1 /* is_en */ );
+	smm->session_enable_asap = 1;
       else
 	return clib_error_return (0, "unknown input `%U'",
 				  format_unformat_error, input);

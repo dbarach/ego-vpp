@@ -1464,11 +1464,11 @@ vppcom_session_accept (uint32_t listen_session_handle, vppcom_endpt_t * ep,
 
   is_nonblocking = VCL_SESS_ATTR_TEST (listen_session->attr,
 				       VCL_SESS_ATTR_NONBLOCK);
-  if (svm_msg_q_is_empty (wrk->app_event_queue) && is_nonblocking)
-    return VPPCOM_EAGAIN;
-
   while (1)
     {
+      if (svm_msg_q_is_empty (wrk->app_event_queue) && is_nonblocking)
+	return VPPCOM_EAGAIN;
+
       if (svm_msg_q_sub (wrk->app_event_queue, &msg, SVM_Q_WAIT, 0))
 	return VPPCOM_EAGAIN;
 
@@ -1897,7 +1897,7 @@ vppcom_session_write_inline (uint32_t session_handle, void *buf, size_t n,
   svm_msg_q_t *mq;
   u8 is_ct;
 
-  if (PREDICT_FALSE (!buf))
+  if (PREDICT_FALSE (!buf || n == 0))
     return VPPCOM_EINVAL;
 
   s = vcl_session_get_w_handle (wrk, session_handle);

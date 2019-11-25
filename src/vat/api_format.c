@@ -9796,6 +9796,7 @@ api_sr_localsid_add_del (vat_main_t * vam)
   M (SR_LOCALSID_ADD_DEL, mp);
 
   clib_memcpy (mp->localsid.addr, &localsid, sizeof (mp->localsid));
+
   if (nexthop_set)
     {
       clib_memcpy (mp->nh_addr6, &nh_addr6, sizeof (mp->nh_addr6));
@@ -16278,13 +16279,13 @@ api_one_use_petr (vat_main_t * vam)
 	if (unformat (input, "%U", unformat_ip4_address, &ip_addr_v4 (&ip)))
 	{
 	  is_add = 1;
-	  ip_addr_version (&ip) = IP4;
+	  ip_addr_version (&ip) = AF_IP4;
 	}
       else
 	if (unformat (input, "%U", unformat_ip6_address, &ip_addr_v6 (&ip)))
 	{
 	  is_add = 1;
-	  ip_addr_version (&ip) = IP6;
+	  ip_addr_version (&ip) = AF_IP6;
 	}
       else
 	{
@@ -16298,7 +16299,7 @@ api_one_use_petr (vat_main_t * vam)
   mp->is_add = is_add;
   if (is_add)
     {
-      mp->is_ip4 = ip_addr_version (&ip) == IP4 ? 1 : 0;
+      mp->is_ip4 = ip_addr_version (&ip) == AF_IP4 ? 1 : 0;
       if (mp->is_ip4)
 	clib_memcpy (mp->address, &ip, 4);
       else

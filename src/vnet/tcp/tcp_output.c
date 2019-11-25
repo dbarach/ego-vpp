@@ -411,7 +411,7 @@ tcp_update_burst_snd_vars (tcp_connection_t * tc)
   if (tc->snd_una == tc->snd_nxt)
     {
       tcp_cc_event (tc, TCP_CC_EVT_START_TX);
-      tcp_connection_tx_pacer_reset (tc, tc->cwnd, TRANSPORT_PACER_MIN_MSS);
+      tcp_connection_tx_pacer_reset (tc, tc->cwnd, TRANSPORT_PACER_MIN_BURST);
     }
 }
 
@@ -896,26 +896,15 @@ static void
 tcp_push_ip_hdr (tcp_worker_ctx_t * wrk, tcp_connection_t * tc,
 		 vlib_buffer_t * b)
 {
-  tcp_header_t *th = vlib_buffer_get_current (b);
-  vlib_main_t *vm = wrk->vm;
   if (tc->c_is_ip4)
     {
-      ip4_header_t *ih;
-      ih = vlib_buffer_push_ip4 (vm, b, &tc->c_lcl_ip4,
-				 &tc->c_rmt_ip4, IP_PROTOCOL_TCP,
-				 tcp_csum_offload (tc));
-      th->checksum = ip4_tcp_udp_compute_checksum (vm, b, ih);
+      vlib_buffer_push_ip4 (wrk->vm, b, &tc->c_lcl_ip4, &tc->c_rmt_ip4,
+			    IP_PROTOCOL_TCP, tcp_csum_offload (tc));
     }
   else
     {
-      ip6_header_t *ih;
-      int bogus = ~0;
-
-      ih = vlib_buffer_push_ip6_custom (vm, b, &tc->c_lcl_ip6,
-					&tc->c_rmt_ip6, IP_PROTOCOL_TCP,
-					tc->ipv6_flow_label);
-      th->checksum = ip6_tcp_udp_icmp_compute_checksum (vm, b, ih, &bogus);
-      ASSERT (!bogus);
+      vlib_buffer_push_ip6_custom (wrk->vm, b, &tc->c_lcl_ip6, &tc->c_rmt_ip6,
+				   IP_PROTOCOL_TCP, tc->ipv6_flow_label);
     }
 }
 
@@ -1518,6 +1507,7 @@ tcp_timer_retransmit_handler (u32 tc_index)
 	  tcp_send_reset (tc);
 	  tcp_connection_set_state (tc, TCP_STATE_CLOSED);
 	  session_transport_closing_notify (&tc->connection);
+	  session_transport_closed_notify (&tc->connection);
 	  tcp_connection_timers_reset (tc);
 	  tcp_timer_update (tc, TCP_TIMER_WAITCLOSE, tcp_cfg.closewait_time);
 	  return;
@@ -1850,6 +1840,9 @@ tcp_retransmit_should_retry_head (tcp_connection_t * tc,
   u32 tx_adv_sack = sb->high_sacked - tc->snd_congestion;
   f64 rr = (f64) tc->ssthresh / tc->prev_cwnd;
 
+  if (tcp_fastrecovery_first (tc))
+    return 1;
+
   return (tx_adv_sack > (tc->snd_una - tc->prr_start) * rr);
 }
 
@@ -1871,9 +1864,9 @@ static int
 tcp_retransmit_sack (tcp_worker_ctx_t * wrk, tcp_connection_t * tc,
 		     u32 burst_size)
 {
-  u8 snd_limited = 0, can_rescue = 0, reset_pacer = 0;
   u32 n_written = 0, offset, max_bytes, n_segs = 0;
-  u32 bi, max_deq, burst_bytes, sent_bytes;
+  u8 snd_limited = 0, can_rescue = 0;
+  u32 bi, max_deq, burst_bytes;
   sack_scoreboard_hole_t *hole;
   vlib_main_t *vm = wrk->vm;
   vlib_buffer_t *b = 0;
@@ -1896,12 +1889,7 @@ tcp_retransmit_sack (tcp_worker_ctx_t * wrk, tcp_connection_t * tc,
     snd_space = tcp_fastrecovery_prr_snd_space (tc);
 
   if (snd_space < tc->snd_mss)
-    {
-      reset_pacer = burst_bytes > tc->snd_mss;
-      goto done;
-    }
-
-  reset_pacer = snd_space < burst_bytes;
+    goto done;
 
   sb = &tc->sack_sb;
 
@@ -1927,6 +1915,8 @@ tcp_retransmit_sack (tcp_worker_ctx_t * wrk, tcp_connection_t * tc,
       tc->prr_delivered += n_written;
       ASSERT (tc->rxt_delivered <= tc->snd_rxt_bytes);
     }
+
+  tcp_fastrecovery_first_off (tc);
 
   TCP_EVT (TCP_EVT_CC_EVT, tc, 0);
   hole = scoreboard_get_hole (sb, sb->cur_rxt_hole);
@@ -2015,17 +2005,7 @@ tcp_retransmit_sack (tcp_worker_ctx_t * wrk, tcp_connection_t * tc,
 
 done:
 
-  if (reset_pacer)
-    {
-      transport_connection_tx_pacer_reset_bucket (&tc->connection);
-    }
-  else
-    {
-      sent_bytes = clib_min (n_segs * tc->snd_mss, burst_bytes);
-      transport_connection_tx_pacer_update_bytes (&tc->connection,
-						  sent_bytes);
-    }
-
+  transport_connection_tx_pacer_reset_bucket (&tc->connection, 0);
   return n_segs;
 }
 
@@ -2279,19 +2259,16 @@ always_inline void
 tcp_output_push_ip (vlib_main_t * vm, vlib_buffer_t * b0,
 		    tcp_connection_t * tc0, u8 is_ip4)
 {
-  u8 __clib_unused *ih0;
-  tcp_header_t __clib_unused *th0 = vlib_buffer_get_current (b0);
-
-  TCP_EVT (TCP_EVT_OUTPUT, tc0, th0->flags, b0->current_length);
+  TCP_EVT (TCP_EVT_OUTPUT, tc0,
+	   ((tcp_header_t *) vlib_buffer_get_current (b0))->flags,
+	   b0->current_length);
 
   if (is_ip4)
-    ih0 = vlib_buffer_push_ip4 (vm, b0, &tc0->c_lcl_ip4, &tc0->c_rmt_ip4,
-				IP_PROTOCOL_TCP, tcp_csum_offload (tc0));
+    vlib_buffer_push_ip4 (vm, b0, &tc0->c_lcl_ip4, &tc0->c_rmt_ip4,
+			  IP_PROTOCOL_TCP, tcp_csum_offload (tc0));
   else
-    ih0 =
-      vlib_buffer_push_ip6_custom (vm, b0, &tc0->c_lcl_ip6, &tc0->c_rmt_ip6,
-				   IP_PROTOCOL_TCP, tc0->ipv6_flow_label);
-
+    vlib_buffer_push_ip6_custom (vm, b0, &tc0->c_lcl_ip6, &tc0->c_rmt_ip6,
+				 IP_PROTOCOL_TCP, tc0->ipv6_flow_label);
 }
 
 always_inline void

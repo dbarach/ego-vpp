@@ -453,6 +453,7 @@ list(APPEND VNET_SOURCES
   ip/ip_init.c
   ip/ip_in_out_acl.c
   ip/ip_punt_drop.c
+  ip/ip_types.c
   ip/lookup.c
   ip/punt_api.c
   ip/punt.c
@@ -495,6 +496,7 @@ list(APPEND VNET_HEADERS
   ip/ip_packet.h
   ip/ip_source_and_port_range_check.h
   ip/ip_neighbor.h
+  ip/ip_types.h
   ip/lookup.h
   ip/ports.def
   ip/protocols.def
@@ -1030,16 +1032,17 @@ list(APPEND VNET_API_FILES pg/pg.api)
 ##############################################################################
 
 list(APPEND VNET_SOURCES
+  devices/virtio/cli.c
   devices/virtio/device.c
+  devices/virtio/format.c
   devices/virtio/node.c
+  devices/virtio/pci.c
   devices/virtio/vhost_user.c
   devices/virtio/vhost_user_input.c
   devices/virtio/vhost_user_output.c
   devices/virtio/vhost_user_api.c
   devices/virtio/virtio.c
   devices/virtio/virtio_api.c
-  devices/virtio/cli.c
-  devices/virtio/pci.c
 )
 
 list(APPEND VNET_HEADERS

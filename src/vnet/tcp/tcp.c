@@ -705,6 +705,9 @@ tcp_init_snd_vars (tcp_connection_t * tc)
   tc->snd_nxt = tc->iss + 1;
   tc->snd_una_max = tc->snd_nxt;
   tc->srtt = 100;		/* 100 ms */
+
+  if (!tcp_cfg.csum_offload)
+    tc->cfg_flags |= TCP_CFG_F_NO_CSUM_OFFLOAD;
 }
 
 void
@@ -1018,6 +1021,8 @@ format_tcp_vars (u8 * s, va_list * args)
 	      tc->rto, tc->rto_boff, tc->srtt, tc->mrtt_us * 1000, tc->rttvar,
 	      tc->rtt_ts);
   s = format (s, " rtt_seq %u\n", tc->rtt_seq - tc->iss);
+  s = format (s, " next_node %u opaque 0x%x\n", tc->next_node_index,
+	      tc->next_node_opaque);
   s = format (s, " cong:   %U", format_tcp_congestion, tc);
 
   if (tc->state >= TCP_STATE_ESTABLISHED)
@@ -1394,8 +1399,11 @@ tcp_connection_tx_pacer_update (tcp_connection_t * tc)
   if (!transport_connection_is_tx_paced (&tc->connection))
     return;
 
+  f64 srtt = clib_min ((f64) tc->srtt * TCP_TICK, tc->mrtt_us);
+
   transport_connection_tx_pacer_update (&tc->connection,
-					tcp_cc_get_pacing_rate (tc));
+					tcp_cc_get_pacing_rate (tc),
+					srtt * CLIB_US_TIME_FREQ);
 }
 
 void
@@ -1404,7 +1412,8 @@ tcp_connection_tx_pacer_reset (tcp_connection_t * tc, u32 window,
 {
   f64 srtt = clib_min ((f64) tc->srtt * TCP_TICK, tc->mrtt_us);
   u64 rate = (u64) window / srtt;
-  transport_connection_tx_pacer_reset (&tc->connection, rate, start_bucket);
+  transport_connection_tx_pacer_reset (&tc->connection, rate, start_bucket,
+				       srtt * CLIB_US_TIME_FREQ);
 }
 
 static void
@@ -1650,6 +1659,7 @@ tcp_configuration_init (void)
   tcp_cfg.initial_cwnd_multiplier = 0;
   tcp_cfg.enable_tx_pacing = 1;
   tcp_cfg.allow_tso = 0;
+  tcp_cfg.csum_offload = 1;
   tcp_cfg.cc_algo = TCP_CC_NEWRENO;
   tcp_cfg.rwnd_min_update_ack = 1;
 
@@ -1791,6 +1801,8 @@ tcp_config_fn (vlib_main_t * vm, unformat_input_t * input)
 	tcp_cfg.enable_tx_pacing = 0;
       else if (unformat (input, "tso"))
 	tcp_cfg.allow_tso = 1;
+      else if (unformat (input, "no-csum-offload"))
+	tcp_cfg.csum_offload = 0;
       else if (unformat (input, "cc-algo %U", unformat_tcp_cc_algo,
 			 &tcp_cfg.cc_algo))
 	;

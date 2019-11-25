@@ -181,7 +181,7 @@ check_l3cache ()
 	  u8 *p = NULL;
 	  int level_cache = -1;
 
-	  p = format (p, "%s/%s/%s", sys_cache_dir, dp->d_name, "level");
+	  p = format (p, "%s/%s/%s%c", sys_cache_dir, dp->d_name, "level", 0);
 	  if ((err = clib_sysfs_read ((char *) p, "%d", &level_cache)))
 	    clib_error_free (err);
 
@@ -455,6 +455,7 @@ dpdk_lib_init (dpdk_main_t * dm)
 	    case VNET_DPDK_PMD_MLX4:
 	    case VNET_DPDK_PMD_MLX5:
 	    case VNET_DPDK_PMD_QEDE:
+	    case VNET_DPDK_PMD_BNXT:
 	      xd->port_type = port_type_from_speed_capa (&dev_info);
 	      break;
 
@@ -969,6 +970,19 @@ dpdk_bind_devices_to_uio (dpdk_config_main_t * conf)
       {
         continue;
       }
+    /* Broadcom NetXtreme S, and E series only */
+    else if (d->vendor_id == 0x14e4 &&
+	((d->device_id >= 0x16c0 &&
+		d->device_id != 0x16c6 && d->device_id != 0x16c7 &&
+		d->device_id != 0x16dd && d->device_id != 0x16f7 &&
+		d->device_id != 0x16fd && d->device_id != 0x16fe &&
+		d->device_id != 0x170d && d->device_id != 0x170c &&
+		d->device_id != 0x170e && d->device_id != 0x1712 &&
+		d->device_id != 0x1713) ||
+	(d->device_id == 0x1604 || d->device_id == 0x1605 ||
+	 d->device_id == 0x1614 || d->device_id == 0x1606 ||
+	 d->device_id == 0x1609 || d->device_id == 0x1614)))
+      ;
     else
       {
         dpdk_log_warn ("Unsupported PCI device 0x%04x:0x%04x found "
