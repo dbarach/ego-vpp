@@ -61,6 +61,10 @@ svm_get_root_rp (void)
 u64
 svm_get_global_region_base_va ()
 {
+#ifdef CLIB_SANITIZE_ADDR
+  return 0x200000000000;
+#endif
+
 #if __aarch64__
   /* On AArch64 VA space can have different size, from 36 to 48 bits.
      Here we are trying to detect VA bits by parsing /proc/self/maps
@@ -592,7 +596,7 @@ svm_map_region (svm_map_region_args_t * a)
 
   shm_name = shm_name_from_svm_map_region_args (a);
 
-  if (CLIB_DEBUG > 1)
+  if (1 || CLIB_DEBUG > 1)
     clib_warning ("[%d] map region %s: shm_open (%s)",
 		  getpid (), a->name, shm_name);
 

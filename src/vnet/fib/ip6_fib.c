@@ -151,11 +151,11 @@ ip6_fib_table_destroy (u32 fib_index)
     fib_table_t *fib_table = fib_table_get(fib_index, FIB_PROTOCOL_IP6);
     fib_source_t source;
 
-     /*
+    /*
      * validate no more routes.
      */
     ASSERT(0 == fib_table->ft_total_route_counts);
-    FOR_EACH_FIB_SOURCE(source)
+    vec_foreach_index(source, fib_table->ft_src_route_counts)
     {
 	ASSERT(0 == fib_table->ft_src_route_counts[source]);
     }
@@ -164,6 +164,7 @@ ip6_fib_table_destroy (u32 fib_index)
     {
 	hash_unset (ip6_main.fib_index_by_table_id, fib_table->ft_table_id);
     }
+    vec_free(fib_table->ft_src_route_counts);
     pool_put_index(ip6_main.v6_fibs, fib_table->ft_index);
     pool_put(ip6_main.fibs, fib_table);
 }
@@ -679,13 +680,16 @@ ip6_show_fib (vlib_main_t * vm,
         if (fib_table->ft_flags & FIB_TABLE_FLAG_IP6_LL)
             continue;
 
-	s = format(s, "%U, fib_index:%d, flow hash:[%U] locks:[",
+	s = format(s, "%U, fib_index:%d, flow hash:[%U] epoch:%d flags:%U locks:[",
                    format_fib_table_name, fib->index,
                    FIB_PROTOCOL_IP6,
                    fib->index,
                    format_ip_flow_hash_config,
-                   fib_table->ft_flow_hash_config);
-	FOR_EACH_FIB_SOURCE(source)
+                   fib_table->ft_flow_hash_config,
+                   fib_table->ft_epoch,
+                   format_fib_table_flags, fib_table->ft_flags);
+
+        vec_foreach_index(source, fib_table->ft_locks)
         {
             if (0 != fib_table->ft_locks[source])
             {

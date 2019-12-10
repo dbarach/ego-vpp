@@ -23,12 +23,6 @@
 #include <vnet/mpls/packet.h>
 
 /**
- * Keep a lock per-source and a total
- */
-#define FIB_TABLE_N_LOCKS (FIB_SOURCE_MAX+1)
-#define FIB_TABLE_TOTAL_LOCKS FIB_SOURCE_MAX
-
-/**
  * Flags for the source data
  */
 typedef enum fib_table_attribute_t_ {
@@ -41,15 +35,20 @@ typedef enum fib_table_attribute_t_ {
      */
     FIB_TABLE_ATTRIBUTE_IP6_LL = FIB_TABLE_ATTRIBUTE_FIRST,
     /**
+     * the table is currently resync-ing
+     */
+    FIB_TABLE_ATTRIBUTE_RESYNC,
+    /**
      * Marker. add new entries before this one.
      */
-    FIB_TABLE_ATTRIBUTE_LAST = FIB_TABLE_ATTRIBUTE_IP6_LL,
+    FIB_TABLE_ATTRIBUTE_LAST = FIB_TABLE_ATTRIBUTE_RESYNC,
 } fib_table_attribute_t;
 
 #define FIB_TABLE_ATTRIBUTE_MAX (FIB_TABLE_ATTRIBUTE_LAST+1)
 
 #define FIB_TABLE_ATTRIBUTES {		         \
     [FIB_TABLE_ATTRIBUTE_IP6_LL]  = "ip6-ll",	 \
+    [FIB_TABLE_ATTRIBUTE_RESYNC]  = "resync",    \
 }
 
 #define FOR_EACH_FIB_TABLE_ATTRIBUTE(_item)      	\
@@ -60,7 +59,10 @@ typedef enum fib_table_attribute_t_ {
 typedef enum fib_table_flags_t_ {
     FIB_TABLE_FLAG_NONE   = 0,
     FIB_TABLE_FLAG_IP6_LL  = (1 << FIB_TABLE_ATTRIBUTE_IP6_LL),
+    FIB_TABLE_FLAG_RESYNC  = (1 << FIB_TABLE_ATTRIBUTE_RESYNC),
 } __attribute__ ((packed)) fib_table_flags_t;
+
+extern u8* format_fib_table_flags(u8 *s, va_list *args);
 
 /**
  * @brief 
@@ -81,7 +83,8 @@ typedef struct fib_table_t_
     /**
      * per-source number of locks on the table
      */
-    u16 ft_locks[FIB_TABLE_N_LOCKS];
+    u16 *ft_locks;
+    u32 ft_total_locks;
 
     /**
      * Table ID (hash key) for this FIB.
@@ -101,12 +104,17 @@ typedef struct fib_table_t_
     /**
      * Per-source route counters
      */
-    u32 ft_src_route_counts[FIB_SOURCE_MAX];
+    u32 *ft_src_route_counts;
 
     /**
      * Total route counters
      */
     u32 ft_total_route_counts;
+
+    /**
+     * Epoch - number of resyncs performed
+     */
+    u32 ft_epoch;
 
     /**
      * Table description
@@ -621,6 +629,46 @@ extern u32 fib_table_entry_get_stats_index(u32 fib_index,
 extern void fib_table_flush(u32 fib_index,
 			    fib_protocol_t proto,
 			    fib_source_t source);
+
+/**
+ * @brief
+ *  Resync all entries from a table for the source
+ *  this is the mark part of the mark and sweep algorithm.
+ *  All entries in this FIB that are sourced by 'source' are marked
+ *  as stale.
+ *
+ * @param fib_index
+ *  The index of the FIB
+ *
+ * @paran proto
+ *  The protocol of the entries in the table
+ *
+ * @param source
+ *  the source to flush
+ */
+extern void fib_table_mark(u32 fib_index,
+                           fib_protocol_t proto,
+                           fib_source_t source);
+
+/**
+ * @brief
+ *  Signal that the table has converged, i.e. all updates are complete.
+ *  this is the sweep part of the mark and sweep algorithm.
+ *  All entries in this FIB that are sourced by 'source' and marked
+ *  as stale are flushed.
+ *
+ * @param fib_index
+ *  The index of the FIB
+ *
+ * @paran proto
+ *  The protocol of the entries in the table
+ *
+ * @param source
+ *  the source to flush
+ */
+extern void fib_table_sweep(u32 fib_index,
+                            fib_protocol_t proto,
+                            fib_source_t source);
 
 /**
  * @brief

@@ -42,16 +42,10 @@ defaultmapping = {
                               'learn': 1, 'is_add': 1, },
     'bvi_create': {'user_instance': 4294967295, },
     'bvi_delete': {},
-    'classify_add_del_table': {'match_n_vectors': 1, 'table_index': 4294967295,
-                               'nbuckets': 2, 'memory_size': 2097152,
-                               'next_table_index': 4294967295,
-                               'miss_next_index': 4294967295, },
     'gbp_subnet_add_del': {'sw_if_index': 4294967295, 'epg_id': 65535, },
     'geneve_add_del_tunnel': {'mcast_sw_if_index': 4294967295, 'is_add': 1,
                               'decap_next_index': 4294967295, },
     'gre_tunnel_add_del': {'instance': 4294967295, 'is_add': 1, },
-    'gtpu_add_del_tunnel': {'is_add': 1, 'mcast_sw_if_index': 4294967295,
-                            'decap_next_index': 4294967295, },
     'input_acl_set_interface': {'ip4_table_index': 4294967295,
                                 'ip6_table_index': 4294967295,
                                 'l2_table_index': 4294967295, },
@@ -65,7 +59,6 @@ defaultmapping = {
     'ip_punt_police': {'is_add': 1, },
     'ip_punt_redirect': {'is_add': 1, },
     'ip_route_add_del': {'is_add': 1, },
-    'ip_table_add_del': {'is_add': 1, },
     'ip_unnumbered_dump': {'sw_if_index': 4294967295, },
     'ipsec_interface_add_del_spd': {'is_add': 1, },
     'ipsec_sad_entry_add_del': {'is_add': 1, },
@@ -460,30 +453,6 @@ class VppPapiProvider(object):
         return self.api(self.papi.create_loopback,
                         {'mac_address': mac})
 
-    def ip_table_add_del(self,
-                         table_id,
-                         is_add=1,
-                         is_ipv6=0):
-        """
-
-        :param table_id
-        :param is_add:  (Default value = 1)
-        :param is_ipv6:  (Default value = 0)
-
-        """
-
-        return self.api(
-            self.papi.ip_table_add_del,
-            {'table':
-             {
-                 'table_id': table_id,
-                 'is_ip6': is_ipv6
-             },
-             'is_add': is_add})
-
-    def ip_table_dump(self):
-        return self.api(self.papi.ip_table_dump, {})
-
     def ip_route_dump(self, table_id, is_ip6=False):
         return self.api(self.papi.ip_route_dump,
                         {'table': {
@@ -559,8 +528,9 @@ class VppPapiProvider(object):
     def gre_tunnel_add_del(self,
                            src,
                            dst,
-                           outer_fib_id=0,
-                           tunnel_type=0,
+                           outer_table_id=0,
+                           type=0,
+                           mode=0,
                            instance=0xFFFFFFFF,
                            session_id=0,
                            is_add=1):
@@ -581,11 +551,12 @@ class VppPapiProvider(object):
             {'is_add': is_add,
              'tunnel':
              {
-                 'type': tunnel_type,
+                 'type': type,
+                 'mode': mode,
                  'instance': instance,
                  'src': src,
                  'dst': dst,
-                 'outer_fib_id': outer_fib_id,
+                 'outer_table_id': outer_table_id,
                  'session_id': session_id}
              }
         )
@@ -717,84 +688,6 @@ class VppPapiProvider(object):
                  'mt_n_paths': len(paths),
                  'mt_paths': paths,
              }})
-
-    def classify_add_del_table(
-            self,
-            is_add,
-            mask,
-            match_n_vectors=1,
-            table_index=0xFFFFFFFF,
-            nbuckets=2,
-            memory_size=2097152,
-            skip_n_vectors=0,
-            next_table_index=0xFFFFFFFF,
-            miss_next_index=0xFFFFFFFF,
-            current_data_flag=0,
-            current_data_offset=0):
-        """
-        :param is_add:
-        :param mask:
-        :param match_n_vectors: (Default value = 1)
-        :param table_index: (Default value = 0xFFFFFFFF)
-        :param nbuckets:  (Default value = 2)
-        :param memory_size:  (Default value = 2097152)
-        :param skip_n_vectors:  (Default value = 0)
-        :param next_table_index:  (Default value = 0xFFFFFFFF)
-        :param miss_next_index:  (Default value = 0xFFFFFFFF)
-        :param current_data_flag:  (Default value = 0)
-        :param current_data_offset:  (Default value = 0)
-        """
-        mask_len = ((len(mask) - 1) // 16 + 1) * 16
-        mask = mask + b'\0' * (mask_len - len(mask))
-        return self.api(
-            self.papi.classify_add_del_table,
-            {'is_add': is_add,
-             'table_index': table_index,
-             'nbuckets': nbuckets,
-             'memory_size': memory_size,
-             'skip_n_vectors': skip_n_vectors,
-             'match_n_vectors': match_n_vectors,
-             'next_table_index': next_table_index,
-             'miss_next_index': miss_next_index,
-             'current_data_flag': current_data_flag,
-             'current_data_offset': current_data_offset,
-             'mask_len': mask_len,
-             'mask': mask})
-
-    def classify_add_del_session(
-            self,
-            is_add,
-            table_index,
-            match,
-            opaque_index=0xFFFFFFFF,
-            hit_next_index=0xFFFFFFFF,
-            advance=0,
-            action=0,
-            metadata=0):
-        """
-        :param is_add:
-        :param table_index:
-        :param match:
-        :param opaque_index:  (Default value = 0xFFFFFFFF)
-        :param hit_next_index:  (Default value = 0xFFFFFFFF)
-        :param advance:  (Default value = 0)
-        :param action:  (Default value = 0)
-        :param metadata:  (Default value = 0)
-        """
-
-        match_len = ((len(match) - 1) // 16 + 1) * 16
-        match = match + b'\0' * (match_len - len(match))
-        return self.api(
-            self.papi.classify_add_del_session,
-            {'is_add': is_add,
-             'table_index': table_index,
-             'hit_next_index': hit_next_index,
-             'opaque_index': opaque_index,
-             'advance': advance,
-             'action': action,
-             'metadata': metadata,
-             'match_len': match_len,
-             'match': match})
 
     def input_acl_set_interface(
             self,
@@ -1023,38 +916,6 @@ class VppPapiProvider(object):
                 'reid_len': reid_len,
             })
 
-    def gtpu_add_del_tunnel(
-            self,
-            src_addr,
-            dst_addr,
-            is_add=1,
-            is_ipv6=0,
-            mcast_sw_if_index=0xFFFFFFFF,
-            encap_vrf_id=0,
-            decap_next_index=0xFFFFFFFF,
-            teid=0):
-        """
-
-        :param is_add:  (Default value = 1)
-        :param is_ipv6:  (Default value = 0)
-        :param src_addr:
-        :param dst_addr:
-        :param mcast_sw_if_index:  (Default value = 0xFFFFFFFF)
-        :param encap_vrf_id:  (Default value = 0)
-        :param decap_next_index:  (Default value = 0xFFFFFFFF)
-        :param teid:  (Default value = 0)
-
-        """
-        return self.api(self.papi.gtpu_add_del_tunnel,
-                        {'is_add': is_add,
-                         'is_ipv6': is_ipv6,
-                         'src_address': src_addr,
-                         'dst_address': dst_addr,
-                         'mcast_sw_if_index': mcast_sw_if_index,
-                         'encap_vrf_id': encap_vrf_id,
-                         'decap_next_index': decap_next_index,
-                         'teid': teid})
-
     def vxlan_gpe_add_del_tunnel(
             self,
             src_addr,
@@ -1100,7 +961,6 @@ class VppPapiProvider(object):
             client_mac,
             session_id=0,
             is_add=1,
-            is_ipv6=0,
             decap_vrf_id=0):
         """
 
@@ -1114,7 +974,6 @@ class VppPapiProvider(object):
         """
         return self.api(self.papi.pppoe_add_del_session,
                         {'is_add': is_add,
-                         'is_ipv6': is_ipv6,
                          'session_id': session_id,
                          'client_ip': client_ip,
                          'decap_vrf_id': decap_vrf_id,

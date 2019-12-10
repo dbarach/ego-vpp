@@ -1021,17 +1021,42 @@ static void *vl_api_delete_subif_t_print
 }
 
 static void *
-vl_api_reset_fib_t_print (vl_api_reset_fib_t * mp, void *handle)
+vl_api_ip_table_replace_begin_t_print (vl_api_ip_table_replace_begin_t * mp,
+				       void *handle)
 {
   u8 *s;
 
-  s = format (0, "SCRIPT: reset_fib ");
+  s = format (0, "SCRIPT: ip_table_replace_begin ");
 
-  if (mp->vrf_id)
-    s = format (s, "vrf %d ", (mp->vrf_id));
+  s = format (s, "v%s-table %d ",
+	      mp->table.is_ip6 ? "6" : "4", (mp->table.table_id));
 
-  if (mp->is_ipv6 != 0)
-    s = format (s, "ipv6 ");
+  FINISH;
+}
+
+static void *
+vl_api_ip_table_flush_t_print (vl_api_ip_table_flush_t * mp, void *handle)
+{
+  u8 *s;
+
+  s = format (0, "SCRIPT: ip_table_flush ");
+
+  s = format (s, "v%s-table %d ",
+	      mp->table.is_ip6 ? "6" : "4", (mp->table.table_id));
+
+  FINISH;
+}
+
+static void *
+vl_api_ip_table_replace_end_t_print (vl_api_ip_table_replace_end_t * mp,
+				     void *handle)
+{
+  u8 *s;
+
+  s = format (0, "SCRIPT: ip_table_replace_end ");
+
+  s = format (s, "v%s-table %d ",
+	      mp->table.is_ip6 ? "6" : "4", (mp->table.table_id));
 
   FINISH;
 }
@@ -1767,8 +1792,8 @@ static void *vl_api_gre_tunnel_add_del_t_print
   if (mp->tunnel.type == GRE_API_TUNNEL_TYPE_ERSPAN)
     s = format (s, "erspan %d ", (mp->tunnel.session_id));
 
-  if (mp->tunnel.outer_fib_id)
-    s = format (s, "outer-fib-id %d ", (mp->tunnel.outer_fib_id));
+  if (mp->tunnel.outer_table_id)
+    s = format (s, "outer-table-id %d ", mp->tunnel.outer_table_id);
 
   if (mp->is_add == 0)
     s = format (s, "del ");
@@ -2428,13 +2453,13 @@ static void *vl_api_policer_classify_dump_t_print
   s = format (0, "SCRIPT: policer_classify_dump ");
   switch (mp->type)
     {
-    case POLICER_CLASSIFY_TABLE_IP4:
+    case POLICER_CLASSIFY_API_TABLE_IP4:
       s = format (s, "type ip4 ");
       break;
-    case POLICER_CLASSIFY_TABLE_IP6:
+    case POLICER_CLASSIFY_API_TABLE_IP6:
       s = format (s, "type ip6 ");
       break;
-    case POLICER_CLASSIFY_TABLE_L2:
+    case POLICER_CLASSIFY_API_TABLE_L2:
       s = format (s, "type l2 ");
       break;
     default:
@@ -3406,10 +3431,10 @@ static void *vl_api_flow_classify_dump_t_print
   s = format (0, "SCRIPT: flow_classify_dump ");
   switch (mp->type)
     {
-    case FLOW_CLASSIFY_TABLE_IP4:
+    case FLOW_CLASSIFY_API_TABLE_IP4:
       s = format (s, "type ip4 ");
       break;
-    case FLOW_CLASSIFY_TABLE_IP6:
+    case FLOW_CLASSIFY_API_TABLE_IP6:
       s = format (s, "type ip6 ");
       break;
     default:
@@ -3737,7 +3762,9 @@ _(SW_INTERFACE_SET_UNNUMBERED, sw_interface_set_unnumbered)             \
 _(IP_NEIGHBOR_ADD_DEL, ip_neighbor_add_del)                             \
 _(CREATE_VLAN_SUBIF, create_vlan_subif)                                 \
 _(CREATE_SUBIF, create_subif)                                           \
-_(RESET_FIB, reset_fib)                                                 \
+_(IP_TABLE_REPLACE_BEGIN, ip_table_replace_begin)                       \
+_(IP_TABLE_FLUSH, ip_table_flush)                                       \
+_(IP_TABLE_REPLACE_END, ip_table_replace_end)                           \
 _(SET_IP_FLOW_HASH, set_ip_flow_hash)                                   \
 _(SW_INTERFACE_IP6ND_RA_PREFIX, sw_interface_ip6nd_ra_prefix)           \
 _(SW_INTERFACE_IP6ND_RA_CONFIG, sw_interface_ip6nd_ra_config)           \

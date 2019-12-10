@@ -1100,7 +1100,7 @@ vl_api_cli_reply_t_handler_json (vl_api_cli_reply_t * mp)
 {
   vat_main_t *vam = &vat_main;
   vat_json_node_t node;
-  api_main_t *am = &api_main;
+  api_main_t *am = vlibapi_get_main ();
   void *oldheap;
   u8 *reply;
 
@@ -2710,7 +2710,7 @@ static void vl_api_get_node_graph_reply_t_handler
   (vl_api_get_node_graph_reply_t * mp)
 {
   vat_main_t *vam = &vat_main;
-  api_main_t *am = &api_main;
+  api_main_t *am = vlibapi_get_main ();
   i32 retval = ntohl (mp->retval);
   u8 *pvt_copy, *reply;
   void *oldheap;
@@ -2773,7 +2773,7 @@ static void vl_api_get_node_graph_reply_t_handler_json
   (vl_api_get_node_graph_reply_t * mp)
 {
   vat_main_t *vam = &vat_main;
-  api_main_t *am = &api_main;
+  api_main_t *am = vlibapi_get_main ();
   void *oldheap;
   vat_json_node_t node;
   u8 *reply;
@@ -5071,6 +5071,9 @@ _(l2fib_flush_int_reply)                                \
 _(l2fib_flush_bd_reply)                                 \
 _(ip_route_add_del_reply)                               \
 _(ip_table_add_del_reply)                               \
+_(ip_table_replace_begin_reply)                         \
+_(ip_table_flush_reply)                                 \
+_(ip_table_replace_end_reply)                           \
 _(ip_mroute_add_del_reply)                              \
 _(mpls_route_add_del_reply)                             \
 _(mpls_table_add_del_reply)                             \
@@ -5081,7 +5084,6 @@ _(proxy_arp_add_del_reply)                              \
 _(proxy_arp_intfc_enable_disable_reply)                 \
 _(sw_interface_set_unnumbered_reply)                    \
 _(ip_neighbor_add_del_reply)                            \
-_(reset_fib_reply)                                      \
 _(set_ip_flow_hash_reply)                               \
 _(sw_interface_ip6_enable_disable_reply)                \
 _(ip6nd_proxy_add_del_reply)                            \
@@ -5270,6 +5272,9 @@ _(SW_INTERFACE_BOND_DETAILS, sw_interface_bond_details)                 \
 _(SW_INTERFACE_SLAVE_DETAILS, sw_interface_slave_details)               \
 _(IP_ROUTE_ADD_DEL_REPLY, ip_route_add_del_reply)			\
 _(IP_TABLE_ADD_DEL_REPLY, ip_table_add_del_reply)			\
+_(IP_TABLE_REPLACE_BEGIN_REPLY, ip_table_replace_begin_reply)           \
+_(IP_TABLE_FLUSH_REPLY, ip_table_flush_reply)                           \
+_(IP_TABLE_REPLACE_END_REPLY, ip_table_replace_end_reply)               \
 _(IP_MROUTE_ADD_DEL_REPLY, ip_mroute_add_del_reply)			\
 _(MPLS_TABLE_ADD_DEL_REPLY, mpls_table_add_del_reply)			\
 _(MPLS_ROUTE_ADD_DEL_REPLY, mpls_route_add_del_reply)			\
@@ -5285,7 +5290,6 @@ _(SW_INTERFACE_SET_UNNUMBERED_REPLY,                                    \
 _(IP_NEIGHBOR_ADD_DEL_REPLY, ip_neighbor_add_del_reply)                 \
 _(CREATE_VLAN_SUBIF_REPLY, create_vlan_subif_reply)                     \
 _(CREATE_SUBIF_REPLY, create_subif_reply)                     		\
-_(RESET_FIB_REPLY, reset_fib_reply)                                     \
 _(SET_IP_FLOW_HASH_REPLY, set_ip_flow_hash_reply)                       \
 _(SW_INTERFACE_IP6_ENABLE_DISABLE_REPLY,                                \
   sw_interface_ip6_enable_disable_reply)                                \
@@ -9210,19 +9214,18 @@ api_create_subif (vat_main_t * vam)
 }
 
 static int
-api_reset_fib (vat_main_t * vam)
+api_ip_table_replace_begin (vat_main_t * vam)
 {
   unformat_input_t *i = vam->input;
-  vl_api_reset_fib_t *mp;
-  u32 vrf_id = 0;
+  vl_api_ip_table_replace_begin_t *mp;
+  u32 table_id = 0;
   u8 is_ipv6 = 0;
-  u8 vrf_id_set = 0;
 
   int ret;
   while (unformat_check_input (i) != UNFORMAT_END_OF_INPUT)
     {
-      if (unformat (i, "vrf %d", &vrf_id))
-	vrf_id_set = 1;
+      if (unformat (i, "table %d", &table_id))
+	;
       else if (unformat (i, "ipv6"))
 	is_ipv6 = 1;
       else
@@ -9232,16 +9235,74 @@ api_reset_fib (vat_main_t * vam)
 	}
     }
 
-  if (vrf_id_set == 0)
+  M (IP_TABLE_REPLACE_BEGIN, mp);
+
+  mp->table.table_id = ntohl (table_id);
+  mp->table.is_ip6 = is_ipv6;
+
+  S (mp);
+  W (ret);
+  return ret;
+}
+
+static int
+api_ip_table_flush (vat_main_t * vam)
+{
+  unformat_input_t *i = vam->input;
+  vl_api_ip_table_flush_t *mp;
+  u32 table_id = 0;
+  u8 is_ipv6 = 0;
+
+  int ret;
+  while (unformat_check_input (i) != UNFORMAT_END_OF_INPUT)
     {
-      errmsg ("missing vrf id");
-      return -99;
+      if (unformat (i, "table %d", &table_id))
+	;
+      else if (unformat (i, "ipv6"))
+	is_ipv6 = 1;
+      else
+	{
+	  clib_warning ("parse error '%U'", format_unformat_error, i);
+	  return -99;
+	}
     }
 
-  M (RESET_FIB, mp);
+  M (IP_TABLE_FLUSH, mp);
 
-  mp->vrf_id = ntohl (vrf_id);
-  mp->is_ipv6 = is_ipv6;
+  mp->table.table_id = ntohl (table_id);
+  mp->table.is_ip6 = is_ipv6;
+
+  S (mp);
+  W (ret);
+  return ret;
+}
+
+static int
+api_ip_table_replace_end (vat_main_t * vam)
+{
+  unformat_input_t *i = vam->input;
+  vl_api_ip_table_replace_end_t *mp;
+  u32 table_id = 0;
+  u8 is_ipv6 = 0;
+
+  int ret;
+  while (unformat_check_input (i) != UNFORMAT_END_OF_INPUT)
+    {
+      if (unformat (i, "table %d", &table_id))
+	;
+      else if (unformat (i, "ipv6"))
+	is_ipv6 = 1;
+      else
+	{
+	  clib_warning ("parse error '%U'", format_unformat_error, i);
+	  return -99;
+	}
+    }
+
+  M (IP_TABLE_REPLACE_END, mp);
+
+  mp->table.table_id = ntohl (table_id);
+  mp->table.is_ip6 = is_ipv6;
 
   S (mp);
   W (ret);
@@ -12590,7 +12651,7 @@ api_gre_tunnel_add_del (vat_main_t * vam)
   u8 is_add = 1;
   u8 src_set = 0;
   u8 dst_set = 0;
-  u32 outer_fib_id = 0;
+  u32 outer_table_id = 0;
   u32 session_id = 0;
   u32 instance = ~0;
   int ret;
@@ -12611,7 +12672,7 @@ api_gre_tunnel_add_del (vat_main_t * vam)
 	{
 	  dst_set = 1;
 	}
-      else if (unformat (line_input, "outer-fib-id %d", &outer_fib_id))
+      else if (unformat (line_input, "outer-table-id %d", &outer_table_id))
 	;
       else if (unformat (line_input, "teb"))
 	t_type = GRE_API_TUNNEL_TYPE_TEB;
@@ -12641,7 +12702,7 @@ api_gre_tunnel_add_del (vat_main_t * vam)
   clib_memcpy (&mp->tunnel.dst, &dst, sizeof (mp->tunnel.dst));
 
   mp->tunnel.instance = htonl (instance);
-  mp->tunnel.outer_fib_id = htonl (outer_fib_id);
+  mp->tunnel.outer_table_id = htonl (outer_table_id);
   mp->is_add = is_add;
   mp->tunnel.session_id = htons ((u16) session_id);
   mp->tunnel.type = htonl (t_type);
@@ -12661,7 +12722,7 @@ static void vl_api_gre_tunnel_details_t_handler
 	 ntohl (mp->tunnel.instance),
 	 format_vl_api_address, &mp->tunnel.src,
 	 format_vl_api_address, &mp->tunnel.dst,
-	 mp->tunnel.type, ntohl (mp->tunnel.outer_fib_id),
+	 mp->tunnel.type, ntohl (mp->tunnel.outer_table_id),
 	 ntohl (mp->tunnel.session_id));
 }
 
@@ -12686,8 +12747,8 @@ static void vl_api_gre_tunnel_details_t_handler_json
   vat_json_object_add_address (node, "src", &mp->tunnel.src);
   vat_json_object_add_address (node, "dst", &mp->tunnel.dst);
   vat_json_object_add_uint (node, "tunnel_type", mp->tunnel.type);
-  vat_json_object_add_uint (node, "outer_fib_id",
-			    ntohl (mp->tunnel.outer_fib_id));
+  vat_json_object_add_uint (node, "outer_table_id",
+			    ntohl (mp->tunnel.outer_table_id));
   vat_json_object_add_uint (node, "session_id", mp->tunnel.session_id);
 }
 
@@ -21272,7 +21333,7 @@ value_sort_cmp (void *a1, void *a2)
 static int
 dump_msg_api_table (vat_main_t * vam)
 {
-  api_main_t *am = &api_main;
+  api_main_t *am = vlibapi_get_main ();
   name_sort_t *nses = 0, *ns;
   hash_pair_t *hp;
   int i;
@@ -21546,7 +21607,9 @@ _(create_subif, "<intfc> | sw_if_index <id> sub_id <n>\n"               \
   "[outer_vlan_id <n>][inner_vlan_id <n>]\n"                            \
   "[no_tags][one_tag][two_tags][dot1ad][exact_match][default_sub]\n"    \
   "[outer_vlan_id_any][inner_vlan_id_any]")                             \
-_(reset_fib, "vrf <n> [ipv6]")                                          \
+_(ip_table_replace_begin, "table <n> [ipv6]")                           \
+_(ip_table_flush, "table <n> [ipv6]")                                   \
+_(ip_table_replace_end, "table <n> [ipv6]")                             \
 _(set_ip_flow_hash,                                                     \
   "vrf <n> [src] [dst] [sport] [dport] [proto] [reverse] [ipv6]")       \
 _(sw_interface_ip6_enable_disable,                                      \

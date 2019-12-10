@@ -1315,7 +1315,8 @@ session_transport_cleanup (session_t * s)
 		       s->thread_index);
   /* Since we called cleanup, no delete notification will come. So, make
    * sure the session is properly freed. */
-  session_free_w_fifos (s);
+  segment_manager_dealloc_fifos (s->rx_fifo, s->tx_fifo);
+  session_free (s);
 }
 
 /**
@@ -1332,7 +1333,7 @@ session_vpp_event_queues_allocate (session_main_t * smm)
 {
   u32 evt_q_length = 2048, evt_size = sizeof (session_event_t);
   ssvm_private_t *eqs = &smm->evt_qs_segment;
-  api_main_t *am = &api_main;
+  api_main_t *am = vlibapi_get_main ();
   uword eqs_size = 64 << 20;
   pid_t vpp_pid = getpid ();
   void *oldheap;
