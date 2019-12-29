@@ -1400,6 +1400,10 @@ tcp_cc_handle_event (tcp_connection_t * tc, tcp_rate_sample_t * rs,
 {
   u8 has_sack = tcp_opts_sack_permitted (&tc->rcv_opts);
 
+  /* If reneging, wait for timer based retransmits */
+  if (PREDICT_FALSE (tcp_is_lost_fin (tc) || tc->sack_sb.is_reneging))
+    return;
+
   /*
    * If not in recovery, figure out if we should enter
    */
@@ -1529,10 +1533,6 @@ tcp_ack_is_cc_event (tcp_connection_t * tc, vlib_buffer_t * b,
    * defined to be 'duplicate' as well */
   *is_dack = tc->sack_sb.last_sacked_bytes
     || tcp_ack_is_dupack (tc, b, prev_snd_wnd, prev_snd_una);
-
-  /* If reneging, wait for timer based retransmits */
-  if (PREDICT_FALSE (tcp_is_lost_fin (tc) || tc->sack_sb.is_reneging))
-    return 0;
 
   return (*is_dack || tcp_in_cong_recovery (tc));
 }
@@ -2360,6 +2360,36 @@ tcp_lookup_connection (u32 fib_index, vlib_buffer_t * b, u8 thread_index,
   return tc;
 }
 
+static tcp_connection_t *
+tcp_lookup_listener (vlib_buffer_t * b, u32 fib_index, int is_ip4)
+{
+  session_t *s;
+
+  if (is_ip4)
+    {
+      ip4_header_t *ip4 = vlib_buffer_get_current (b);
+      tcp_header_t *tcp = tcp_buffer_hdr (b);
+      s = session_lookup_listener4 (fib_index,
+				    &ip4->dst_address,
+				    tcp->dst_port, TRANSPORT_PROTO_TCP, 1);
+    }
+  else
+    {
+      ip6_header_t *ip6 = vlib_buffer_get_current (b);
+      tcp_header_t *tcp = tcp_buffer_hdr (b);
+      s = session_lookup_listener6 (fib_index,
+				    &ip6->dst_address,
+				    tcp->dst_port, TRANSPORT_PROTO_TCP, 1);
+
+    }
+  if (PREDICT_TRUE (s != 0))
+    return tcp_get_connection_from_transport (transport_get_listener
+					      (TRANSPORT_PROTO_TCP,
+					       s->connection_index));
+  else
+    return 0;
+}
+
 always_inline void
 tcp_check_tx_offload (tcp_connection_t * tc, int is_ipv4)
 {
@@ -3138,6 +3168,7 @@ tcp46_listen_inline (vlib_main_t * vm, vlib_node_runtime_t * node,
 {
   u32 n_left_from, *from, n_syns = 0, *first_buffer;
   u32 my_thread_index = vm->thread_index;
+  tcp_connection_t *tc0;
 
   from = first_buffer = vlib_frame_vector_args (from_frame);
   n_left_from = from_frame->n_vectors;
@@ -3160,16 +3191,29 @@ tcp46_listen_inline (vlib_main_t * vm, vlib_node_runtime_t * node,
 
       b0 = vlib_get_buffer (vm, bi0);
       lc0 = tcp_listener_get (vnet_buffer (b0)->tcp.connection_index);
+      if (PREDICT_FALSE (lc0 == 0))
+	{
+	  tc0 = tcp_connection_get (vnet_buffer (b0)->tcp.connection_index,
+				    my_thread_index);
+	  if (tc0->state != TCP_STATE_TIME_WAIT)
+	    {
+	      error0 = TCP_ERROR_CREATE_EXISTS;
+	      goto drop;
+	    }
+	  lc0 = tcp_lookup_listener (b0, tc0->c_fib_index, is_ip4);
+	  /* clean up the old session */
+	  tcp_connection_del (tc0);
+	}
 
       if (is_ip4)
 	{
 	  ip40 = vlib_buffer_get_current (b0);
-	  th0 = ip4_next_header (ip40);
+	  th0 = tcp_buffer_hdr (b0);
 	}
       else
 	{
 	  ip60 = vlib_buffer_get_current (b0);
-	  th0 = ip6_next_header (ip60);
+	  th0 = tcp_buffer_hdr (b0);
 	}
 
       /* Create child session. For syn-flood protection use filter */
@@ -3957,7 +4001,7 @@ do {                                                       	\
     TCP_ERROR_NONE);
   _(LAST_ACK, TCP_FLAG_SYN | TCP_FLAG_RST | TCP_FLAG_ACK,
     TCP_INPUT_NEXT_RCV_PROCESS, TCP_ERROR_NONE);
-  _(TIME_WAIT, TCP_FLAG_SYN, TCP_INPUT_NEXT_RCV_PROCESS, TCP_ERROR_NONE);
+  _(TIME_WAIT, TCP_FLAG_SYN, TCP_INPUT_NEXT_LISTEN, TCP_ERROR_NONE);
   _(TIME_WAIT, TCP_FLAG_FIN, TCP_INPUT_NEXT_RCV_PROCESS, TCP_ERROR_NONE);
   _(TIME_WAIT, TCP_FLAG_FIN | TCP_FLAG_ACK, TCP_INPUT_NEXT_RCV_PROCESS,
     TCP_ERROR_NONE);

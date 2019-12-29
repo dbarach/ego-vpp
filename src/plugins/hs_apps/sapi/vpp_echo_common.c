@@ -258,6 +258,20 @@ echo_unformat_timing_event (unformat_input_t * input, va_list * args)
 }
 
 u8 *
+echo_format_bytes_per_sec (u8 * s, va_list * args)
+{
+  f64 bps = va_arg (*args, f64) * 8;
+  if (bps > 1e9)
+    return format (s, "%.3f Gb/s", bps / 1e9);
+  else if (bps > 1e6)
+    return format (s, "%.3f Mb/s", bps / 1e6);
+  else if (bps > 1e3)
+    return format (s, "%.3f Kb/s", bps / 1e3);
+  else
+    return format (s, "%.3f b/s", bps);
+}
+
+u8 *
 echo_format_timing_event (u8 * s, va_list * args)
 {
   u32 timing_event = va_arg (*args, u32);
@@ -457,6 +471,20 @@ unformat_ip6_address (unformat_input_t * input, va_list * args)
   }
 }
 
+uword
+unformat_ip46_address (unformat_input_t * input, va_list * args)
+{
+  ip46_address_t *ip = va_arg (*args, ip46_address_t *);
+
+  if (unformat (input, "%U", unformat_ip4_address, &ip->ip4))
+    ;
+  else if (unformat (input, "%U", unformat_ip6_address, &ip->ip6))
+    ;
+  else
+    return 0;
+  return 1;
+}
+
 u8 *
 echo_format_crypto_engine (u8 * s, va_list * args)
 {
@@ -517,14 +545,15 @@ echo_session_handle_add_del (echo_main_t * em, u64 handle, u32 sid)
 echo_session_t *
 echo_session_new (echo_main_t * em)
 {
-  /* thread safe new prealloced session */
+  /* thread safe new prealloced session
+   * see echo_session_prealloc */
   return pool_elt_at_index (em->sessions,
 			    clib_atomic_fetch_add (&em->nxt_available_sidx,
 						   1));
 }
 
 int
-echo_send_rpc (echo_main_t * em, void *fp, void *arg, u32 opaque)
+echo_send_rpc (echo_main_t * em, void *fp, echo_rpc_args_t * args)
 {
   svm_msg_q_msg_t msg;
   echo_rpc_msg_t *evt;
@@ -541,9 +570,8 @@ echo_send_rpc (echo_main_t * em, void *fp, void *arg, u32 opaque)
     }
   msg = svm_msg_q_alloc_msg_w_ring (em->rpc_msq_queue, 0);
   evt = (echo_rpc_msg_t *) svm_msg_q_msg_data (em->rpc_msq_queue, &msg);
-  evt->arg = arg;
-  evt->opaque = opaque;
   evt->fp = fp;
+  clib_memcpy (&evt->args, args, sizeof (evt->args));
 
   svm_msg_q_add_and_unlock (em->rpc_msq_queue, &msg);
   return 0;
@@ -562,28 +590,6 @@ echo_get_session_from_handle (echo_main_t * em, u64 handle)
       return 0;
     }
   return pool_elt_at_index (em->sessions, p[0]);
-}
-
-int
-wait_for_segment_allocation (u64 segment_handle)
-{
-  echo_main_t *em = &echo_main;
-  f64 timeout;
-  timeout = clib_time_now (&em->clib_time) + TIMEOUT;
-  uword *segment_present;
-  ECHO_LOG (3, "Waiting for segment 0x%lx...", segment_handle);
-  while (clib_time_now (&em->clib_time) < timeout)
-    {
-      clib_spinlock_lock (&em->segment_handles_lock);
-      segment_present = hash_get (em->shared_segment_handles, segment_handle);
-      clib_spinlock_unlock (&em->segment_handles_lock);
-      if (segment_present != 0)
-	return 0;
-      if (em->time_to_stop == 1)
-	return 0;
-    }
-  ECHO_LOG (2, "timeout wait_for_segment_allocation (0x%lx)", segment_handle);
-  return -1;
 }
 
 int

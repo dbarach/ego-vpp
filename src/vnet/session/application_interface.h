@@ -29,13 +29,13 @@ typedef struct certificate_
   u8 *cert;
 } app_cert_key_pair_t;
 
-typedef struct _stream_session_cb_vft
+typedef struct session_cb_vft_
 {
   /** Notify server of new segment */
-  int (*add_segment_callback) (u32 api_client_index, u64 segment_handle);
+  int (*add_segment_callback) (u32 app_wrk_index, u64 segment_handle);
 
   /** Notify server of new segment */
-  int (*del_segment_callback) (u32 api_client_index, u64 segment_handle);
+  int (*del_segment_callback) (u32 app_wrk_index, u64 segment_handle);
 
   /** Notify server of newly accepted session */
   int (*session_accept_callback) (session_t * new_session);
@@ -182,6 +182,7 @@ typedef struct crypto_ctx_
   u32 n_subscribers;		/**< refcount of sessions using said context */
   u32 ckpair_index;		/**< certificate & key */
   u8 crypto_engine;
+  void *data;			/**< protocol specific data */
 } crypto_context_t;
 
 /* Application attach options */
@@ -361,6 +362,7 @@ typedef struct session_accepted_msg_
   u64 segment_handle;
   uword vpp_event_queue_address;
   transport_endpoint_t rmt;
+  u8 flags;
 } __clib_packed session_accepted_msg_t;
 
 typedef struct session_accepted_reply_msg_
@@ -386,6 +388,7 @@ typedef struct session_connect_msg_
   u64 parent_handle;
   u32 ckpair_index;
   u8 crypto_engine;
+  u8 flags;
 } __clib_packed session_connect_msg_t;
 
 STATIC_ASSERT (sizeof (session_connect_msg_t) <= SESSION_CTRL_MSG_MAX_SIZE,
@@ -481,6 +484,23 @@ typedef struct session_app_detach_msg_
   u32 client_index;
   u32 context;
 } session_app_detach_msg_t;
+
+typedef struct app_map_another_segment_msg_
+{
+  u32 client_index;
+  u32 context;
+  u8 fd_flags;
+  u32 segment_size;
+  u8 segment_name[128];
+  u64 segment_handle;
+} session_app_add_segment_msg_t;
+
+typedef struct app_unmap_segment_msg_
+{
+  u32 client_index;
+  u32 context;
+  u64 segment_handle;
+} session_app_del_segment_msg_t;
 
 typedef struct app_session_event_
 {

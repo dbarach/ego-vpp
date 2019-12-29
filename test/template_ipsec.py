@@ -4,7 +4,8 @@ import struct
 
 from scapy.layers.inet import IP, ICMP, TCP, UDP
 from scapy.layers.ipsec import SecurityAssociation, ESP
-from scapy.layers.l2 import Ether, Raw
+from scapy.layers.l2 import Ether
+from scapy.packet import Raw
 from scapy.layers.inet6 import IPv6, ICMPv6EchoRequest
 
 from framework import VppTestCase, VppTestRunner
@@ -93,8 +94,8 @@ def mk_scapy_crypt_key(p):
 
 def config_tun_params(p, encryption_type, tun_if):
     ip_class_by_addr_type = {socket.AF_INET: IP, socket.AF_INET6: IPv6}
-    use_esn = bool(p.flags & (VppEnum.vl_api_ipsec_sad_flags_t.
-                              IPSEC_API_SAD_FLAG_USE_ESN))
+    esn_en = bool(p.flags & (VppEnum.vl_api_ipsec_sad_flags_t.
+                             IPSEC_API_SAD_FLAG_USE_ESN))
     crypt_key = mk_scapy_crypt_key(p)
     p.scapy_tun_sa = SecurityAssociation(
         encryption_type, spi=p.vpp_tun_spi,
@@ -105,7 +106,7 @@ def config_tun_params(p, encryption_type, tun_if):
             src=tun_if.remote_addr[p.addr_type],
             dst=tun_if.local_addr[p.addr_type]),
         nat_t_header=p.nat_header,
-        use_esn=use_esn)
+        esn_en=esn_en)
     p.vpp_tun_sa = SecurityAssociation(
         encryption_type, spi=p.scapy_tun_spi,
         crypt_algo=p.crypt_algo,
@@ -115,12 +116,12 @@ def config_tun_params(p, encryption_type, tun_if):
             dst=tun_if.remote_addr[p.addr_type],
             src=tun_if.local_addr[p.addr_type]),
         nat_t_header=p.nat_header,
-        use_esn=use_esn)
+        esn_en=esn_en)
 
 
 def config_tra_params(p, encryption_type):
-    use_esn = bool(p.flags & (VppEnum.vl_api_ipsec_sad_flags_t.
-                              IPSEC_API_SAD_FLAG_USE_ESN))
+    esn_en = bool(p.flags & (VppEnum.vl_api_ipsec_sad_flags_t.
+                             IPSEC_API_SAD_FLAG_USE_ESN))
     crypt_key = mk_scapy_crypt_key(p)
     p.scapy_tra_sa = SecurityAssociation(
         encryption_type,
@@ -130,7 +131,7 @@ def config_tra_params(p, encryption_type):
         auth_algo=p.auth_algo,
         auth_key=p.auth_key,
         nat_t_header=p.nat_header,
-        use_esn=use_esn)
+        esn_en=esn_en)
     p.vpp_tra_sa = SecurityAssociation(
         encryption_type,
         spi=p.scapy_tra_spi,
@@ -139,7 +140,7 @@ def config_tra_params(p, encryption_type):
         auth_algo=p.auth_algo,
         auth_key=p.auth_key,
         nat_t_header=p.nat_header,
-        use_esn=use_esn)
+        esn_en=esn_en)
 
 
 class TemplateIpsec(VppTestCase):
@@ -271,7 +272,7 @@ class IpsecTra4(object):
     """ verify methods for Transport v4 """
     def verify_tra_anti_replay(self):
         p = self.params[socket.AF_INET]
-        use_esn = p.vpp_tra_sa.use_esn
+        esn_en = p.vpp_tra_sa.esn_en
 
         seq_cycle_node_name = ('/err/%s/sequence number cycled' %
                                self.tra4_encrypt_node_name)
@@ -415,7 +416,7 @@ class IpsecTra4(object):
                                       seq_num=17))
         self.send_and_assert_no_replies(self.tra_if, pkt * 17)
 
-        if use_esn:
+        if esn_en:
             # an out of window error with ESN looks like a high sequence
             # wrap. but since it isn't then the verify will fail.
             hash_failed_count += 17
@@ -455,7 +456,7 @@ class IpsecTra4(object):
                                         seq_num=seq))
                 for seq in range(259, 280)]
 
-        if use_esn:
+        if esn_en:
             rxs = self.send_and_expect(self.tra_if, pkts, self.tra_if)
 
             #
@@ -659,21 +660,21 @@ class IpsecTra46Tests(IpsecTra4Tests, IpsecTra6Tests):
 
 class IpsecTun4(object):
     """ verify methods for Tunnel v4 """
-    def verify_counters4(self, p, count, n_frags=None):
+    def verify_counters4(self, p, count, n_frags=None, worker=None):
         if not n_frags:
             n_frags = count
         if (hasattr(p, "spd_policy_in_any")):
-            pkts = p.spd_policy_in_any.get_stats()['packets']
+            pkts = p.spd_policy_in_any.get_stats(worker)['packets']
             self.assertEqual(pkts, count,
                              "incorrect SPD any policy: expected %d != %d" %
                              (count, pkts))
 
         if (hasattr(p, "tun_sa_in")):
-            pkts = p.tun_sa_in.get_stats()['packets']
+            pkts = p.tun_sa_in.get_stats(worker)['packets']
             self.assertEqual(pkts, count,
                              "incorrect SA in counts: expected %d != %d" %
                              (count, pkts))
-            pkts = p.tun_sa_out.get_stats()['packets']
+            pkts = p.tun_sa_out.get_stats(worker)['packets']
             self.assertEqual(pkts, count,
                              "incorrect SA out counts: expected %d != %d" %
                              (count, pkts))
@@ -839,14 +840,14 @@ class IpsecTun4Tests(IpsecTun4):
 
 class IpsecTun6(object):
     """ verify methods for Tunnel v6 """
-    def verify_counters6(self, p_in, p_out, count):
+    def verify_counters6(self, p_in, p_out, count, worker=None):
         if (hasattr(p_in, "tun_sa_in")):
-            pkts = p_in.tun_sa_in.get_stats()['packets']
+            pkts = p_in.tun_sa_in.get_stats(worker)['packets']
             self.assertEqual(pkts, count,
                              "incorrect SA in counts: expected %d != %d" %
                              (count, pkts))
         if (hasattr(p_out, "tun_sa_out")):
-            pkts = p_out.tun_sa_out.get_stats()['packets']
+            pkts = p_out.tun_sa_out.get_stats(worker)['packets']
             self.assertEqual(pkts, count,
                              "incorrect SA out counts: expected %d != %d" %
                              (count, pkts))
@@ -907,8 +908,7 @@ class IpsecTun6(object):
                                        dst=p_out.remote_tun_if_host,
                                        count=count,
                                        payload_size=payload_size)
-            recv_pkts = self.send_and_expect(self.pg1, send_pkts,
-                                             self.tun_if)
+            recv_pkts = self.send_and_expect(self.pg1, send_pkts, self.tun_if)
             self.verify_encrypted6(p_out, p_out.vpp_tun_sa, recv_pkts)
 
         finally:
@@ -999,6 +999,68 @@ class IpsecTun6Tests(IpsecTun6):
     def test_tun_burst66(self):
         """ ipsec 6o6 tunnel burst test """
         self.verify_tun_66(self.params[socket.AF_INET6], count=257)
+
+
+class IpsecTun6HandoffTests(IpsecTun6):
+    """ UT test methods for Tunnel v6 with multiple workers """
+    worker_config = "workers 2"
+
+    def test_tun_handoff_66(self):
+        """ ipsec 6o6 tunnel worker hand-off test """
+        N_PKTS = 15
+        p = self.params[socket.AF_INET6]
+
+        # inject alternately on worker 0 and 1. all counts on the SA
+        # should be against worker 0
+        for worker in [0, 1, 0, 1]:
+            send_pkts = self.gen_encrypt_pkts6(p.scapy_tun_sa, self.tun_if,
+                                               src=p.remote_tun_if_host,
+                                               dst=self.pg1.remote_ip6,
+                                               count=N_PKTS)
+            recv_pkts = self.send_and_expect(self.tun_if, send_pkts,
+                                             self.pg1, worker=worker)
+            self.verify_decrypted6(p, recv_pkts)
+
+            send_pkts = self.gen_pkts6(self.pg1, src=self.pg1.remote_ip6,
+                                       dst=p.remote_tun_if_host,
+                                       count=N_PKTS)
+            recv_pkts = self.send_and_expect(self.pg1, send_pkts,
+                                             self.tun_if, worker=worker)
+            self.verify_encrypted6(p, p.vpp_tun_sa, recv_pkts)
+
+        # all counts against the first worker that was used
+        self.verify_counters6(p, p, 4*N_PKTS, worker=0)
+
+
+class IpsecTun4HandoffTests(IpsecTun4):
+    """ UT test methods for Tunnel v4 with multiple workers """
+    worker_config = "workers 2"
+
+    def test_tun_handooff_44(self):
+        """ ipsec 4o4 tunnel worker hand-off test """
+        N_PKTS = 15
+        p = self.params[socket.AF_INET]
+
+        # inject alternately on worker 0 and 1. all counts on the SA
+        # should be against worker 0
+        for worker in [0, 1, 0, 1]:
+            send_pkts = self.gen_encrypt_pkts(p.scapy_tun_sa, self.tun_if,
+                                              src=p.remote_tun_if_host,
+                                              dst=self.pg1.remote_ip4,
+                                              count=N_PKTS)
+            recv_pkts = self.send_and_expect(self.tun_if, send_pkts,
+                                             self.pg1, worker=worker)
+            self.verify_decrypted(p, recv_pkts)
+
+            send_pkts = self.gen_pkts(self.pg1, src=self.pg1.remote_ip4,
+                                      dst=p.remote_tun_if_host,
+                                      count=N_PKTS)
+            recv_pkts = self.send_and_expect(self.pg1, send_pkts,
+                                             self.tun_if, worker=worker)
+            self.verify_encrypted(p, p.vpp_tun_sa, recv_pkts)
+
+        # all counts against the first worker that was used
+        self.verify_counters4(p, 4*N_PKTS, worker=0)
 
 
 class IpsecTun46Tests(IpsecTun4Tests, IpsecTun6Tests):

@@ -775,6 +775,9 @@ vnet_classify_add_del_table (vnet_classify_main_t * cm,
 	  if (nbuckets == 0)
 	    return VNET_API_ERROR_INVALID_VALUE;
 
+	  if (match < 1 || match > 5)
+	    return VNET_API_ERROR_INVALID_VALUE;
+
 	  t = vnet_classify_new_table (cm, mask, nbuckets, memory_size,
 				       skip, match);
 	  t->next_table_index = next_table_index;
@@ -1694,6 +1697,7 @@ classify_filter_command_fn (vlib_main_t * vm,
   int current_data_offset = 0;
   u32 sw_if_index = ~0;
   int pkt_trace = 0;
+  int pcap = 0;
   int i;
   vnet_classify_table_t *t;
   u8 *mask = 0;
@@ -1706,13 +1710,16 @@ classify_filter_command_fn (vlib_main_t * vm,
     {
       if (unformat (input, "del"))
 	is_add = 0;
-      else if (unformat (input, "pcap %=", &sw_if_index, 0))
-	;
+      else if (unformat (input, "pcap %=", &pcap, 1))
+	sw_if_index = 0;
       else if (unformat (input, "trace"))
 	pkt_trace = 1;
       else if (unformat (input, "%U",
 			 unformat_vnet_sw_interface, vnm, &sw_if_index))
-	;
+	{
+	  if (sw_if_index == 0)
+	    return clib_error_return (0, "Local interface not supported...");
+	}
       else if (unformat (input, "buckets %d", &nbuckets))
 	;
       else if (unformat (input, "mask %U", unformat_classify_mask,
@@ -1725,9 +1732,6 @@ classify_filter_command_fn (vlib_main_t * vm,
 	break;
     }
 
-  if (sw_if_index == 0)
-    return clib_error_return (0, "Local interface not supported...");
-
   if (is_add && mask == 0 && table_index == ~0)
     return clib_error_return (0, "Mask required");
 
@@ -1737,7 +1741,7 @@ classify_filter_command_fn (vlib_main_t * vm,
   if (is_add && match == ~0 && table_index == ~0)
     return clib_error_return (0, "match count required");
 
-  if (sw_if_index == ~0 && pkt_trace == 0)
+  if (sw_if_index == ~0 && pkt_trace == 0 && pcap == 0)
     return clib_error_return (0, "Must specify trace, pcap or interface...");
 
   if (pkt_trace && sw_if_index != ~0)

@@ -141,11 +141,11 @@ $(PIP_INSTALL_DONE): $(PYTHON_DEPENDS)
 $(PIP_PATCH_DONE): $(PIP_INSTALL_DONE)
 	@echo --- patching ---
 	@sleep 1 # Ensure python recompiles patched *.py files -> *.pyc
-	for f in $(CURDIR)/patches/scapy-2.4/*.patch ; do \
+	for f in $(CURDIR)/patches/scapy-2.4.3/*.patch ; do \
 		echo Applying patch: $$(basename $$f) ; \
 		patch --forward -p1 -d $(SCAPY_SOURCE) < $$f ; \
 		retCode=$$?; \
-		[ $$retCode -gt 1 ] && exit $$retCode; \
+		[ $$retCode -gt 0 ] && exit $$retCode; \
 	done; \
 	touch $@
 
@@ -241,8 +241,10 @@ shell: test-dep
 	@echo "source $(VENV_PATH)/bin/activate;\
 		cd $(BUILD_TEST_SRC);\
 		export PYTHONPATH=$(BUILD_TEST_SRC);\
+		export RND_SEED=$(RND_SEED);\
 		echo '***';\
 		echo PYTHONPATH=$(BUILD_TEST_SRC);\
+		echo RND_SEED=$(RND_SEED);\
 		echo VPP_BUILD_DIR=$(VPP_BUILD_DIR);\
 		echo VPP_BIN=$(VPP_BIN);\
 		echo VPP_PLUGIN_PATH=$(VPP_PLUGIN_PATH);\

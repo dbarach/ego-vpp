@@ -150,7 +150,7 @@ print_global_json_stats (echo_main_t * em)
   fformat (stdout, "  \"end_evt_missing\": \"%s\",\n",
 	   end_evt_missing ? "True" : "False");
   fformat (stdout, "  \"rx_data\": %lld,\n", em->stats.rx_total);
-  fformat (stdout, "  \"tx_rx\": %lld,\n", em->stats.tx_total);
+  fformat (stdout, "  \"tx_data\": %lld,\n", em->stats.tx_total);
   fformat (stdout, "  \"closing\": {\n");
   fformat (stdout, "    \"reset\": { \"q\": %d, \"s\": %d },\n",
 	   em->stats.reset_count.q, em->stats.reset_count.s);
@@ -244,10 +244,10 @@ echo_update_count_on_session_close (echo_main_t * em, echo_session_t * s)
 	    s->bytes_received, s->bytes_received + s->bytes_to_receive,
 	    echo_format_session, s, s->bytes_sent,
 	    s->bytes_sent + s->bytes_to_send);
-  clib_atomic_fetch_add (&em->stats.tx_total, s->bytes_sent);
-  clib_atomic_fetch_add (&em->stats.rx_total, s->bytes_received);
 
-  if (PREDICT_FALSE (em->stats.rx_total == em->stats.rx_expected))
+  if (PREDICT_FALSE
+      ((em->stats.rx_total == em->stats.rx_expected)
+       && (em->stats.tx_total == em->stats.tx_expected)))
     echo_notify_event (em, ECHO_EVT_LAST_BYTE);
 }
 
@@ -313,6 +313,7 @@ recv_data_chunk (echo_main_t * em, echo_session_t * s, u8 * rx_buf)
 
   s->bytes_received += n_read;
   s->bytes_to_receive -= n_read;
+  clib_atomic_fetch_add (&em->stats.rx_total, n_read);
   return n_read;
 }
 
@@ -321,6 +322,8 @@ send_data_chunk (echo_session_t * s, u8 * tx_buf, int offset, int len)
 {
   int n_sent;
   int bytes_this_chunk = clib_min (s->bytes_to_send, len - offset);
+  echo_main_t *em = &echo_main;
+
   if (!bytes_this_chunk)
     return 0;
   n_sent = app_send ((app_session_t *) s, tx_buf + offset,
@@ -329,6 +332,7 @@ send_data_chunk (echo_session_t * s, u8 * tx_buf, int offset, int len)
     return 0;
   s->bytes_to_send -= n_sent;
   s->bytes_sent += n_sent;
+  clib_atomic_fetch_add (&em->stats.tx_total, n_sent);
   return n_sent;
 }
 
@@ -394,7 +398,7 @@ echo_handle_data (echo_main_t * em, echo_session_t * s, u8 * rx_buf)
 	  if (em->send_stream_disconnects == ECHO_CLOSE_F_ACTIVE)
 	    {
 	      echo_send_rpc (em, echo_send_disconnect_session,
-			     (void *) s->vpp_session_handle, 0);
+			     (echo_rpc_args_t *) & s->vpp_session_handle);
 	      clib_atomic_fetch_add (&em->stats.active_count.s, 1);
 	    }
 	  else if (em->send_stream_disconnects == ECHO_CLOSE_F_NONE)
@@ -413,7 +417,7 @@ echo_handle_data (echo_main_t * em, echo_session_t * s, u8 * rx_buf)
     {
       if (n_sent || n_read)
 	s->idle_cycles = 0;
-      else if (s->idle_cycles++ == 1e7)
+      else if (s->idle_cycles++ == LOG_EVERY_N_IDLE_CYCLES)
 	{
 	  s->idle_cycles = 0;
 	  ECHO_LOG (2, "Idle client TX:%dB RX:%dB", s->bytes_to_send,
@@ -488,14 +492,16 @@ echo_data_thread_fn (void *arg)
 }
 
 static void
-session_unlisten_handler (session_unlisten_msg_t * mp)
+session_unlisten_handler (session_unlisten_reply_msg_t * mp)
 {
-  echo_session_t *listen_session;
+  echo_session_t *ls;
   echo_main_t *em = &echo_main;
-  listen_session = pool_elt_at_index (em->sessions, em->listen_session_index);
-  em->proto_cb_vft->cleanup_cb (listen_session, 0 /* parent_died */ );
-  listen_session->session_state = ECHO_SESSION_STATE_CLOSED;
-  em->state = STATE_DISCONNECTED;
+
+  ls = echo_get_session_from_handle (em, mp->handle);
+  em->proto_cb_vft->cleanup_cb (ls, 0 /* parent_died */ );
+  ls->session_state = ECHO_SESSION_STATE_CLOSED;
+  if (--em->listen_session_cnt == 0)
+    em->state = STATE_DISCONNECTED;
 }
 
 static void
@@ -518,10 +524,26 @@ session_bound_handler (session_bound_msg_t * mp)
   listen_session->session_type = ECHO_SESSION_TYPE_LISTEN;
   listen_session->vpp_session_handle = mp->handle;
   echo_session_handle_add_del (em, mp->handle, listen_session->session_index);
-  em->state = STATE_LISTEN;
-  em->listen_session_index = listen_session->session_index;
+  vec_add1 (em->listen_session_indexes, listen_session->session_index);
+  if (++em->listen_session_cnt == em->n_uris)
+    em->state = STATE_LISTEN;
   if (em->proto_cb_vft->bound_uri_cb)
     em->proto_cb_vft->bound_uri_cb (mp, listen_session);
+}
+
+static int
+echo_segment_is_not_mapped (u64 segment_handle)
+{
+  echo_main_t *em = &echo_main;
+  uword *segment_present;
+  ECHO_LOG (3, "Check if segment mapped 0x%lx...", segment_handle);
+  clib_spinlock_lock (&em->segment_handles_lock);
+  segment_present = hash_get (em->shared_segment_handles, segment_handle);
+  clib_spinlock_unlock (&em->segment_handles_lock);
+  if (segment_present != 0)
+    return 0;
+  ECHO_LOG (2, "Segment not mapped (0x%lx)", segment_handle);
+  return -1;
 }
 
 static void
@@ -539,7 +561,7 @@ session_accepted_handler (session_accepted_msg_t * mp)
 		 "Unknown listener handle 0x%lx", mp->listener_handle);
       return;
     }
-  if (wait_for_segment_allocation (mp->segment_handle))
+  if (echo_segment_is_not_mapped (mp->segment_handle))
     {
       ECHO_FAIL (ECHO_FAIL_ACCEPTED_WAIT_FOR_SEG_ALLOC,
 		 "accepted wait_for_segment_allocation errored");
@@ -608,7 +630,7 @@ session_connected_handler (session_connected_msg_t * mp)
     }
 
   session = echo_session_new (em);
-  if (wait_for_segment_allocation (mp->segment_handle))
+  if (echo_segment_is_not_mapped (mp->segment_handle))
     {
       ECHO_FAIL (ECHO_FAIL_CONNECTED_WAIT_FOR_SEG_ALLOC,
 		 "connected wait_for_segment_allocation errored");
@@ -702,6 +724,66 @@ session_reset_handler (session_reset_msg_t * mp)
 }
 
 static void
+add_segment_handler (session_app_add_segment_msg_t * mp)
+{
+  fifo_segment_main_t *sm = &echo_main.segment_main;
+  fifo_segment_create_args_t _a, *a = &_a;
+  echo_main_t *em = &echo_main;
+  int *fds = 0, i;
+  char *seg_name = (char *) mp->segment_name;
+  u64 segment_handle = mp->segment_handle;
+
+  if (mp->fd_flags & SESSION_FD_F_MEMFD_SEGMENT)
+    {
+      vec_validate (fds, 1);
+      if (vl_socket_client_recv_fd_msg (fds, 1, 5))
+	{
+	  ECHO_FAIL (ECHO_FAIL_VL_API_RECV_FD_MSG,
+		     "vl_socket_client_recv_fd_msg failed");
+	  goto failed;
+	}
+
+      if (echo_ssvm_segment_attach (seg_name, SSVM_SEGMENT_MEMFD, fds[0]))
+	{
+	  ECHO_FAIL (ECHO_FAIL_VL_API_SVM_FIFO_SEG_ATTACH,
+		     "svm_fifo_segment_attach ('%s') "
+		     "failed on SSVM_SEGMENT_MEMFD", seg_name);
+	  goto failed;
+	}
+      vec_free (fds);
+    }
+  else
+    {
+      clib_memset (a, 0, sizeof (*a));
+      a->segment_name = seg_name;
+      a->segment_size = mp->segment_size;
+      /* Attach to the segment vpp created */
+      if (fifo_segment_attach (sm, a))
+	{
+	  ECHO_FAIL (ECHO_FAIL_VL_API_FIFO_SEG_ATTACH,
+		     "fifo_segment_attach ('%s') failed", seg_name);
+	  goto failed;
+	}
+    }
+  echo_segment_handle_add_del (em, segment_handle, 1 /* add */ );
+  ECHO_LOG (2, "Mapped segment 0x%lx", segment_handle);
+  return;
+
+failed:
+  for (i = 0; i < vec_len (fds); i++)
+    close (fds[i]);
+  vec_free (fds);
+}
+
+static void
+del_segment_handler (session_app_del_segment_msg_t * mp)
+{
+  echo_main_t *em = &echo_main;
+  echo_segment_handle_add_del (em, mp->segment_handle, 0 /* add */ );
+  ECHO_LOG (2, "Unmaped segment 0x%lx", mp->segment_handle);
+}
+
+static void
 handle_mq_event (session_event_t * e)
 {
   switch (e->event_type)
@@ -718,7 +800,14 @@ handle_mq_event (session_event_t * e)
     case SESSION_CTRL_EVT_RESET:
       return session_reset_handler ((session_reset_msg_t *) e->data);
     case SESSION_CTRL_EVT_UNLISTEN_REPLY:
-      return session_unlisten_handler ((session_unlisten_msg_t *) e->data);
+      return session_unlisten_handler ((session_unlisten_reply_msg_t *)
+				       e->data);
+    case SESSION_CTRL_EVT_APP_ADD_SEGMENT:
+      add_segment_handler ((session_app_add_segment_msg_t *) e->data);
+      break;
+    case SESSION_CTRL_EVT_APP_DEL_SEGMENT:
+      del_segment_handler ((session_app_del_segment_msg_t *) e->data);
+      break;
     case SESSION_IO_EVT_RX:
       break;
     default:
@@ -744,9 +833,37 @@ echo_process_rpcs (echo_main_t * em)
       svm_msg_q_sub_w_lock (mq, &msg);
       rpc = svm_msg_q_msg_data (mq, &msg);
       svm_msg_q_unlock (mq);
-      ((echo_rpc_t) rpc->fp) (rpc->arg, rpc->opaque);
+      ((echo_rpc_t) rpc->fp) (em, &rpc->args);
       svm_msg_q_free_msg (mq, &msg);
     }
+}
+
+static inline void
+echo_print_periodic_stats (echo_main_t * em)
+{
+  f64 delta, now = clib_time_now (&em->clib_time);
+  echo_stats_t _st, *st = &_st;
+  echo_stats_t *lst = &em->last_stat_sampling;
+  delta = now - em->last_stat_sampling_ts;
+  if (delta < em->periodic_stats_delta)
+    return;
+
+  clib_memcpy_fast (st, &em->stats, sizeof (*st));
+  if (st->rx_total - lst->rx_total)
+    clib_warning ("RX: %U", echo_format_bytes_per_sec,
+		  (st->rx_total - lst->rx_total) / delta);
+  if (st->tx_total - lst->tx_total)
+    clib_warning ("TX: %U", echo_format_bytes_per_sec,
+		  (st->tx_total - lst->tx_total) / delta);
+  if (st->connected_count.q - lst->connected_count.q)
+    clib_warning ("conn: %d/s",
+		  st->connected_count.q - lst->connected_count.q);
+  if (st->accepted_count.q - lst->accepted_count.q)
+    clib_warning ("accept: %d/s",
+		  st->accepted_count.q - lst->accepted_count.q);
+
+  clib_memcpy_fast (lst, st, sizeof (*st));
+  em->last_stat_sampling_ts = now;
 }
 
 static void *
@@ -772,6 +889,9 @@ echo_mq_thread_fn (void *arg)
 
   while (em->state < STATE_DETACHED && !em->time_to_stop)
     {
+      if (em->periodic_stats_delta)
+	echo_print_periodic_stats (em);
+
       svm_msg_q_lock (mq);
       if (svm_msg_q_is_empty (mq) && svm_msg_q_timedwait (mq, 1))
 	{
@@ -798,13 +918,43 @@ echo_mq_thread_fn (void *arg)
   pthread_exit (0);
 }
 
+static inline void
+echo_cycle_ip (echo_main_t * em, ip46_address_t * ip, ip46_address_t * src_ip,
+	       u32 i)
+{
+  u8 *ipu8;
+  u8 l;
+  if (i % em->n_uris == 0)
+    {
+      clib_memcpy_fast (ip, src_ip, sizeof (*ip));
+      return;
+    }
+  l = em->uri_elts.is_ip4 ? 3 : 15;
+  ipu8 = em->uri_elts.is_ip4 ? ip->ip4.as_u8 : ip->ip6.as_u8;
+  while (ipu8[l] == 0xf)
+    ipu8[l--] = 0;
+  if (l)
+    ipu8[l]++;
+}
+
 static void
 clients_run (echo_main_t * em)
 {
+  echo_connect_args_t _a, *a = &_a;
   u64 i;
+
+  a->context = SESSION_INVALID_INDEX;
+  a->parent_session_handle = SESSION_INVALID_HANDLE;
+  clib_memset (&a->lcl_ip, 0, sizeof (a->lcl_ip));
+
   echo_notify_event (em, ECHO_EVT_FIRST_QCONNECT);
   for (i = 0; i < em->n_connects; i++)
-    echo_send_connect (SESSION_INVALID_HANDLE, SESSION_INVALID_INDEX);
+    {
+      echo_cycle_ip (em, &a->ip, &em->uri_elts.ip, i);
+      if (em->lcl_ip_set)
+	echo_cycle_ip (em, &a->lcl_ip, &em->lcl_ip, i);
+      echo_send_connect (em, a);
+    }
   wait_for_state_change (em, STATE_READY, 0);
   ECHO_LOG (2, "App is ready");
   echo_process_rpcs (em);
@@ -814,14 +964,25 @@ static void
 server_run (echo_main_t * em)
 {
   echo_session_t *ls;
-  echo_send_listen (em);
+  ip46_address_t _ip, *ip = &_ip;
+  u32 *listen_session_index;
+  u32 i;
+
+  for (i = 0; i < em->n_uris; i++)
+    {
+      echo_cycle_ip (em, ip, &em->uri_elts.ip, i);
+      echo_send_listen (em, ip);
+    }
   wait_for_state_change (em, STATE_READY, 0);
   ECHO_LOG (2, "App is ready");
   echo_process_rpcs (em);
   /* Cleanup */
-  ECHO_LOG (2, "Unbind listen port");
-  ls = pool_elt_at_index (em->sessions, em->listen_session_index);
-  echo_send_unbind (em, ls);
+  vec_foreach (listen_session_index, em->listen_session_indexes)
+  {
+    ECHO_LOG (2, "Unbind listen port %d", em->listen_session_cnt);
+    ls = pool_elt_at_index (em->sessions, *listen_session_index);
+    echo_send_unbind (em, ls);
+  }
   if (wait_for_state_change (em, STATE_DISCONNECTED, TIMEOUT))
     {
       ECHO_FAIL (ECHO_FAIL_SERVER_DISCONNECT_TIMEOUT,
@@ -854,6 +1015,8 @@ print_usage_and_exit (void)
 	   "  secret SECRET       set namespace secret\n"
 	   "  chroot prefix PATH  Use PATH as memory root path\n"
 	   "  sclose=[Y|N|W]      When stream is done, send[Y]|nop[N]|wait[W] for close\n"
+	   "  nuris N             Cycle through N consecutive (src&dst) ips when creating connections\n"
+	   "  lcl IP              Set the local ip to use as a client (use with nuris to set first src ip)\n"
 	   "\n"
 	   "  time START:END      Time between evts START & END, events being :\n"
 	   "                       start - Start of the app\n"
@@ -866,6 +1029,7 @@ print_usage_and_exit (void)
 	   "  rx-results-diff     Rx results different to pass test\n"
 	   "  tx-results-diff     Tx results different to pass test\n"
 	   "  json                Output global stats in json\n"
+	   "  stats N             Output stats evry N secs\n"
 	   "  log=N               Set the log level to [0: no output, 1:errors, 2:log]\n"
 	   "  crypto [engine]     Set the crypto engine [openssl, vpp, picotls, mbedtls]\n"
 	   "\n"
@@ -931,6 +1095,10 @@ echo_process_opts (int argc, char **argv)
 	vl_set_memory_root_path ((char *) chroot_prefix);
       else if (unformat (a, "uri %s", &uri))
 	em->uri = format (0, "%s%c", uri, 0);
+      else if (unformat (a, "lcl %U", unformat_ip46_address, &em->lcl_ip))
+	em->lcl_ip_set = 1;
+      else if (unformat (a, "nuris %u", &em->n_uris))
+	em->n_sessions = em->n_clients + em->n_uris;
       else if (unformat (a, "server"))
 	em->i_am_master = 1;
       else if (unformat (a, "client"))
@@ -965,7 +1133,7 @@ echo_process_opts (int argc, char **argv)
 	;
       else if (unformat (a, "nclients %d", &em->n_clients))
 	{
-	  em->n_sessions = em->n_clients + 1;
+	  em->n_sessions = em->n_clients + em->n_uris;
 	  em->n_connects = em->n_clients;
 	}
       else if (unformat (a, "nthreads %d", &em->n_rx_threads))
@@ -996,6 +1164,8 @@ echo_process_opts (int argc, char **argv)
 	em->tx_results_diff = 1;
       else if (unformat (a, "json"))
 	em->output_json = 1;
+      else if (unformat (a, "stats %d", &em->periodic_stats_delta))
+	;
       else if (unformat (a, "wait-for-gdb"))
 	em->wait_for_gdb = 1;
       else if (unformat (a, "log=%d", &em->log_lvl))
@@ -1113,6 +1283,8 @@ main (int argc, char **argv)
   em->i_am_master = 1;
   em->n_rx_threads = 4;
   em->evt_q_size = 256;
+  em->lcl_ip_set = 0;
+  clib_memset (&em->lcl_ip, 0, sizeof (em->lcl_ip));
   em->test_return_packets = RETURN_PACKETS_NOTEST;
   em->timing.start_event = ECHO_EVT_FIRST_QCONNECT;
   em->timing.end_event = ECHO_EVT_LAST_BYTE;
@@ -1122,7 +1294,9 @@ main (int argc, char **argv)
   em->tx_buf_size = 1 << 20;
   em->data_source = ECHO_INVALID_DATA_SOURCE;
   em->uri = format (0, "%s%c", "tcp://0.0.0.0/1234", 0);
+  em->n_uris = 1;
   em->max_sim_connects = 0;
+  em->listen_session_cnt = 0;
   em->crypto_engine = CRYPTO_ENGINE_NONE;
   echo_set_each_proto_defaults_before_opts (em);
   echo_process_opts (argc, argv);

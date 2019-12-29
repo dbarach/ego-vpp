@@ -47,6 +47,7 @@ typedef struct _session_endpoint_cfg
   u64 parent_handle;
   u32 ckpair_index;
   u8 crypto_engine;
+  u8 flags;
 } session_endpoint_cfg_t;
 
 #define SESSION_IP46_ZERO			\
@@ -152,6 +153,7 @@ typedef enum
   _(PROXY, "proxy")					\
   _(CUSTOM_TX, "custom-tx")				\
   _(IS_MIGRATING, "migrating")				\
+  _(UNIDIRECTIONAL, "unidirectional")			\
 
 typedef enum session_flags_bits_
 {
@@ -332,6 +334,8 @@ typedef enum
   SESSION_CTRL_EVT_LISTEN_URI,
   SESSION_CTRL_EVT_UNLISTEN,
   SESSION_CTRL_EVT_APP_DETACH,
+  SESSION_CTRL_EVT_APP_ADD_SEGMENT,
+  SESSION_CTRL_EVT_APP_DEL_SEGMENT,
 } session_evt_type_t;
 
 #define foreach_session_ctrl_evt				\
@@ -353,7 +357,8 @@ typedef enum
   _(WORKER_UPDATE, worker_update)				\
   _(WORKER_UPDATE_REPLY, worker_update_reply)			\
   _(APP_DETACH, app_detach)					\
-
+  _(APP_ADD_SEGMENT, app_add_segment)				\
+  _(APP_DEL_SEGMENT, app_del_segment)				\
 
 /* Deprecated and will be removed. Use types above */
 #define FIFO_EVENT_APP_RX SESSION_IO_EVT_RX

@@ -70,6 +70,9 @@ DEB_DEPENDS += python-virtualenv python-pip libffi6 check
 DEB_DEPENDS += libboost-all-dev libffi-dev python3-ply libmbedtls-dev
 DEB_DEPENDS += cmake ninja-build uuid-dev python3-jsonschema python3-yaml yamllint
 DEB_DEPENDS += python3-venv  # ensurepip
+DEB_DEPENDS += python3-dev   # needed for python3 -m pip install psutil
+# python3.6 on 16.04 requires python36-dev
+ 
 ifeq ($(OS_VERSION_ID),14.04)
 	DEB_DEPENDS += libssl-dev
 else ifeq ($(OS_ID)-$(OS_VERSION_ID),debian-8)
@@ -91,19 +94,27 @@ RPM_DEPENDS += ninja-build
 RPM_DEPENDS += libuuid-devel
 RPM_DEPENDS += mbedtls-devel
 RPM_DEPENDS += yamllint
+RPM_DEPENDS += python3-devel  # needed for python3 -m pip install psutil
 
 ifeq ($(OS_ID),fedora)
 	RPM_DEPENDS += dnf-utils
 	RPM_DEPENDS += subunit subunit-devel
 	RPM_DEPENDS += compat-openssl10-devel
-	RPM_DEPENDS += python3-devel python3-ply
+	RPM_DEPENDS += python3-ply  # for vppapigen
 	RPM_DEPENDS += python3-virtualenv python3-jsonschema
 	RPM_DEPENDS += cmake
 	RPM_DEPENDS_GROUPS = 'C Development Tools and Libraries'
+else ifeq ($(OS_ID)-$(OS_VERSION_ID),centos-8)
+	RPM_DEPENDS += dnf-utils
+	RPM_DEPENDS += compat-openssl10
+	RPM_DEPENDS += python3-devel python3-ply
+	RPM_DEPENDS += python3-virtualenv python3-jsonschema
+	RPM_DEPENDS += cmake
+	RPM_DEPENDS_GROUPS = 'Development Tools'
 else
 	RPM_DEPENDS += yum-utils
 	RPM_DEPENDS += openssl-devel
-	RPM_DEPENDS += python-devel python36-ply
+	RPM_DEPENDS += python36-ply  # for vppapigen
 	RPM_DEPENDS += python3-devel python3-pip
 	RPM_DEPENDS += python-virtualenv python36-jsonschema
 	RPM_DEPENDS += devtoolset-7
@@ -291,6 +302,9 @@ ifeq ($(OS_ID),rhel)
 	@sudo -E yum groupinstall $(CONFIRM) $(RPM_DEPENDS_GROUPS)
 	@sudo -E yum install $(CONFIRM) $(RPM_DEPENDS)
 	@sudo -E debuginfo-install $(CONFIRM) glibc openssl-libs mbedtls-devel zlib
+else ifeq ($(OS_ID)-$(OS_VERSION_ID),centos-8)
+	@sudo -E dnf groupinstall $(CONFIRM) $(RPM_DEPENDS_GROUPS)
+	@sudo -E dnf install $(CONFIRM) $(RPM_DEPENDS)
 else ifeq ($(OS_ID),centos)
 	@sudo -E yum install $(CONFIRM) centos-release-scl-rh epel-release
 	@sudo -E yum groupinstall $(CONFIRM) $(RPM_DEPENDS_GROUPS)
@@ -384,6 +398,7 @@ rebuild-release: wipe-release build-release
 libexpand = $(subst $(subst ,, ),:,$(foreach lib,$(1),$(BR)/install-$(2)-native/vpp/$(lib)/$(3)))
 
 export TEST_DIR ?= $(WS_ROOT)/test
+export RND_SEED ?= $(shell python3 -c 'import time; print(time.time())')
 
 define test
 	$(if $(filter-out $(3),retest),make -C $(BR) PLATFORM=$(1) TAG=$(2) vpp-install,)
@@ -398,6 +413,7 @@ define test
 	  EXTENDED_TESTS=$(EXTENDED_TESTS) \
 	  PYTHON=$(PYTHON) \
 	  OS_ID=$(OS_ID) \
+	  RND_SEED=$(RND_SEED) \
 	  CACHE_OUTPUT=$(CACHE_OUTPUT) \
 	  $(3)
 endef
@@ -684,7 +700,7 @@ docs-venv:
 	@($(SPHINX_SCRIPTS_DIR)/sphinx-make.sh venv)
 
 .PHONY: docs
-docs: $(DOCS_DIR) docs-venv
+docs: $(DOCS_DIR)
 	@($(SPHINX_SCRIPTS_DIR)/sphinx-make.sh html)
 
 .PHONY: docs-clean

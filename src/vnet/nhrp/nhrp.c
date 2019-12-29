@@ -20,8 +20,55 @@
 #include <vnet/fib/fib_table.h>
 #include <vnet/adj/adj_midchain.h>
 
+typedef struct nhrp_key_t_
+{
+  ip46_address_t nk_peer;
+  u32 nk_sw_if_index;
+} nhrp_key_t;
+
+struct nhrp_entry_t_
+{
+  nhrp_key_t *ne_key;
+  fib_prefix_t ne_nh;
+  u32 ne_fib_index;
+};
+
 static uword *nhrp_db;
 static nhrp_entry_t *nhrp_pool;
+static nhrp_vft_t *nhrp_vfts;
+
+#define NHRP_NOTIFY(_ne, _fn) {                 \
+  nhrp_vft_t *_vft;                             \
+  vec_foreach(_vft, nhrp_vfts) {                \
+    if (_vft->_fn) {                             \
+      _vft->_fn(_ne);                            \
+    }                                           \
+  }                                             \
+}
+
+u32
+nhrp_entry_get_sw_if_index (const nhrp_entry_t * ne)
+{
+  return (ne->ne_key->nk_sw_if_index);
+}
+
+u32
+nhrp_entry_get_fib_index (const nhrp_entry_t * ne)
+{
+  return (ne->ne_fib_index);
+}
+
+const ip46_address_t *
+nhrp_entry_get_peer (const nhrp_entry_t * ne)
+{
+  return (&ne->ne_key->nk_peer);
+}
+
+const fib_prefix_t *
+nhrp_entry_get_nh (const nhrp_entry_t * ne)
+{
+  return (&ne->ne_nh);
+}
 
 void
 nhrp_entry_adj_stack (const nhrp_entry_t * ne, adj_index_t ai)
@@ -113,6 +160,8 @@ nhrp_entry_add (u32 sw_if_index,
       adj_nbr_walk_nh (sw_if_index,
 		       ne->ne_nh.fp_proto,
 		       &ne->ne_key->nk_peer, nhrp_entry_add_adj_walk, ne);
+
+      NHRP_NOTIFY (ne, nv_added);
     }
   else
     return (VNET_API_ERROR_ENTRY_ALREADY_EXISTS);
@@ -135,6 +184,8 @@ nhrp_entry_del (u32 sw_if_index, const ip46_address_t * peer)
 		       ne->ne_nh.fp_proto,
 		       &ne->ne_key->nk_peer, nhrp_entry_del_adj_walk, ne);
 
+      NHRP_NOTIFY (ne, nv_deleted);
+
       clib_mem_free (ne->ne_key);
       pool_put (nhrp_pool, ne);
     }
@@ -154,10 +205,11 @@ format_nhrp_entry (u8 * s, va_list * args)
   ne = nhrp_entry_get (nei);
 
   s = format (s, "[%d] ", nei);
-  s = format (s, "%U:%U ", format_vnet_sw_if_index_name,
-	      vnm, ne->ne_key->nk_sw_if_index,
-	      format_ip46_address, &ne->ne_key->nk_peer, IP46_TYPE_ANY);
-  s = format (s, "via %d:%U",
+  s = format (s, "%U:", format_vnet_sw_if_index_name,
+	      vnm, ne->ne_key->nk_sw_if_index);
+  s = format (s, " %U", format_ip46_address,
+	      &ne->ne_key->nk_peer, IP46_TYPE_ANY);
+  s = format (s, " via [%d]:%U",
 	      fib_table_get_table_id (ne->ne_fib_index, ne->ne_nh.fp_proto),
 	      format_fib_prefix, &ne->ne_nh);
 
@@ -175,6 +227,26 @@ nhrp_walk (nhrp_walk_cb_t fn, void *ctx)
     fn(nei, ctx);
   }));
   /* *INDENT-ON* */
+}
+
+void
+nhrp_walk_itf (u32 sw_if_index, nhrp_walk_cb_t fn, void *ctx)
+{
+  index_t nei;
+
+  /* *INDENT-OFF* */
+  pool_foreach_index(nei, nhrp_pool,
+  ({
+    if (sw_if_index == nhrp_entry_get_sw_if_index(nhrp_entry_get(nei)))
+      fn(nei, ctx);
+  }));
+  /* *INDENT-ON* */
+}
+
+void
+nhrp_register (const nhrp_vft_t * vft)
+{
+  vec_add1 (nhrp_vfts, *vft);
 }
 
 static clib_error_t *
