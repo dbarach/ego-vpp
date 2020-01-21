@@ -11,6 +11,21 @@
 # See the License for the specific language governing permissions and
 # limitations under the License.
 
+set(NAT_SRCS
+  lib/alloc.c
+)
+
+set(NAT_HEADERS
+  lib/alloc.h
+)
+
+add_vpp_library(nat
+  SOURCES ${NAT_SRCS}
+  LINK_LIBRARIES m
+  INSTALL_HEADERS ${NAT_HEADERS}
+  COMPONENT libnat
+)
+
 add_vpp_plugin(nat
   SOURCES
   nat.c
@@ -23,7 +38,6 @@ add_vpp_plugin(nat
   nat_det.c
   nat_det_in2out.c
   nat_det_out2in.c
-  nat_reass.c
   nat_dpo.c
   nat44_cli.c
   nat44_handoff.c

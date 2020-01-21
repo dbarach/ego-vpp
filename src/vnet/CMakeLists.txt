@@ -1509,6 +1509,20 @@ list(APPEND VNET_HEADERS
 list(APPEND VNET_API_FILES syslog/syslog.api)
 
 ##############################################################################
+# PCI
+##############################################################################
+
+list (APPEND VNET_SOURCES
+  pci/pci_types_api.c
+)
+
+list(APPEND VNET_HEADERS
+  pci/pci_types_api.h
+)
+
+list(APPEND VNET_API_FILES pci/pci_types.api)
+
+##############################################################################
 # NHRP
 ##############################################################################
 
@@ -1569,6 +1583,15 @@ add_vpp_library(vnet
   INSTALL_HEADERS ${VNET_HEADERS}
   API_FILES ${VNET_API_FILES}
   LINK_LIBRARIES vppinfra svm vlib ${OPENSSL_LIBRARIES}
+  DEPENDS vpp_version_h api_headers
+)
+
+##############################################################################
+# vpp api test client library
+##############################################################################
+
+add_vpp_library (vatclient
+  SOURCES ip/ip_types_api.c
   DEPENDS api_headers
 )
 

@@ -1375,11 +1375,11 @@ quic_start_listen (u32 quic_listen_session_index, transport_endpoint_t * tep)
   app = application_get (app_wrk->app_index);
   QUIC_DBG (2, "Called quic_start_listen for app %d", app_wrk->app_index);
 
-  sep->transport_proto = TRANSPORT_PROTO_UDPC;
   clib_memset (args, 0, sizeof (*args));
   args->app_index = qm->app_index;
   args->sep_ext = *sep;
   args->sep_ext.ns_index = app->ns_index;
+  args->sep_ext.transport_proto = TRANSPORT_PROTO_UDPC;
   if ((rv = vnet_listen (args)))
     return rv;
 
@@ -2153,7 +2153,7 @@ static int
 quic_udp_session_rx_callback (session_t * udp_session)
 {
   /*  Read data from UDP rx_fifo and pass it to the quicly conn. */
-  quic_ctx_t *ctx = NULL;
+  quic_ctx_t *ctx = NULL, *prev_ctx = NULL;
   svm_fifo_t *f = udp_session->rx_fifo;
   u32 max_deq;
   u64 udp_session_handle = session_handle (udp_session);
@@ -2234,8 +2234,10 @@ rx_start:
 	  break;
 	}
     }
+  ctx = prev_ctx = NULL;
   for (i = 0; i < max_packets; i++)
     {
+      prev_ctx = ctx;
       switch (packets_ctx[i].ptype)
 	{
 	case QUIC_PACKET_TYPE_RECEIVE:
@@ -2250,9 +2252,11 @@ rx_start:
 			      packets_ctx[i].thread_index);
 	  break;
 	default:
-	  continue;
+	  continue;		/* this exits the for loop since other packet types are
+				   necessarily the last in the batch */
 	}
-      quic_send_packets (ctx);
+      if (ctx != prev_ctx)
+	quic_send_packets (ctx);
     }
 
   udp_session = session_get_from_handle (udp_session_handle);	/*  session alloc might have happened */

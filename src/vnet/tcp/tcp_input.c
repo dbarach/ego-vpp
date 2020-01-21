@@ -784,6 +784,8 @@ scoreboard_update_bytes (sack_scoreboard_t * sb, u32 ack, u32 snd_mss)
   if (!right)
     {
       sb->sacked_bytes = sb->high_sacked - ack;
+      sb->last_sacked_bytes = sb->sacked_bytes
+	- (old_sacked - sb->last_bytes_delivered);
       return;
     }
 
@@ -988,7 +990,7 @@ tcp_rcv_sacks (tcp_connection_t * tc, u32 ack)
   sb->last_bytes_delivered = 0;
   sb->rxt_sacked = 0;
 
-  if (!tcp_opts_sack (&tc->rcv_opts)
+  if (!tcp_opts_sack (&tc->rcv_opts) && !sb->sacked_bytes
       && sb->head == TCP_INVALID_SACK_HOLE_INDEX)
     return;
 
@@ -1097,7 +1099,11 @@ tcp_rcv_sacks (tcp_connection_t * tc, u32 ack)
   hole = pool_elt_at_index (sb->holes, sb->head);
 
   if (PREDICT_FALSE (sb->is_reneging))
-    sb->last_bytes_delivered += hole->start - tc->snd_una;
+    {
+      sb->last_bytes_delivered += clib_min (hole->start - tc->snd_una,
+					    ack - tc->snd_una);
+      sb->is_reneging = seq_lt (ack, hole->start);
+    }
 
   while (hole && blk_index < vec_len (rcv_sacks))
     {
@@ -1455,7 +1461,7 @@ tcp_cc_handle_event (tcp_connection_t * tc, tcp_rate_sample_t * rs,
 	  tc->rcv_dupacks += 1;
 	  TCP_EVT (TCP_EVT_DUPACK_RCVD, tc, 1);
 	}
-      tc->rxt_delivered = clib_max (tc->rxt_delivered + tc->bytes_acked,
+      tc->rxt_delivered = clib_min (tc->rxt_delivered + tc->bytes_acked,
 				    tc->snd_rxt_bytes);
       if (is_dack)
 	tc->prr_delivered += clib_min (tc->snd_mss,
@@ -1507,6 +1513,23 @@ tcp_cc_handle_event (tcp_connection_t * tc, tcp_rate_sample_t * rs,
     tcp_cc_rcv_ack (tc, rs);
   else
     tcp_cc_rcv_cong_ack (tc, TCP_CC_PARTIALACK, rs);
+}
+
+static void
+tcp_handle_old_ack (tcp_connection_t * tc, tcp_rate_sample_t * rs)
+{
+  if (!tcp_in_cong_recovery (tc))
+    return;
+
+  if (tcp_opts_sack_permitted (&tc->rcv_opts))
+    tcp_rcv_sacks (tc, tc->snd_una);
+
+  tc->bytes_acked = 0;
+
+  if (tc->cfg_flags & TCP_CFG_F_RATE_SAMPLE)
+    tcp_bt_sample_delivery_rate (tc, rs);
+
+  tcp_cc_handle_event (tc, rs, 1);
 }
 
 /**
@@ -1574,8 +1597,12 @@ tcp_rcv_ack (tcp_worker_ctx_t * wrk, tcp_connection_t * tc, vlib_buffer_t * b,
       tc->errors.below_ack_wnd += 1;
       *error = TCP_ERROR_ACK_OLD;
       TCP_EVT (TCP_EVT_ACK_RCV_ERR, tc, 1, vnet_buffer (b)->tcp.ack_number);
-      if (tcp_in_fastrecovery (tc) && tc->rcv_dupacks == TCP_DUPACK_THRESHOLD)
-	tcp_cc_handle_event (tc, 0, 1);
+
+      if (seq_lt (vnet_buffer (b)->tcp.ack_number, tc->snd_una - tc->rcv_wnd))
+	return -1;
+
+      tcp_handle_old_ack (tc, &rs);
+
       /* Don't drop yet */
       return 0;
     }
@@ -2411,11 +2438,15 @@ tcp_check_tx_offload (tcp_connection_t * tc, int is_ipv4)
     }
 
   lb = load_balance_get (lb_idx);
+  if (PREDICT_FALSE (lb->lb_n_buckets > 1))
+    return;
   dpo = load_balance_get_bucket_i (lb, 0);
 
-  sw_if_idx = dpo->dpoi_index;
-  hw_if = vnet_get_sup_hw_interface (vnm, sw_if_idx);
+  sw_if_idx = dpo_get_urpf (dpo);
+  if (PREDICT_FALSE (sw_if_idx == ~0))
+    return;
 
+  hw_if = vnet_get_sup_hw_interface (vnm, sw_if_idx);
   if (hw_if->flags & VNET_HW_INTERFACE_FLAG_SUPPORTS_GSO)
     tc->cfg_flags |= TCP_CFG_F_TSO;
 }
@@ -3190,6 +3221,18 @@ tcp46_listen_inline (vlib_main_t * vm, vlib_node_runtime_t * node,
       n_left_from -= 1;
 
       b0 = vlib_get_buffer (vm, bi0);
+
+      if (is_ip4)
+	{
+	  ip40 = vlib_buffer_get_current (b0);
+	  th0 = tcp_buffer_hdr (b0);
+	}
+      else
+	{
+	  ip60 = vlib_buffer_get_current (b0);
+	  th0 = tcp_buffer_hdr (b0);
+	}
+
       lc0 = tcp_listener_get (vnet_buffer (b0)->tcp.connection_index);
       if (PREDICT_FALSE (lc0 == 0))
 	{
@@ -3203,17 +3246,6 @@ tcp46_listen_inline (vlib_main_t * vm, vlib_node_runtime_t * node,
 	  lc0 = tcp_lookup_listener (b0, tc0->c_fib_index, is_ip4);
 	  /* clean up the old session */
 	  tcp_connection_del (tc0);
-	}
-
-      if (is_ip4)
-	{
-	  ip40 = vlib_buffer_get_current (b0);
-	  th0 = tcp_buffer_hdr (b0);
-	}
-      else
-	{
-	  ip60 = vlib_buffer_get_current (b0);
-	  th0 = tcp_buffer_hdr (b0);
 	}
 
       /* Create child session. For syn-flood protection use filter */
