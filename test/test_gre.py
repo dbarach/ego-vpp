@@ -1014,8 +1014,8 @@ class TestGRE(VppTestCase):
             gre_if = VppGreInterface(self,
                                      itf.local_ip4,
                                      "0.0.0.0",
-                                     mode=(VppEnum.vl_api_gre_tunnel_mode_t.
-                                           GRE_API_TUNNEL_MODE_MP))
+                                     mode=(VppEnum.vl_api_tunnel_mode_t.
+                                           TUNNEL_API_MODE_MP))
             gre_if.add_vpp_config()
             gre_if.admin_up()
             gre_if.config_ip4()
@@ -1066,7 +1066,7 @@ class TestGRE(VppTestCase):
                 rx = self.send_and_expect(self.pg0, tx_e, itf)
                 self.verify_tunneled_4o4(self.pg0, rx, tx_e,
                                          itf.local_ip4,
-                                         gre_if._remote_hosts[ii].ip4)
+                                         itf._remote_hosts[ii].ip4)
 
                 tx_i = self.create_tunnel_stream_4o4(self.pg0,
                                                      itf._remote_hosts[ii].ip4,
@@ -1087,7 +1087,7 @@ class TestGRE(VppTestCase):
                 rx = self.send_and_expect(self.pg0, tx_e, itf)
                 self.verify_tunneled_4o4(self.pg0, rx, tx_e,
                                          itf.local_ip4,
-                                         gre_if._remote_hosts[ii].ip4)
+                                         itf._remote_hosts[ii].ip4)
                 rx = self.send_and_expect(self.pg0, tx_i, self.pg0)
                 self.verify_decapped_4o4(self.pg0, rx, tx_i)
 
@@ -1117,8 +1117,8 @@ class TestGRE(VppTestCase):
             gre_if = VppGreInterface(self,
                                      itf.local_ip6,
                                      "::",
-                                     mode=(VppEnum.vl_api_gre_tunnel_mode_t.
-                                           GRE_API_TUNNEL_MODE_MP))
+                                     mode=(VppEnum.vl_api_tunnel_mode_t.
+                                           TUNNEL_API_MODE_MP))
             gre_if.add_vpp_config()
             gre_if.admin_up()
             gre_if.config_ip6()
@@ -1131,6 +1131,14 @@ class TestGRE(VppTestCase):
                 route_addr = "4::%d" % ii
 
                 #
+                # Add a NHRP entry resolves the peer
+                #
+                nhrp = VppNhrp(self, gre_if,
+                               gre_if._remote_hosts[ii].ip6,
+                               itf._remote_hosts[ii].ip6)
+                nhrp.add_vpp_config()
+
+                #
                 # route traffic via the peer
                 #
                 route_via_tun = VppIpRoute(
@@ -1140,14 +1148,6 @@ class TestGRE(VppTestCase):
                 route_via_tun.add_vpp_config()
 
                 #
-                # Add a NHRP entry resolves the peer
-                #
-                nhrp = VppNhrp(self, gre_if,
-                               gre_if._remote_hosts[ii].ip6,
-                               itf._remote_hosts[ii].ip6)
-                nhrp.add_vpp_config()
-
-                #
                 # Send a packet stream that is routed into the tunnel
                 #  - packets are GRE encapped
                 #
@@ -1155,7 +1155,7 @@ class TestGRE(VppTestCase):
                 rx = self.send_and_expect(self.pg0, tx_e, itf)
                 self.verify_tunneled_6o6(self.pg0, rx, tx_e,
                                          itf.local_ip6,
-                                         gre_if._remote_hosts[ii].ip6)
+                                         itf._remote_hosts[ii].ip6)
                 tx_i = self.create_tunnel_stream_6o6(self.pg0,
                                                      itf._remote_hosts[ii].ip6,
                                                      itf.local_ip6,
@@ -1174,7 +1174,7 @@ class TestGRE(VppTestCase):
                 rx = self.send_and_expect(self.pg0, tx_e, itf)
                 self.verify_tunneled_6o6(self.pg0, rx, tx_e,
                                          itf.local_ip6,
-                                         gre_if._remote_hosts[ii].ip6)
+                                         itf._remote_hosts[ii].ip6)
                 rx = self.send_and_expect(self.pg0, tx_i, self.pg0)
                 self.verify_decapped_6o6(self.pg0, rx, tx_i)
 
