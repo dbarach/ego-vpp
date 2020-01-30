@@ -60,7 +60,7 @@ bfd_usec_to_clocks (const bfd_main_t * bm, u64 us)
 u32
 bfd_clocks_to_usec (const bfd_main_t * bm, u64 clocks)
 {
-  return (clocks / bm->cpu_cps) * USEC_PER_SECOND;
+  return ((f64) clocks / bm->cpu_cps) * USEC_PER_SECOND;
 }
 
 static vlib_node_registration_t bfd_process_node;
@@ -1327,7 +1327,7 @@ bfd_main_init (vlib_main_t * vm)
   bm->vlib_main = vm;
   bm->vnet_main = vnet_get_main ();
   clib_memset (&bm->wheel, 0, sizeof (bm->wheel));
-  bm->cpu_cps = vm->clib_time.clocks_per_second;
+  bm->cpu_cps = (u64) vm->clib_time.clocks_per_second;
   BFD_DBG ("cps is %.2f", bm->cpu_cps);
   bm->default_desired_min_tx_clocks =
     bfd_usec_to_clocks (bm, BFD_DEFAULT_DESIRED_MIN_TX_USEC);
