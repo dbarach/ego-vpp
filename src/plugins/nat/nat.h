@@ -517,6 +517,9 @@ typedef struct
 
   /* real thread index */
   u32 thread_index;
+
+  /* discovered minimum session timeout time */
+  u64 min_session_timeout;
 } snat_main_per_thread_data_t;
 
 struct snat_main_s;
@@ -1119,11 +1122,6 @@ int nat44_i2o_ed_is_idle_session_cb (clib_bihash_kv_16_8_t * kv, void *arg);
 int nat44_o2i_ed_is_idle_session_cb (clib_bihash_kv_16_8_t * kv, void *arg);
 int nat44_i2o_is_idle_session_cb (clib_bihash_kv_8_8_t * kv, void *arg);
 int nat44_o2i_is_idle_session_cb (clib_bihash_kv_8_8_t * kv, void *arg);
-
-/**
- * @brief Increment IPv4 address
- */
-void increment_v4_address (ip4_address_t * a);
 
 /**
  * @brief Add external address to NAT44 pool

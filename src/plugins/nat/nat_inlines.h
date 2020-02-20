@@ -704,6 +704,15 @@ static int inline snat_dest_subnet_untranslated (ip4_header_t *ip)
   return 0;
 }
 
+static inline void
+increment_v4_address (ip4_address_t * a)
+{
+  u32 v;
+
+  v = clib_net_to_host_u32 (a->as_u32) + 1;
+  a->as_u32 = clib_host_to_net_u32 (v);
+}
+
 #endif /* __included_nat_inlines_h__ */
 
 /*

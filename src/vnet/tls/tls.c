@@ -211,8 +211,6 @@ tls_notify_app_accept (tls_ctx_t * ctx)
       return rv;
     }
   ctx->app_session_handle = session_handle (app_session);
-  session_lookup_add_connection (&ctx->connection,
-				 session_handle (app_session));
   ctx->parent_app_wrk_index = app_session->app_wrk_index;
   app_wrk = app_worker_get (app_session->app_wrk_index);
   return app_worker_accept_notify (app_wrk, app_session);
@@ -254,8 +252,6 @@ tls_notify_app_connected (tls_ctx_t * ctx, u8 is_failed)
 
   ctx->app_session_handle = session_handle (app_session);
   app_session->session_state = SESSION_STATE_READY;
-  session_lookup_add_connection (&ctx->connection,
-				 session_handle (app_session));
 
   return 0;
 
@@ -362,15 +358,22 @@ tls_session_reset_callback (session_t * s)
   session_t *app_session;
 
   ctx = tls_ctx_get (s->opaque);
+  ctx->is_passive_close = 1;
   tc = &ctx->connection;
   if (tls_ctx_handshake_is_over (ctx))
     {
       session_transport_reset_notify (tc);
       session_transport_closed_notify (tc);
+      tls_disconnect_transport (ctx);
     }
-  else if ((app_session = session_get (tc->s_index, tc->thread_index)))
-    session_free (app_session);
-  tls_disconnect_transport (ctx);
+  else
+    if ((app_session =
+	 session_get_if_valid (ctx->c_s_index, ctx->c_thread_index)))
+    {
+      session_free (app_session);
+      ctx->c_s_index = SESSION_INVALID_INDEX;
+      tls_disconnect_transport (ctx);
+    }
 }
 
 int

@@ -22,6 +22,7 @@
 #include <nat/nat_det.h>
 #include <nat/nat64.h>
 #include <nat/nat_inlines.h>
+#include <nat/nat44/inlines.h>
 #include <nat/nat_affinity.h>
 #include <vnet/fib/fib_table.h>
 #include <nat/nat_ha.h>
@@ -113,6 +114,18 @@ nat_show_workers_commnad_fn (vlib_main_t * vm, unformat_input_t * input,
     }
 
   return 0;
+}
+
+static clib_error_t *
+nat44_session_cleanup_command_fn (vlib_main_t * vm,
+				  unformat_input_t * input,
+				  vlib_cli_command_t * cmd)
+{
+  clib_error_t *error = 0;
+
+  nat44_force_session_cleanup ();
+
+  return error;
 }
 
 static clib_error_t *
@@ -624,6 +637,101 @@ done:
   unformat_free (line_input);
 
   return error;
+}
+
+static clib_error_t *
+nat44_show_summary_command_fn (vlib_main_t * vm, unformat_input_t * input,
+			       vlib_cli_command_t * cmd)
+{
+  snat_main_per_thread_data_t *tsm;
+  snat_main_t *sm = &snat_main;
+  snat_address_t *a;
+  snat_session_t *s;
+  u32 free_ports, free_ports_addr;
+
+  if (sm->deterministic)
+    return clib_error_return (0, UNSUPPORTED_IN_DET_MODE_STR);
+
+  if (sm->endpoint_dependent)
+    vlib_cli_output (vm, "mode: endpoint-depenent");
+
+  // print timeouts
+  vlib_cli_output (vm, "icmp timeout: %u", sm->icmp_timeout);
+  vlib_cli_output (vm, "udp timeout: %u", sm->udp_timeout);
+
+  vlib_cli_output (vm, "tcp established timeout: %u",
+		   sm->tcp_established_timeout);
+  vlib_cli_output (vm, "tcp transitory timeout: %u",
+		   sm->tcp_transitory_timeout);
+
+  // print session configuration values
+  vlib_cli_output (vm, "max translations: %u", sm->max_translations);
+  vlib_cli_output (vm, "max translations per user: %u",
+		   sm->max_translations_per_user);
+
+  // do we need also twice-nat addresses ??
+  if (vec_len (sm->addresses))
+    {
+      free_ports = 0;
+      /* *INDENT-OFF* */
+      vec_foreach (a, sm->addresses)
+        {
+          free_ports_addr = sm->port_per_thread;
+
+          #define _(N, i, n, s) \
+            free_ports_addr -= a->busy_##n##_ports;
+            foreach_snat_protocol
+          #undef _
+
+          vlib_cli_output (vm, "addr: %U free ports: %u out of: %u",
+              format_ip4_address, &a->addr, free_ports_addr, sm->port_per_thread);
+
+          free_ports += free_ports_addr;
+        }
+      /* *INDENT-ON* */
+      vlib_cli_output (vm, "free ports overall: %u out of: %u",
+		       free_ports,
+		       vec_len (sm->addresses) * sm->port_per_thread);
+    }
+
+  u32 count = 0;
+  u32 transitory = 0;
+  u32 established = 0;
+
+  if (sm->num_workers > 1)
+    {
+      /* *INDENT-OFF* */
+      vec_foreach (tsm, sm->per_thread_data)
+        {
+          count += vec_len (tsm->sessions);
+          pool_foreach (s, tsm->sessions,
+          ({
+            if (s->state)
+              transitory++;
+            else
+              established++;
+          }));
+        }
+      /* *INDENT-ON* */
+    }
+  else
+    {
+      tsm = vec_elt_at_index (sm->per_thread_data, sm->num_workers);
+      /* *INDENT-OFF* */
+      pool_foreach (s, tsm->sessions,
+      ({
+        if (s->state)
+          transitory++;
+        else
+          established++;
+      }));
+      /* *INDENT-ON* */
+      count = vec_len (tsm->sessions);
+    }
+  vlib_cli_output (vm, "established sessions: %u", established);
+  vlib_cli_output (vm, "transitory sessions: %u", transitory);
+  vlib_cli_output (vm, "sessions: %u", count);
+  return 0;
 }
 
 static clib_error_t *
@@ -1364,6 +1472,51 @@ nat44_show_sessions_command_fn (vlib_main_t * vm, unformat_input_t * input,
 }
 
 static clib_error_t *
+nat44_del_user_command_fn (vlib_main_t * vm,
+			   unformat_input_t * input, vlib_cli_command_t * cmd)
+{
+  snat_main_t *sm = &snat_main;
+  unformat_input_t _line_input, *line_input = &_line_input;
+  clib_error_t *error = 0;
+  ip4_address_t addr;
+  u32 fib_index = 0;
+  int rv;
+
+  if (sm->deterministic)
+    return clib_error_return (0, UNSUPPORTED_IN_DET_MODE_STR);
+
+  /* Get a line of input. */
+  if (!unformat_user (input, unformat_line_input, line_input))
+    return 0;
+
+  while (unformat_check_input (line_input) != UNFORMAT_END_OF_INPUT)
+    {
+      if (unformat (line_input, "%U", unformat_ip4_address, &addr))
+	;
+      else if (unformat (line_input, "fib %u", &fib_index))
+	;
+      else
+	{
+	  error = clib_error_return (0, "unknown input '%U'",
+				     format_unformat_error, line_input);
+	  goto done;
+	}
+    }
+
+  rv = nat44_user_del (&addr, fib_index);
+
+  if (!rv)
+    {
+      error = clib_error_return (0, "nat44_user_del returned %d", rv);
+    }
+
+done:
+  unformat_free (line_input);
+
+  return error;
+}
+
+static clib_error_t *
 nat44_del_session_command_fn (vlib_main_t * vm,
 			      unformat_input_t * input,
 			      vlib_cli_command_t * cmd)
@@ -1979,6 +2132,19 @@ VLIB_CLI_COMMAND (nat_show_timeouts_command, static) = {
 /*?
  * @cliexpar
  * @cliexstart{nat set logging level}
+ * To force garbage collection of nat sessions
+ *  vpp# nat44 session cleanup
+ * @cliexend
+?*/
+VLIB_CLI_COMMAND (nat44_session_cleanup_command, static) = {
+  .path = "nat44 session cleanup",
+  .function = nat44_session_cleanup_command_fn,
+  .short_help = "nat44 session cleanup",
+};
+
+/*?
+ * @cliexpar
+ * @cliexstart{nat set logging level}
  * To set NAT logging level use:
  * Set nat logging level
  * @cliexend
@@ -2150,6 +2316,19 @@ VLIB_CLI_COMMAND (add_address_command, static) = {
   .short_help = "nat44 add address <ip4-range-start> [- <ip4-range-end>] "
                 "[tenant-vrf <vrf-id>] [twice-nat] [del]",
   .function = add_address_command_fn,
+};
+
+/*?
+ * @cliexpar
+ * @cliexstart{show nat44 summary}
+ * Show NAT44 summary
+ * vpp# show nat44 summary
+ * @cliexend
+?*/
+VLIB_CLI_COMMAND (nat44_show_summary_command, static) = {
+  .path = "show nat44 summary",
+  .short_help = "show nat44 summary",
+  .function = nat44_show_summary_command_fn,
 };
 
 /*?
@@ -2358,6 +2537,19 @@ VLIB_CLI_COMMAND (nat44_show_sessions_command, static) = {
   .path = "show nat44 sessions",
   .short_help = "show nat44 sessions [detail]",
   .function = nat44_show_sessions_command_fn,
+};
+
+/*?
+ * @cliexpar
+ * @cliexstart{nat44 del user}
+ * To delete all NAT44 user sessions:
+ *  vpp# nat44 del user 10.0.0.3
+ * @cliexend
+?*/
+VLIB_CLI_COMMAND (nat44_del_user_command, static) = {
+    .path = "nat44 del user",
+    .short_help = "nat44 del user <addr> [fib <index>]",
+    .function = nat44_del_user_command_fn,
 };
 
 /*?
