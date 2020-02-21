@@ -1550,7 +1550,7 @@ ikev2_add_tunnel_from_main (ikev2_add_ipsec_tunnel_args_t * a)
 
   u32 *sas_in = NULL;
   vec_add1 (sas_in, a->remote_sa_id);
-  rv |= ipsec_tun_protect_update (sw_if_index, a->local_sa_id, sas_in);
+  rv |= ipsec_tun_protect_update (sw_if_index, NULL, a->local_sa_id, sas_in);
 }
 
 static int
@@ -1803,7 +1803,7 @@ ikev2_del_tunnel_from_main (ikev2_del_ipsec_tunnel_args_t * a)
     }
 
   if (~0 != sw_if_index)
-    ipsec_tun_protect_del (sw_if_index);
+    ipsec_tun_protect_del (sw_if_index, NULL);
 
   ipsec_sa_unlock_id (a->remote_sa_id);
   ipsec_sa_unlock_id (a->local_sa_id);
@@ -1951,6 +1951,8 @@ ikev2_generate_message (ikev2_sa_t * sa, ike_header_t * ike, void *user)
 	  ikev2_payload_add_sa (chain, sa->childs[0].i_proposals);
 	  ikev2_payload_add_ts (chain, sa->childs[0].tsi, IKEV2_PAYLOAD_TSI);
 	  ikev2_payload_add_ts (chain, sa->childs[0].tsr, IKEV2_PAYLOAD_TSR);
+	  ikev2_payload_add_notify (chain, IKEV2_NOTIFY_MSG_INITIAL_CONTACT,
+				    0);
 	}
       else
 	{
@@ -3184,6 +3186,7 @@ ikev2_initiate_sa_init (vlib_main_t * vm, u8 * name)
     sa.state = IKEV2_STATE_SA_INIT;
     sa.tun_itf = p->tun_itf;
     sa.is_tun_itf_set = 1;
+    sa.initial_contact = 1;
     ikev2_generate_sa_init_data (&sa);
     ikev2_payload_add_ke (chain, sa.dh_group, sa.i_dh_data);
     ikev2_payload_add_nonce (chain, sa.i_nonce);
@@ -3262,6 +3265,8 @@ ikev2_initiate_sa_init (vlib_main_t * vm, u8 * name)
     sa.i_auth.data = vec_dup (p->auth.data);
     vec_add (sa.childs[0].tsi, &p->loc_ts, 1);
     vec_add (sa.childs[0].tsr, &p->rem_ts, 1);
+
+    ikev2_initial_contact_cleanup (&sa);
 
     /* add SA to the pool */
     ikev2_sa_t *sa0 = 0;
