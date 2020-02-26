@@ -867,7 +867,7 @@ static void *vl_api_sr_mpls_policy_add_t_print
   if (mp->weight != htonl ((u32) 1))
     s = format (s, "%d ", (mp->weight));
 
-  if (mp->type)
+  if (mp->is_spray)
     s = format (s, "spray ");
 
   if (mp->n_segments)
@@ -1783,7 +1783,7 @@ static void *vl_api_sw_interface_dump_t_print
 
   if (mp->name_filter_valid)
     {
-      u8 *v = vl_api_from_api_to_vec (&mp->name_filter);
+      u8 *v = vl_api_from_api_to_new_vec (&mp->name_filter);
       s = format (s, "name_filter %v ", v);
       vec_free (v);
     }
@@ -1841,10 +1841,8 @@ static void *vl_api_cli_inband_t_print
 {
   u8 *s;
   u8 *cmd = 0;
-  u32 length = vl_api_string_len (&mp->cmd);
 
-  vec_validate (cmd, length);
-  clib_memcpy (cmd, vl_api_from_api_string (&mp->cmd), length);
+  cmd = vl_api_from_api_to_new_vec (&mp->cmd);
 
   s = format (0, "SCRIPT: exec %v ", cmd);
 
@@ -2533,8 +2531,10 @@ static void *vl_api_pg_enable_disable_t_print
   u8 *s;
 
   s = format (0, "SCRIPT: pg_enable_disable ");
-  if ((mp->stream_name_length) > 0)
-    s = format (s, "stream %s", mp->stream_name);
+  if (vl_api_string_len (&mp->stream_name) > 0)
+    s =
+      format (s, "stream %s",
+	      vl_api_from_api_to_new_c_string (&mp->stream_name));
   if (!mp->is_enabled)
     s = format (s, "disable");
 
@@ -3397,7 +3397,7 @@ static void *vl_api_sw_interface_set_lldp_t_print
   s = format (0, "SCRIPT: sw_interface_set_lldp ");
   s = format (s, "sw_if_index %d ", (mp->sw_if_index));
 
-  if (memcmp (mp->port_desc, null_data, sizeof (mp->port_desc)))
+  if (memcmp (&mp->port_desc, null_data, sizeof (mp->port_desc)))
     s = format (s, "port_desc %s ", mp->port_desc);
 
   if (memcmp (mp->mgmt_ip4, null_data, sizeof (mp->mgmt_ip4)))

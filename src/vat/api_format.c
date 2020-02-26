@@ -264,6 +264,26 @@ unformat_ethernet_type_host_byte_order (unformat_input_t * input,
   return 0;
 }
 
+/* Parse an IP46 address. */
+uword
+unformat_ip46_address (unformat_input_t * input, va_list * args)
+{
+  ip46_address_t *ip46 = va_arg (*args, ip46_address_t *);
+  ip46_type_t type = va_arg (*args, ip46_type_t);
+  if ((type != IP46_TYPE_IP6) &&
+      unformat (input, "%U", unformat_ip4_address, &ip46->ip4))
+    {
+      ip46_address_mask_ip4 (ip46);
+      return 1;
+    }
+  else if ((type != IP46_TYPE_IP4) &&
+	   unformat (input, "%U", unformat_ip6_address, &ip46->ip6))
+    {
+      return 1;
+    }
+  return 0;
+}
+
 /* Parse an IP6 address. */
 uword
 unformat_ip6_address (unformat_input_t * input, va_list * args)
@@ -759,6 +779,16 @@ set_ip4_address (vl_api_address_t * a, u32 v)
     }
 }
 
+void
+ip_set (ip46_address_t * dst, void *src, u8 is_ip4)
+{
+  if (is_ip4)
+    dst->ip4.as_u32 = ((ip4_address_t *) src)->as_u32;
+  else
+    clib_memcpy_fast (&dst->ip6, (ip6_address_t *) src,
+		      sizeof (ip6_address_t));
+}
+
 static void
 increment_mac_address (u8 * mac)
 {
@@ -1127,18 +1157,12 @@ vl_api_cli_inband_reply_t_handler (vl_api_cli_inband_reply_t * mp)
 {
   vat_main_t *vam = &vat_main;
   i32 retval = ntohl (mp->retval);
-  u32 length = vl_api_string_len (&mp->reply);
 
   vec_reset_length (vam->cmd_reply);
 
   vam->retval = retval;
   if (retval == 0)
-    {
-      vec_validate (vam->cmd_reply, length);
-      clib_memcpy ((char *) (vam->cmd_reply),
-		   vl_api_from_api_string (&mp->reply), length);
-      vam->cmd_reply[length] = 0;
-    }
+    vam->cmd_reply = vl_api_from_api_to_new_vec (&mp->reply);
   vam->result_ready = 1;
 }
 
@@ -1147,16 +1171,18 @@ vl_api_cli_inband_reply_t_handler_json (vl_api_cli_inband_reply_t * mp)
 {
   vat_main_t *vam = &vat_main;
   vat_json_node_t node;
+  u8 *reply = 0;		/* reply vector */
 
+  reply = vl_api_from_api_to_new_vec (&mp->reply);
   vec_reset_length (vam->cmd_reply);
 
   vat_json_init_object (&node);
   vat_json_object_add_int (&node, "retval", ntohl (mp->retval));
-  vat_json_object_add_string_copy (&node, "reply",
-				   vl_api_from_api_string (&mp->reply));
+  vat_json_object_add_string_copy (&node, "reply", reply);
 
   vat_json_print (vam->ofp, &node);
   vat_json_free (&node);
+  vec_free (reply);
 
   vam->retval = ntohl (mp->retval);
   vam->result_ready = 1;
@@ -5638,9 +5664,8 @@ exec_inband (vat_main_t * vam)
    * must be a vector ending in \n, not a C-string ending
    * in \n\0.
    */
-  u32 len = vec_len (vam->input->buffer);
-  M2 (CLI_INBAND, mp, len);
-  vl_api_to_api_string (len - 1, (const char *) vam->input->buffer, &mp->cmd);
+  M2 (CLI_INBAND, mp, vec_len (vam->input->buffer));
+  vl_api_vec_to_api_string (vam->input->buffer, &mp->cmd);
 
   S (mp);
   W (ret);
@@ -8553,7 +8578,7 @@ api_sr_mpls_policy_add (vat_main_t * vam)
 
   mp->bsid = htonl (bsid);
   mp->weight = htonl (weight);
-  mp->type = type;
+  mp->is_spray = type;
   mp->n_segments = n_segments;
   memcpy (mp->segments, segments, sizeof (u32) * n_segments);
   vec_free (segments);
@@ -18598,17 +18623,15 @@ api_pg_capture (vat_main_t * vam)
 	}
     }
 
-  u32 name_len = vec_len (pcap_file);
   /* Construct the API message */
   M (PG_CAPTURE, mp);
   mp->context = 0;
   mp->interface_id = ntohl (if_id);
   mp->is_enabled = enable;
   mp->count = ntohl (count);
-  mp->pcap_name_length = ntohl (name_len);
   if (pcap_file_set != 0)
     {
-      clib_memcpy (mp->pcap_file_name, pcap_file, name_len);
+      vl_api_vec_to_api_string (pcap_file, &mp->pcap_file_name);
     }
   vec_free (pcap_file);
 
@@ -18646,15 +18669,13 @@ api_pg_enable_disable (vat_main_t * vam)
 	}
     }
 
-  u32 name_len = vec_len (stream_name);
   /* Construct the API message */
   M (PG_ENABLE_DISABLE, mp);
   mp->context = 0;
   mp->is_enabled = enable;
   if (stream_name_set != 0)
     {
-      mp->stream_name_length = ntohl (name_len);
-      clib_memcpy (mp->stream_name, stream_name, name_len);
+      vl_api_vec_to_api_string (stream_name, &mp->stream_name);
     }
   vec_free (stream_name);
 
@@ -19525,7 +19546,7 @@ api_lldp_config (vat_main_t * vam)
   M (LLDP_CONFIG, mp);
   mp->tx_hold = htonl (tx_hold);
   mp->tx_interval = htonl (tx_interval);
-  clib_memcpy (mp->system_name, sys_name, vec_len (sys_name));
+  vl_api_vec_to_api_string (sys_name, &mp->system_name);
   vec_free (sys_name);
 
   S (mp);
@@ -19581,7 +19602,7 @@ api_sw_interface_set_lldp (vat_main_t * vam)
   M (SW_INTERFACE_SET_LLDP, mp);
   mp->sw_if_index = ntohl (sw_if_index);
   mp->enable = enable;
-  clib_memcpy (mp->port_desc, port_desc, vec_len (port_desc));
+  vl_api_vec_to_api_string (port_desc, &mp->port_desc);
   clib_memcpy (mp->mgmt_oid, mgmt_oid, vec_len (mgmt_oid));
   clib_memcpy (mp->mgmt_ip4, &ip4_addr, sizeof (ip4_addr));
   clib_memcpy (mp->mgmt_ip6, &ip6_addr, sizeof (ip6_addr));
