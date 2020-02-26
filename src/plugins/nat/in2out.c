@@ -954,13 +954,6 @@ snat_in2out_node_fn_inline (vlib_main_t * vm,
 
 	  sw_if_index0 = vnet_buffer (b0)->sw_if_index[VLIB_RX];
 
-          /* Is the destination subnet untranslated? */
-          if (PREDICT_FALSE(snat_dest_subnet_untranslated (ip0)))
-            {
-              vnet_feature_next (&next0, b0);
-              goto trace00;
-            }
-
 	  udp0 = ip4_next_header (ip0);
 	  tcp0 = (tcp_header_t *) udp0;
 	  icmp0 = (icmp46_header_t *) udp0;
@@ -1171,12 +1164,6 @@ snat_in2out_node_fn_inline (vlib_main_t * vm,
 				  iph_offset1);
 
 	  sw_if_index1 = vnet_buffer (b1)->sw_if_index[VLIB_RX];
-
-          if (PREDICT_FALSE(snat_dest_subnet_untranslated (ip1)))
-            {
-              vnet_feature_next (&next1, b1);
-              goto trace01;
-            }
 
 	  udp1 = ip4_next_header (ip1);
 	  tcp1 = (tcp_header_t *) udp1;
@@ -1421,12 +1408,6 @@ snat_in2out_node_fn_inline (vlib_main_t * vm,
 				  iph_offset0);
 
 	  sw_if_index0 = vnet_buffer (b0)->sw_if_index[VLIB_RX];
-
-          if (PREDICT_FALSE(snat_dest_subnet_untranslated (ip0)))
-            {
-              vnet_feature_next (&next0, b0);
-              goto trace0;
-            }
 
 	  udp0 = ip4_next_header (ip0);
 	  tcp0 = (tcp_header_t *) udp0;

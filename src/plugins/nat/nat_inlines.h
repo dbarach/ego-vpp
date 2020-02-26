@@ -694,16 +694,6 @@ snat_not_translate_fast (snat_main_t * sm, vlib_node_runtime_t * node,
   return 1;
 }
 
-/* $$$ obviously this is a POC implementation. FIXME $$$ */
-static int inline snat_dest_subnet_untranslated (ip4_header_t *ip)
-{
-  if (ip->dst_address.as_u8[0] == 192 &&
-      ip->dst_address.as_u8[1] == 168 &&
-      ip->dst_address.as_u8[2] < 10)
-    return 1;
-  return 0;
-}
-
 static inline void
 increment_v4_address (ip4_address_t * a)
 {

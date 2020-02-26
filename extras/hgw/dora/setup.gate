@@ -6,6 +6,7 @@ set int state GigabitEthernet3/0/0 up
 bvi create instance 0
 set int l2 bridge bvi0 1 bvi
 set int ip address bvi0 192.168.2.1/24
+set int mtu packet 1500 bvi0
 set int state bvi0 up
  
 set int l2 bridge TenGigabitEthernet6/0/0 1
@@ -26,10 +27,39 @@ nat44 add interface address GigabitEthernet3/0/0
 set interface nat44 in bvi0 out GigabitEthernet3/0/0
 
 nat44 add static mapping local 192.168.2.2 22432 external GigabitEthernet3/0/0 22432 tcp
+nat44 add identity mapping external GigabitEthernet3/0/0 udp 500
+nat44 add identity mapping external GigabitEthernet3/0/0 udp 4500
 
 service restart isc-dhcp-server
 
 comment { nat44 add identity mapping external GigabitEthernet3/0/0 udp 53053 }
 comment { bin dns_name_server_add_del 8.8.8.8 }
 comment { bin dns_enable_disable }
+
+comment { set ct6 inside GigabitEthernet3/0/0 }
+comment { set ct6 outside GigabitEthernet3/0/0 }
+
+set int ip6 table GigabitEthernet3/0/0 0
+ip6 nd address autoconfig GigabitEthernet3/0/0 default-route
+dhcp6 client GigabitEthernet3/0/0
+dhcp6 pd client GigabitEthernet3/0/0 prefix group hgw
+set ip6 address bvi0 prefix group hgw ::1/64
+ip6 nd address autoconfig bvi0 default-route
+comment { iPhones seem to need lots of RA messages... }
+ip6 nd bvi0 ra-managed-config-flag 
+ip6 nd bvi0 ra-interval 5 3 ra-lifetime 180
+
+comment { responder profile }
+ikev2 profile add swan
+ikev2 profile set swan auth rsa-sig cert-file /home/dbarach/certs/swancert.pem
+set ikev2 local key /home/dbarach/certs/dorakey.pem
+ikev2 profile set swan id remote fqdn swan.barachs.net
+ikev2 profile set swan id local fqdn broiler2.barachs.net
+ikev2 profile set swan traffic-selector remote ip-range 192.168.1.0 - 192.168.1.255 port-range 0 - 65535 protocol 0
+ikev2 profile set swan traffic-selector local ip-range 192.168.2.0 - 192.168.2.255 port-range 0 - 65535 protocol 0
+create ipip tunnel src 73.21.177.100 dst 64.102.253.73
+ikev2 profile set swan tunnel ipip0
+
+set int mtu packet 1390 ipip0
+set int unnum ipip0 use host-eth1
 
