@@ -569,6 +569,25 @@ VLIB_CLI_COMMAND (restart_dora_tunnels_command, static) =
 };
 /* *INDENT-ON* */
 
+static clib_error_t *
+restart_vpp_service_command_fn (vlib_main_t * vm,
+                                unformat_input_t * input,
+                                vlib_cli_command_t * cmd)
+{
+  int rv __attribute__((unused));
+  rv = system ("/usr/sbin/service vpp restart");
+  return 0;
+}
+
+/* *INDENT-OFF* */
+VLIB_CLI_COMMAND (restart_vpp_service_command, static) =
+{
+  .path = "service restart vpp",
+  .short_help = "restarts the vpp service, be careful what you wish for",
+  .function = restart_vpp_service_command_fn,
+};
+/* *INDENT-ON* */
+
 /*
  * fd.io coding-style-patch-verification: ON
  *

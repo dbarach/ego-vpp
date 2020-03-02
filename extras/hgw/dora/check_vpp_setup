@@ -1,0 +1,21 @@
+#!/bin/bash
+
+if [ -f /home/dbarach/setup.gate.checked ]; then
+    exit 0
+fi
+
+ping -4 -c 1 www.cisco.com
+
+if [ $? = '0' ]; then
+    echo Ping OK, touch setup.gate.checked
+    touch /home/dbarach/setup.gate.checked
+    exit 0
+fi
+
+echo Revert setup.gate...
+mv /home/dbarach/setup.gate /home/dbarach/setup.gate.bad
+cp /home/dbarach/setup.gate.good /home/dbarach/setup.gate
+touch /home/dbarach/setup.gate.checked
+
+vppctl service restart vpp
+exit 0

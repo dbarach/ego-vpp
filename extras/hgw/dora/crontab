@@ -2,3 +2,4 @@
 # 
 # m h  dom mon dow   command
 0,15,30,45 * * * * /home/dbarach/bin/upload-addr
+1,16,31,46 * * * * /home/dbarach/bin/check_vpp_setup
