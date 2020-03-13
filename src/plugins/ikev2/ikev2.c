@@ -398,6 +398,7 @@ ikev2_complete_sa_data (ikev2_sa_t * sa, ikev2_sa_t * sai)
   sa->i_auth.key = _(sai->i_auth.key);
   sa->last_sa_init_req_packet_data = _(sai->last_sa_init_req_packet_data);
   sa->childs = _(sai->childs);
+  sa->udp_encap = sai->udp_encap;
 #undef _
 
 
@@ -1377,6 +1378,9 @@ ikev2_sa_auth (ikev2_sa_t * sa)
   }));
   /* *INDENT-ON* */
 
+  if (sel_p)
+    sa->udp_encap = sel_p->udp_encap;
+
   vec_free (authmsg);
 
   if (sa->state == IKEV2_STATE_AUTHENTICATED)
@@ -1541,6 +1545,8 @@ ikev2_add_tunnel_from_main (ikev2_add_ipsec_tunnel_args_t * a)
   vec_add1 (sas_in, a->remote_sa_id);
   if (a->is_rekey)
     {
+      ipsec_tun_protect_del (sw_if_index, NULL);
+
       /* replace local SA immediately */
       ipsec_sa_unlock_id (a->local_sa_id);
 
@@ -1552,12 +1558,12 @@ ikev2_add_tunnel_from_main (ikev2_add_ipsec_tunnel_args_t * a)
 			       a->local_spi,
 			       IPSEC_PROTOCOL_ESP, a->encr_type,
 			       &a->loc_ckey, a->integ_type, &a->loc_ikey,
-			       a->flags | IPSEC_SA_FLAG_UDP_ENCAP, 0, a->salt_local, &a->local_ip,
+			       a->flags, 0, a->salt_local, &a->local_ip,
 			       &a->remote_ip, NULL);
   rv |= ipsec_sa_add_and_lock (a->remote_sa_id, a->remote_spi,
 			       IPSEC_PROTOCOL_ESP, a->encr_type, &a->rem_ckey,
 			       a->integ_type, &a->rem_ikey,
-			       (a->flags | IPSEC_SA_FLAG_IS_INBOUND | IPSEC_SA_FLAG_UDP_ENCAP), 0,
+			       (a->flags | IPSEC_SA_FLAG_IS_INBOUND), 0,
 			       a->salt_remote, &a->remote_ip,
 			       &a->local_ip, NULL);
 
@@ -1606,6 +1612,9 @@ ikev2_create_tunnel_interface (vnet_main_t * vnm,
     }
 
   a.flags = IPSEC_SA_FLAG_USE_ANTI_REPLAY;
+  a.flags |= IPSEC_SA_FLAG_IS_TUNNEL;
+  if (sa->udp_encap)
+    a.flags |= IPSEC_SA_FLAG_UDP_ENCAP;
   a.is_rekey = is_rekey;
 
   tr = ikev2_sa_get_td_for_type (proposals, IKEV2_TRANSFORM_TYPE_ESN);
@@ -2745,24 +2754,27 @@ ikev2_set_initiator_proposals (vlib_main_t * vm, ikev2_sa_t * sa,
       return r;
     }
 
-  /* Integrity */
-  error = 1;
-  vec_foreach (td, km->supported_transforms)
-  {
-    if (td->type == IKEV2_TRANSFORM_TYPE_INTEG
-	&& td->integ_type == ts->integ_alg)
-      {
-	vec_add1 (proposal->transforms, *td);
-	error = 0;
-	break;
-      }
-  }
-  if (error)
+  if (IKEV2_TRANSFORM_ENCR_TYPE_AES_GCM_16 != ts->crypto_alg)
     {
-      ikev2_elog_error
-	("Didn't find any supported algorithm for IKEV2_TRANSFORM_TYPE_INTEG");
-      r = clib_error_return (0, "Unsupported algorithm");
-      return r;
+      /* Integrity */
+      error = 1;
+      vec_foreach (td, km->supported_transforms)
+      {
+	if (td->type == IKEV2_TRANSFORM_TYPE_INTEG
+	    && td->integ_type == ts->integ_alg)
+	  {
+	    vec_add1 (proposal->transforms, *td);
+	    error = 0;
+	    break;
+	  }
+      }
+      if (error)
+	{
+	  ikev2_elog_error
+	    ("Didn't find any supported algorithm for IKEV2_TRANSFORM_TYPE_INTEG");
+	  r = clib_error_return (0, "Unsupported algorithm");
+	  return r;
+	}
     }
 
   /* PRF */
@@ -3150,6 +3162,22 @@ ikev2_set_profile_tunnel_interface (vlib_main_t * vm,
 }
 
 clib_error_t *
+ikev2_set_profile_udp_encap (vlib_main_t * vm, u8 * name)
+{
+  ikev2_profile_t *p = ikev2_profile_index_by_name (name);
+  clib_error_t *r;
+
+  if (!p)
+    {
+      r = clib_error_return (0, "unknown profile %v", name);
+      return r;
+    }
+
+  p->udp_encap = 1;
+  return 0;
+}
+
+clib_error_t *
 ikev2_set_profile_sa_lifetime (vlib_main_t * vm, u8 * name,
 			       u64 lifetime, u32 jitter, u32 handover,
 			       u64 maxdata)
@@ -3233,6 +3261,7 @@ ikev2_initiate_sa_init (vlib_main_t * vm, u8 * name)
     sa.is_profile_index_set = 1;
     sa.state = IKEV2_STATE_SA_INIT;
     sa.tun_itf = p->tun_itf;
+    sa.udp_encap = p->udp_encap;
     sa.is_tun_itf_set = 1;
     sa.initial_contact = 1;
     ikev2_generate_sa_init_data (&sa);
@@ -3567,7 +3596,8 @@ ikev2_init (vlib_main_t * vm)
 
   mhash_init_vec_string (&km->profile_index_by_name, sizeof (uword));
 
-  vec_validate (km->per_thread_data, tm->n_vlib_mains - 1);
+  vec_validate_aligned (km->per_thread_data, tm->n_vlib_mains - 1,
+			CLIB_CACHE_LINE_BYTES);
   for (thread_id = 0; thread_id < tm->n_vlib_mains - 1; thread_id++)
     {
       km->per_thread_data[thread_id].sa_by_rspi =
