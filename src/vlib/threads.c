@@ -256,21 +256,6 @@ vlib_thread_init (vlib_main_t * vm)
     }
   avail_cpu = clib_bitmap_set (avail_cpu, tm->main_lcore, 0);
 
-  /*
-   * Determine if the number of workers is greater than 0.
-   * If so, mark CPU 0 unavailable so workers will be numbered after main.
-   */
-  u32 n_workers = 0;
-  uword *p = hash_get_mem (tm->thread_registrations_by_name, "workers");
-  if (p != 0)
-    {
-      vlib_thread_registration_t *tr = (vlib_thread_registration_t *) p[0];
-      int worker_thread_count = tr->count;
-      n_workers = worker_thread_count;
-    }
-  if (tm->skip_cores == 0 && n_workers)
-    avail_cpu = clib_bitmap_set (avail_cpu, 0, 0);
-
   /* assume that there is socket 0 only if there is no data from sysfs */
   if (!tm->cpu_socket_bitmap)
     tm->cpu_socket_bitmap = clib_bitmap_set (0, 0, 1);
@@ -352,12 +337,24 @@ vlib_thread_init (vlib_main_t * vm)
 	{
 	  for (j = 0; j < tr->count; j++)
 	    {
+	      /* Do not use CPU 0 by default - leave it to the host and IRQs */
+	      uword avail_c0 = clib_bitmap_get (avail_cpu, 0);
+	      avail_cpu = clib_bitmap_set (avail_cpu, 0, 0);
+
 	      uword c = clib_bitmap_first_set (avail_cpu);
+	      /* Use CPU 0 as a last resort */
+	      if (c == ~0 && avail_c0)
+		{
+		  c = 0;
+		  avail_c0 = 0;
+		}
+
 	      if (c == ~0)
 		return clib_error_return (0,
 					  "no available cpus to be used for"
 					  " the '%s' thread", tr->name);
 
+	      avail_cpu = clib_bitmap_set (avail_cpu, 0, avail_c0);
 	      avail_cpu = clib_bitmap_set (avail_cpu, c, 0);
 	      tr->coremask = clib_bitmap_set (tr->coremask, c, 1);
 	    }
@@ -1299,6 +1296,10 @@ cpu_config (vlib_main_t * vm, unformat_input_t * input)
 	    return clib_error_return (0,
 				      "corelist cannot be set for '%s' threads",
 				      name);
+	  if (tr->count)
+	    return clib_error_return
+	      (0, "core placement of '%s' threads is already configured",
+	       name);
 
 	  tr->coremask = bitmap;
 	  tr->count = clib_bitmap_count_set_bits (tr->coremask);
@@ -1317,9 +1318,14 @@ cpu_config (vlib_main_t * vm, unformat_input_t * input)
 	    return clib_error_return (0, "no such thread type 3 '%s'", name);
 
 	  tr = (vlib_thread_registration_t *) p[0];
+
 	  if (tr->fixed_count)
 	    return clib_error_return
-	      (0, "number of %s threads not configurable", tr->name);
+	      (0, "number of '%s' threads not configurable", name);
+	  if (tr->count)
+	    return clib_error_return
+	      (0, "number of '%s' threads is already configured", name);
+
 	  tr->count = count;
 	}
       else

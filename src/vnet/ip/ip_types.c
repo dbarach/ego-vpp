@@ -15,6 +15,7 @@
 
 #include <vnet/ip/ip_types.h>
 #include <vnet/ip/format.h>
+#include <vnet/ip/ip.h>
 
 u8 *
 format_ip_address (u8 * s, va_list * args)
@@ -115,8 +116,7 @@ ip_address_cmp (const ip_address_t * ip1, const ip_address_t * ip2)
   int res = 0;
   if (ip_addr_version (ip1) != ip_addr_version (ip2))
     return -1;
-  res =
-    memcmp (&ip_addr_addr (ip1), &ip_addr_addr (ip2), ip_address_size (ip1));
+  res = ip46_address_cmp (&ip_addr_46 (ip1), &ip_addr_46 (ip2));
 
   if (res < 0)
     res = 2;
@@ -133,7 +133,7 @@ ip_address_copy (ip_address_t * dst, const ip_address_t * src)
     {
       /* don't copy any garbage from the union */
       clib_memset (dst, 0, sizeof (*dst));
-      dst->ip.v4 = src->ip.v4;
+      ip_addr_v4 (dst) = ip_addr_v4 (src);
       dst->version = AF_IP4;
     }
   else
@@ -142,16 +142,39 @@ ip_address_copy (ip_address_t * dst, const ip_address_t * src)
     }
 }
 
+u8 *
+ip_addr_bytes (ip_address_t * ip)
+{
+  switch (ip->version)
+    {
+    case AF_IP4:
+      return (u8 *) & ip_addr_v4 (ip);
+    case AF_IP6:
+      return (u8 *) & ip_addr_v6 (ip);
+      break;
+    }
+  ASSERT (0);
+  return (NULL);
+}
+
 void
 ip_address_copy_addr (void *dst, const ip_address_t * src)
 {
-  clib_memcpy (dst, src, ip_address_size (src));
+  switch (src->version)
+    {
+    case AF_IP4:
+      clib_memcpy (dst, &ip_addr_v4 (src), ip_address_size (src));
+      break;
+    case AF_IP6:
+      clib_memcpy (dst, &ip_addr_v6 (src), ip_address_size (src));
+      break;
+    }
 }
 
 u16
-ip_version_to_size (u8 ver)
+ip_version_to_size (ip_address_family_t af)
 {
-  switch (ver)
+  switch (af)
     {
     case AF_IP4:
       return sizeof (ip4_address_t);
@@ -163,49 +186,79 @@ ip_version_to_size (u8 ver)
   return 0;
 }
 
+vnet_link_t
+ip_address_family_to_link_type (ip_address_family_t af)
+{
+  switch (af)
+    {
+    case AF_IP4:
+      return (VNET_LINK_IP4);
+    case AF_IP6:
+      return (VNET_LINK_IP6);
+    }
+  ASSERT (0);
+  return (VNET_LINK_IP4);
+}
+
+
 void
 ip_address_set (ip_address_t * dst, const void *src, u8 version)
 {
-  clib_memcpy (dst, src, ip_version_to_size (version));
   ip_addr_version (dst) = version;
+
+  switch (version)
+    {
+    case AF_IP4:
+      ip_addr_v4 (dst) = *(ip4_address_t *) src;
+      break;
+    case AF_IP6:
+      ip_addr_v6 (dst) = *(ip6_address_t *) src;
+      break;
+    }
+}
+
+fib_protocol_t
+ip_address_family_to_fib_proto (ip_address_family_t af)
+{
+  switch (af)
+    {
+    case AF_IP4:
+      return (FIB_PROTOCOL_IP4);
+    case AF_IP6:
+      return (FIB_PROTOCOL_IP6);
+    }
+  ASSERT (0);
+  return (FIB_PROTOCOL_IP4);
+}
+
+ip_address_family_t
+ip_address_family_from_fib_proto (fib_protocol_t fp)
+{
+  switch (fp)
+    {
+    case FIB_PROTOCOL_IP4:
+      return (AF_IP4);
+    case FIB_PROTOCOL_IP6:
+      return (AF_IP6);
+    case FIB_PROTOCOL_MPLS:
+      ASSERT (0);
+    }
+  return (AF_IP4);
 }
 
 fib_protocol_t
 ip_address_to_46 (const ip_address_t * addr, ip46_address_t * a)
 {
-  fib_protocol_t proto = FIB_PROTOCOL_IP4;
-
-  switch (ip_addr_version (addr))
-    {
-    case AF_IP4:
-      ip46_address_set_ip4 (a, &addr->ip.v4);
-      break;
-    case AF_IP6:
-      proto = FIB_PROTOCOL_IP6;
-      a->ip6 = addr->ip.v6;
-      break;
-    }
-
-  return (proto);
+  *a = ip_addr_46 (addr);
+  return (ip_address_family_to_fib_proto (ip_addr_version (addr)));
 }
 
 void
 ip_address_from_46 (const ip46_address_t * nh,
 		    fib_protocol_t fproto, ip_address_t * ip)
 {
-  switch (fproto)
-    {
-    case FIB_PROTOCOL_IP4:
-      clib_memset (ip, 0, sizeof (*ip));
-      ip_address_set (ip, &nh->ip4, AF_IP4);
-      break;
-    case FIB_PROTOCOL_IP6:
-      ip_address_set (ip, &nh->ip6, AF_IP6);
-      break;
-    default:
-      ASSERT (0);
-      break;
-    }
+  ip_addr_46 (ip) = *nh;
+  ip_addr_version (ip) = ip_address_family_from_fib_proto (fproto);
 }
 
 static void
@@ -309,6 +362,165 @@ ip_prefix_cmp (ip_prefix_t * p1, ip_prefix_t * p2)
 	}
     }
   return cmp;
+}
+
+static bool
+ip4_prefix_validate (const ip_prefix_t * ip)
+{
+  ip4_address_t ip4_addr, ip4_mask;
+
+  if (ip_prefix_len (ip) > 32)
+    return (false);
+
+  ip4_addr = ip_prefix_v4 (ip);
+  ip4_preflen_to_mask (ip_prefix_len (ip), &ip4_mask);
+
+  return ((ip4_addr.as_u32 & ip4_mask.as_u32) == ip4_addr.as_u32);
+}
+
+static bool
+ip6_prefix_validate (const ip_prefix_t * ip)
+{
+  ip6_address_t ip6_addr, ip6_mask;
+
+  if (ip_prefix_len (ip) > 128)
+    return (false);
+
+  ip6_addr = ip_prefix_v6 (ip);
+  ip6_preflen_to_mask (ip_prefix_len (ip), &ip6_mask);
+
+  return (((ip6_addr.as_u64[0] & ip6_mask.as_u64[0]) == ip6_addr.as_u64[0]) &&
+	  ((ip6_addr.as_u64[1] & ip6_mask.as_u64[1]) == ip6_addr.as_u64[1]));
+}
+
+bool
+ip_prefix_validate (const ip_prefix_t * ip)
+{
+  switch (ip_prefix_version (ip))
+    {
+    case AF_IP4:
+      return (ip4_prefix_validate (ip));
+    case AF_IP6:
+      return (ip6_prefix_validate (ip));
+    }
+  ASSERT (0);
+  return (false);
+}
+
+void
+ip4_address_normalize (ip4_address_t * ip4, u8 preflen)
+{
+  ASSERT (preflen <= 32);
+  if (preflen == 0)
+    ip4->data_u32 = 0;
+  else
+    ip4->data_u32 &= clib_net_to_host_u32 (0xffffffff << (32 - preflen));
+}
+
+void
+ip6_address_normalize (ip6_address_t * ip6, u8 preflen)
+{
+  ASSERT (preflen <= 128);
+  if (preflen == 0)
+    {
+      ip6->as_u64[0] = 0;
+      ip6->as_u64[1] = 0;
+    }
+  else if (preflen <= 64)
+    {
+      ip6->as_u64[0] &=
+	clib_host_to_net_u64 (0xffffffffffffffffL << (64 - preflen));
+      ip6->as_u64[1] = 0;
+    }
+  else
+    ip6->as_u64[1] &=
+      clib_host_to_net_u64 (0xffffffffffffffffL << (128 - preflen));
+}
+
+void
+ip4_preflen_to_mask (u8 pref_len, ip4_address_t * ip)
+{
+  if (pref_len == 0)
+    ip->as_u32 = 0;
+  else
+    ip->as_u32 = clib_host_to_net_u32 (~((1 << (32 - pref_len)) - 1));
+}
+
+u32
+ip4_mask_to_preflen (ip4_address_t * mask)
+{
+  if (mask->as_u32 == 0)
+    return 0;
+  return (32 - log2_first_set (clib_net_to_host_u32 (mask->as_u32)));
+}
+
+void
+ip4_prefix_max_address_host_order (ip4_address_t * ip, u8 plen,
+				   ip4_address_t * res)
+{
+  u32 not_mask;
+  not_mask = (1 << (32 - plen)) - 1;
+  res->as_u32 = clib_net_to_host_u32 (ip->as_u32) + not_mask;
+}
+
+void
+ip6_preflen_to_mask (u8 pref_len, ip6_address_t * mask)
+{
+  if (pref_len == 0)
+    {
+      mask->as_u64[0] = 0;
+      mask->as_u64[1] = 0;
+    }
+  else if (pref_len <= 64)
+    {
+      mask->as_u64[0] =
+	clib_host_to_net_u64 (0xffffffffffffffffL << (64 - pref_len));
+      mask->as_u64[1] = 0;
+    }
+  else
+    {
+      mask->as_u64[0] = 0xffffffffffffffffL;
+      mask->as_u64[1] =
+	clib_host_to_net_u64 (0xffffffffffffffffL << (128 - pref_len));
+    }
+}
+
+void
+ip6_prefix_max_address_host_order (ip6_address_t * ip, u8 plen,
+				   ip6_address_t * res)
+{
+  u64 not_mask;
+  if (plen == 0)
+    {
+      res->as_u64[0] = 0xffffffffffffffffL;
+      res->as_u64[1] = 0xffffffffffffffffL;
+    }
+  else if (plen <= 64)
+    {
+      not_mask = ((u64) 1 << (64 - plen)) - 1;
+      res->as_u64[0] = clib_net_to_host_u64 (ip->as_u64[0]) + not_mask;
+      res->as_u64[1] = 0xffffffffffffffffL;
+    }
+  else
+    {
+      not_mask = ((u64) 1 << (128 - plen)) - 1;
+      res->as_u64[1] = clib_net_to_host_u64 (ip->as_u64[1]) + not_mask;
+    }
+}
+
+u32
+ip6_mask_to_preflen (ip6_address_t * mask)
+{
+  u8 first1, first0;
+  if (mask->as_u64[0] == 0 && mask->as_u64[1] == 0)
+    return 0;
+  first1 = log2_first_set (clib_net_to_host_u64 (mask->as_u64[1]));
+  first0 = log2_first_set (clib_net_to_host_u64 (mask->as_u64[0]));
+
+  if (first1 != 0)
+    return 128 - first1;
+  else
+    return 64 - first0;
 }
 
 /*
