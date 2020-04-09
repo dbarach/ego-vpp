@@ -93,9 +93,9 @@ static_always_inline void
 vat_json_set_string_copy (vat_json_node_t * json, const u8 * str)
 {
   u8 *ns = NULL;
-  vec_validate (ns, strlen ((const char *) str));
-  strcpy ((char *) ns, (const char *) str);
-  vec_add1 (ns, '\0');
+  int len = strlen ((const char *) str);
+  vec_validate (ns, len);
+  memcpy ((char *) ns, (const char *) str, len + 1);
   vat_json_set_string (json, ns);
 }
 

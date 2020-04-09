@@ -31,6 +31,7 @@
 #include <vppinfra/error.h>
 #include <vlibapi/api.h>
 #include <vlib/log.h>
+#include <vppinfra/bihash_16_8.h>
 
 /* default session timeouts */
 #define SNAT_UDP_TIMEOUT 300
@@ -221,11 +222,14 @@ _(IN2OUT_PACKETS, "good in2out packets processed")      \
 _(OUT_OF_PORTS, "out of ports")                         \
 _(BAD_ICMP_TYPE, "unsupported ICMP type")               \
 _(MAX_SESSIONS_EXCEEDED, "maximum sessions exceeded")   \
+_(MAX_USER_SESS_EXCEEDED, "max user sessions exceeded") \
 _(DROP_FRAGMENT, "drop fragment")                       \
 _(MAX_REASS, "maximum reassemblies exceeded")           \
 _(MAX_FRAG, "maximum fragments per reassembly exceeded")\
+_(CANNOT_CREATE_USER, "cannot create NAT user")         \
 _(NON_SYN, "non-SYN packet try to create session")      \
 _(TCP_PACKETS, "TCP packets")                           \
+_(TCP_CLOSED, "drops due to TCP in transitory timeout") \
 _(UDP_PACKETS, "UDP packets")                           \
 _(ICMP_PACKETS, "ICMP packets")                         \
 _(OTHER_PACKETS, "other protocol packets")              \
@@ -248,11 +252,14 @@ _(OUT_OF_PORTS, "out of ports")                         \
 _(BAD_ICMP_TYPE, "unsupported ICMP type")               \
 _(NO_TRANSLATION, "no translation")                     \
 _(MAX_SESSIONS_EXCEEDED, "maximum sessions exceeded")   \
+_(MAX_USER_SESS_EXCEEDED, "max user sessions exceeded") \
 _(DROP_FRAGMENT, "drop fragment")                       \
 _(MAX_REASS, "maximum reassemblies exceeded")           \
 _(MAX_FRAG, "maximum fragments per reassembly exceeded")\
+_(CANNOT_CREATE_USER, "cannot create NAT user")         \
 _(NON_SYN, "non-SYN packet try to create session")      \
 _(TCP_PACKETS, "TCP packets")                           \
+_(TCP_CLOSED, "drops due to TCP in transitory timeout") \
 _(UDP_PACKETS, "UDP packets")                           \
 _(ICMP_PACKETS, "ICMP packets")                         \
 _(OTHER_PACKETS, "other protocol packets")              \
@@ -314,6 +321,10 @@ typedef CLIB_PACKED(struct
   u32 per_user_index;
   u32 per_user_list_head_index;
 
+  /* index in global LRU list */
+  u32 global_lru_index;
+  f64 last_lru_update;
+
   /* Last heard timer */
   f64 last_heard;
 
@@ -336,6 +347,7 @@ typedef CLIB_PACKED(struct
   u8 state;
   u32 i2o_fin_seq;
   u32 o2i_fin_seq;
+  u32 tcp_close_timestamp;
 
   /* user index */
   u32 user_index;
@@ -362,7 +374,7 @@ typedef struct
 #define _(N, i, n, s) \
   u16 busy_##n##_ports; \
   u16 * busy_##n##_ports_per_thread; \
-  uword * busy_##n##_port_bitmap;
+  u32 busy_##n##_port_refcounts[65535];
   foreach_snat_protocol
 #undef _
 /* *INDENT-ON* */
@@ -514,6 +526,10 @@ typedef struct
   /* Pool of doubly-linked list elements */
   dlist_elt_t *list_pool;
 
+  /* LRU session list - head is stale, tail is fresh */
+  dlist_elt_t *global_lru_pool;
+  u32 global_lru_head_index;
+
   /* NAT thread index */
   u32 snat_thread_index;
 
@@ -560,6 +576,28 @@ typedef int (nat_alloc_out_addr_and_port_function_t) (snat_address_t *
 						      snat_session_key_t * k,
 						      u16 port_per_thread,
 						      u32 snat_thread_index);
+
+typedef struct ed_bihash_key_s
+{
+  u32 src_address;
+  u32 dst_address;
+  u16 src_port;
+  u16 dst_port;
+  u8 protocol;
+} ed_bihash_key_t;
+
+typedef struct ed_bihash_kv_s
+{
+  union
+  {
+    ed_bihash_key_t k;
+    clib_bihash_kv_16_8_t kv;
+  };
+} ed_bihash_kv_t;
+
+STATIC_ASSERT (STRUCT_SIZE_OF (ed_bihash_kv_t, k) <=
+	       STRUCT_SIZE_OF (ed_bihash_kv_t, kv.key),
+	       "ed key needs to fit in bihash key");
 
 typedef struct snat_main_s
 {
@@ -674,10 +712,10 @@ typedef struct snat_main_s
   u8 out2in_dpo;
   u8 endpoint_dependent;
   u32 translation_buckets;
-  u32 translation_memory_size;
+  uword translation_memory_size;
   u32 max_translations;
   u32 user_buckets;
-  u32 user_memory_size;
+  uword user_memory_size;
   u32 max_translations_per_user;
   u32 outside_vrf_id;
   u32 outside_fib_index;
@@ -717,6 +755,7 @@ typedef struct snat_main_s
   ip_lookup_main_t *ip4_lookup_main;
   api_main_t *api_main;
 
+  clib_bihash_16_8_t ed_ext_ports;
 } snat_main_t;
 
 typedef struct
@@ -741,23 +780,14 @@ extern vlib_node_registration_t nat_pre_out2in_node;
 extern vlib_node_registration_t snat_in2out_node;
 extern vlib_node_registration_t snat_in2out_output_node;
 extern vlib_node_registration_t snat_out2in_node;
-extern vlib_node_registration_t snat_in2out_fast_node;
-extern vlib_node_registration_t snat_out2in_fast_node;
 extern vlib_node_registration_t snat_in2out_worker_handoff_node;
 extern vlib_node_registration_t snat_in2out_output_worker_handoff_node;
 extern vlib_node_registration_t snat_out2in_worker_handoff_node;
 extern vlib_node_registration_t snat_det_in2out_node;
 extern vlib_node_registration_t snat_det_out2in_node;
-extern vlib_node_registration_t snat_hairpin_dst_node;
-extern vlib_node_registration_t snat_hairpin_src_node;
 extern vlib_node_registration_t nat44_ed_in2out_node;
 extern vlib_node_registration_t nat44_ed_in2out_output_node;
 extern vlib_node_registration_t nat44_ed_out2in_node;
-extern vlib_node_registration_t nat44_ed_hairpin_dst_node;
-extern vlib_node_registration_t nat44_ed_hairpin_src_node;
-extern vlib_node_registration_t nat44_ed_in2out_worker_handoff_node;
-extern vlib_node_registration_t nat44_ed_in2out_output_worker_handoff_node;
-extern vlib_node_registration_t nat44_ed_out2in_worker_handoff_node;
 
 extern fib_source_t nat_fib_src_hi;
 extern fib_source_t nat_fib_src_low;

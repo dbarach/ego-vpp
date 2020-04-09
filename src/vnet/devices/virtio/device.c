@@ -158,9 +158,13 @@ set_checksum_offsets (vlib_main_t * vm, virtio_if_t * vif, vlib_buffer_t * b,
       hdr->flags = VIRTIO_NET_HDR_F_NEEDS_CSUM;
       hdr->csum_start = gho.l4_hdr_offset;	// 0x22;
       if (b->flags & VNET_BUFFER_F_OFFLOAD_TCP_CKSUM)
-	hdr->csum_offset = STRUCT_OFFSET_OF (tcp_header_t, checksum);
+	{
+	  hdr->csum_offset = STRUCT_OFFSET_OF (tcp_header_t, checksum);
+	}
       else if (b->flags & VNET_BUFFER_F_OFFLOAD_UDP_CKSUM)
-	hdr->csum_offset = STRUCT_OFFSET_OF (udp_header_t, checksum);
+	{
+	  hdr->csum_offset = STRUCT_OFFSET_OF (udp_header_t, checksum);
+	}
 
       /*
        * virtio devices do not support IP4 checksum offload. So driver takes care
@@ -177,9 +181,13 @@ set_checksum_offsets (vlib_main_t * vm, virtio_if_t * vif, vlib_buffer_t * b,
       hdr->flags = VIRTIO_NET_HDR_F_NEEDS_CSUM;
       hdr->csum_start = gho.l4_hdr_offset;	// 0x36;
       if (b->flags & VNET_BUFFER_F_OFFLOAD_TCP_CKSUM)
-	hdr->csum_offset = STRUCT_OFFSET_OF (tcp_header_t, checksum);
+	{
+	  hdr->csum_offset = STRUCT_OFFSET_OF (tcp_header_t, checksum);
+	}
       else if (b->flags & VNET_BUFFER_F_OFFLOAD_UDP_CKSUM)
-	hdr->csum_offset = STRUCT_OFFSET_OF (udp_header_t, checksum);
+	{
+	  hdr->csum_offset = STRUCT_OFFSET_OF (udp_header_t, checksum);
+	}
     }
 }
 
