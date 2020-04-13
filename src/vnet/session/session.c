@@ -18,7 +18,6 @@
  */
 
 #include <vnet/session/session.h>
-#include <vnet/session/session_debug.h>
 #include <vnet/session/application.h>
 #include <vnet/dpo/load_balance.h>
 #include <vnet/fib/ip4_fib.h>
@@ -809,6 +808,31 @@ session_ho_stream_connect_notify (transport_connection_t * tc,
   return session_stream_connect_notify_inline (tc, err, SESSION_STATE_OPENED);
 }
 
+static void
+session_switch_pool_reply (void *arg)
+{
+  u32 session_index = pointer_to_uword (arg);
+  segment_manager_t *sm;
+  app_worker_t *app_wrk;
+  session_t *s;
+
+  s = session_get_if_valid (session_index, vlib_get_thread_index ());
+  if (!s)
+    return;
+
+  app_wrk = app_worker_get_if_valid (s->app_wrk_index);
+  if (!app_wrk)
+    return;
+
+  /* Attach fifos to the right session and segment slice */
+  sm = app_worker_get_connect_segment_manager (app_wrk);
+  segment_manager_attach_fifo (sm, s->rx_fifo, s);
+  segment_manager_attach_fifo (sm, s->tx_fifo, s);
+
+  /* Notify app that it has data on the new session */
+  session_enqueue_notify (s);
+}
+
 typedef struct _session_switch_pool_args
 {
   u32 session_index;
@@ -824,27 +848,37 @@ static void
 session_switch_pool (void *cb_args)
 {
   session_switch_pool_args_t *args = (session_switch_pool_args_t *) cb_args;
+  session_handle_t new_sh;
+  segment_manager_t *sm;
   app_worker_t *app_wrk;
   session_t *s;
+  void *rargs;
 
   ASSERT (args->thread_index == vlib_get_thread_index ());
   s = session_get (args->session_index, args->thread_index);
-  s->tx_fifo->master_session_index = args->new_session_index;
-  s->tx_fifo->master_thread_index = args->new_thread_index;
+
   transport_cleanup (session_get_transport_proto (s), s->connection_index,
 		     s->thread_index);
+
+  new_sh = session_make_handle (args->new_session_index,
+				args->new_thread_index);
 
   app_wrk = app_worker_get_if_valid (s->app_wrk_index);
   if (app_wrk)
     {
-      session_handle_t new_sh;
-      new_sh = session_make_handle (args->new_session_index,
-				    args->new_thread_index);
-      app_worker_migrate_notify (app_wrk, s, new_sh);
+      /* Cleanup fifo segment slice state for fifos */
+      sm = app_worker_get_connect_segment_manager (app_wrk);
+      segment_manager_detach_fifo (sm, s->rx_fifo);
+      segment_manager_detach_fifo (sm, s->tx_fifo);
 
-      /* Trigger app read on the new thread */
-      session_enqueue_notify_thread (new_sh);
+      /* Notify app, using old session, about the migration event */
+      app_worker_migrate_notify (app_wrk, s, new_sh);
     }
+
+  /* Trigger app read and fifo updates on the new thread */
+  rargs = uword_to_pointer (args->new_session_index, void *);
+  session_send_rpc_evt_to_thread (args->new_thread_index,
+				  session_switch_pool_reply, rargs);
 
   session_free (s);
   clib_mem_free (cb_args);
@@ -865,10 +899,9 @@ session_dgram_connect_notify (transport_connection_t * tc,
    */
   new_s = session_clone_safe (tc->s_index, old_thread_index);
   new_s->connection_index = tc->c_index;
-  new_s->rx_fifo->master_session_index = new_s->session_index;
-  new_s->rx_fifo->master_thread_index = new_s->thread_index;
   new_s->session_state = SESSION_STATE_READY;
   new_s->flags |= SESSION_F_IS_MIGRATING;
+
   session_lookup_add_connection (tc, session_handle (new_s));
 
   /*
@@ -1070,7 +1103,10 @@ session_stream_accept (transport_connection_t * tc, u32 listener_index,
   s->session_state = SESSION_STATE_CREATED;
 
   if ((rv = app_worker_init_accepted (s)))
-    return rv;
+    {
+      session_free (s);
+      return rv;
+    }
 
   session_lookup_add_connection (tc, session_handle (s));
 
@@ -1078,7 +1114,13 @@ session_stream_accept (transport_connection_t * tc, u32 listener_index,
   if (notify)
     {
       app_worker_t *app_wrk = app_worker_get (s->app_wrk_index);
-      return app_worker_accept_notify (app_wrk, s);
+      if ((rv = app_worker_accept_notify (app_wrk, s)))
+	{
+	  session_lookup_del_session (s);
+	  segment_manager_dealloc_fifos (s->rx_fifo, s->tx_fifo);
+	  session_free (s);
+	  return rv;
+	}
     }
 
   return 0;
@@ -1104,7 +1146,8 @@ session_dgram_accept (transport_connection_t * tc, u32 listener_index,
   app_wrk = app_worker_get (s->app_wrk_index);
   if ((rv = app_worker_accept_notify (app_wrk, s)))
     {
-      session_free_w_fifos (s);
+      segment_manager_dealloc_fifos (s->rx_fifo, s->tx_fifo);
+      session_free (s);
       return rv;
     }
 
@@ -1661,6 +1704,8 @@ session_manager_main_enable (vlib_main_t * vm)
 
   /* Enable transports */
   transport_enable_disable (vm, 1);
+  session_debug_init ();
+
   return 0;
 }
 
