@@ -37,7 +37,7 @@ _(OK, "Permitted packets")			\
 _(STATIC_DROP, "Static drop packets")           \
 _(RANGE_DROP, "Range drop packets")             \
 _(QUOTA_DROP, "Data quota drop packets")	\
-_(DROP_10001, "Dropped UDP DST-port 10001")
+_(DROP_10001, "Dropped rogue call-home packets")
 
 typedef enum
 {
@@ -205,8 +205,8 @@ mactime_node_inline (vlib_main_t * vm,
 	      else		/* note next0 set to allow */
 		{
 		  /*
-		   * Special-case mini-ACL for a certain species of
-		   * home security DVR which likes to "call home."
+		   * Special-case mini-ACL for certain species of
+		   * cheap IOT devices which like to "call home."
 		   */
 		  if (PREDICT_FALSE
 		      (dp->flags & MACTIME_DEVICE_FLAG_DROP_UDP_10001))
@@ -216,10 +216,15 @@ mactime_node_inline (vlib_main_t * vm,
 		      if (ip->protocol != IP_PROTOCOL_UDP)
 			goto pass;
 		      if (clib_net_to_host_u16 (udp->dst_port) == 10001 ||
-			  clib_net_to_host_u16 (udp->dst_port) == 9603)
+			  clib_net_to_host_u16 (udp->dst_port) == 9603 ||
+                          clib_net_to_host_u16 (udp->dst_port) == 32100 ||
+                          clib_net_to_host_u16 (udp->dst_port) == 1900)
 			{
 			  next0 = MACTIME_NEXT_DROP;
 			  b0->error = node->errors[MACTIME_ERROR_DROP_10001];
+			  vlib_increment_combined_counter
+			    (&mm->drop_counters, thread_index,
+			     dp - mm->devices, 1, len0);
 			}
 		      else
 			goto pass;
