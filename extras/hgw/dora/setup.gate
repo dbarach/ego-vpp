@@ -4,6 +4,7 @@ set dhcp client intfc GigabitEthernet3/0/0 hostname vppn1
 set int state GigabitEthernet3/0/0 up
 
 bvi create instance 0
+set int mac address bvi0 48:f8:b3:e0:85:1b
 set int l2 bridge bvi0 1 bvi
 set int ip address bvi0 192.168.2.1/24
 set int state bvi0 up
@@ -59,5 +60,11 @@ create ipip tunnel src 73.21.177.100 dst 64.102.253.73
 ikev2 profile set swan tunnel ipip0
 
 set int mtu packet 1390 ipip0
-set int unnum ipip0 use host-eth1
+set int unnum ipip0 use GigabitEthernet3/0/0
 
+comment { kill ptz camera "ET call home" nonsense }
+bin mactime_add_del_range name ptz mac 5c:ff:ff:1d:1c:71 allow-static no-udp-10001
+bin mactime_enable_disable GigabitEthernet6/0/0
+bin mactime_enable_disable GigabitEthernet6/0/1
+bin mactime_enable_disable GigabitEthernet8/0/0
+bin mactime_enable_disable GigabitEthernet8/0/1
