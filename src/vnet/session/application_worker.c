@@ -75,6 +75,8 @@ app_worker_free (app_worker_t * app_wrk)
   }));
   /* *INDENT-ON* */
 
+  hash_free (app_wrk->listeners_table);
+
   for (i = 0; i < vec_len (handles); i++)
     {
       a->app_index = app->app_index;
@@ -83,6 +85,7 @@ app_worker_free (app_worker_t * app_wrk)
       /* seg manager is removed when unbind completes */
       (void) vnet_unlisten (a);
     }
+  vec_reset_length (handles);
 
   /*
    * Connects segment manager cleanup
@@ -95,6 +98,31 @@ app_worker_free (app_worker_t * app_wrk)
       sm->first_is_protected = 0;
       segment_manager_init_free (sm);
     }
+
+  /*
+   * Half-open cleanup
+   */
+
+  for (i = 0; i < vec_len (app_wrk->half_open_table); i++)
+    {
+      if (!app_wrk->half_open_table[i])
+	continue;
+
+      /* *INDENT-OFF* */
+      hash_foreach (handle, sm_index, app_wrk->half_open_table[i], ({
+	vec_add1 (handles, handle);
+      }));
+      /* *INDENT-ON* */
+
+      for (i = 0; i < vec_len (handles); i++)
+	session_cleanup_half_open (i, handles[i]);
+
+      hash_free (app_wrk->half_open_table[i]);
+      vec_reset_length (handles);
+    }
+
+  vec_free (app_wrk->half_open_table);
+  vec_free (handles);
 
   /* If first segment manager is used by a listener */
   if (app_wrk->first_segment_manager != APP_INVALID_SEGMENT_MANAGER_INDEX
@@ -230,24 +258,22 @@ app_worker_stop_listen_session (app_worker_t * app_wrk, session_t * ls)
   if (PREDICT_FALSE (!sm_indexp))
     return;
 
-  /* Dealloc fifos first, if any, to avoid cleanup attempt lower */
+  /* Dealloc fifos, if any (dgram listeners) */
   if (ls->rx_fifo)
     {
       segment_manager_dealloc_fifos (ls->rx_fifo, ls->tx_fifo);
       ls->tx_fifo = ls->rx_fifo = 0;
     }
 
+  /* Try to cleanup segment manager */
   sm = segment_manager_get (*sm_indexp);
-  if (app_wrk->first_segment_manager == *sm_indexp)
+  if (sm && app_wrk->first_segment_manager != *sm_indexp)
     {
-      /* Delete sessions but don't remove segment manager */
-      app_wrk->first_segment_manager_in_use = 0;
-      segment_manager_del_sessions (sm);
+      segment_manager_app_detach (sm);
+      if (!segment_manager_has_fifos (sm))
+	segment_manager_free (sm);
     }
-  else
-    {
-      segment_manager_init_free (sm);
-    }
+
   hash_unset (app_wrk->listeners_table, handle);
 }
 
@@ -334,6 +360,40 @@ app_worker_connect_notify (app_worker_t * app_wrk, session_t * s,
   application_t *app = application_get (app_wrk->app_index);
   return app->cb_fns.session_connected_callback (app_wrk->wrk_index, opaque,
 						 s, err);
+}
+
+int
+app_worker_add_half_open (app_worker_t * app_wrk, transport_proto_t tp,
+			  session_handle_t ho_handle,
+			  session_handle_t wrk_handle)
+{
+  ASSERT (vlib_get_thread_index () == 0);
+  vec_validate (app_wrk->half_open_table, tp);
+  hash_set (app_wrk->half_open_table[tp], ho_handle, wrk_handle);
+  return 0;
+}
+
+int
+app_worker_del_half_open (app_worker_t * app_wrk, transport_proto_t tp,
+			  session_handle_t ho_handle)
+{
+  ASSERT (vlib_get_thread_index () == 0);
+  hash_unset (app_wrk->half_open_table[tp], ho_handle);
+  return 0;
+}
+
+u64
+app_worker_lookup_half_open (app_worker_t * app_wrk, transport_proto_t tp,
+			     session_handle_t ho_handle)
+{
+  u64 *ho_wrk_handlep;
+
+  /* No locking because all updates are done from main thread */
+  ho_wrk_handlep = hash_get (app_wrk->half_open_table[tp], ho_handle);
+  if (!ho_wrk_handlep)
+    return SESSION_INVALID_HANDLE;
+
+  return *ho_wrk_handlep;
 }
 
 int

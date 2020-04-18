@@ -285,12 +285,6 @@ transport_protocol_get_vft (transport_proto_t transport_proto)
   return &tp_vfts[transport_proto];
 }
 
-u8
-transport_half_open_has_fifos (transport_proto_t tp)
-{
-  return tp_vfts[tp].transport_options.half_open_has_fifos;
-}
-
 transport_service_type_t
 transport_protocol_service_type (transport_proto_t tp)
 {
@@ -307,6 +301,13 @@ void
 transport_cleanup (transport_proto_t tp, u32 conn_index, u8 thread_index)
 {
   tp_vfts[tp].cleanup (conn_index, thread_index);
+}
+
+void
+transport_cleanup_half_open (transport_proto_t tp, u32 conn_index)
+{
+  if (tp_vfts[tp].cleanup)
+    tp_vfts[tp].cleanup_ho (conn_index);
 }
 
 int
