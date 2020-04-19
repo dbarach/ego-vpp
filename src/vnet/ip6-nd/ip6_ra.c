@@ -494,7 +494,8 @@ icmp6_router_solicitation (vlib_main_t * vm,
 			}
 
 		      /* add MTU option */
-		      if (radv_info->adv_link_mtu)
+                      /* $$$ HACK FIXME dont send mtu */
+		      if (0 && radv_info->adv_link_mtu)
 			{
 			  icmp6_neighbor_discovery_mtu_option_t h;
 
@@ -587,6 +588,31 @@ icmp6_router_solicitation (vlib_main_t * vm,
                           }
                       }));
 		      /* *INDENT-ON* */
+
+                      /* $$$$ HACK fixme add a 0::/0 route */
+                      {
+                        icmp6_route_information_option_t h;
+
+                        h.header.type =
+                          ICMP6_NEIGHBOR_DISCOVERY_OPTION_route_information;
+                        h.header.n_data_u64s = 3;
+                        h.prefix_length = 0;
+                        h.flags = 0;
+                        h.route_lifetime = clib_host_to_net_u32 (180);
+                        memset (h.prefix, 0, sizeof (h.prefix));
+
+                        payload_length +=
+                          sizeof (icmp6_route_information_option_t);
+
+                        if (vlib_buffer_add_data
+                            (vm, &bi0, (void *) &h,
+                             sizeof
+                             (icmp6_route_information_option_t)))
+			    {
+			      error0 = ICMP6_ERROR_ALLOC_FAILURE;
+			      goto drop0;
+			    }
+                      }
 
 		      /* add additional options before here */
 
