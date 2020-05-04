@@ -99,6 +99,12 @@ ip_neighbor_get_index (const ip_neighbor_t * ipn)
   return (ipn - ip_neighbor_pool);
 }
 
+static void
+ip_neighbor_touch (ip_neighbor_t * ipn)
+{
+  ipn->ipn_flags &= ~IP_NEIGHBOR_FLAG_STALE;
+}
+
 static bool
 ip_neighbor_is_dynamic (const ip_neighbor_t * ipn)
 {
@@ -145,6 +151,7 @@ ip_neighbor_refresh (ip_neighbor_t * ipn)
    * list is time sorted, newest first */
   ip_neighbor_elt_t *elt, *head;
 
+  ip_neighbor_touch (ipn);
   ipn->ipn_time_last_updated = vlib_time_now (vlib_get_main ());
   ipn->ipn_n_probes = 0;
 
@@ -473,6 +480,8 @@ ip_neighbor_add (const ip46_address_t * ip,
 		       format_ip_neighbor_flags, flags, format_mac_address_t,
 		       mac);
 
+      ip_neighbor_touch (ipn);
+
       /* Refuse to over-write static neighbor entry. */
       if (!(flags & IP_NEIGHBOR_FLAG_STATIC) &&
 	  (ipn->ipn_flags & IP_NEIGHBOR_FLAG_STATIC))
@@ -565,6 +574,40 @@ ip_neighbor_del (const ip46_address_t * ip, ip46_type_t type, u32 sw_if_index)
   ip_neighbor_free (ipn);
 
   return (0);
+}
+
+typedef struct ip_neighbor_del_all_ctx_t_
+{
+  index_t *ipn_del;
+} ip_neighbor_del_all_ctx_t;
+
+static walk_rc_t
+ip_neighbor_del_all_walk_cb (index_t ipni, void *arg)
+{
+  ip_neighbor_del_all_ctx_t *ctx = arg;
+
+  vec_add1 (ctx->ipn_del, ipni);
+
+  return (WALK_CONTINUE);
+}
+
+void
+ip_neighbor_del_all (ip46_type_t type, u32 sw_if_index)
+{
+  IP_NEIGHBOR_INFO ("delete-all: %U, %U",
+		    format_ip46_type, type,
+		    format_vnet_sw_if_index_name, vnet_get_main (),
+		    sw_if_index);
+
+  ip_neighbor_del_all_ctx_t ctx = {
+    .ipn_del = NULL,
+  };
+  index_t *ipni;
+
+  ip_neighbor_walk (type, sw_if_index, ip_neighbor_del_all_walk_cb, &ctx);
+
+  vec_foreach (ipni, ctx.ipn_del) ip_neighbor_free (ip_neighbor_get (*ipni));
+  vec_free (ctx.ipn_del);
 }
 
 void
@@ -1004,7 +1047,8 @@ ip_neighbor_walk (ip46_type_t type,
           /* *INDENT-OFF* */
           hash_foreach (key, ipni, *hash,
           ({
-            cb (ipni, ctx);
+            if (WALK_STOP == cb (ipni, ctx))
+	      break;
           }));
           /* *INDENT-ON* */
       }
@@ -1020,7 +1064,8 @@ ip_neighbor_walk (ip46_type_t type,
       /* *INDENT-OFF* */
       hash_foreach (key, ipni, hash,
       ({
-        cb (ipni, ctx);
+        if (WALK_STOP == cb (ipni, ctx))
+	  break;
       }));
       /* *INDENT-ON* */
     }
@@ -1175,6 +1220,60 @@ ip_neighbor_flush (ip46_type_t type, u32 sw_if_index)
 
   vec_foreach (ipni, ipnis) ip_neighbor_free (ip_neighbor_get (*ipni));
   vec_free (ipnis);
+}
+
+static walk_rc_t
+ip_neighbor_mark_one (index_t ipni, void *ctx)
+{
+  ip_neighbor_t *ipn;
+
+  ipn = ip_neighbor_get (ipni);
+
+  ipn->ipn_flags |= IP_NEIGHBOR_FLAG_STALE;
+
+  return (WALK_CONTINUE);
+}
+
+void
+ip_neighbor_mark (ip46_type_t type)
+{
+  ip_neighbor_walk (type, ~0, ip_neighbor_mark_one, NULL);
+}
+
+typedef struct ip_neighbor_sweep_ctx_t_
+{
+  index_t *ipnsc_stale;
+} ip_neighbor_sweep_ctx_t;
+
+static walk_rc_t
+ip_neighbor_sweep_one (index_t ipni, void *arg)
+{
+  ip_neighbor_sweep_ctx_t *ctx = arg;
+  ip_neighbor_t *ipn;
+
+  ipn = ip_neighbor_get (ipni);
+
+  if (ipn->ipn_flags & IP_NEIGHBOR_FLAG_STALE)
+    {
+      vec_add1 (ctx->ipnsc_stale, ipni);
+    }
+
+  return (WALK_CONTINUE);
+}
+
+void
+ip_neighbor_sweep (ip46_type_t type)
+{
+  ip_neighbor_sweep_ctx_t ctx = { };
+  index_t *ipni;
+
+  ip_neighbor_walk (type, ~0, ip_neighbor_sweep_one, &ctx);
+
+  vec_foreach (ipni, ctx.ipnsc_stale)
+  {
+    ip_neighbor_free (ip_neighbor_get (*ipni));
+  }
+  vec_free (ctx.ipnsc_stale);
 }
 
 /*

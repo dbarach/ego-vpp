@@ -1,5 +1,6 @@
 #!/usr/bin/env python3
 
+import ipaddress
 import socket
 import unittest
 import struct
@@ -857,7 +858,8 @@ class MethodHolder(VppTestCase):
             else:
                 nat44_ses_delete_num += 1
             # sourceIPv4Address
-            self.assertEqual(self.pg0.remote_ip4n, record[8])
+            self.assertEqual(self.pg0.remote_ip4,
+                             str(ipaddress.IPv4Address(record[8])))
             # postNATSourceIPv4Address
             self.assertEqual(socket.inet_pton(socket.AF_INET, self.nat_addr),
                              record[225])
@@ -929,44 +931,6 @@ class MethodHolder(VppTestCase):
         # maxBIBEntries
         self.assertEqual(struct.pack("I", limit), record[472])
 
-    def verify_ipfix_max_fragments_ip6(self, data, limit, src_addr):
-        """
-        Verify IPFIX maximum IPv6 fragments pending reassembly exceeded event
-
-        :param data: Decoded IPFIX data records
-        :param limit: Number of maximum fragments pending reassembly
-        :param src_addr: IPv6 source address
-        """
-        self.assertEqual(1, len(data))
-        record = data[0]
-        # natEvent
-        self.assertEqual(scapy.compat.orb(record[230]), 13)
-        # natQuotaExceededEvent
-        self.assertEqual(struct.pack("I", 5), record[466])
-        # maxFragmentsPendingReassembly
-        self.assertEqual(struct.pack("I", limit), record[475])
-        # sourceIPv6Address
-        self.assertEqual(src_addr, record[27])
-
-    def verify_ipfix_max_fragments_ip4(self, data, limit, src_addr):
-        """
-        Verify IPFIX maximum IPv4 fragments pending reassembly exceeded event
-
-        :param data: Decoded IPFIX data records
-        :param limit: Number of maximum fragments pending reassembly
-        :param src_addr: IPv4 source address
-        """
-        self.assertEqual(1, len(data))
-        record = data[0]
-        # natEvent
-        self.assertEqual(scapy.compat.orb(record[230]), 13)
-        # natQuotaExceededEvent
-        self.assertEqual(struct.pack("I", 5), record[466])
-        # maxFragmentsPendingReassembly
-        self.assertEqual(struct.pack("I", limit), record[475])
-        # sourceIPv4Address
-        self.assertEqual(src_addr, record[8])
-
     def verify_ipfix_bib(self, data, is_create, src_addr):
         """
         Verify IPFIX NAT64 BIB create and delete events
@@ -983,7 +947,7 @@ class MethodHolder(VppTestCase):
         else:
             self.assertEqual(scapy.compat.orb(record[230]), 11)
         # sourceIPv6Address
-        self.assertEqual(src_addr, record[27])
+        self.assertEqual(src_addr, str(ipaddress.IPv6Address(record[27])))
         # postNATSourceIPv4Address
         self.assertEqual(self.nat_addr_n, record[225])
         # protocolIdentifier
@@ -1014,7 +978,7 @@ class MethodHolder(VppTestCase):
         else:
             self.assertEqual(scapy.compat.orb(record[230]), 7)
         # sourceIPv6Address
-        self.assertEqual(src_addr, record[27])
+        self.assertEqual(src_addr, str(ipaddress.IPv6Address(record[27])))
         # destinationIPv6Address
         self.assertEqual(socket.inet_pton(socket.AF_INET6,
                                           self.compose_ip6(dst_addr,
@@ -2703,7 +2667,7 @@ class TestNAT44(MethodHolder):
         self.verify_capture_out(capture)
         self.nat44_add_address(self.nat_addr, is_add=0)
         self.vapi.ipfix_flush()
-        capture = self.pg3.get_capture(9)
+        capture = self.pg3.get_capture(7)
         ipfix = IPFIXDecoder()
         # first load template
         for p in capture:
@@ -2748,7 +2712,7 @@ class TestNAT44(MethodHolder):
         self.pg1.assert_nothing_captured()
         sleep(1)
         self.vapi.ipfix_flush()
-        capture = self.pg3.get_capture(9)
+        capture = self.pg3.get_capture(7)
         ipfix = IPFIXDecoder()
         # first load template
         for p in capture:
@@ -2811,7 +2775,7 @@ class TestNAT44(MethodHolder):
         self.pg1.assert_nothing_captured()
         sleep(1)
         self.vapi.ipfix_flush()
-        capture = self.pg3.get_capture(9)
+        capture = self.pg3.get_capture(7)
         ipfix = IPFIXDecoder()
         # first load template
         for p in capture:
@@ -4548,8 +4512,6 @@ class TestNAT44EndpointDependent(MethodHolder):
             '/err/nat44-ed-out2in/good out2in packets processed')
         self.assertEqual(err - totaln, 3)
 
-        users = self.statistics.get_counter('/nat44/total-users')
-        self.assertEqual(users[0][0], 1)
         sessions = self.statistics.get_counter('/nat44/total-sessions')
         self.assertEqual(sessions[0][0], 3)
 
@@ -4645,8 +4607,6 @@ class TestNAT44EndpointDependent(MethodHolder):
                 '/err/nat44-ed-out2in/good out2in packets processed')
             self.assertEqual(err - totaln, 3)
 
-            users = self.statistics.get_counter('/nat44/total-users')
-            self.assertEqual(users[0][0], 1)
             sessions = self.statistics.get_counter('/nat44/total-sessions')
             self.assertEqual(sessions[0][0], 3)
 
@@ -6855,13 +6815,6 @@ class TestNAT44EndpointDependent(MethodHolder):
         self.pg_start()
         self.pg1.get_capture(1)
 
-        nsessions = 0
-        users = self.vapi.nat44_user_dump()
-        self.assertEqual(len(users), 1)
-        self.assertEqual(str(users[0].ip_address),
-                         self.pg0.remote_ip4)
-        self.assertEqual(users[0].nsessions, 1)
-
     def test_syslog_sess(self):
         """ Test syslog session creation and deletion """
         self.vapi.syslog_set_filter(
@@ -8022,19 +7975,19 @@ class TestNAT64(MethodHolder):
         self.vapi.nat64_add_del_interface(is_add=1, flags=0,
                                           sw_if_index=self.pg1.sw_if_index)
 
-        self.vapi.nat64_add_del_static_bib(i_addr=self.pg0.remote_ip6n,
+        self.vapi.nat64_add_del_static_bib(i_addr=self.pg0.remote_ip6,
                                            o_addr=self.nat_addr,
                                            i_port=self.tcp_port_in,
                                            o_port=self.tcp_port_out,
                                            proto=IP_PROTOS.tcp, vrf_id=0,
                                            is_add=1)
-        self.vapi.nat64_add_del_static_bib(i_addr=self.pg0.remote_ip6n,
+        self.vapi.nat64_add_del_static_bib(i_addr=self.pg0.remote_ip6,
                                            o_addr=self.nat_addr,
                                            i_port=self.udp_port_in,
                                            o_port=self.udp_port_out,
                                            proto=IP_PROTOS.udp, vrf_id=0,
                                            is_add=1)
-        self.vapi.nat64_add_del_static_bib(i_addr=self.pg0.remote_ip6n,
+        self.vapi.nat64_add_del_static_bib(i_addr=self.pg0.remote_ip6,
                                            o_addr=self.nat_addr,
                                            i_port=self.icmp_id_in,
                                            o_port=self.icmp_id_out,
@@ -8831,7 +8784,7 @@ class TestNAT64(MethodHolder):
         self.pg1.assert_nothing_captured()
         sleep(1)
         self.vapi.ipfix_flush()
-        capture = self.pg3.get_capture(9)
+        capture = self.pg3.get_capture(7)
         ipfix = IPFIXDecoder()
         # first load template
         for p in capture:
@@ -8907,7 +8860,7 @@ class TestNAT64(MethodHolder):
         p = self.pg1.get_capture(1)
         self.tcp_port_out = p[0][TCP].sport
         self.vapi.ipfix_flush()
-        capture = self.pg3.get_capture(10)
+        capture = self.pg3.get_capture(8)
         ipfix = IPFIXDecoder()
         # first load template
         for p in capture:
@@ -8925,11 +8878,11 @@ class TestNAT64(MethodHolder):
             if p.haslayer(Data):
                 data = ipfix.decode_data_set(p.getlayer(Set))
                 if scapy.compat.orb(data[0][230]) == 10:
-                    self.verify_ipfix_bib(data, 1, self.pg0.remote_ip6n)
+                    self.verify_ipfix_bib(data, 1, self.pg0.remote_ip6)
                 elif scapy.compat.orb(data[0][230]) == 6:
                     self.verify_ipfix_nat64_ses(data,
                                                 1,
-                                                self.pg0.remote_ip6n,
+                                                self.pg0.remote_ip6,
                                                 self.pg1.remote_ip4,
                                                 25)
                 else:
@@ -8955,11 +8908,11 @@ class TestNAT64(MethodHolder):
             if p.haslayer(Data):
                 data = ipfix.decode_data_set(p.getlayer(Set))
                 if scapy.compat.orb(data[0][230]) == 11:
-                    self.verify_ipfix_bib(data, 0, self.pg0.remote_ip6n)
+                    self.verify_ipfix_bib(data, 0, self.pg0.remote_ip6)
                 elif scapy.compat.orb(data[0][230]) == 7:
                     self.verify_ipfix_nat64_ses(data,
                                                 0,
-                                                self.pg0.remote_ip6n,
+                                                self.pg0.remote_ip6,
                                                 self.pg1.remote_ip4,
                                                 25)
                 else:
@@ -9103,7 +9056,7 @@ class TestNAT66(MethodHolder):
         self.vapi.nat66_add_del_interface(is_add=1,
                                           sw_if_index=self.pg1.sw_if_index)
         self.vapi.nat66_add_del_static_mapping(
-            local_ip_address=self.pg0.remote_ip6n,
+            local_ip_address=self.pg0.remote_ip6,
             external_ip_address=self.nat_addr,
             is_add=1)
 
@@ -9182,7 +9135,7 @@ class TestNAT66(MethodHolder):
         self.vapi.nat66_add_del_interface(is_add=1, flags=flags,
                                           sw_if_index=self.pg1.sw_if_index)
         self.vapi.nat66_add_del_static_mapping(
-            local_ip_address=self.pg0.remote_ip6n,
+            local_ip_address=self.pg0.remote_ip6,
             external_ip_address=self.nat_addr,
             is_add=1)
 

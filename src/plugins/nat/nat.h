@@ -45,11 +45,6 @@
 /* NAT buffer flags */
 #define SNAT_FLAG_HAIRPINNING (1 << 0)
 
-typedef struct
-{
-  u32 arc_next;
-} nat_buffer_opaque_t;
-
 typedef enum
 {
   NAT_NEXT_DROP,
@@ -69,18 +64,6 @@ typedef struct
   u32 next_index;
 } nat_pre_trace_t;
 
-#define nat_buffer_opaque(b) \
-  ((nat_buffer_opaque_t *)((vnet_buffer_opaque2_t *)b->opaque2)->__unused2)
-
-/*
-STATIC_ASSERT (sizeof (nat_buffer_opaque_t) <=
-               STRUCT_SIZE_OF (vnet_buffer_opaque_t, unused),
-               "Custom meta-data too large for vnet_buffer_opaque_t");
-
-#define nat_buffer_opaque(b) \
-  ((nat_buffer_opaque_t *)((u8 *)((b)->opaque) + \
-    STRUCT_OFFSET_OF (vnet_buffer_opaque_t, unused)))*/
-
 /* session key (4-tuple) */
 typedef struct
 {
@@ -95,23 +78,6 @@ typedef struct
     u64 as_u64;
   };
 } snat_session_key_t;
-
-/* endpoint-dependent session key (6-tuple) */
-typedef struct
-{
-  union
-  {
-    struct
-    {
-      ip4_address_t l_addr;
-      ip4_address_t r_addr;
-      u32 proto:8, fib_index:24;
-      u16 l_port;
-      u16 r_port;
-    };
-    u64 as_u64[2];
-  };
-} nat_ed_ses_key_t;
 
 /* deterministic session outside key */
 typedef struct
@@ -141,13 +107,6 @@ typedef struct
     u64 as_u64;
   };
 } snat_user_key_t;
-
-typedef struct
-{
-  u32 sw_if_index;
-  u32 next_index;
-  u8 cached;
-} nat44_reass_trace_t;
 
 /* NAT API Configuration flags */
 #define foreach_nat_config_flag \
@@ -224,8 +183,6 @@ _(BAD_ICMP_TYPE, "unsupported ICMP type")               \
 _(MAX_SESSIONS_EXCEEDED, "maximum sessions exceeded")   \
 _(MAX_USER_SESS_EXCEEDED, "max user sessions exceeded") \
 _(DROP_FRAGMENT, "drop fragment")                       \
-_(MAX_REASS, "maximum reassemblies exceeded")           \
-_(MAX_FRAG, "maximum fragments per reassembly exceeded")\
 _(CANNOT_CREATE_USER, "cannot create NAT user")         \
 _(NON_SYN, "non-SYN packet try to create session")      \
 _(TCP_PACKETS, "TCP packets")                           \
@@ -254,8 +211,6 @@ _(NO_TRANSLATION, "no translation")                     \
 _(MAX_SESSIONS_EXCEEDED, "maximum sessions exceeded")   \
 _(MAX_USER_SESS_EXCEEDED, "max user sessions exceeded") \
 _(DROP_FRAGMENT, "drop fragment")                       \
-_(MAX_REASS, "maximum reassemblies exceeded")           \
-_(MAX_FRAG, "maximum fragments per reassembly exceeded")\
 _(CANNOT_CREATE_USER, "cannot create NAT user")         \
 _(NON_SYN, "non-SYN packet try to create session")      \
 _(TCP_PACKETS, "TCP packets")                           \
@@ -567,27 +522,6 @@ typedef int (nat_alloc_out_addr_and_port_function_t) (snat_address_t *
 						      u16 port_per_thread,
 						      u32 snat_thread_index);
 
-typedef struct ed_bihash_key_s
-{
-  u32 src_address;
-  u32 dst_address;
-  u16 src_port;
-  u16 dst_port;
-  u8 protocol;
-} ed_bihash_key_t;
-
-typedef struct ed_bihash_kv_s
-{
-  union
-  {
-    ed_bihash_key_t k;
-    clib_bihash_kv_16_8_t kv;
-  };
-} ed_bihash_kv_t;
-
-STATIC_ASSERT (STRUCT_SIZE_OF (ed_bihash_kv_t, k) <=
-	       STRUCT_SIZE_OF (ed_bihash_kv_t, kv.key),
-	       "ed key needs to fit in bihash key");
 
 typedef struct snat_main_s
 {
@@ -741,8 +675,6 @@ typedef struct snat_main_s
   ip4_main_t *ip4_main;
   ip_lookup_main_t *ip4_lookup_main;
   api_main_t *api_main;
-
-  clib_bihash_16_8_t ed_ext_ports;
 } snat_main_t;
 
 typedef struct
@@ -1144,9 +1076,6 @@ void nat44_ed_hairpinning_unknown_proto (snat_main_t * sm, vlib_buffer_t * b,
 int snat_hairpinning (snat_main_t * sm, vlib_buffer_t * b0,
 		      ip4_header_t * ip0, udp_header_t * udp0,
 		      tcp_header_t * tcp0, u32 proto0, int is_ed);
-void nat44_reass_hairpinning (snat_main_t * sm, vlib_buffer_t * b0,
-			      ip4_header_t * ip0, u16 sport, u16 dport,
-			      u32 proto0, int is_ed);
 
 /* Call back functions for clib_bihash_add_or_overwrite_stale */
 int nat44_i2o_ed_is_idle_session_cb (clib_bihash_kv_16_8_t * kv, void *arg);
@@ -1363,13 +1292,12 @@ snat_session_t *nat_session_alloc_or_recycle (snat_main_t * sm,
 /**
  * @brief Allocate NAT endpoint-dependent session
  *
- * @param u            NAT user
  * @param thread_index thread index
  *
  * @return session data structure on success otherwise zero value
  */
-snat_session_t *nat_ed_session_alloc (snat_main_t * sm, snat_user_t * u,
-				      u32 thread_index, f64 now);
+snat_session_t *nat_ed_session_alloc (snat_main_t * sm, u32 thread_index,
+				      f64 now);
 
 /**
  * @brief Set address and port assignment algorithm for MAP-E CE
@@ -1479,6 +1407,8 @@ typedef struct
 {
   u16 src_port, dst_port;
 } tcp_udp_header_t;
+
+int nat_global_lru_free_one (snat_main_t * sm, int thread_index, f64 now);
 
 #endif /* __included_nat_h__ */
 /*
