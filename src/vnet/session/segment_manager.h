@@ -27,6 +27,7 @@ typedef struct _segment_manager_props
   u32 tx_fifo_size;			/**< transmit fifo size */
   u32 evt_q_size;			/**< event queue length */
   u32 prealloc_fifos;			/**< preallocated fifo pairs */
+  u32 prealloc_fifo_hdrs;		/**< preallocated fifo hdrs */
   uword segment_size;			/**< first segment size */
   uword add_segment_size;		/**< additional segment size */
   u8 add_segment:1;			/**< can add new segments flag */
@@ -40,6 +41,12 @@ typedef struct _segment_manager_props
   u8 low_watermark;			/**< memory usage low watermark % */
   u8 pct_first_alloc;			/**< pct of fifo size to alloc */
 } segment_manager_props_t;
+
+typedef enum seg_manager_flag_
+{
+  SEG_MANAGER_F_DETACHED = 1 << 0,
+  SEG_MANAGER_F_DETACHED_LISTENER = 1 << 1,
+} seg_manager_flag_t;
 
 typedef struct _segment_manager
 {
@@ -63,6 +70,8 @@ typedef struct _segment_manager
    * App event queue allocated in first segment
    */
   svm_msg_q_t *event_queue;
+
+  u8 flags;
 
   u32 max_fifo_size;
   u8 high_watermark;
@@ -158,6 +167,14 @@ void segment_manager_main_init (segment_manager_main_init_args_t * a);
 
 segment_manager_props_t *segment_manager_props_init (segment_manager_props_t *
 						     sm);
+
+static inline void
+segment_manager_parse_segment_handle (u64 segment_handle, u32 * sm_index,
+				      u32 * segment_index)
+{
+  *sm_index = segment_handle >> 32;
+  *segment_index = segment_handle & 0xFFFFFFFF;
+}
 
 #endif /* SRC_VNET_SESSION_SEGMENT_MANAGER_H_ */
 /*

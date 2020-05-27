@@ -9,7 +9,10 @@ import logging
 import binascii
 import os
 import sys
+from subprocess import Popen, PIPE
 
+assert sys.version_info >= (3, 6), \
+    "Not supported Python version: {}".format(sys.version)
 log = logging.getLogger('vppapigen')
 
 # Ensure we don't leave temporary files around
@@ -173,10 +176,11 @@ def vla_is_last_check(name, block):
 
 
 class Service():
-    def __init__(self, caller, reply, events=None, stream=False):
+    def __init__(self, caller, reply, events=None, stream_message=None, stream=False):
         self.caller = caller
         self.reply = reply
         self.stream = stream
+        self.stream_message = stream_message
         self.events = [] if events is None else events
 
 
@@ -275,14 +279,17 @@ class Define():
             elif f == 'autoreply':
                 self.autoreply = True
 
+        remove = []
         for b in block:
             if isinstance(b, Option):
                 if b[1] == 'singular' and b[2] == 'true':
                     self.singular = True
                 else:
                     self.options[b.option] = b.value
-                block.remove(b)
+                remove.append(b)
 
+        block = [x for x in block if x not in remove]
+        self.block = block
         self.vla = vla_is_last_check(name, block)
         self.crc = str(block).encode()
 
@@ -322,25 +329,20 @@ class Import():
 
         return seen_imports[args[0]]
 
-    def __init__(self, filename):
+    def __init__(self, filename, revision):
         if self._initialized:
             return
         else:
             self.filename = filename
             # Deal with imports
-            parser = VPPAPI(filename=filename)
+            parser = VPPAPI(filename=filename, revision=revision)
             dirlist = dirlist_get()
             f = filename
             for dir in dirlist:
                 f = os.path.join(dir, filename)
                 if os.path.exists(f):
                     break
-            if sys.version[0] == '2':
-                with open(f) as fd:
-                    self.result = parser.parse_file(fd, None)
-            else:
-                with open(f, encoding='utf-8') as fd:
-                    self.result = parser.parse_file(fd, None)
+            self.result = parser.parse_filename(f, None)
             self._initialized = True
 
     def __repr__(self):
@@ -430,10 +432,11 @@ class ParseError(Exception):
 class VPPAPIParser(object):
     tokens = VPPAPILexer.tokens
 
-    def __init__(self, filename, logger):
+    def __init__(self, filename, logger, revision=None):
         self.filename = filename
         self.logger = logger
         self.fields = []
+        self.revision = revision
 
     def _parse_error(self, msg, coord):
         raise ParseError("%s: %s" % (coord, msg))
@@ -478,7 +481,7 @@ class VPPAPIParser(object):
 
     def p_import(self, p):
         '''import : IMPORT STRING_LITERAL ';' '''
-        p[0] = Import(p[2])
+        p[0] = Import(p[2], revision=self.revision)
 
     def p_service(self, p):
         '''service : SERVICE '{' service_statements '}' ';' '''
@@ -508,6 +511,10 @@ class VPPAPIParser(object):
             p[0] = Service(p[2], p[5], stream=True)
         else:
             p[0] = Service(p[2], p[4])
+
+    def p_service_statement2(self, p):
+        '''service_statement : RPC ID RETURNS ID STREAM ID ';' '''
+        p[0] = Service(p[2], p[4], stream_message=p[6], stream=True)
 
     def p_event_list(self, p):
         '''event_list : events
@@ -731,23 +738,49 @@ class VPPAPIParser(object):
 
 class VPPAPI(object):
 
-    def __init__(self, debug=False, filename='', logger=None):
+    def __init__(self, debug=False, filename='', logger=None, revision=None):
         self.lexer = lex.lex(module=VPPAPILexer(filename), debug=debug)
-        self.parser = yacc.yacc(module=VPPAPIParser(filename, logger),
+        self.parser = yacc.yacc(module=VPPAPIParser(filename, logger,
+                                                    revision=revision),
                                 write_tables=False, debug=debug)
         self.logger = logger
+        self.revision = revision
+        self.filename = filename
 
     def parse_string(self, code, debug=0, lineno=1):
         self.lexer.lineno = lineno
         return self.parser.parse(code, lexer=self.lexer, debug=debug)
 
-    def parse_file(self, fd, debug=0):
+    def parse_fd(self, fd, debug=0):
         data = fd.read()
         return self.parse_string(data, debug=debug)
 
-    def autoreply_block(self, name):
+    def parse_filename(self, filename, debug=0):
+        if self.revision:
+            git_show = f'git show  {self.revision}:{filename}'
+            proc = Popen(git_show.split(), stdout=PIPE, encoding='utf-8')
+            try:
+                data, errs = proc.communicate()
+                if proc.returncode != 0:
+                    print(f'File not found: {self.revision}:{filename}', file=sys.stderr)
+                    sys.exit(2)
+                return self.parse_string(data, debug=debug)
+            except Exception as e:
+                sys.exit(3)
+        else:
+            try:
+                with open(filename, encoding='utf-8') as fd:
+                    return self.parse_fd(fd, None)
+            except FileNotFoundError:
+                print(f'File not found: {filename}', file=sys.stderr)
+                sys.exit(2)
+
+    def autoreply_block(self, name, parent):
         block = [Field('u32', 'context'),
                  Field('i32', 'retval')]
+        # inherhit the parent's options
+        for k, v in parent.options.items():
+            block.append(Option(k, v))
         return Define(name + '_reply', [], block)
 
     def process(self, objs):
@@ -767,7 +800,7 @@ class VPPAPI(object):
             if isinstance(o, Define):
                 s[tname].append(o)
                 if o.autoreply:
-                    s[tname].append(self.autoreply_block(o.name))
+                    s[tname].append(self.autoreply_block(o.name, o))
             elif isinstance(o, Option):
                 s[tname][o.option] = o.value
             elif type(o) is list:
@@ -925,9 +958,7 @@ def main():
     cliparser.add_argument('--pluginpath', default=""),
     cliparser.add_argument('--includedir', action='append'),
     cliparser.add_argument('--outputdir', action='store'),
-    cliparser.add_argument('--input',
-                           type=argparse.FileType('r', encoding='UTF-8'),
-                           default=sys.stdin)
+    cliparser.add_argument('--input')
     cliparser.add_argument('--output', nargs='?',
                            type=argparse.FileType('w', encoding='UTF-8'),
                            default=sys.stdout)
@@ -935,6 +966,8 @@ def main():
     cliparser.add_argument('output_module', nargs='?', default='C')
     cliparser.add_argument('--debug', action='store_true')
     cliparser.add_argument('--show-name', nargs=1)
+    cliparser.add_argument('--git-revision',
+                           help="Git revision to use for opening files")
     args = cliparser.parse_args()
 
     dirlist_add(args.includedir)
@@ -944,8 +977,8 @@ def main():
     # Filename
     if args.show_name:
         filename = args.show_name[0]
-    elif args.input != sys.stdin:
-        filename = args.input.name
+    elif args.input:
+        filename = args.input
     else:
         filename = ''
 
@@ -954,8 +987,17 @@ def main():
     else:
         logging.basicConfig()
 
-    parser = VPPAPI(debug=args.debug, filename=filename, logger=log)
-    parsed_objects = parser.parse_file(args.input, log)
+    parser = VPPAPI(debug=args.debug, filename=filename, logger=log,
+                    revision=args.git_revision)
+
+    try:
+        if not args.input:
+            parsed_objects = parser.parse_fd(sys.stdin, log)
+        else:
+            parsed_objects = parser.parse_filename(args.input, log)
+    except ParseError as e:
+        print('Parse error: ', e, file=sys.stderr)
+        sys.exit(1)
 
     # Build a list of objects. Hash of lists.
     result = []

@@ -214,6 +214,80 @@ class TestIPv4(VppTestCase):
             self.verify_capture(i, pkts)
 
 
+class TestIPv4RouteLookup(VppTestCase):
+    """ IPv4 Route Lookup Test Case """
+    routes = []
+
+    def route_lookup(self, prefix, exact):
+        return self.vapi.api(self.vapi.papi.ip_route_lookup,
+                             {
+                                 'table_id': 0,
+                                 'exact': exact,
+                                 'prefix': prefix,
+                             })
+
+    @classmethod
+    def setUpClass(cls):
+        super(TestIPv4RouteLookup, cls).setUpClass()
+
+    @classmethod
+    def tearDownClass(cls):
+        super(TestIPv4RouteLookup, cls).tearDownClass()
+
+    def setUp(self):
+        super(TestIPv4RouteLookup, self).setUp()
+
+        drop_nh = VppRoutePath("127.0.0.1", 0xffffffff,
+                               type=FibPathType.FIB_PATH_TYPE_DROP)
+
+        # Add 3 routes
+        r = VppIpRoute(self, "1.1.0.0", 16, [drop_nh])
+        r.add_vpp_config()
+        self.routes.append(r)
+
+        r = VppIpRoute(self, "1.1.1.0", 24, [drop_nh])
+        r.add_vpp_config()
+        self.routes.append(r)
+
+        r = VppIpRoute(self, "1.1.1.1", 32, [drop_nh])
+        r.add_vpp_config()
+        self.routes.append(r)
+
+    def tearDown(self):
+        # Remove the routes we added
+        for r in self.routes:
+            r.remove_vpp_config()
+
+        super(TestIPv4RouteLookup, self).tearDown()
+
+    def test_exact_match(self):
+        # Verify we find the host route
+        prefix = "1.1.1.1/32"
+        result = self.route_lookup(prefix, True)
+        assert (prefix == str(result.route.prefix))
+
+        # Verify we find a middle prefix route
+        prefix = "1.1.1.0/24"
+        result = self.route_lookup(prefix, True)
+        assert (prefix == str(result.route.prefix))
+
+        # Verify we do not find an available LPM.
+        with self.vapi.assert_negative_api_retval():
+            self.route_lookup("1.1.1.2/32", True)
+
+    def test_longest_prefix_match(self):
+        # verify we find lpm
+        lpm_prefix = "1.1.1.0/24"
+        result = self.route_lookup("1.1.1.2/32", False)
+        assert (lpm_prefix == str(result.route.prefix))
+
+        # Verify we find the exact when not requested
+        result = self.route_lookup(lpm_prefix, False)
+        assert (lpm_prefix == str(result.route.prefix))
+
+        # Can't seem to delete the default route so no negative LPM test.
+
+
 class TestIPv4IfAddrRoute(VppTestCase):
     """ IPv4 Interface Addr Route Test Case """
 
@@ -336,6 +410,24 @@ class TestIPv4IfAddrRoute(VppTestCase):
         lo_if.config_ip4()
         fib4_dump = self.vapi.ip_route_dump(0)
         self.assertTrue(lo_if.is_ip4_entry_in_fib_dump(fib4_dump))
+
+    def test_ipv4_ifaddr_del(self):
+        """ Delete an interface address that does not exist """
+
+        loopbacks = self.create_loopback_interfaces(1)
+        lo = self.lo_interfaces[0]
+
+        lo.config_ip4()
+        lo.admin_up()
+
+        #
+        # try and remove pg0's subnet from lo
+        #
+        with self.vapi.assert_negative_api_retval():
+            self.vapi.sw_interface_add_del_address(
+                sw_if_index=lo.sw_if_index,
+                prefix=self.pg0.local_ip4_prefix,
+                is_add=0)
 
 
 class TestICMPEcho(VppTestCase):

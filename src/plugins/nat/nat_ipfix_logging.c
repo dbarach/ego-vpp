@@ -48,7 +48,7 @@ typedef struct
   u8 nat_event;
   u32 src_ip;
   u32 nat_src_ip;
-  snat_protocol_t snat_proto;
+  nat_protocol_t nat_proto;
   u16 src_port;
   u16 nat_src_port;
   u32 vrf_id;
@@ -493,6 +493,7 @@ snat_ipfix_header_create (flow_report_main_t * frm,
   u32 stream_index;
   ip4_header_t *ip;
   udp_header_t *udp;
+  vlib_main_t *vm = vlib_get_main ();
   
   stream_index = clib_atomic_fetch_or(&silm->stream_index, 0);
   stream = &frm->streams[stream_index];
@@ -521,7 +522,7 @@ snat_ipfix_header_create (flow_report_main_t * frm,
 
   h->export_time = clib_host_to_net_u32 ((u32)
 					 (((f64) frm->unix_time_0) +
-					  (vlib_time_now (frm->vlib_main) -
+					  (vlib_time_now (vm) -
 					   frm->vlib_time_0)));
 
   sequence_number = clib_atomic_fetch_add (&stream->sequence_number, 1);
@@ -532,7 +533,7 @@ snat_ipfix_header_create (flow_report_main_t * frm,
 }
 
 static inline void
-snat_ipfix_send (flow_report_main_t * frm,
+snat_ipfix_send (u32 thread_index, flow_report_main_t * frm,
 		 vlib_frame_t * f, vlib_buffer_t * b0, u16 template_id)
 {
   ip4_ipfix_template_packet_t *tp;
@@ -540,7 +541,7 @@ snat_ipfix_send (flow_report_main_t * frm,
   ipfix_set_header_t *s = 0;
   ip4_header_t *ip;
   udp_header_t *udp;
-  vlib_main_t *vm = frm->vlib_main;
+  vlib_main_t *vm = vlib_mains[thread_index];
 
   tp = vlib_buffer_get_current (b0);
   ip = (ip4_header_t *) & tp->ip4;
@@ -573,7 +574,7 @@ snat_ipfix_send (flow_report_main_t * frm,
 
 static void
 snat_ipfix_logging_nat44_ses (u32 thread_index, u8 nat_event, u32 src_ip,
-                              u32 nat_src_ip, snat_protocol_t snat_proto,
+                              u32 nat_src_ip, nat_protocol_t nat_proto,
                               u16 src_port, u16 nat_src_port, u32 vrf_id,
                               int do_flush)
 {
@@ -584,12 +585,12 @@ snat_ipfix_logging_nat44_ses (u32 thread_index, u8 nat_event, u32 src_ip,
   vlib_buffer_t *b0 = 0;
   u32 bi0 = ~0;
   u32 offset;
-  vlib_main_t *vm = frm->vlib_main;
+  vlib_main_t *vm = vlib_mains[thread_index];
   u64 now;
-  u8 proto = ~0;
+  u8 proto;
   u16 template_id;
 
-  proto = snat_proto_to_ip_proto (snat_proto);
+  proto = nat_proto_to_ip_proto (nat_proto);
 
   now = (u64) ((vlib_time_now (vm) - silm->vlib_time_0) * 1e3);
   now += silm->milisecond_time_0;
@@ -667,7 +668,7 @@ snat_ipfix_logging_nat44_ses (u32 thread_index, u8 nat_event, u32 src_ip,
       template_id = clib_atomic_fetch_or (
         &silm->nat44_session_template_id,
         0);
-      snat_ipfix_send (frm, f, b0, template_id);
+      snat_ipfix_send (thread_index, frm, f, b0, template_id);
       sitd->nat44_session_frame = 0;
       sitd->nat44_session_buffer = 0;
       offset = 0;
@@ -685,7 +686,7 @@ snat_ipfix_logging_addr_exhausted (u32 thread_index, u32 pool_id, int do_flush)
   vlib_buffer_t *b0 = 0;
   u32 bi0 = ~0;
   u32 offset;
-  vlib_main_t *vm = frm->vlib_main;
+  vlib_main_t *vm = vlib_mains[thread_index];
   u64 now;
   u8 nat_event = NAT_ADDRESSES_EXHAUTED;
   u16 template_id;
@@ -751,7 +752,7 @@ snat_ipfix_logging_addr_exhausted (u32 thread_index, u32 pool_id, int do_flush)
       template_id = clib_atomic_fetch_or (
           &silm->addr_exhausted_template_id,
           0);
-      snat_ipfix_send (frm, f, b0, template_id);
+      snat_ipfix_send (thread_index, frm, f, b0, template_id);
       sitd->addr_exhausted_frame = 0;
       sitd->addr_exhausted_buffer = 0;
       offset = 0;
@@ -770,7 +771,7 @@ snat_ipfix_logging_max_entries_per_usr (u32 thread_index,
   vlib_buffer_t *b0 = 0;
   u32 bi0 = ~0;
   u32 offset;
-  vlib_main_t *vm = frm->vlib_main;
+  vlib_main_t *vm = vlib_mains[thread_index];
   u64 now;
   u8 nat_event = QUOTA_EXCEEDED;
   u32 quota_event = MAX_ENTRIES_PER_USER;
@@ -843,7 +844,7 @@ snat_ipfix_logging_max_entries_per_usr (u32 thread_index,
       template_id = clib_atomic_fetch_or (
           &silm->max_entries_per_user_template_id,
           0);
-      snat_ipfix_send (frm, f, b0, template_id);
+      snat_ipfix_send (thread_index, frm, f, b0, template_id);
       sitd->max_entries_per_user_frame = 0;
       sitd->max_entries_per_user_buffer = 0;
       offset = 0;
@@ -861,7 +862,7 @@ nat_ipfix_logging_max_ses (u32 thread_index, u32 limit, int do_flush)
   vlib_buffer_t *b0 = 0;
   u32 bi0 = ~0;
   u32 offset;
-  vlib_main_t *vm = frm->vlib_main;
+  vlib_main_t *vm = vlib_mains[thread_index];
   u64 now;
   u8 nat_event = QUOTA_EXCEEDED;
   u32 quota_event = MAX_SESSION_ENTRIES;
@@ -931,7 +932,7 @@ nat_ipfix_logging_max_ses (u32 thread_index, u32 limit, int do_flush)
       template_id = clib_atomic_fetch_or (
         &silm->max_sessions_template_id,
         0);
-      snat_ipfix_send (frm, f, b0, template_id);
+      snat_ipfix_send (thread_index, frm, f, b0, template_id);
       sitd->max_sessions_frame = 0;
       sitd->max_sessions_buffer = 0;
       offset = 0;
@@ -949,7 +950,7 @@ nat_ipfix_logging_max_bib (u32 thread_index, u32 limit, int do_flush)
   vlib_buffer_t *b0 = 0;
   u32 bi0 = ~0;
   u32 offset;
-  vlib_main_t *vm = frm->vlib_main;
+  vlib_main_t *vm = vlib_mains[thread_index];
   u64 now;
   u8 nat_event = QUOTA_EXCEEDED;
   u32 quota_event = MAX_BIB_ENTRIES;
@@ -1019,7 +1020,7 @@ nat_ipfix_logging_max_bib (u32 thread_index, u32 limit, int do_flush)
       template_id = clib_atomic_fetch_or (
         &silm->max_bibs_template_id,
         0);
-      snat_ipfix_send (frm, f, b0, template_id);
+      snat_ipfix_send (thread_index, frm, f, b0, template_id);
       sitd->max_bibs_frame = 0;
       sitd->max_bibs_buffer = 0;
       offset = 0;
@@ -1040,7 +1041,7 @@ nat_ipfix_logging_nat64_bibe (u32 thread_index, u8 nat_event,
   vlib_buffer_t *b0 = 0;
   u32 bi0 = ~0;
   u32 offset;
-  vlib_main_t *vm = frm->vlib_main;
+  vlib_main_t *vm = vlib_mains[thread_index];
   u64 now;
   u16 template_id;
 
@@ -1120,7 +1121,7 @@ nat_ipfix_logging_nat64_bibe (u32 thread_index, u8 nat_event,
       template_id = clib_atomic_fetch_or (
         &silm->nat64_bib_template_id,
         0);
-      snat_ipfix_send (frm, f, b0, template_id);
+      snat_ipfix_send (thread_index, frm, f, b0, template_id);
       sitd->nat64_bib_frame = 0;
       sitd->nat64_bib_buffer = 0;
       offset = 0;
@@ -1143,7 +1144,7 @@ nat_ipfix_logging_nat64_ses (u32 thread_index, u8 nat_event,
   vlib_buffer_t *b0 = 0;
   u32 bi0 = ~0;
   u32 offset;
-  vlib_main_t *vm = frm->vlib_main;
+  vlib_main_t *vm = vlib_mains[thread_index];
   u64 now;
   u16 template_id;
 
@@ -1235,7 +1236,7 @@ nat_ipfix_logging_nat64_ses (u32 thread_index, u8 nat_event,
       template_id = clib_atomic_fetch_or (
         &silm->nat64_ses_template_id,
         0);
-      snat_ipfix_send (frm, f, b0, template_id);
+      snat_ipfix_send (thread_index, frm, f, b0, template_id);
       sitd->nat64_ses_frame = 0;
       sitd->nat64_ses_buffer = 0;
       offset = 0;
@@ -1299,7 +1300,7 @@ snat_ipfix_flush_from_main (void)
  * @param thread_index thread index
  * @param src_ip       source IPv4 address
  * @param nat_src_ip   transaltes source IPv4 address
- * @param snat_proto   NAT transport protocol
+ * @param nat_proto   NAT transport protocol
  * @param src_port     source port
  * @param nat_src_port translated source port
  * @param vrf_id       VRF ID
@@ -1308,14 +1309,14 @@ void
 snat_ipfix_logging_nat44_ses_create (u32 thread_index,
                                      u32 src_ip,
 				     u32 nat_src_ip,
-				     snat_protocol_t snat_proto,
+				     nat_protocol_t nat_proto,
 				     u16 src_port,
 				     u16 nat_src_port, u32 vrf_id)
 {
   skip_if_disabled ();
 
   snat_ipfix_logging_nat44_ses (thread_index, NAT44_SESSION_CREATE, src_ip,
-                                nat_src_ip, snat_proto, src_port, nat_src_port,
+                                nat_src_ip, nat_proto, src_port, nat_src_port,
 				vrf_id, 0);
 }
 
@@ -1325,7 +1326,7 @@ snat_ipfix_logging_nat44_ses_create (u32 thread_index,
  * @param thread_index thread index
  * @param src_ip       source IPv4 address
  * @param nat_src_ip   transaltes source IPv4 address
- * @param snat_proto   NAT transport protocol
+ * @param nat_proto   NAT transport protocol
  * @param src_port     source port
  * @param nat_src_port translated source port
  * @param vrf_id       VRF ID
@@ -1334,14 +1335,14 @@ void
 snat_ipfix_logging_nat44_ses_delete (u32 thread_index,
                                      u32 src_ip,
 				     u32 nat_src_ip,
-				     snat_protocol_t snat_proto,
+				     nat_protocol_t nat_proto,
 				     u16 src_port,
 				     u16 nat_src_port, u32 vrf_id)
 {
   skip_if_disabled ();
 
   snat_ipfix_logging_nat44_ses (thread_index, NAT44_SESSION_DELETE, src_ip,
-                                nat_src_ip, snat_proto, src_port, nat_src_port,
+                                nat_src_ip, nat_proto, src_port, nat_src_port,
 				vrf_id, 0);
 }
 

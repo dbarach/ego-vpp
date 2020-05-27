@@ -143,13 +143,11 @@ tcp_update_rcv_wnd (tcp_connection_t * tc)
       wnd = available_space;
     }
 
-  /* Make sure we have a multiple of rcv_wscale */
+  /* Make sure we have a multiple of 1 << rcv_wscale. We round up to
+   * avoid advertising a window less than mss which could happen if
+   * 1 << rcv_wscale < mss */
   if (wnd && tc->rcv_wscale)
-    {
-      wnd &= ~((1 << tc->rcv_wscale) - 1);
-      if (wnd == 0)
-	wnd = 1 << tc->rcv_wscale;
-    }
+    wnd = round_pow2 (wnd, 1 << tc->rcv_wscale);
 
   tc->rcv_wnd = clib_min (wnd, TCP_WND_MAX << tc->rcv_wscale);
 }
@@ -671,7 +669,10 @@ tcp_send_reset_w_pkt (tcp_connection_t * tc, vlib_buffer_t * pkt,
   fib_protocol_t fib_proto;
 
   if (PREDICT_FALSE (!vlib_buffer_alloc (vm, &bi, 1)))
-    return;
+    {
+      tcp_worker_stats_inc (wrk, no_buffer, 1);
+      return;
+    }
 
   b = vlib_get_buffer (vm, bi);
   sw_if_index = vnet_buffer (pkt)->sw_if_index[VLIB_RX];
@@ -752,7 +753,10 @@ tcp_send_reset (tcp_connection_t * tc)
   u8 flags;
 
   if (PREDICT_FALSE (!vlib_buffer_alloc (vm, &bi, 1)))
-    return;
+    {
+      tcp_worker_stats_inc (wrk, no_buffer, 1);
+      return;
+    }
   b = vlib_get_buffer (vm, bi);
   tcp_init_buffer (vm, b);
 
@@ -814,6 +818,7 @@ tcp_send_syn (tcp_connection_t * tc)
   if (PREDICT_FALSE (!vlib_buffer_alloc (vm, &bi, 1)))
     {
       tcp_timer_update (&wrk->timer_wheel, tc, TCP_TIMER_RETRANSMIT_SYN, 1);
+      tcp_worker_stats_inc (wrk, no_buffer, 1);
       return;
     }
 
@@ -844,6 +849,7 @@ tcp_send_synack (tcp_connection_t * tc)
   if (PREDICT_FALSE (!vlib_buffer_alloc (vm, &bi, 1)))
     {
       tcp_timer_update (&wrk->timer_wheel, tc, TCP_TIMER_RETRANSMIT, 1);
+      tcp_worker_stats_inc (wrk, no_buffer, 1);
       return;
     }
 
@@ -880,6 +886,7 @@ tcp_send_fin (tcp_connection_t * tc)
       else
 	/* Make sure retransmit retries a fin not data */
 	tc->flags |= TCP_CONN_FINSNT;
+      tcp_worker_stats_inc (wrk, no_buffer, 1);
       return;
     }
 
@@ -1020,6 +1027,7 @@ tcp_send_ack (tcp_connection_t * tc)
   if (PREDICT_FALSE (!vlib_buffer_alloc (vm, &bi, 1)))
     {
       tcp_update_rcv_wnd (tc);
+      tcp_worker_stats_inc (wrk, no_buffer, 1);
       return;
     }
   b = vlib_get_buffer (vm, bi);
@@ -1129,7 +1137,10 @@ tcp_prepare_segment (tcp_worker_ctx_t * wrk, tcp_connection_t * tc,
   if (PREDICT_TRUE (seg_size <= bytes_per_buffer))
     {
       if (PREDICT_FALSE (!vlib_buffer_alloc (vm, &bi, 1)))
-	return 0;
+	{
+	  tcp_worker_stats_inc (wrk, no_buffer, 1);
+	  return 0;
+	}
       *b = vlib_get_buffer (vm, bi);
       data = tcp_init_buffer (vm, *b);
       n_bytes = session_tx_fifo_peek_bytes (&tc->connection, data, offset,
@@ -1156,6 +1167,7 @@ tcp_prepare_segment (tcp_worker_ctx_t * wrk, tcp_connection_t * tc,
 	{
 	  if (n_bufs)
 	    vlib_buffer_free (vm, wrk->tx_buffers, n_bufs);
+	  tcp_worker_stats_inc (wrk, no_buffer, 1);
 	  return 0;
 	}
 
@@ -1417,6 +1429,7 @@ tcp_timer_retransmit_handler (tcp_connection_t * tc)
       if (PREDICT_FALSE (!vlib_buffer_alloc (vm, &bi, 1)))
 	{
 	  tcp_timer_update (&wrk->timer_wheel, tc, TCP_TIMER_RETRANSMIT, 1);
+	  tcp_worker_stats_inc (wrk, no_buffer, 1);
 	  return;
 	}
 
@@ -1480,6 +1493,7 @@ tcp_timer_retransmit_syn_handler (tcp_connection_t * tc)
   if (PREDICT_FALSE (!vlib_buffer_alloc (vm, &bi, 1)))
     {
       tcp_timer_update (&wrk->timer_wheel, tc, TCP_TIMER_RETRANSMIT_SYN, 1);
+      tcp_worker_stats_inc (wrk, no_buffer, 1);
       return;
     }
 
@@ -1547,6 +1561,7 @@ tcp_timer_persist_handler (tcp_connection_t * tc)
   if (PREDICT_FALSE (!vlib_buffer_alloc (vm, &bi, 1)))
     {
       tcp_persist_timer_set (&wrk->timer_wheel, tc);
+      tcp_worker_stats_inc (wrk, no_buffer, 1);
       return;
     }
 

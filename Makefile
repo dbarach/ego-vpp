@@ -65,8 +65,7 @@ DEB_DEPENDS  = curl build-essential autoconf automake ccache
 DEB_DEPENDS += debhelper dkms git libtool libapr1-dev dh-systemd
 DEB_DEPENDS += libconfuse-dev git-review exuberant-ctags cscope pkg-config
 DEB_DEPENDS += lcov chrpath autoconf indent clang-format libnuma-dev
-DEB_DEPENDS += python-all python3-all python3-setuptools
-DEB_DEPENDS += python-virtualenv python-pip check
+DEB_DEPENDS += python3-all python3-setuptools check
 DEB_DEPENDS += libboost-all-dev libffi-dev python3-ply libmbedtls-dev
 DEB_DEPENDS += cmake ninja-build uuid-dev python3-jsonschema python3-yaml
 DEB_DEPENDS += python3-venv  # ensurepip
@@ -75,20 +74,21 @@ DEB_DEPENDS += python3-dev   # needed for python3 -m pip install psutil
 
 LIBFFI=libffi6 # works on all but 20.04
 
-ifeq ($(OS_VERSION_ID),16.04)
-	DEB_DEPENDS += python-dev
-	DEB_DEPENDS += libssl-dev
-else ifeq ($(OS_VERSION_ID),18.04)
-	DEB_DEPENDS += python-dev
+ifeq ($(OS_VERSION_ID),18.04)
+	DEB_DEPENDS += python-dev python-all python-pip python-virtualenv
 	DEB_DEPENDS += libssl-dev
 	DEB_DEPENDS += clang-9
 else ifeq ($(OS_VERSION_ID),20.04)
+	DEB_DEPENDS += python3-virtualenv
 	LIBFFI=libffi7
 else ifeq ($(OS_ID)-$(OS_VERSION_ID),debian-8)
 	DEB_DEPENDS += libssl-dev
+	DEB_DEPENDS += python-dev python-all python-pip python-virtualenv
 	APT_ARGS = -t jessie-backports
 else ifeq ($(OS_ID)-$(OS_VERSION_ID),debian-9)
 	DEB_DEPENDS += libssl1.0-dev
+	DEB_DEPENDS += python-all python-pip
+	DEB_DEPENDS += python-dev python-all python-pip python-virtualenv
 else
 	DEB_DEPENDS += libssl-dev
 endif
@@ -223,9 +223,11 @@ help:
 	@echo " ctags                - (re)generate ctags database"
 	@echo " gtags                - (re)generate gtags database"
 	@echo " cscope               - (re)generate cscope database"
+	@echo " compdb               - (re)generate compile_commands.json"
 	@echo " checkstyle           - check coding style"
 	@echo " checkstyle-commit    - check commit message format"
 	@echo " checkstyle-test      - check test framework coding style"
+	@echo " checkstyle-api       - check api for incompatible changes"
 	@echo " fixstyle             - fix coding style"
 	@echo " doxygen              - (re)generate documentation"
 	@echo " bootstrap-doxygen    - setup Doxygen dependencies"
@@ -654,6 +656,10 @@ gtags: ctags
 cscope: cscope.files
 	@cscope -b -q -v
 
+.PHONY: compdb
+compdb:
+	@ninja -C build-root/build-vpp_debug-native/vpp -t compdb > compile_commands.json
+
 .PHONY: checkstyle
 checkstyle: checkfeaturelist
 	@build-root/scripts/checkstyle.sh
@@ -671,6 +677,10 @@ checkstyle-all: checkstyle-commit checkstyle checkstyle-test
 .PHONY: fixstyle
 fixstyle:
 	@build-root/scripts/checkstyle.sh --fix
+
+.PHONY: checkstyle-api
+checkstyle-api:
+	@extras/scripts/crcchecker.py --check-patch
 
 # necessary because Bug 1696324 - Update to python3.6 breaks PyYAML dependencies
 # Status:	CLOSED CANTFIX

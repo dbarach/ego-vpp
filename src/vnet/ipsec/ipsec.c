@@ -135,6 +135,50 @@ ipsec_add_feature (const char *arc_name,
   *out_feature_index = vnet_get_feature_index (arc, node_name);
 }
 
+void
+ipsec_unregister_udp_port (u16 port)
+{
+  ipsec_main_t *im = &ipsec_main;
+  u32 n_regs;
+  uword *p;
+
+  p = hash_get (im->udp_port_registrations, port);
+
+  ASSERT (p);
+
+  n_regs = p[0];
+
+  if (0 == --n_regs)
+    {
+      udp_unregister_dst_port (vlib_get_main (), port, 1);
+      hash_unset (im->udp_port_registrations, port);
+    }
+  else
+    {
+      hash_unset (im->udp_port_registrations, port);
+      hash_set (im->udp_port_registrations, port, n_regs);
+    }
+}
+
+void
+ipsec_register_udp_port (u16 port)
+{
+  ipsec_main_t *im = &ipsec_main;
+  u32 n_regs;
+  uword *p;
+
+  p = hash_get (im->udp_port_registrations, port);
+
+  n_regs = (p ? p[0] : 0);
+
+  if (0 == n_regs++)
+    udp_register_dst_port (vlib_get_main (), port,
+			   ipsec4_tun_input_node.index, 1);
+
+  hash_unset (im->udp_port_registrations, port);
+  hash_set (im->udp_port_registrations, port, n_regs);
+}
+
 u32
 ipsec_register_ah_backend (vlib_main_t * vm, ipsec_main_t * im,
 			   const char *name,
@@ -198,14 +242,10 @@ ipsec_register_esp_backend (vlib_main_t * vm, ipsec_main_t * im,
 		  &b->esp6_decrypt_tun_node_index,
 		  &b->esp6_decrypt_tun_next_index);
 
-  ipsec_add_feature ("ip4-output", esp4_encrypt_node_tun_name,
-		     &b->esp44_encrypt_tun_feature_index);
-  ipsec_add_feature ("ip4-output", esp6_encrypt_node_tun_name,
-		     &b->esp46_encrypt_tun_feature_index);
-  ipsec_add_feature ("ip6-output", esp6_encrypt_node_tun_name,
-		     &b->esp66_encrypt_tun_feature_index);
-  ipsec_add_feature ("ip6-output", esp4_encrypt_node_tun_name,
-		     &b->esp64_encrypt_tun_feature_index);
+  b->esp6_encrypt_tun_node_index =
+    vlib_get_node_by_name (vm, (u8 *) esp6_encrypt_node_tun_name)->index;
+  b->esp4_encrypt_tun_node_index =
+    vlib_get_node_by_name (vm, (u8 *) esp4_encrypt_node_tun_name)->index;
 
   b->check_support_cb = esp_check_support_cb;
   b->add_del_sa_sess_cb = esp_add_del_sa_sess_cb;
@@ -284,11 +324,8 @@ ipsec_select_esp_backend (ipsec_main_t * im, u32 backend_idx)
   im->esp4_decrypt_tun_next_index = b->esp4_decrypt_tun_next_index;
   im->esp6_decrypt_tun_node_index = b->esp6_decrypt_tun_node_index;
   im->esp6_decrypt_tun_next_index = b->esp6_decrypt_tun_next_index;
-
-  im->esp44_encrypt_tun_feature_index = b->esp44_encrypt_tun_feature_index;
-  im->esp64_encrypt_tun_feature_index = b->esp64_encrypt_tun_feature_index;
-  im->esp46_encrypt_tun_feature_index = b->esp46_encrypt_tun_feature_index;
-  im->esp66_encrypt_tun_feature_index = b->esp66_encrypt_tun_feature_index;
+  im->esp4_encrypt_tun_node_index = b->esp4_encrypt_tun_node_index;
+  im->esp6_encrypt_tun_node_index = b->esp6_encrypt_tun_node_index;
 
   if (b->enable_disable_cb)
     {

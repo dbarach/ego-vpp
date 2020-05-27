@@ -22,13 +22,13 @@
 #include <nat/nat_det.h>
 
 uword
-unformat_snat_protocol (unformat_input_t * input, va_list * args)
+unformat_nat_protocol (unformat_input_t * input, va_list * args)
 {
   u32 *r = va_arg (*args, u32 *);
 
   if (0);
-#define _(N, i, n, s) else if (unformat (input, s)) *r = SNAT_PROTOCOL_##N;
-  foreach_snat_protocol
+#define _(N, i, n, s) else if (unformat (input, s)) *r = NAT_PROTOCOL_##N;
+  foreach_nat_protocol
 #undef _
     else
     return 0;
@@ -36,15 +36,15 @@ unformat_snat_protocol (unformat_input_t * input, va_list * args)
 }
 
 u8 *
-format_snat_protocol (u8 * s, va_list * args)
+format_nat_protocol (u8 * s, va_list * args)
 {
   u32 i = va_arg (*args, u32);
   u8 *t = 0;
 
   switch (i)
     {
-#define _(N, j, n, str) case SNAT_PROTOCOL_##N: t = (u8 *) str; break;
-      foreach_snat_protocol
+#define _(N, j, n, str) case NAT_PROTOCOL_##N: t = (u8 *) str; break;
+      foreach_nat_protocol
 #undef _
     default:
       s = format (s, "unknown");
@@ -80,7 +80,7 @@ format_snat_key (u8 * s, va_list * args)
 
   s = format (s, "%U proto %U port %d fib %d",
 	      format_ip4_address, &key->addr,
-	      format_snat_protocol, key->protocol,
+	      format_nat_protocol, key->protocol,
 	      clib_net_to_host_u16 (key->port), key->fib_index);
   return s;
 }
@@ -92,7 +92,7 @@ format_static_mapping_key (u8 * s, va_list * args)
 
   s = format (s, "%U proto %U port %d fib %d",
 	      format_ip4_address, &key->addr,
-	      format_snat_protocol, key->protocol, key->port, key->fib_index);
+	      format_nat_protocol, key->protocol, key->port, key->fib_index);
   return s;
 }
 
@@ -117,7 +117,7 @@ format_snat_session_state (u8 * s, va_list * args)
 u8 *
 format_snat_session (u8 * s, va_list * args)
 {
-  snat_main_per_thread_data_t *sm =
+  snat_main_per_thread_data_t *tsm =
     va_arg (*args, snat_main_per_thread_data_t *);
   snat_session_t *sess = va_arg (*args, snat_session_t *);
 
@@ -153,7 +153,7 @@ format_snat_session (u8 * s, va_list * args)
 			clib_net_to_host_u16 (sess->ext_host_port));
 	}
     }
-  s = format (s, "       index %llu\n", sess - sm->sessions);
+  s = format (s, "       index %llu\n", sess - tsm->sessions);
   s = format (s, "       last heard %.2f\n", sess->last_heard);
   s = format (s, "       total pkts %d, total bytes %lld\n",
 	      sess->total_pkts, sess->total_bytes);
@@ -174,8 +174,6 @@ format_snat_session (u8 * s, va_list * args)
 u8 *
 format_snat_user (u8 * s, va_list * args)
 {
-
-  snat_main_t *sm = &snat_main;
   snat_main_per_thread_data_t *tsm =
     va_arg (*args, snat_main_per_thread_data_t *);
   snat_user_t *u = va_arg (*args, snat_user_t *);
@@ -204,91 +202,13 @@ format_snat_user (u8 * s, va_list * args)
 	{
 	  sess = pool_elt_at_index (tsm->sessions, session_index);
 
-	  s = format (s, "  %U\n", format_snat_session, sm, sess);
+	  s = format (s, "  %U\n", format_snat_session, tsm, sess);
 
 	  elt_index = elt->next;
 	  elt = pool_elt_at_index (tsm->list_pool, elt_index);
 	  session_index = elt->value;
 	}
     }
-
-  return s;
-}
-
-u8 *
-format_snat_user_v2 (u8 * s, va_list * args)
-{
-
-  snat_main_t *sm = &snat_main;
-  snat_main_per_thread_data_t *tsm =
-    va_arg (*args, snat_main_per_thread_data_t *);
-  snat_user_t *u = va_arg (*args, snat_user_t *);
-  u64 now = va_arg (*args, u64);
-
-  dlist_elt_t *head, *elt;
-  u32 elt_index, head_index;
-  u32 session_index;
-  snat_session_t *sess;
-
-  u32 udp_sessions = 0;
-  u32 tcp_sessions = 0;
-  u32 icmp_sessions = 0;
-
-  u32 timed_out = 0;
-  u32 transitory = 0;
-  u32 established = 0;
-
-  u64 sess_timeout_time;
-
-  if (u->nsessions || u->nstaticsessions)
-    {
-      head_index = u->sessions_per_user_list_head_index;
-      head = pool_elt_at_index (tsm->list_pool, head_index);
-
-      elt_index = head->next;
-      elt = pool_elt_at_index (tsm->list_pool, elt_index);
-      session_index = elt->value;
-
-      while (session_index != ~0)
-	{
-	  sess = pool_elt_at_index (tsm->sessions, session_index);
-
-	  sess_timeout_time = sess->last_heard +
-	    (f64) nat44_session_get_timeout (sm, sess);
-	  if (now >= sess_timeout_time)
-	    timed_out++;
-
-	  switch (sess->in2out.protocol)
-	    {
-	    case SNAT_PROTOCOL_ICMP:
-	      icmp_sessions++;
-	      break;
-	    case SNAT_PROTOCOL_TCP:
-	      tcp_sessions++;
-	      if (sess->state)
-		transitory++;
-	      else
-		established++;
-	      break;
-	    case SNAT_PROTOCOL_UDP:
-	    default:
-	      udp_sessions++;
-	      break;
-
-	    }
-
-	  elt_index = elt->next;
-	  elt = pool_elt_at_index (tsm->list_pool, elt_index);
-	  session_index = elt->value;
-	}
-    }
-
-  s = format (s, "%U: %d dynamic translations, %d static translations\n",
-	      format_ip4_address, &u->addr, u->nsessions, u->nstaticsessions);
-  s = format (s, "\t%u timed out, %u transitory, %u established\n",
-	      timed_out, transitory, established);
-  s = format (s, "\t%u tcp sessions, %u udp sessions, %u icmp sessions\n",
-	      tcp_sessions, udp_sessions, icmp_sessions);
 
   return s;
 }
@@ -306,7 +226,7 @@ format_snat_static_mapping (u8 * s, va_list * args)
 		    format_ip4_address, &m->local_addr);
       else
 	s = format (s, "identity mapping %U %U:%d",
-		    format_snat_protocol, m->proto,
+		    format_nat_protocol, m->proto,
 		    format_ip4_address, &m->local_addr, m->local_port);
 
       /* *INDENT-OFF* */
@@ -332,7 +252,7 @@ format_snat_static_mapping (u8 * s, va_list * args)
       if (is_lb_static_mapping (m))
 	{
 	  s = format (s, "%U external %U:%d %s %s",
-		      format_snat_protocol, m->proto,
+		      format_nat_protocol, m->proto,
 		      format_ip4_address, &m->external_addr, m->external_port,
 		      m->twice_nat == TWICE_NAT ? "twice-nat" :
 		      m->twice_nat == TWICE_NAT_SELF ? "self-twice-nat" : "",
@@ -350,7 +270,7 @@ format_snat_static_mapping (u8 * s, va_list * args)
 	}
       else
 	s = format (s, "%U local %U:%d external %U:%d vrf %d %s %s",
-		    format_snat_protocol, m->proto,
+		    format_nat_protocol, m->proto,
 		    format_ip4_address, &m->local_addr, m->local_port,
 		    format_ip4_address, &m->external_addr, m->external_port,
 		    m->vrf_id,
@@ -373,7 +293,7 @@ format_snat_static_map_to_resolve (u8 * s, va_list * args)
 		format_vnet_sw_if_index_name, vnm, m->sw_if_index, m->vrf_id);
   else
     s = format (s, "%U local %U:%d external %U:%d vrf %d",
-		format_snat_protocol, m->proto,
+		format_nat_protocol, m->proto,
 		format_ip4_address, &m->l_addr, m->l_port,
 		format_vnet_sw_if_index_name, vnm, m->sw_if_index,
 		m->e_port, m->vrf_id);

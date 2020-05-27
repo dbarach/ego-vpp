@@ -243,8 +243,6 @@ dpdk_esp_encrypt_inline (vlib_main_t * vm,
 
 	      if (PREDICT_FALSE (res_idx == (u16) ~ 0))
 		{
-		  clib_warning ("unsupported SA by thread index %u",
-				thread_idx);
 		  if (is_ip6)
 		    vlib_node_increment_counter (vm,
 						 dpdk_esp6_encrypt_node.index,
@@ -263,7 +261,6 @@ dpdk_esp_encrypt_inline (vlib_main_t * vm,
 	      error = crypto_get_session (&session, sa_index0, res, cwm, 1);
 	      if (PREDICT_FALSE (error || !session))
 		{
-		  clib_warning ("failed to get crypto session");
 		  if (is_ip6)
 		    vlib_node_increment_counter (vm,
 						 dpdk_esp6_encrypt_node.index,
@@ -285,9 +282,6 @@ dpdk_esp_encrypt_inline (vlib_main_t * vm,
 
 	  if (PREDICT_FALSE (esp_seq_advance (sa0)))
 	    {
-	      clib_warning
-		("sequence number counter has cycled SPI %u (0x%08x)",
-		 sa0->spi, sa0->spi);
 	      if (is_ip6)
 		vlib_node_increment_counter (vm,
 					     dpdk_esp6_encrypt_node.index,
@@ -682,13 +676,6 @@ VLIB_REGISTER_NODE (dpdk_esp4_encrypt_tun_node) = {
       [ESP_ENCRYPT_NEXT_DROP] = "error-drop",
     }
 };
-
-VNET_FEATURE_INIT (dpdk_esp4_encrypt_tun_feat_node, static) =
-{
-  .arc_name = "ip4-output",
-  .node_name = "dpdk-esp4-encrypt-tun",
-  .runs_before = VNET_FEATURES ("adj-midchain-tx"),
-};
 /* *INDENT-ON* */
 
 VLIB_NODE_FN (dpdk_esp6_encrypt_tun_node) (vlib_main_t * vm,
@@ -711,13 +698,6 @@ VLIB_REGISTER_NODE (dpdk_esp6_encrypt_tun_node) = {
     {
       [ESP_ENCRYPT_NEXT_DROP] = "error-drop",
     }
-};
-
-VNET_FEATURE_INIT (dpdk_esp6_encrypt_tun_feat_node, static) =
-{
-  .arc_name = "ip6-output",
-  .node_name = "dpdk-esp6-encrypt-tun",
-  .runs_before = VNET_FEATURES ("adj-midchain-tx"),
 };
 /* *INDENT-ON* */
 

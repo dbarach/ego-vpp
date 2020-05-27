@@ -529,7 +529,7 @@ static inline u8
 vcl_session_is_cl (vcl_session_t * s)
 {
   if (s->session_type == VPPCOM_PROTO_UDP)
-    return 1;
+    return !(s->flags & VCL_SESSION_F_CONNECTED);
   return 0;
 }
 
@@ -546,6 +546,12 @@ vcl_session_is_closing (vcl_session_t * s)
 {
   return (s->session_state == STATE_VPP_CLOSING
 	  || s->session_state == STATE_DISCONNECT);
+}
+
+static inline u8
+vcl_session_is_closed (vcl_session_t * s)
+{
+  return (!s || (s->session_state == STATE_CLOSED));
 }
 
 static inline int

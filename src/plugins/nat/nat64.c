@@ -133,12 +133,12 @@ nat64_get_worker_out2in (vlib_buffer_t * b, ip4_header_t * ip)
   u16 port;
   u32 proto;
 
-  proto = ip_proto_to_snat_proto (ip->protocol);
+  proto = ip_proto_to_nat_proto (ip->protocol);
   udp = ip4_next_header (ip);
   port = udp->dst_port;
 
   /* unknown protocol */
-  if (PREDICT_FALSE (proto == ~0))
+  if (PREDICT_FALSE (proto == NAT_PROTOCOL_OTHER))
     {
       nat64_db_t *db;
       ip46_address_t daddr;
@@ -170,17 +170,17 @@ nat64_get_worker_out2in (vlib_buffer_t * b, ip4_header_t * ip)
 	{
 	  /* if error message, then it's not fragmented and we can access it */
 	  ip4_header_t *inner_ip = (ip4_header_t *) (echo + 1);
-	  proto = ip_proto_to_snat_proto (inner_ip->protocol);
+	  proto = ip_proto_to_nat_proto (inner_ip->protocol);
 	  void *l4_header = ip4_next_header (inner_ip);
 	  switch (proto)
 	    {
-	    case SNAT_PROTOCOL_ICMP:
+	    case NAT_PROTOCOL_ICMP:
 	      icmp = (icmp46_header_t *) l4_header;
 	      echo = (icmp_echo_header_t *) (icmp + 1);
 	      port = echo->identifier;
 	      break;
-	    case SNAT_PROTOCOL_UDP:
-	    case SNAT_PROTOCOL_TCP:
+	    case NAT_PROTOCOL_UDP:
+	    case NAT_PROTOCOL_TCP:
 	      port = ((tcp_udp_header_t *) l4_header)->src_port;
 	      break;
 	    default:
@@ -314,7 +314,7 @@ nat64_add_del_pool_addr (u32 thread_index,
       clib_memset (a->busy_##n##_port_refcounts, 0, sizeof(a->busy_##n##_port_refcounts)); \
       a->busy_##n##_ports = 0; \
       vec_validate_init_empty (a->busy_##n##_ports_per_thread, tm->n_vlib_mains - 1, 0);
-      foreach_snat_protocol
+      foreach_nat_protocol
 #undef _
     }
   else
@@ -413,6 +413,7 @@ nat64_add_interface_address (u32 sw_if_index, int is_add)
 int
 nat64_add_del_interface (u32 sw_if_index, u8 is_inside, u8 is_add)
 {
+  vlib_main_t *vm = vlib_get_main ();
   nat64_main_t *nm = &nat64_main;
   snat_interface_t *interface = 0, *i;
   snat_address_t *ap;
@@ -445,7 +446,7 @@ nat64_add_del_interface (u32 sw_if_index, u8 is_inside, u8 is_add)
 	interface->flags |= NAT_INTERFACE_FLAG_IS_OUTSIDE;
 
       nm->total_enabled_count++;
-      vlib_process_signal_event (nm->sm->vlib_main,
+      vlib_process_signal_event (vm,
 				 nm->nat64_expire_walk_node_index,
 				 NAT64_CLEANER_RESCHEDULE, 0);
 
@@ -523,7 +524,7 @@ nat64_interfaces_walk (nat64_interface_walk_fn_t fn, void *ctx)
 }
 
 int
-nat64_alloc_out_addr_and_port (u32 fib_index, snat_protocol_t proto,
+nat64_alloc_out_addr_and_port (u32 fib_index, nat_protocol_t proto,
 			       ip4_address_t * addr, u16 * port,
 			       u32 thread_index)
 {
@@ -559,7 +560,7 @@ nat64_free_out_addr_and_port (struct nat64_db_s *db, ip4_address_t * addr,
   int i;
   snat_address_t *a;
   u32 thread_index = db - nm->db;
-  snat_protocol_t proto = ip_proto_to_snat_proto (protocol);
+  nat_protocol_t proto = ip_proto_to_nat_proto (protocol);
   u16 port_host_byte_order = clib_net_to_host_u16 (port);
 
   for (i = 0; i < vec_len (nm->addr_pool); i++)
@@ -570,13 +571,13 @@ nat64_free_out_addr_and_port (struct nat64_db_s *db, ip4_address_t * addr,
       switch (proto)
 	{
 #define _(N, j, n, s) \
-        case SNAT_PROTOCOL_##N: \
+        case NAT_PROTOCOL_##N: \
           ASSERT (a->busy_##n##_port_refcounts[port_host_byte_order] >= 1); \
           --a->busy_##n##_port_refcounts[port_host_byte_order]; \
           a->busy_##n##_ports--; \
           a->busy_##n##_ports_per_thread[thread_index]--; \
           break;
-	  foreach_snat_protocol
+	  foreach_nat_protocol
 #undef _
 	default:
 	  nat_elog_notice ("unknown protocol");
@@ -662,7 +663,7 @@ nat64_add_del_static_bib_entry (ip6_address_t * in_addr,
   nat64_db_bib_entry_t *bibe;
   u32 fib_index = fib_table_find_or_create_and_lock (FIB_PROTOCOL_IP6, vrf_id,
 						     nat_fib_src_hi);
-  snat_protocol_t p = ip_proto_to_snat_proto (proto);
+  nat_protocol_t p = ip_proto_to_nat_proto (proto);
   ip46_address_t addr;
   int i;
   snat_address_t *a;
@@ -706,7 +707,7 @@ nat64_add_del_static_bib_entry (ip6_address_t * in_addr,
 	  switch (p)
 	    {
 #define _(N, j, n, s) \
-            case SNAT_PROTOCOL_##N: \
+            case NAT_PROTOCOL_##N: \
               if (a->busy_##n##_port_refcounts[out_port]) \
                 return VNET_API_ERROR_INVALID_VALUE; \
 	      ++a->busy_##n##_port_refcounts[out_port]; \
@@ -716,7 +717,7 @@ nat64_add_del_static_bib_entry (ip6_address_t * in_addr,
                   a->busy_##n##_ports_per_thread[thread_index]++; \
                 } \
               break;
-	      foreach_snat_protocol
+	      foreach_nat_protocol
 #undef _
 	    default:
 	      clib_memset (&addr, 0, sizeof (addr));
@@ -869,12 +870,12 @@ nat64_session_reset_timeout (nat64_db_st_entry_t * ste, vlib_main_t * vm)
   nat64_main_t *nm = &nat64_main;
   u32 now = (u32) vlib_time_now (vm);
 
-  switch (ip_proto_to_snat_proto (ste->proto))
+  switch (ip_proto_to_nat_proto (ste->proto))
     {
-    case SNAT_PROTOCOL_ICMP:
+    case NAT_PROTOCOL_ICMP:
       ste->expire = now + nm->icmp_timeout;
       return;
-    case SNAT_PROTOCOL_TCP:
+    case NAT_PROTOCOL_TCP:
       {
 	switch (ste->tcp_state)
 	  {
@@ -893,7 +894,7 @@ nat64_session_reset_timeout (nat64_db_st_entry_t * ste, vlib_main_t * vm)
 	    return;
 	  }
       }
-    case SNAT_PROTOCOL_UDP:
+    case NAT_PROTOCOL_UDP:
       ste->expire = now + nm->udp_timeout;
       return;
     default:

@@ -200,6 +200,7 @@ typedef enum
   APP_OPTIONS_RX_FIFO_SIZE,
   APP_OPTIONS_TX_FIFO_SIZE,
   APP_OPTIONS_PREALLOC_FIFO_PAIRS,
+  APP_OPTIONS_PREALLOC_FIFO_HDRS,
   APP_OPTIONS_NAMESPACE,
   APP_OPTIONS_NAMESPACE_SECRET,
   APP_OPTIONS_PROXY_TRANSPORT,
@@ -314,6 +315,7 @@ typedef struct session_listen_msg_
   ip46_address_t ip;
   u32 ckpair_index;
   u8 crypto_engine;
+  u8 flags;
 } __clib_packed session_listen_msg_t;
 
 STATIC_ASSERT (sizeof (session_listen_msg_t) <= SESSION_CTRL_MSG_MAX_SIZE,

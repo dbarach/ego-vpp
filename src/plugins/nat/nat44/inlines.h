@@ -31,6 +31,17 @@ nat44_maximum_sessions_exceeded (snat_main_t * sm, u32 thread_index)
   return 0;
 }
 
+static_always_inline u8
+nat44_ed_maximum_sessions_exceeded (snat_main_t * sm,
+				    u32 fib_index, u32 thread_index)
+{
+  u32 translations;
+  translations = pool_elts (sm->per_thread_data[thread_index].sessions);
+  if (vec_len (sm->max_translations_per_fib) <= fib_index)
+    fib_index = 0;
+  return translations >= sm->max_translations_per_fib[fib_index];
+}
+
 static_always_inline snat_session_t *
 nat44_session_reuse_old (snat_main_t * sm, snat_user_t * u,
 			 snat_session_t * s, u32 thread_index, f64 now)
@@ -48,47 +59,7 @@ nat44_session_reuse_old (snat_main_t * sm, snat_user_t * u,
   s->ext_host_port = 0;
   s->ext_host_nat_addr.as_u32 = 0;
   s->ext_host_nat_port = 0;
-  s->tcp_close_timestamp = 0;
-  s->ha_last_refreshed = now;
-  return s;
-}
-
-static_always_inline void
-nat44_global_lru_insert (snat_main_per_thread_data_t * tsm,
-			 snat_session_t * s, f64 now)
-{
-  dlist_elt_t *lru_list_elt;
-  pool_get (tsm->global_lru_pool, lru_list_elt);
-  s->global_lru_index = lru_list_elt - tsm->global_lru_pool;
-  clib_dlist_addtail (tsm->global_lru_pool, tsm->global_lru_head_index,
-		      s->global_lru_index);
-  lru_list_elt->value = s - tsm->sessions;
-  s->last_lru_update = now;
-}
-
-static_always_inline snat_session_t *
-nat44_session_alloc_new (snat_main_per_thread_data_t * tsm, snat_user_t * u,
-			 f64 now)
-{
-  snat_session_t *s;
-  dlist_elt_t *per_user_translation_list_elt;
-
-  pool_get (tsm->sessions, s);
-  clib_memset (s, 0, sizeof (*s));
-  /* Create list elts */
-  pool_get (tsm->list_pool, per_user_translation_list_elt);
-  clib_dlist_init (tsm->list_pool,
-		   per_user_translation_list_elt - tsm->list_pool);
-
-  per_user_translation_list_elt->value = s - tsm->sessions;
-  s->per_user_index = per_user_translation_list_elt - tsm->list_pool;
-  s->per_user_list_head_index = u->sessions_per_user_list_head_index;
-
-  clib_dlist_addtail (tsm->list_pool,
-		      s->per_user_list_head_index,
-		      per_user_translation_list_elt - tsm->list_pool);
-
-  nat44_global_lru_insert (tsm, s, now);
+  s->tcp_closed_timestamp = 0;
   s->ha_last_refreshed = now;
   return s;
 }
@@ -128,6 +99,9 @@ nat44_user_del (ip4_address_t * addr, u32 fib_index)
 
   snat_user_key_t user_key;
   clib_bihash_kv_8_8_t kv, value;
+
+  if (sm->deterministic || sm->endpoint_dependent)
+    return rv;
 
   user_key.addr.as_u32 = addr->as_u32;
   user_key.fib_index = fib_index;
