@@ -179,6 +179,7 @@ typedef struct
   clib_error_t *error;
   u8 support_int_mode;		/* support interrupt mode */
   u16 max_queue_pairs;
+  u16 msix_table_size;
   u8 status;
   u8 mac_addr[6];
   u8 *host_if_name;
@@ -190,6 +191,7 @@ typedef struct
   ip6_address_t host_ip6_addr;
   u8 host_ip6_prefix_len;
   u32 host_mtu_size;
+  u32 tap_flags;
   int ifindex;
   virtio_vring_t *cxq_vring;
 } virtio_if_t;
