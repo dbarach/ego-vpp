@@ -34,6 +34,11 @@
 #include <nat/nat44/ed_inlines.h>
 #include <nat/lib/nat_inlines.h>
 
+/* number of attempts to get a port for ED overloading algorithm, if rolling
+ * a dice this many times doesn't produce a free port, it's treated
+ * as if there were no free ports available to conserve resources */
+#define ED_PORT_ALLOC_ATTEMPTS (10)
+
 static char *nat_in2out_ed_error_strings[] = {
 #define _(sym,string) string,
   foreach_nat_in2out_ed_error
@@ -217,17 +222,17 @@ nat_ed_alloc_addr_and_port (snat_main_t * sm, u32 rx_fib_index,
     if (a->fib_index == rx_fib_index)                                        \
       {                                                                      \
         /* first try port suggested by caller */                             \
-        u16 port = clib_net_to_host_u16 (*outside_port);                   \
+        u16 port = clib_net_to_host_u16 (*outside_port);                     \
         u16 port_offset = port - port_thread_offset;                         \
         if (port <= port_thread_offset ||                                    \
             port > port_thread_offset + port_per_thread)                     \
           {                                                                  \
             /* need to pick a different port, suggested port doesn't fit in  \
              * this thread's port range */                                   \
-            port_offset = snat_random_port (1, port_per_thread);             \
+            port_offset = snat_random_port (0, port_per_thread - 1);         \
             port = port_thread_offset + port_offset;                         \
           }                                                                  \
-        u16 attempts = port_per_thread;                                      \
+        u16 attempts = ED_PORT_ALLOC_ATTEMPTS;                               \
         do                                                                   \
           {                                                                  \
             init_ed_kv (out2in_ed_kv, a->addr, clib_host_to_net_u16 (port),  \
@@ -240,11 +245,11 @@ nat_ed_alloc_addr_and_port (snat_main_t * sm, u32 rx_fib_index,
                 ++a->busy_##n##_port_refcounts[port];                        \
                 a->busy_##n##_ports_per_thread[thread_index]++;              \
                 a->busy_##n##_ports++;                                       \
-                *outside_addr = a->addr;                                   \
-                *outside_port = clib_host_to_net_u16 (port);               \
+                *outside_addr = a->addr;                                     \
+                *outside_port = clib_host_to_net_u16 (port);                 \
                 return 0;                                                    \
               }                                                              \
-            port_offset = (port_offset + 1) % port_per_thread;               \
+            port_offset = snat_random_port (0, port_per_thread - 1);         \
             port = port_thread_offset + port_offset;                         \
             --attempts;                                                      \
           }                                                                  \
