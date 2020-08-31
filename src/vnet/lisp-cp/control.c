@@ -124,41 +124,6 @@ ip_interface_get_first_ip_address (lisp_cp_main_t * lcm, u32 sw_if_index,
 }
 
 /**
- * convert from a LISP address to a FIB prefix
- */
-void
-ip_address_to_fib_prefix (const ip_address_t * addr, fib_prefix_t * prefix)
-{
-  if (addr->version == AF_IP4)
-    {
-      prefix->fp_len = 32;
-      prefix->fp_proto = FIB_PROTOCOL_IP4;
-      clib_memset (&prefix->fp_addr.pad, 0, sizeof (prefix->fp_addr.pad));
-      memcpy (&prefix->fp_addr.ip4, &addr->ip.ip4,
-	      sizeof (prefix->fp_addr.ip4));
-    }
-  else
-    {
-      prefix->fp_len = 128;
-      prefix->fp_proto = FIB_PROTOCOL_IP6;
-      memcpy (&prefix->fp_addr.ip6, &addr->ip.ip6,
-	      sizeof (prefix->fp_addr.ip6));
-    }
-  prefix->___fp___pad = 0;
-}
-
-/**
- * convert from a LISP to a FIB prefix
- */
-void
-ip_prefix_to_fib_prefix (const ip_prefix_t * ip_prefix,
-			 fib_prefix_t * fib_prefix)
-{
-  ip_address_to_fib_prefix (&ip_prefix->addr, fib_prefix);
-  fib_prefix->fp_len = ip_prefix->len;
-}
-
-/**
  * Find the sw_if_index of the interface that would be used to egress towards
  * dst.
  */
@@ -1699,7 +1664,7 @@ vnet_lisp_use_petr (ip_address_t * ip, u8 is_add)
 
   if (is_add)
     {
-      /* Create dummy petr locator-set */
+      /* Create placeholder petr locator-set */
       clib_memset (&loc, 0, sizeof (loc));
       gid_address_from_ip (&loc.address, ip);
       loc.priority = 1;
@@ -2872,7 +2837,7 @@ lisp_cp_output (vlib_main_t * vm, vlib_node_runtime_t * node,
   return 0;
 }
 
-/* dummy node used only for statistics */
+/* placeholder node used only for statistics */
 /* *INDENT-OFF* */
 VLIB_REGISTER_NODE (lisp_cp_output_node) = {
   .function = lisp_cp_output,

@@ -681,7 +681,7 @@ tcp_init_snd_vars (tcp_connection_t * tc)
   tc->snd_una = tc->iss;
   tc->snd_nxt = tc->iss + 1;
   tc->snd_una_max = tc->snd_nxt;
-  tc->srtt = 100;		/* 100 ms */
+  tc->srtt = 0.1 * THZ;		/* 100 ms */
 
   if (!tcp_cfg.csum_offload)
     tc->cfg_flags |= TCP_CFG_F_NO_CSUM_OFFLOAD;
@@ -925,17 +925,21 @@ tcp_snd_space_inline (tcp_connection_t * tc)
    * to force the peer to send enough dupacks to start retransmitting as
    * per Limited Transmit (RFC3042)
    */
-  if (PREDICT_FALSE (tc->rcv_dupacks != 0 || tc->sack_sb.sacked_bytes))
+  if (PREDICT_FALSE (tc->rcv_dupacks || tc->sack_sb.sacked_bytes))
     {
-      if (tc->limited_transmit != tc->snd_nxt
-	  && (seq_lt (tc->limited_transmit, tc->snd_nxt - 2 * tc->snd_mss)
-	      || seq_gt (tc->limited_transmit, tc->snd_nxt)))
+      int snt_limited, n_pkts;
+
+      n_pkts = tcp_opts_sack_permitted (&tc->rcv_opts)
+	? tc->sack_sb.reorder - 1 : 2;
+
+      if ((seq_lt (tc->limited_transmit, tc->snd_nxt - n_pkts * tc->snd_mss)
+	   || seq_gt (tc->limited_transmit, tc->snd_nxt)))
 	tc->limited_transmit = tc->snd_nxt;
 
       ASSERT (seq_leq (tc->limited_transmit, tc->snd_nxt));
 
-      int snt_limited = tc->snd_nxt - tc->limited_transmit;
-      snd_space = clib_max ((int) 2 * tc->snd_mss - snt_limited, 0);
+      snt_limited = tc->snd_nxt - tc->limited_transmit;
+      snd_space = clib_max (n_pkts * tc->snd_mss - snt_limited, 0);
     }
   return tcp_round_snd_space (tc, snd_space);
 }
@@ -1360,11 +1364,6 @@ tcp_main_enable (vlib_main_t * vm)
   if (tcp_cfg.preallocated_half_open_connections)
     pool_init_fixed (tm->half_open_connections,
 		     tcp_cfg.preallocated_half_open_connections);
-
-  /* Initialize clocks per tick for TCP timestamp. Used to compute
-   * monotonically increasing timestamps. */
-  tm->tstamp_ticks_per_clock = vm->clib_time.seconds_per_clock
-    / TCP_TSTAMP_RESOLUTION;
 
   if (num_threads > 1)
     {

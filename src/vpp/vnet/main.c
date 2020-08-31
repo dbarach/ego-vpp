@@ -328,7 +328,7 @@ heapsize_config (vlib_main_t * vm, unformat_input_t * input)
 VLIB_CONFIG_FUNCTION (heapsize_config, "heapsize");
 
 static clib_error_t *
-dummy_path_config (vlib_main_t * vm, unformat_input_t * input)
+placeholder_path_config (vlib_main_t * vm, unformat_input_t * input)
 {
   u8 *junk;
 
@@ -349,7 +349,7 @@ dummy_path_config (vlib_main_t * vm, unformat_input_t * input)
 static clib_error_t *
 plugin_path_config (vlib_main_t * vm, unformat_input_t * input)
 {
-  return dummy_path_config (vm, input);
+  return placeholder_path_config (vm, input);
 }
 
 VLIB_CONFIG_FUNCTION (plugin_path_config, "plugin_path");
@@ -357,7 +357,7 @@ VLIB_CONFIG_FUNCTION (plugin_path_config, "plugin_path");
 static clib_error_t *
 test_plugin_path_config (vlib_main_t * vm, unformat_input_t * input)
 {
-  return dummy_path_config (vm, input);
+  return placeholder_path_config (vm, input);
 }
 
 VLIB_CONFIG_FUNCTION (test_plugin_path_config, "test_plugin_path");
