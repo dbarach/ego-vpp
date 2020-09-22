@@ -378,6 +378,18 @@ wipe-release: test-wipe $(BR)/.deps.ok
 .PHONY: rebuild-release
 rebuild-release: wipe-release build-release
 
+.PHONY: rebuild-ego
+
+rebuild-ego:
+	cd $(BR)/build-vpp_debug-native/vpp; ninja ego_rebuild
+	$(call make,$(PLATFORM)_debug,$(addsuffix -install,$(TARGETS)))
+
+.PHONY: rebuild-ego-release
+
+rebuild-ego-release:
+	cd $(BR)/build-vpp-native/vpp; ninja ego_rebuild
+	$(call make,$(PLATFORM),$(addsuffix -install,$(TARGETS)))
+
 libexpand = $(subst $(subst ,, ),:,$(foreach lib,$(1),$(BR)/install-$(2)-native/vpp/$(lib)/$(3)))
 
 export TEST_DIR ?= $(WS_ROOT)/test
