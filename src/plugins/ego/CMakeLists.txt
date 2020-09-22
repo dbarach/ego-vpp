@@ -33,11 +33,19 @@ add_vpp_plugin(ego
   ego_test.c
 )
 
+option(VPP_EGO_OPTIMIZE "Optimize ego code" OFF)
+
+if(VPP_EGO_OPTIMIZE)
+  set(EGO_OPTIMIZE_FLAG "-O2")
+else()
+  set(EGO_OPTIMIZE_FLAG "-O0")
+endif()
+
 add_custom_command(
   OUTPUT ego_vpp.o
-  COMMAND $ENV{GOPATH}/bin/ego -link-bitcode -build-dir `pwd` -g -O0 -o ego_vpp.bc -main ego/vpp.main ego/vpp
-  COMMAND clang -Werror -Wall -march=corei7 -mtune=corei7-avx -c -g -O0 -fstack-protector -DFORTIFY_SOURCE=2 -maes -mavx2 -fPIC ego_vpp.bc
-  COMMENT "build golang objects.."
+  COMMAND $ENV{GOPATH}/bin/ego -link-bitcode -build-dir `pwd` -g ${EGO_OPTIMIZE_FLAG} -o ego_vpp.bc -main ego/vpp.main ego/vpp
+  COMMAND clang -Werror -Wall -march=corei7 -mtune=corei7-avx -c -g ${EGO_OPTIMIZE_FLAG} -fstack-protector -DFORTIFY_SOURCE=2 -maes -mavx2 -fPIC ego_vpp.bc
+  COMMENT "build golang objects..."
 )
 
 add_custom_target(ego_rebuild

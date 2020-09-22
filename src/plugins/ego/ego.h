@@ -51,7 +51,12 @@ extern vlib_node_registration_t ego_periodic_node;
 #define EGO_EVENT_PERIODIC_ENABLE_DISABLE 3
 
 void ego_create_periodic_process (ego_main_t *);
-void ego_set_dispatch_function (vlib_node_function_t *fp);
+
+typedef uword (ego_node_function_t) (vlib_main_t * vm,
+				      vlib_node_runtime_t * node,
+				      vlib_frame_t * frame);
+
+void ego_set_dispatch_function (ego_node_function_t *);
 
 #endif /* __included_ego_h__ */
 
