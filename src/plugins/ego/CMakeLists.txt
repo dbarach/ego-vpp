@@ -20,9 +20,6 @@ add_vpp_plugin(ego
   ego_vpp.o
   node.c
 
-  MULTIARCH_SOURCES
-  node.c
-
   INSTALL_HEADERS
   ego.h
 
@@ -33,18 +30,12 @@ add_vpp_plugin(ego
   ego_test.c
 )
 
-option(VPP_EGO_OPTIMIZE "Optimize ego code" OFF)
-
-if(VPP_EGO_OPTIMIZE)
-  set(EGO_OPTIMIZE_FLAG "-O2")
-else()
-  set(EGO_OPTIMIZE_FLAG "-O0")
-endif()
+set(EGO_OPTIMIZE_FLAG "-O0")
 
 add_custom_command(
   OUTPUT ego_vpp.o
-  COMMAND $ENV{GOPATH}/bin/ego -link-bitcode -build-dir `pwd` -g ${EGO_OPTIMIZE_FLAG} -o ego_vpp.bc -main ego/vpp.main ego/vpp
-  COMMAND clang -Werror -Wall -march=corei7 -mtune=corei7-avx -c -g ${EGO_OPTIMIZE_FLAG} -fstack-protector -DFORTIFY_SOURCE=2 -maes -mavx2 -fPIC ego_vpp.bc
+  COMMAND $ENV{GOPATH}/bin/ego -link-bitcode -build-dir `pwd` -g ${EGO_OPTIMIZE_FLAG} -o `pwd`/ego_vpp.bc ego/net/vpp
+  COMMAND clang -Werror -Wall -march=corei7 -mtune=corei7-avx -c -g ${EGO_OPTIMIZE_FLAG} -fstack-protector -DFORTIFY_SOURCE=2 -maes -mavx2 -fPIC `pwd`/ego_vpp.bc
   COMMENT "build golang objects..."
 )
 

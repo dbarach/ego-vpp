@@ -49,16 +49,16 @@ int ego_enable_disable (ego_main_t * emp, u32 sw_if_index,
   if (sw->type != VNET_SW_INTERFACE_TYPE_HARDWARE)
     return VNET_API_ERROR_INVALID_SW_IF_INDEX;
 
-  ego_create_periodic_process (emp);
+  /* ego_create_periodic_process (emp); */
 
   vnet_feature_enable_disable ("device-input", "ego",
                                sw_if_index, enable_disable, 0, 0);
 
   /* Send an event to enable/disable the periodic scanner process */
-  vlib_process_signal_event (emp->vlib_main,
-                             emp->periodic_node_index,
-                             EGO_EVENT_PERIODIC_ENABLE_DISABLE,
-                            (uword)enable_disable);
+  /* vlib_process_signal_event (emp->vlib_main,
+     emp->periodic_node_index,
+     EGO_EVENT_PERIODIC_ENABLE_DISABLE,
+     (uword)enable_disable); */
   return rv;
 }
 

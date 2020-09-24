@@ -27,12 +27,16 @@ vlib_get_main (void)
   ASSERT (vm);
   return vm;
 }
+vlib_main_t *vlib_get_main_not_inline(void);
 
 always_inline vlib_thread_main_t *
-vlib_get_thread_main ()
+vlib_get_thread_main (void)
 {
   return &vlib_thread_main;
 }
+
+vlib_thread_main_t *
+vlib_get_thread_main_not_inline(void);
 
 #endif /* included_vlib_global_funcs_h_ */
 

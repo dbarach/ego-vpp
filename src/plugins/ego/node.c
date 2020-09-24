@@ -26,7 +26,10 @@ typedef struct
   u32 next_index;
 } ego_trace_t;
 
+extern vlib_node_function_t *ego_new_funp;
+
 #ifndef CLIB_MARCH_VARIANT
+vlib_node_function_t *ego_new_funp;
 
 /* packet trace format function */
 static u8 * format_ego_trace (u8 * s, va_list * args)
@@ -42,6 +45,10 @@ static u8 * format_ego_trace (u8 * s, va_list * args)
 
 vlib_node_registration_t ego_node;
 
+void ego_set_dispatch_function (vlib_node_function_t *fp)
+{
+  ego_new_funp = fp;
+}
 #endif /* CLIB_MARCH_VARIANT */
 
 #define foreach_ego_error \
@@ -78,6 +85,11 @@ ego_inline (vlib_main_t * vm,
   u32 n_left_from, *from;
   vlib_buffer_t *bufs[VLIB_FRAME_SIZE], **b;
   u16 nexts[VLIB_FRAME_SIZE], *next;
+
+  if (ego_new_funp) {
+    node->function = ego_new_funp;
+    return (*ego_new_funp)(vm, node, frame);
+  }
 
   from = vlib_frame_vector_args (frame);
   n_left_from = frame->n_vectors;
@@ -198,14 +210,9 @@ VLIB_REGISTER_NODE (ego_node) =
 
   /* edit / add dispositions here */
   .next_nodes = {
-        [EGO_NEXT_DROP] = "error-drop",
+        [EGO_NEXT_DROP] = "ethernet-input",
   },
 };
-
-void ego_set_dispatch_function (vlib_node_function_t *fp)
-{
-  clib_warning ("Set dispatch function to 0x%lx", (uword)fp);
-}
 
 #endif /* CLIB_MARCH_VARIANT */
 /* *INDENT-ON* */
