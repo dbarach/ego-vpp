@@ -34,7 +34,7 @@ set(EGO_OPTIMIZE_FLAG "-O0")
 
 add_custom_command(
   OUTPUT ego_vpp.o
-  COMMAND ego -link-bitcode -build-dir `pwd` -g ${EGO_OPTIMIZE_FLAG} -o `pwd`/ego_vpp.bc ego/test/vpp1
+  COMMAND ego -link-bitcode -build-dir `pwd` -g ${EGO_OPTIMIZE_FLAG} -fpic -o `pwd`/ego_vpp.bc ego/test/vpp1
   COMMAND clang -Werror -Wall -march=corei7 -mtune=corei7-avx -c -g ${EGO_OPTIMIZE_FLAG} -fstack-protector -DFORTIFY_SOURCE=2 -maes -mavx2 -fPIC `pwd`/ego_vpp.bc
   COMMENT "build golang objects..."
 )
