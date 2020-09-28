@@ -31,18 +31,6 @@ extern vlib_node_function_t *ego_new_funp;
 #ifndef CLIB_MARCH_VARIANT
 vlib_node_function_t *ego_new_funp;
 
-/* packet trace format function */
-static u8 * format_ego_trace (u8 * s, va_list * args)
-{
-  CLIB_UNUSED (vlib_main_t * vm) = va_arg (*args, vlib_main_t *);
-  CLIB_UNUSED (vlib_node_t * node) = va_arg (*args, vlib_node_t *);
-  ego_trace_t * t = va_arg (*args, ego_trace_t *);
-
-  s = format (s, "EGO: sw_if_index %d, next index %d\n",
-              t->sw_if_index, t->next_index);
-  return s;
-}
-
 vlib_node_registration_t ego_node;
 
 void ego_set_dispatch_function (vlib_node_function_t *fp)
@@ -61,15 +49,6 @@ typedef enum
 #undef _
   EGO_N_ERROR,
 } ego_error_t;
-
-#ifndef CLIB_MARCH_VARIANT
-static char * ego_error_strings[] =
-{
-#define _(sym,string) string,
-  foreach_ego_error
-#undef _
-};
-#endif /* CLIB_MARCH_VARIANT */
 
 typedef enum
 {
@@ -195,7 +174,7 @@ VLIB_NODE_FN (ego_node) (vlib_main_t * vm, vlib_node_runtime_t * node,
 }
 
 /* *INDENT-OFF* */
-#ifndef CLIB_MARCH_VARIANT
+#if 0 /*ndef CLIB_MARCH_VARIANT */
 VLIB_REGISTER_NODE (ego_node) =
 {
   .name = "ego",
