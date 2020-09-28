@@ -48,7 +48,6 @@ cnat_client_destroy (cnat_client_t * cc)
     {
       ASSERT (fib_entry_is_sourced (cc->cc_fei, cnat_fib_source));
       fib_table_entry_delete_index (cc->cc_fei, cnat_fib_source);
-      ASSERT (!fib_entry_is_sourced (cc->cc_fei, cnat_fib_source));
     }
   cnat_client_db_remove (cc);
   dpo_reset (&cc->cc_parent);
@@ -61,12 +60,10 @@ cnat_client_free_by_ip (ip46_address_t * ip, u8 af)
   cnat_client_t *cc;
   cc = (AF_IP4 == af ?
 	cnat_client_ip4_find (&ip->ip4) : cnat_client_ip6_find (&ip->ip6));
-  /* This can happen if the translation gets deleted
-     before the session */
-  if (NULL == cc)
-    return;
+  ASSERT (NULL != cc);
+
   if ((0 == cnat_client_uncnt_session (cc))
-      && (cc->flags & CNAT_FLAG_EXPIRES))
+      && (cc->flags & CNAT_FLAG_EXPIRES) && (0 == cc->tr_refcnt))
     cnat_client_destroy (cc);
 }
 
@@ -101,7 +98,6 @@ cnat_client_throttle_pool_process ()
       /* *INDENT-ON* */
       vec_foreach (ai, del_vec)
       {
-	/* Free session */
 	addr = pool_elt_at_index (cnat_client_db.throttle_pool[i], *ai);
 	pool_put (cnat_client_db.throttle_pool[i], addr);
       }
@@ -113,6 +109,9 @@ void
 cnat_client_translation_added (index_t cci)
 {
   cnat_client_t *cc;
+  if (INDEX_INVALID == cci)
+    return;
+
   cc = cnat_client_get (cci);
   ASSERT (!(cc->flags & CNAT_FLAG_EXPIRES));
   cc->tr_refcnt++;
@@ -122,12 +121,14 @@ void
 cnat_client_translation_deleted (index_t cci)
 {
   cnat_client_t *cc;
+  if (INDEX_INVALID == cci)
+    return;
 
   cc = cnat_client_get (cci);
   ASSERT (!(cc->flags & CNAT_FLAG_EXPIRES));
   cc->tr_refcnt--;
 
-  if (0 == cc->tr_refcnt)
+  if (0 == cc->tr_refcnt && 0 == cc->session_refcnt)
     cnat_client_destroy (cc);
 }
 
@@ -171,6 +172,8 @@ cnat_client_add (const ip_address_t * ip, u8 flags)
   cci = cc - cnat_client_pool;
   cc->parent_cci = cci;
   cc->flags = flags;
+  cc->tr_refcnt = 0;
+  cc->session_refcnt = 0;
 
   ip_address_copy (&cc->cc_ip, ip);
   cnat_client_db_add (cc);
@@ -238,9 +241,16 @@ cnat_client_dpo_interpose (const dpo_id_t * original,
 int
 cnat_client_purge (void)
 {
+  vlib_thread_main_t *tm = vlib_get_thread_main ();
+  int nthreads;
+  nthreads = tm->n_threads + 1;
   ASSERT (0 == hash_elts (cnat_client_db.crd_cip6));
   ASSERT (0 == hash_elts (cnat_client_db.crd_cip4));
   ASSERT (0 == pool_elts (cnat_client_pool));
+  for (int i = 0; i < nthreads; i++)
+    {
+      ASSERT (0 == pool_elts (cnat_client_db.throttle_pool[i]));
+    }
   return (0);
 }
 

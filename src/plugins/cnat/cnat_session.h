@@ -146,6 +146,16 @@ extern u64 cnat_session_scan (vlib_main_t * vm, f64 start_time, int i);
  */
 extern int cnat_session_purge (void);
 
+/**
+ * Free a session & update refcounts
+ */
+extern void cnat_session_free (cnat_session_t * session);
+
+/**
+ * Port cleanup callback
+ */
+extern void (*cnat_free_port_cb) (u16 port, ip_protocol_t iproto);
+
 /*
  * fd.io coding-style-patch-verification: ON
  *
