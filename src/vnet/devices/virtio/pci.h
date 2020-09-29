@@ -195,7 +195,10 @@ typedef struct _virtio_pci_func
     u8 (*setup_queue) (vlib_main_t * vm, virtio_if_t * vif, u16 queue_id,
 		       void *p);
   void (*del_queue) (vlib_main_t * vm, virtio_if_t * vif, u16 queue_id);
-  void (*notify_queue) (vlib_main_t * vm, virtio_if_t * vif, u16 queue_id);
+    u16 (*get_queue_notify_off) (vlib_main_t * vm, virtio_if_t * vif,
+				 u16 queue_id);
+  void (*notify_queue) (vlib_main_t * vm, virtio_if_t * vif, u16 queue_id,
+			u16 queue_notify_offset);
 
     u16 (*set_config_irq) (vlib_main_t * vm, virtio_if_t * vif, u16 vec);
     u16 (*set_queue_irq) (vlib_main_t * vm, virtio_if_t * vif, u16 vec,
@@ -214,7 +217,8 @@ typedef struct _virtio_pci_func
   _ (CSUM_OFFLOAD, 1)         \
   _ (GRO_COALESCE, 2)         \
   _ (PACKED, 3)               \
-  _ (IN_ORDER, 4)
+  _ (IN_ORDER, 4)	      \
+  _ (BUFFERING, 5)
 
 typedef enum
 {
@@ -234,6 +238,7 @@ typedef struct
   u64 features;
   u8 gso_enabled;
   u8 checksum_offload_enabled;
+  u32 buffering_size;
   u32 virtio_flags;
   clib_error_t *error;
 } virtio_pci_create_if_args_t;

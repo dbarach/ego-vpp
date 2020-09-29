@@ -20,6 +20,7 @@
 
 #include <vnet/devices/virtio/virtio_std.h>
 #include <vnet/devices/virtio/vhost_std.h>
+#include <vnet/devices/virtio/virtio_buffering.h>
 #include <vnet/gso/gro.h>
 
 #define foreach_virtio_if_flag		\
@@ -65,8 +66,15 @@ typedef struct
   vring_avail_t *avail;
   u16 desc_in_use;
   u16 desc_next;
-  int kick_fd;
-  int call_fd;
+  union
+  {
+    struct
+    {
+      int kick_fd;
+      int call_fd;
+    };
+    u16 queue_notify_offset;
+  };
   u8 buffer_pool_index;
   u16 size;
   u16 queue_id;
@@ -76,6 +84,7 @@ typedef struct
   u16 last_used_idx;
   u16 last_kick_avail_idx;
   u32 call_file_index;
+  virtio_vring_buffering_t *buffering;
   gro_flow_table_t *flow_table;
 } virtio_vring_t;
 
@@ -123,6 +132,7 @@ typedef struct
 
     CLIB_CACHE_LINE_ALIGN_MARK (cacheline1);
   int packet_coalesce;
+  int packet_buffering;
   u32 dev_instance;
   u32 numa_node;
   u64 remote_features;
@@ -203,10 +213,13 @@ extern void virtio_set_net_hdr_size (virtio_if_t * vif);
 extern void virtio_show (vlib_main_t * vm, u32 * hw_if_indices, u8 show_descr,
 			 u32 type);
 extern void virtio_set_packet_coalesce (virtio_if_t * vif);
+clib_error_t *virtio_set_packet_buffering (virtio_if_t * vif, u16 size);
 extern void virtio_pci_legacy_notify_queue (vlib_main_t * vm,
-					    virtio_if_t * vif, u16 queue_id);
+					    virtio_if_t * vif, u16 queue_id,
+					    u16 queue_notify_offset);
 extern void virtio_pci_modern_notify_queue (vlib_main_t * vm,
-					    virtio_if_t * vif, u16 queue_id);
+					    virtio_if_t * vif, u16 queue_id,
+					    u16 queue_notify_offset);
 format_function_t format_virtio_device_name;
 format_function_t format_virtio_log_name;
 
@@ -216,9 +229,11 @@ virtio_kick (vlib_main_t * vm, virtio_vring_t * vring, virtio_if_t * vif)
   if (vif->type == VIRTIO_IF_TYPE_PCI)
     {
       if (vif->is_modern)
-	virtio_pci_modern_notify_queue (vm, vif, vring->queue_id);
+	virtio_pci_modern_notify_queue (vm, vif, vring->queue_id,
+					vring->queue_notify_offset);
       else
-	virtio_pci_legacy_notify_queue (vm, vif, vring->queue_id);
+	virtio_pci_legacy_notify_queue (vm, vif, vring->queue_id,
+					vring->queue_notify_offset);
     }
   else
     {

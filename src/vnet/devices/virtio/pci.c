@@ -486,7 +486,11 @@ virtio_pci_control_vring_init (vlib_main_t * vm, virtio_if_t * vif,
   virtio_log_debug (vif, "control-queue: number %u, size %u", queue_num,
 		    queue_size);
   vif->virtio_pci_func->setup_queue (vm, vif, queue_num, ptr);
-  vring->kick_fd = -1;
+  vring->queue_notify_offset =
+    vif->notify_off_multiplier *
+    vif->virtio_pci_func->get_queue_notify_off (vm, vif, queue_num);
+  virtio_log_debug (vif, "queue-notify-offset: number %u, offset %u",
+		    queue_num, vring->queue_notify_offset);
 
   return error;
 }
@@ -562,7 +566,11 @@ virtio_pci_vring_init (vlib_main_t * vm, virtio_if_t * vif, u16 queue_num)
   if (vif->virtio_pci_func->setup_queue (vm, vif, queue_num, ptr))
     return clib_error_return (0, "error in queue address setup");
 
-  vring->kick_fd = -1;
+  vring->queue_notify_offset =
+    vif->notify_off_multiplier *
+    vif->virtio_pci_func->get_queue_notify_off (vm, vif, queue_num);
+  virtio_log_debug (vif, "queue-notify-offset: number %u, offset %u",
+		    queue_num, vring->queue_notify_offset);
   return error;
 }
 
@@ -775,6 +783,7 @@ virtio_pci_read_caps (vlib_main_t * vm, virtio_if_t * vif, void **bar)
   if (common_cfg == 0 || notify == 0 || dev_cfg == 0 || isr == 0)
     {
       vif->virtio_pci_func = &virtio_pci_legacy_func;
+      vif->notify_off_multiplier = 0;
       virtio_log_debug (vif, "legacy virtio pci device found");
       return error;
     }
@@ -783,9 +792,14 @@ virtio_pci_read_caps (vlib_main_t * vm, virtio_if_t * vif, void **bar)
   vif->virtio_pci_func = &virtio_pci_modern_func;
 
   if (!pci_cfg)
-    virtio_log_debug (vif, "modern virtio pci device found");
+    {
+      virtio_log_debug (vif, "modern virtio pci device found");
+    }
+  else
+    {
+      virtio_log_debug (vif, "transitional virtio pci device found");
+    }
 
-  virtio_log_debug (vif, "transitional virtio pci device found");
   return error;
 }
 
@@ -1154,6 +1168,19 @@ virtio_pci_create_if (vlib_main_t * vm, virtio_pci_create_if_args_t * args)
 
   vnet_hw_interface_t *hw = vnet_get_hw_interface (vnm, vif->hw_if_index);
   hw->flags |= VNET_HW_INTERFACE_FLAG_SUPPORTS_INT_MODE;
+
+  if (args->virtio_flags & VIRTIO_FLAG_BUFFERING)
+    {
+      error = virtio_set_packet_buffering (vif, args->buffering_size);
+      if (error)
+	{
+	  args->rv = VNET_API_ERROR_INIT_FAILED;
+	  virtio_log_error (vif,
+			    "error encountered during packet buffering init");
+	  goto error;
+	}
+    }
+
   vnet_hw_interface_set_input_node (vnm, vif->hw_if_index,
 				    virtio_input_node.index);
   u32 i = 0;
@@ -1231,8 +1258,6 @@ virtio_pci_delete_if (vlib_main_t * vm, virtio_if_t * vif)
   vec_foreach_index (i, vif->rxq_vrings)
   {
     virtio_vring_t *vring = vec_elt_at_index (vif->rxq_vrings, i);
-    if (vring->kick_fd != -1)
-      close (vring->kick_fd);
     if (vring->used)
       {
 	virtio_free_rx_buffers (vm, vring);
@@ -1244,8 +1269,6 @@ virtio_pci_delete_if (vlib_main_t * vm, virtio_if_t * vif)
   vec_foreach_index (i, vif->txq_vrings)
   {
     virtio_vring_t *vring = vec_elt_at_index (vif->txq_vrings, i);
-    if (vring->kick_fd != -1)
-      close (vring->kick_fd);
     if (vring->used)
       {
 	virtio_free_used_desc (vm, vring);
