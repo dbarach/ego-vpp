@@ -153,6 +153,7 @@ static clib_error_t * ego_init (vlib_main_t * vm)
 
 VLIB_INIT_FUNCTION (ego_init);
 
+#if 0
 /* *INDENT-OFF* */
 VNET_FEATURE_INIT (ego, static) =
 {
@@ -161,6 +162,7 @@ VNET_FEATURE_INIT (ego, static) =
   .runs_before = VNET_FEATURES ("ethernet-input"),
 };
 /* *INDENT-ON */
+#endif
 
 /* *INDENT-OFF* */
 VLIB_PLUGIN_REGISTER () =
