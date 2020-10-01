@@ -380,6 +380,18 @@ rebuild-ego-release:
 	cd $(BR)/build-vpp-native/vpp; ninja ego_rebuild
 	$(call make,$(PLATFORM),$(addsuffix -install,$(TARGETS)))
 
+.PHONY: rebuild-g2
+
+rebuild-g2:
+	cd $(BR)/build-vpp_debug-native/vpp; ninja g2_rebuild
+	$(call make,$(PLATFORM)_debug,$(addsuffix -install,$(TARGETS)))
+
+.PHONY: rebuild-g2-release
+
+rebuild-g2-release:
+	cd $(BR)/build-vpp-native/vpp; ninja g2_rebuild
+	$(call make,$(PLATFORM),$(addsuffix -install,$(TARGETS)))
+
 libexpand = $(subst $(subst ,, ),:,$(foreach lib,$(1),$(BR)/install-$(2)-native/vpp/$(lib)/$(3)))
 
 export TEST_DIR ?= $(WS_ROOT)/test
