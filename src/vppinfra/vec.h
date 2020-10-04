@@ -381,6 +381,7 @@ do {						\
 
 void vec_free_not_inline (void *v);
 
+
 /**\brief Free vector user header (syntactic sugar)
    @param h vector header
    @void

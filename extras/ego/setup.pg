@@ -1,0 +1,16 @@
+set term pag off
+loop create
+ego enable-disable loop0
+
+packet-generator new {
+    name x
+    limit 0
+    size 128-128
+    interface loop0
+    node ethernet-input
+    data {
+        IP6: 01.02.03 -> 04.05.06
+        ICMP: db00::1 -> db00::2
+        incrementing 30
+    }
+}

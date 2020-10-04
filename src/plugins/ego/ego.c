@@ -162,7 +162,6 @@ VNET_FEATURE_INIT (ego, static) =
   .runs_before = VNET_FEATURES ("ethernet-input"),
 };
 /* *INDENT-ON */
-#endif
 
 /* *INDENT-OFF* */
 VLIB_PLUGIN_REGISTER () =
@@ -171,6 +170,7 @@ VLIB_PLUGIN_REGISTER () =
   .description = "ego plugin description goes here",
 };
 /* *INDENT-ON* */
+#endif
 
 /*
  * fd.io coding-style-patch-verification: ON

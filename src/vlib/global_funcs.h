@@ -28,6 +28,7 @@ vlib_get_main (void)
   return vm;
 }
 vlib_main_t *vlib_get_main_not_inline(void);
+elog_main_t *vlib_get_elog_main_not_inline(void);
 
 always_inline vlib_thread_main_t *
 vlib_get_thread_main (void)

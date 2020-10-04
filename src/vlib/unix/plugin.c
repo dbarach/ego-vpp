@@ -97,6 +97,14 @@ load_one_plugin (plugin_main_t * pm, plugin_info_t * pi, int from_early_init)
   if (elf_read_file (&em, (char *) pi->filename))
     return -1;
 
+  error = elf_get_section_by_name (&em, ".vlib_plugin_unconditional_load",
+                                   &section);
+  if (error == 0)
+    {
+      PLUGIN_LOG_NOTICE ("Plugin loaded unconditionally: %s", pi->name);
+      goto unconditional_load;
+    }
+
   error = elf_get_section_by_name (&em, ".vlib_plugin_registration",
 				   &section);
   if (error)
@@ -205,6 +213,8 @@ load_one_plugin (plugin_main_t * pm, plugin_info_t * pi, int from_early_init)
     }
   vec_free (version_required);
 
+ unconditional_load:
+
   handle = dlopen ((char *) pi->filename, RTLD_LAZY);
 
   if (handle == 0)
@@ -220,10 +230,15 @@ load_one_plugin (plugin_main_t * pm, plugin_info_t * pi, int from_early_init)
 
   if (reg == 0)
     {
-      /* This should never happen unless somebody changes registration macro */
-      PLUGIN_LOG_ERR ("Missing plugin registration in plugin '%s'", pi->name);
-      dlclose (pi->handle);
-      goto error;
+      reg = dlsym (pi->handle, "ego/test/vpp1.Reg");
+
+      if (reg == 0)
+        {
+          PLUGIN_LOG_ERR ("Missing plugin registration in plugin '%s'",
+                          pi->name);
+          dlclose (pi->handle);
+          goto error;
+        }
     }
 
   pi->reg = reg;
