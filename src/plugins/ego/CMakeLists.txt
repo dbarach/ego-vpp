@@ -12,33 +12,36 @@
 # See the License for the specific language governing permissions and
 # limitations under the License.
 
-add_vpp_plugin(ego
-  SOURCES
-  ego.c
-  ego.h
-  ego_periodic.c
-  ego_vpp.o
-  node.c
+option(VPP_BUILD_EGO_PLUGIN "Build ego plugin" OFF)
+if(VPP_BUILD_EGO_PLUGIN)
+  add_vpp_plugin(ego
+    SOURCES
+    ego.c
+    ego.h
+    ego_periodic.c
+    ego_vpp.o
+    node.c
 
-  INSTALL_HEADERS
-  ego.h
+    INSTALL_HEADERS
+    ego.h
 
-  API_FILES
-  ego.api
+    API_FILES
+    ego.api
 
-  API_TEST_SOURCES
-  ego_test.c
-)
+    API_TEST_SOURCES
+    ego_test.c
+    )
 
-set(EGO_OPTIMIZE_FLAG "-O0")
+  set(EGO_OPTIMIZE_FLAG "-O3")
 
-add_custom_command(
-  OUTPUT ego_vpp.o
-  COMMAND ego -link-bitcode -build-dir `pwd` -g ${EGO_OPTIMIZE_FLAG} -fpic -o `pwd`/ego_vpp.bc ego/test/vpp1
-  COMMAND clang -Werror -Wall -march=corei7 -mtune=corei7-avx -c -g ${EGO_OPTIMIZE_FLAG} -fstack-protector -DFORTIFY_SOURCE=2 -maes -mavx2 -fPIC `pwd`/ego_vpp.bc
-  COMMENT "build golang objects..."
-)
+  add_custom_command(
+    OUTPUT ego_vpp.o
+    COMMAND ego -link-bitcode -build-dir `pwd` -g ${EGO_OPTIMIZE_FLAG} -fpic -o `pwd`/ego_vpp.bc ego/test/vpp1
+    COMMAND clang -Werror -Wall -march=corei7 -mtune=corei7-avx -c -g ${EGO_OPTIMIZE_FLAG} -fstack-protector -DFORTIFY_SOURCE=2 -maes -mavx2 -fPIC `pwd`/ego_vpp.bc
+    COMMENT "build golang objects..."
+    )
 
-add_custom_target(ego_rebuild
-  COMMAND rm -f ego_vpp.o
-  )
+  add_custom_target(ego_rebuild
+    COMMAND rm -f ego_vpp.o
+    )
+endif()
