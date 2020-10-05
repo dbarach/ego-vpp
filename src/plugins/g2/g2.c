@@ -30,6 +30,44 @@ VLIB_PLUGIN_REGISTER () =
 };
 /* *INDENT-ON* */
 
+
+static volatile void *ego_g2_fp;
+
+void
+ego_g2_thread_fn (void *arg)
+{
+  vlib_worker_thread_t *w = (vlib_worker_thread_t *) arg;
+  vlib_cli_command_function_t *fp;
+
+  vlib_worker_thread_init (w);
+  clib_mem_set_heap (w->thread_mheap);
+
+  while (1) {
+    while (ego_g2_fp == 0)
+      {
+        sleep(1);
+      }
+    fp = ego_g2_fp;
+    (*fp)(0, 0, 0);
+    ego_g2_fp = 0;
+  }
+}
+
+/* *INDENT-OFF* */
+VLIB_REGISTER_THREAD (ego_g2_thread_reg, static) = {
+  .name = "g2-thread",
+  .short_name = "g2",
+  .function = ego_g2_thread_fn,
+  .use_pthreads = 1,
+  .no_data_structure_clone = 1,
+};
+/* *INDENT-ON* */
+
+void ego_start_thread (vlib_cli_command_function_t *fp)
+{
+  ego_g2_fp = (void *) fp;
+}
+
 /*
  * fd.io coding-style-patch-verification: ON
  *

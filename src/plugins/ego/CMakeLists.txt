@@ -12,7 +12,7 @@
 # See the License for the specific language governing permissions and
 # limitations under the License.
 
-option(VPP_BUILD_EGO_PLUGIN "Build ego plugin" OFF)
+option(VPP_BUILD_EGO_PLUGIN "Build ego plugin" ON)
 if(VPP_BUILD_EGO_PLUGIN)
   add_vpp_plugin(ego
     SOURCES
@@ -32,7 +32,7 @@ if(VPP_BUILD_EGO_PLUGIN)
     ego_test.c
     )
 
-  set(EGO_OPTIMIZE_FLAG "-O3")
+  set(EGO_OPTIMIZE_FLAG "-O0")
 
   add_custom_command(
     OUTPUT ego_vpp.o

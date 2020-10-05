@@ -37,6 +37,8 @@ typedef struct {
 
 extern g2_main_t g2_main;
 
+void ego_start_thread (vlib_cli_command_function_t *f);
+
 #endif /* __included_g2_h__ */
 
 /*
