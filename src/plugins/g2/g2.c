@@ -15,6 +15,7 @@
  * limitations under the License.
  */
 
+#include <pthread.h>
 #include <vnet/vnet.h>
 #include <vnet/plugin/plugin.h>
 #include <vpp/app/version.h>
@@ -32,6 +33,8 @@ VLIB_PLUGIN_REGISTER () =
 
 
 static volatile void *ego_g2_fp;
+static pthread_mutex_t g2_thread_lock;
+static pthread_cond_t g2_thread_cv;
 
 void
 ego_g2_thread_fn (void *arg)
@@ -41,12 +44,17 @@ ego_g2_thread_fn (void *arg)
 
   vlib_worker_thread_init (w);
   clib_mem_set_heap (w->thread_mheap);
+  pthread_mutex_init(&g2_thread_lock, NULL);
+  pthread_cond_init(&g2_thread_cv, NULL);
+
 
   while (1) {
-    while (ego_g2_fp == 0)
-      {
-        sleep(1);
-      }
+    pthread_mutex_lock (&g2_thread_lock);
+    pthread_cond_wait (&g2_thread_cv, &g2_thread_lock);
+    pthread_mutex_unlock (&g2_thread_lock);
+    /* Should never happen... */
+    if (ego_g2_fp == 0)
+      continue;
     fp = ego_g2_fp;
     (*fp)(0, 0, 0);
     ego_g2_fp = 0;
@@ -60,12 +68,15 @@ VLIB_REGISTER_THREAD (ego_g2_thread_reg, static) = {
   .function = ego_g2_thread_fn,
   .use_pthreads = 1,
   .no_data_structure_clone = 1,
+  .fixed_count = 1,
+  .count = 1,
 };
 /* *INDENT-ON* */
 
 void ego_start_thread (vlib_cli_command_function_t *fp)
 {
   ego_g2_fp = (void *) fp;
+  pthread_cond_signal(&g2_thread_cv);
 }
 
 /*
