@@ -57,6 +57,7 @@ ego_g2_thread_fn (void *arg)
       continue;
     fp = ego_g2_fp;
     (*fp)(0, 0, 0);
+    sleep(1);
     ego_g2_fp = 0;
   }
 }

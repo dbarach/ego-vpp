@@ -206,12 +206,12 @@ fifo_segment_create (fifo_segment_main_t * sm, fifo_segment_create_args_t * a)
 
   baseva = a->segment_type == SSVM_SEGMENT_PRIVATE ? ~0ULL : sm->next_baseva;
   fs->ssvm.ssvm_size = a->segment_size;
-  fs->ssvm.i_am_master = 1;
+  fs->ssvm.is_server = 1;
   fs->ssvm.my_pid = getpid ();
   fs->ssvm.name = format (0, "%s%c", a->segment_name, 0);
   fs->ssvm.requested_va = baseva;
 
-  if ((rv = ssvm_master_init (&fs->ssvm, a->segment_type)))
+  if ((rv = ssvm_server_init (&fs->ssvm, a->segment_type)))
     {
       pool_put (sm->segments, fs);
       return (rv);
@@ -245,7 +245,7 @@ fifo_segment_attach (fifo_segment_main_t * sm, fifo_segment_create_args_t * a)
   else
     fs->ssvm.attach_timeout = sm->timeout_in_seconds;
 
-  if ((rv = ssvm_slave_init (&fs->ssvm, a->segment_type)))
+  if ((rv = ssvm_client_init (&fs->ssvm, a->segment_type)))
     {
       _vec_len (fs) = vec_len (fs) - 1;
       return (rv);
@@ -1362,7 +1362,7 @@ format_fifo_segment_type (u8 * s, va_list * args)
   ssvm_segment_type_t st = ssvm_type (&sp->ssvm);
 
   if (st == SSVM_SEGMENT_PRIVATE)
-    s = format (s, "%s", "private-heap");
+    s = format (s, "%s", "private");
   else if (st == SSVM_SEGMENT_MEMFD)
     s = format (s, "%s", "memfd");
   else if (st == SSVM_SEGMENT_SHM)
@@ -1400,7 +1400,7 @@ format_fifo_segment (u8 * s, va_list * args)
 
   if (fs == 0)
     {
-      s = format (s, "%-15s%15s%15s%15s%15s%15s", "Name", "Type",
+      s = format (s, "%-20s%10s%15s%15s%15s%15s", "Name", "Type",
 		  "HeapSize (M)", "ActiveFifos", "FreeFifos", "Address");
       return s;
     }
@@ -1409,7 +1409,7 @@ format_fifo_segment (u8 * s, va_list * args)
   active_fifos = fifo_segment_num_fifos (fs);
   free_fifos = fifo_segment_num_free_fifos (fs);
 
-  s = format (s, "%-15v%15U%15llu%15u%15u%15llx", ssvm_name (&fs->ssvm),
+  s = format (s, "%-20v%10U%15llu%15u%15u%15llx", ssvm_name (&fs->ssvm),
 	      format_fifo_segment_type, fs, size >> 20ULL, active_fifos,
 	      free_fifos, address);
 
