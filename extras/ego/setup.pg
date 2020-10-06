@@ -1,5 +1,5 @@
 set term pag off
-loop create
+bin create_loopback
 ego enable-disable loop0
 
 packet-generator new {

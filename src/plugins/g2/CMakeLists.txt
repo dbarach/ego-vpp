@@ -12,7 +12,7 @@
 # See the License for the specific language governing permissions and
 # limitations under the License.
 
-option(VPP_BUILD_G2_PLUGIN "Build golang g2 plugin" OFF)
+option(VPP_BUILD_G2_PLUGIN "Build golang g2 plugin" ON)
 if(VPP_BUILD_G2_PLUGIN)
   add_vpp_plugin(g2
     SOURCES
