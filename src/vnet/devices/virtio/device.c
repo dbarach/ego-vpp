@@ -312,11 +312,11 @@ set_gso_offsets (vlib_buffer_t * b, virtio_net_hdr_v1_t * hdr, int is_l2)
 }
 
 static_always_inline u16
-add_buffer_to_slot (vlib_main_t * vm, virtio_if_t * vif,
-		    virtio_if_type_t type, virtio_vring_t * vring,
-		    u32 bi, u16 free_desc_count,
+add_buffer_to_slot (vlib_main_t * vm, vlib_node_runtime_t * node,
+		    virtio_if_t * vif, virtio_if_type_t type,
+		    virtio_vring_t * vring, u32 bi, u16 free_desc_count,
 		    u16 avail, u16 next, u16 mask, int do_gso,
-		    int csum_offload, uword node_index)
+		    int csum_offload)
 {
   u16 n_added = 0;
   int hdr_sz = vif->virtio_net_hdr_sz;
@@ -334,7 +334,7 @@ add_buffer_to_slot (vlib_main_t * vm, virtio_if_t * vif,
 	set_gso_offsets (b, hdr, is_l2);
       else
 	{
-	  virtio_interface_drop_inline (vm, node_index, &bi, 1,
+	  virtio_interface_drop_inline (vm, node->node_index, &bi, 1,
 					VIRTIO_TX_ERROR_GSO_PACKET_DROP);
 	  return n_added;
 	}
@@ -346,10 +346,15 @@ add_buffer_to_slot (vlib_main_t * vm, virtio_if_t * vif,
 	set_checksum_offsets (b, hdr, is_l2);
       else
 	{
-	  virtio_interface_drop_inline (vm, node_index, &bi, 1,
+	  virtio_interface_drop_inline (vm, node->node_index, &bi, 1,
 					VIRTIO_TX_ERROR_CSUM_OFFLOAD_PACKET_DROP);
 	  return n_added;
 	}
+    }
+
+  if (PREDICT_FALSE (b->flags & VLIB_BUFFER_IS_TRACED))
+    {
+      virtio_tx_trace (vm, node, type, b, bi);
     }
 
   if (PREDICT_TRUE ((b->flags & VLIB_BUFFER_NEXT_PRESENT) == 0))
@@ -374,7 +379,7 @@ add_buffer_to_slot (vlib_main_t * vm, virtio_if_t * vif,
       u32 indirect_buffer = 0;
       if (PREDICT_FALSE (vlib_buffer_alloc (vm, &indirect_buffer, 1) == 0))
 	{
-	  virtio_interface_drop_inline (vm, node_index, &bi, 1,
+	  virtio_interface_drop_inline (vm, node->node_index, &bi, 1,
 					VIRTIO_TX_ERROR_INDIRECT_DESC_ALLOC_FAILED);
 	  return n_added;
 	}
@@ -599,15 +604,11 @@ retry:
 	  u32 bi = virtio_vring_buffering_read_from_front (vring->buffering);
 	  if (bi == ~0)
 	    break;
-	  vlib_buffer_t *b0 = vlib_get_buffer (vm, bi);
-	  if (b0->flags & VLIB_BUFFER_IS_TRACED)
-	    {
-	      virtio_tx_trace (vm, node, type, b0, buffers[0]);
-	    }
+
 	  n_added =
-	    add_buffer_to_slot (vm, vif, type, vring, bi, free_desc_count,
-				avail, next, mask, do_gso, csum_offload,
-				node->node_index);
+	    add_buffer_to_slot (vm, node, vif, type, vring, bi,
+				free_desc_count, avail, next, mask, do_gso,
+				csum_offload);
 	  if (PREDICT_FALSE (n_added == 0))
 	    {
 	      n_buffers_left--;
@@ -628,15 +629,10 @@ retry:
     {
       u16 n_added = 0;
 
-      vlib_buffer_t *b0 = vlib_get_buffer (vm, buffers[0]);
-      if (b0->flags & VLIB_BUFFER_IS_TRACED)
-	{
-	  virtio_tx_trace (vm, node, type, b0, buffers[0]);
-	}
       n_added =
-	add_buffer_to_slot (vm, vif, type, vring, buffers[0], free_desc_count,
-			    avail, next, mask, do_gso, csum_offload,
-			    node->node_index);
+	add_buffer_to_slot (vm, node, vif, type, vring, buffers[0],
+			    free_desc_count, avail, next, mask, do_gso,
+			    csum_offload);
 
       if (PREDICT_FALSE (n_added == 0))
 	{
@@ -766,7 +762,7 @@ virtio_clear_hw_interface_counters (u32 instance)
 
 static clib_error_t *
 virtio_interface_rx_mode_change (vnet_main_t * vnm, u32 hw_if_index, u32 qid,
-				 vnet_hw_interface_rx_mode mode)
+				 vnet_hw_if_rx_mode mode)
 {
   virtio_main_t *mm = &virtio_main;
   vnet_hw_interface_t *hw = vnet_get_hw_interface (vnm, hw_if_index);
@@ -780,7 +776,7 @@ virtio_interface_rx_mode_change (vnet_main_t * vnm, u32 hw_if_index, u32 qid,
       return clib_error_return (0, "interrupt mode is not supported");
     }
 
-  if (mode == VNET_HW_INTERFACE_RX_MODE_POLLING)
+  if (mode == VNET_HW_IF_RX_MODE_POLLING)
     {
       vec_foreach (tx_vring, vif->txq_vrings)
       {
