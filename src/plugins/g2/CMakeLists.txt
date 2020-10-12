@@ -49,7 +49,7 @@ if(VPP_BUILD_G2_PLUGIN)
     pthread
     )
 
-  set(EGO_OPTIMIZE_FLAG "-O0")
+  set(EGO_OPTIMIZE_FLAG "-O2")
 
   add_custom_command(
     OUTPUT ego_g2.o
