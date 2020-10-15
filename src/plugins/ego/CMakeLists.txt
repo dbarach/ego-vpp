@@ -32,7 +32,7 @@ if(VPP_BUILD_EGO_PLUGIN)
     ego_test.c
     )
 
-  set(EGO_OPTIMIZE_FLAG "-O3")
+  set(EGO_OPTIMIZE_FLAG "-O0")
 
   add_custom_command(
     OUTPUT ego_vpp.o

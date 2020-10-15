@@ -1723,7 +1723,10 @@ vppcom_session_connect (uint32_t session_handle, vppcom_endpt_t * server_ep)
 
   if (VCL_SESS_ATTR_TEST (session->attr, VCL_SESS_ATTR_NONBLOCK))
     {
-      session->session_state = STATE_CONNECT;
+      /* State set to STATE_UPDATED to ensure the session is not assumed
+       * to be open and to also allow the app to close it prior to vpp's
+       * connected reply. */
+      session->session_state = STATE_UPDATED;
       return VPPCOM_EINPROGRESS;
     }
 
@@ -1983,8 +1986,26 @@ vppcom_session_read_segments (uint32_t session_handle,
 	}
     }
 
-  n_read = svm_fifo_segments (rx_fifo, (svm_fifo_seg_t *) ds, n_segments,
-			      max_bytes);
+  n_read = svm_fifo_segments (rx_fifo, s->rx_bytes_pending,
+			      (svm_fifo_seg_t *) ds, n_segments, max_bytes);
+  if (n_read < 0)
+    return VPPCOM_EAGAIN;
+
+  if (svm_fifo_max_dequeue_cons (rx_fifo) == n_read)
+    {
+      svm_fifo_unset_event (s->rx_fifo);
+      if (svm_fifo_max_dequeue_cons (rx_fifo) != n_read
+	  && svm_fifo_set_event (s->rx_fifo)
+	  && VCL_SESS_ATTR_TEST (s->attr, VCL_SESS_ATTR_NONBLOCK))
+	{
+	  session_event_t *e;
+	  vec_add2 (wrk->unhandled_evts_vector, e, 1);
+	  e->event_type = SESSION_IO_EVT_RX;
+	  e->session_index = s->session_index;
+	}
+    }
+
+  s->rx_bytes_pending += n_read;
   return n_read;
 }
 
@@ -1999,19 +2020,9 @@ vppcom_session_free_segments (uint32_t session_handle, uint32_t n_bytes)
     return;
 
   svm_fifo_dequeue_drop (s->rx_fifo, n_bytes);
-  if (svm_fifo_is_empty_cons (s->rx_fifo))
-    {
-      svm_fifo_unset_event (s->rx_fifo);
-      if (!svm_fifo_is_empty_cons (s->rx_fifo)
-	  && svm_fifo_set_event (s->rx_fifo)
-	  && VCL_SESS_ATTR_TEST (s->attr, VCL_SESS_ATTR_NONBLOCK))
-	{
-	  session_event_t *e;
-	  vec_add2 (wrk->unhandled_evts_vector, e, 1);
-	  e->event_type = SESSION_IO_EVT_RX;
-	  e->session_index = s->session_index;
-	}
-    }
+
+  ASSERT (s->rx_bytes_pending < n_bytes);
+  s->rx_bytes_pending -= n_bytes;
 }
 
 static u8
