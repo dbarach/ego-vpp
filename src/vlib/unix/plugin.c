@@ -81,73 +81,77 @@ extract (u8 * sp, u8 * ep)
   return rv;
 }
 
-typedef struct {
-  uword data_segment_offset;
-  uword length;
-} vlib_r2_string_t;
+/*
+ * If a plugin .so contains a ".vlib_plugin_r2" section,
+ * this function converts the vlib_plugin_r2_t to
+ * a vlib_plugin_registration_t.
+ */
 
-typedef struct {
-  int default_disabled;
-  vlib_r2_string_t version;
-  vlib_r2_string_t version_required;
-  vlib_r2_string_t overrides;
-  vlib_r2_string_t early_init;
-  vlib_r2_string_t description;
-} vlib_plugin_r2_t;
-
-#define foreach_r2_string_field                 \
-_(version)                                      \
-_(version_required)                             \
-_(overrides)                                    \
-_(early_init)                                   \
-_(description)
-
-void r2_to_reg (elf_main_t *em, vlib_plugin_r2_t *r2,
-                vlib_plugin_registration_t *reg)
+static clib_error_t *
+r2_to_reg (elf_main_t * em, vlib_plugin_r2_t * r2,
+	   vlib_plugin_registration_t * reg)
 {
   clib_error_t *error;
   elf_section_t *section;
   uword data_segment_offset;
   u8 *data;
 
+  /* It turns out that the strings land in the ".data" section */
   error = elf_get_section_by_name (em, ".data", &section);
-  ASSERT(error == 0);
+  if (error)
+    return error;
   data = elf_get_section_contents (em, section->index, 1);
-  data_segment_offset = *((uword *)data);
+
+  /*
+   * Offsets in the ".vlib_plugin_r2" section
+   * need to have the data section base subtracted from them.
+   * The offset is in the first 8 bytes of the ".data" section
+   */
+
+  data_segment_offset = *((uword *) data);
 
   /* Relocate pointers, subtract data_segment_offset */
 #define _(a) r2->a.data_segment_offset -= data_segment_offset;
   foreach_r2_string_field;
 #undef _
 
+  if (r2->version.length >= ARRAY_LEN (reg->version) - 1)
+    return clib_error_return (0, "Version string too long");
+
+  if (r2->version_required.length >= ARRAY_LEN (reg->version_required) - 1)
+    return clib_error_return (0, "Version-required string too long");
+
+  if (r2->overrides.length >= ARRAY_LEN (reg->overrides) - 1)
+    return clib_error_return (0, "Override string too long");
+
   /* Compatibility with C-initializer */
   memcpy ((void *) reg->version, data + r2->version.data_segment_offset,
-          clib_min (r2->version.length, ARRAY_LEN(reg->version)-1));
+	  r2->version.length);
   memcpy ((void *) reg->version_required,
-          data + r2->version_required.data_segment_offset,
-          clib_min (r2->version_required.length,
-                    ARRAY_LEN(reg->version_required)-1));
+	  data + r2->version_required.data_segment_offset,
+	  r2->version_required.length);
   memcpy ((void *) reg->overrides, data + r2->overrides.data_segment_offset,
-          clib_min (r2->overrides.length, ARRAY_LEN(reg->overrides)-1));
+	  r2->overrides.length);
 
   if (r2->early_init.length > 0)
     {
       u8 *ei = 0;
-      vec_validate(ei, r2->early_init.length + 1);
+      vec_validate (ei, r2->early_init.length + 1);
       memcpy (ei, data + r2->early_init.data_segment_offset,
-              r2->early_init.length);
-      reg->early_init = (void *)ei;
+	      r2->early_init.length);
+      reg->early_init = (void *) ei;
     }
 
   if (r2->description.length > 0)
     {
       u8 *desc = 0;
-      vec_validate(desc, r2->description.length + 1);
+      vec_validate (desc, r2->description.length + 1);
       memcpy (desc, data + r2->description.data_segment_offset,
-              r2->description.length);
-      reg->description = (void *)desc;
+	      r2->description.length);
+      reg->description = (void *) desc;
     }
   vec_free (data);
+  return 0;
 }
 
 
@@ -174,13 +178,19 @@ load_one_plugin (plugin_main_t * pm, plugin_info_t * pi, int from_early_init)
   if (error == 0)
     {
       data = elf_get_section_contents (&em, section->index, 1);
-      r2 = (vlib_plugin_r2_t *)data;
-      reg = clib_mem_alloc (sizeof(*reg));
+      r2 = (vlib_plugin_r2_t *) data;
+      reg = clib_mem_alloc (sizeof (*reg));
       memset (reg, 0, sizeof (*reg));
 
-      r2_to_reg (&em, r2, reg);
+      reg->default_disabled = r2->default_disabled != 0;
+      error = r2_to_reg (&em, r2, reg);
+      if (error)
+	{
+	  PLUGIN_LOG_ERR ("Bad r2 registration: %s\n", (char *) pi->name);
+	  return -1;
+	}
       if (pm->plugins_default_disable)
-        reg->default_disabled = 1;
+	reg->default_disabled = 1;
       reread_reg = 0;
       goto process_reg;
     }
@@ -206,7 +216,7 @@ load_one_plugin (plugin_main_t * pm, plugin_info_t * pi, int from_early_init)
   if (pm->plugins_default_disable)
     reg->default_disabled = 1;
 
- process_reg:
+process_reg:
   p = hash_get_mem (pm->config_index_by_name, pi->name);
   if (p)
     {
