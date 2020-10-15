@@ -77,7 +77,7 @@ typedef enum
  * Node costs 30 clocks/pkt at a vector size of 51
  */
 
-#define VERSION_1 1
+// #define VERSION_1 1
 #ifdef VERSION_1
 #define foreach_mac_address_offset              \
 _(0)                                            \
@@ -467,9 +467,10 @@ VLIB_NODE_FN (sample_node) (vlib_main_t * vm, vlib_node_runtime_t * node,
  * default.
  */
 
+#define VERSION_3
 #ifdef VERSION_3
 
-#define u8x16_shuffle __builtin_shuffle
+#define u8x16_shuffle __builtin_shufflevector
 /* This would normally be a stack local, but since it's a constant... */
 static const u16 nexts[VLIB_FRAME_SIZE] = { 0 };
 
@@ -609,9 +610,10 @@ VLIB_NODE_FN (sample_node) (vlib_main_t * vm, vlib_node_runtime_t * node,
  */
 
 
+// #define VERSION_4 1
 #ifdef VERSION_4
 
-#define u8x16_shuffle __builtin_shuffle
+#define u8x16_shuffle __builtin_shufflevector
 
 static u8x16 swapmac =
   { 6, 7, 8, 9, 10, 11, 0, 1, 2, 3, 4, 5, 12, 13, 14, 15 };

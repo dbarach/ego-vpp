@@ -1,6 +1,7 @@
 set term pag off
 bin create_loopback
-ego enable-disable loop0
+uncomment { ego enable-disable loop0 }
+comment { sample macswap loop0 }
 
 packet-generator new {
     name x
