@@ -12,7 +12,7 @@
 # See the License for the specific language governing permissions and
 # limitations under the License.
 
-option(VPP_BUILD_G2_PLUGIN "Build golang g2 plugin" OFF)
+option(VPP_BUILD_G2_PLUGIN "Build golang g2 plugin" ON)
 option(VPP_USE_DEBUG_GTK "Use locally-installed gtk libs" OFF)
 if(VPP_USE_DEBUG_GTK)
   list(APPEND GTK_LIBS /usr/local/lib/libgtk-3.so)
