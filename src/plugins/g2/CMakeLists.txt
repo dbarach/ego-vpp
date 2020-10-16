@@ -47,6 +47,9 @@ if(VPP_BUILD_G2_PLUGIN)
     gobject-2.0
     glib-2.0
     pthread
+
+    COMPONENT
+    vpp-plugin-g2
     )
 
   set(EGO_OPTIMIZE_FLAG "-O2")

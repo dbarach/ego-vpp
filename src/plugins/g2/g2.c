@@ -23,15 +23,6 @@
 
 g2_main_t g2_main;
 
-/* *INDENT-OFF* */
-VLIB_PLUGIN_REGISTER () =
-{
-  .version = VPP_BUILD_VER,
-  .description = "g2 plugin",
-};
-/* *INDENT-ON* */
-
-
 static volatile void *ego_g2_fp;
 static pthread_mutex_t g2_thread_lock;
 static pthread_cond_t g2_thread_cv;

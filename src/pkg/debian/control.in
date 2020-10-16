@@ -87,3 +87,19 @@ Depends: vpp (= ${source:Version}),
 Description: VPP Python3 API bindings
  This package contains VPP python api bindings
  .
+
+Package: vpp-plugin-g2
+Architecture: any
+Depends: vpp (= ${source:Version}),
+         ${shlibs:Depends}
+Description: VPP G2 Viewer Plugin
+ This package contains the g2 live-data plugin
+ .
+
+Package: vpp-plugin-ego
+Architecture: any
+Depends: vpp (= ${source:Version}),
+         ${shlibs:Depends}
+Description: EGO Test Plugin
+ This package contains ego test code
+ .
