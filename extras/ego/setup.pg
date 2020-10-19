@@ -1,5 +1,6 @@
 set term pag off
 bin create_loopback
+set int state loop0 up
 uncomment { ego enable-disable loop0 }
 comment { sample macswap loop0 }
 
