@@ -544,13 +544,10 @@ virtio_find_free_desc (virtio_vring_t * vring, u16 size, u16 mask,
 static_always_inline uword
 virtio_interface_tx_gso_inline (vlib_main_t * vm, vlib_node_runtime_t * node,
 				vlib_frame_t * frame, virtio_if_t * vif,
-				virtio_if_type_t type, int do_gso,
-				int csum_offload, int do_gro)
+				virtio_if_type_t type, virtio_vring_t * vring,
+				int do_gso, int csum_offload)
 {
   u16 n_left = frame->n_vectors;
-  virtio_vring_t *vring;
-  u16 qid = vm->thread_index % vif->num_txqs;
-  vring = vec_elt_at_index (vif->txq_vrings, qid);
   u16 used, next, avail, n_buffers = 0, n_buffers_left = 0;
   u16 sz = vring->size;
   u16 mask = sz - 1;
@@ -558,13 +555,7 @@ virtio_interface_tx_gso_inline (vlib_main_t * vm, vlib_node_runtime_t * node,
   u32 *buffers = vlib_frame_vector_args (frame);
   u32 to[GRO_TO_VECTOR_SIZE (n_left)];
 
-  clib_spinlock_lock_if_init (&vring->lockp);
-
-  if ((vring->used->flags & VRING_USED_F_NO_NOTIFY) == 0 &&
-      (vring->last_kick_avail_idx != vring->avail->idx))
-    virtio_kick (vm, vring, vif);
-
-  if (do_gro)
+  if (do_gso && vif->packet_coalesce)
     {
       n_left = vnet_gro_inline (vm, vring->flow_table, buffers, n_left, to);
       buffers = to;
@@ -681,34 +672,29 @@ retry:
 				      VIRTIO_TX_ERROR_NO_FREE_SLOTS);
     }
 
-  clib_spinlock_unlock_if_init (&vring->lockp);
-
   return frame->n_vectors - n_left;
 }
 
 static_always_inline uword
 virtio_interface_tx_inline (vlib_main_t * vm, vlib_node_runtime_t * node,
 			    vlib_frame_t * frame, virtio_if_t * vif,
-			    virtio_if_type_t type)
+			    virtio_vring_t * vring, virtio_if_type_t type)
 {
   vnet_main_t *vnm = vnet_get_main ();
   vnet_hw_interface_t *hw = vnet_get_hw_interface (vnm, vif->hw_if_index);
 
   if (hw->flags & VNET_HW_INTERFACE_FLAG_SUPPORTS_GSO)
-    return virtio_interface_tx_gso_inline (vm, node, frame, vif, type,
+    return virtio_interface_tx_gso_inline (vm, node, frame, vif, type, vring,
 					   1 /* do_gso */ ,
-					   1 /* checksum offload */ ,
-					   vif->packet_coalesce);
+					   1 /* checksum offload */ );
   else if (hw->flags & VNET_HW_INTERFACE_FLAG_SUPPORTS_TX_L4_CKSUM_OFFLOAD)
-    return virtio_interface_tx_gso_inline (vm, node, frame, vif, type,
+    return virtio_interface_tx_gso_inline (vm, node, frame, vif, type, vring,
 					   0 /* no do_gso */ ,
-					   1 /* checksum offload */ ,
-					   0 /* do_gro */ );
+					   1 /* checksum offload */ );
   else
-    return virtio_interface_tx_gso_inline (vm, node, frame, vif, type,
+    return virtio_interface_tx_gso_inline (vm, node, frame, vif, type, vring,
 					   0 /* no do_gso */ ,
-					   0 /* no checksum offload */ ,
-					   0 /* do_gro */ );
+					   0 /* no checksum offload */ );
 }
 
 VNET_DEVICE_CLASS_TX_FN (virtio_device_class) (vlib_main_t * vm,
@@ -718,20 +704,31 @@ VNET_DEVICE_CLASS_TX_FN (virtio_device_class) (vlib_main_t * vm,
   virtio_main_t *nm = &virtio_main;
   vnet_interface_output_runtime_t *rund = (void *) node->runtime_data;
   virtio_if_t *vif = pool_elt_at_index (nm->interfaces, rund->dev_instance);
+  u16 qid = vm->thread_index % vif->num_txqs;
+  virtio_vring_t *vring = vec_elt_at_index (vif->txq_vrings, qid);
+  uword rv = 0;
+
+  clib_spinlock_lock_if_init (&vring->lockp);
+
+  if ((vring->used->flags & VRING_USED_F_NO_NOTIFY) == 0 &&
+      (vring->last_kick_avail_idx != vring->avail->idx))
+    virtio_kick (vm, vring, vif);
 
   if (vif->type == VIRTIO_IF_TYPE_TAP)
-    return virtio_interface_tx_inline (vm, node, frame, vif,
-				       VIRTIO_IF_TYPE_TAP);
+    rv = virtio_interface_tx_inline (vm, node, frame, vif, vring,
+				     VIRTIO_IF_TYPE_TAP);
   else if (vif->type == VIRTIO_IF_TYPE_PCI)
-    return virtio_interface_tx_inline (vm, node, frame, vif,
-				       VIRTIO_IF_TYPE_PCI);
+    rv = virtio_interface_tx_inline (vm, node, frame, vif, vring,
+				     VIRTIO_IF_TYPE_PCI);
   else if (vif->type == VIRTIO_IF_TYPE_TUN)
-    return virtio_interface_tx_inline (vm, node, frame, vif,
-				       VIRTIO_IF_TYPE_TUN);
+    rv = virtio_interface_tx_inline (vm, node, frame, vif, vring,
+				     VIRTIO_IF_TYPE_TUN);
   else
     ASSERT (0);
 
-  return 0;
+  clib_spinlock_unlock_if_init (&vring->lockp);
+
+  return rv;
 }
 
 static void
@@ -764,11 +761,11 @@ static clib_error_t *
 virtio_interface_rx_mode_change (vnet_main_t * vnm, u32 hw_if_index, u32 qid,
 				 vnet_hw_if_rx_mode mode)
 {
+  vlib_main_t *vm = vnm->vlib_main;
   virtio_main_t *mm = &virtio_main;
   vnet_hw_interface_t *hw = vnet_get_hw_interface (vnm, hw_if_index);
   virtio_if_t *vif = pool_elt_at_index (mm->interfaces, hw->dev_instance);
   virtio_vring_t *rx_vring = vec_elt_at_index (vif->rxq_vrings, qid);
-  virtio_vring_t *tx_vring = 0;
 
   if (vif->type == VIRTIO_IF_TYPE_PCI && !(vif->support_int_mode))
     {
@@ -778,31 +775,31 @@ virtio_interface_rx_mode_change (vnet_main_t * vnm, u32 hw_if_index, u32 qid,
 
   if (mode == VNET_HW_IF_RX_MODE_POLLING)
     {
-      vec_foreach (tx_vring, vif->txq_vrings)
-      {
-	/* only enable packet coalesce in poll mode */
-	gro_flow_table_set_is_enable (tx_vring->flow_table, 1);
-	/* only enable packet buffering in poll mode */
-	virtio_vring_buffering_set_is_enable (tx_vring->buffering, 1);
-      }
+      if (vif->packet_coalesce || vif->packet_buffering)
+	{
+	  if (mm->interrupt_queues_count > 0)
+	    mm->interrupt_queues_count--;
+	  if (mm->interrupt_queues_count == 0)
+	    vlib_process_signal_event (vm,
+				       virtio_send_interrupt_node.index,
+				       VIRTIO_EVENT_STOP_TIMER, 0);
+	}
       rx_vring->avail->flags |= VRING_AVAIL_F_NO_INTERRUPT;
     }
   else
     {
       if (vif->packet_coalesce || vif->packet_buffering)
 	{
-	  virtio_log_warning (vif,
-			      "interface %U is in interrupt mode, disabling packet coalescing or buffering",
-			      format_vnet_sw_if_index_name, vnet_get_main (),
-			      vif->sw_if_index);
-	  vec_foreach (tx_vring, vif->txq_vrings)
-	  {
-	    gro_flow_table_set_is_enable (tx_vring->flow_table, 0);
-	    virtio_vring_buffering_set_is_enable (tx_vring->buffering, 0);
-	  }
+	  mm->interrupt_queues_count++;
+	  if (mm->interrupt_queues_count == 1)
+	    vlib_process_signal_event (vm,
+				       virtio_send_interrupt_node.index,
+				       VIRTIO_EVENT_START_TIMER, 0);
 	}
       rx_vring->avail->flags &= ~VRING_AVAIL_F_NO_INTERRUPT;
     }
+
+  rx_vring->mode = mode;
 
   return 0;
 }

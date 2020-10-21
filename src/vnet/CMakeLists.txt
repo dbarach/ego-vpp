@@ -672,6 +672,8 @@ list(APPEND VNET_HEADERS
   udp/udp_error.def
   udp/udp.h
   udp/udp_packet.h
+  udp/udp_inlines.h
+  udp/udp_local.h
 )
 
 list(APPEND VNET_API_FILES udp/udp.api)
@@ -985,6 +987,7 @@ list(APPEND VNET_SOURCES
   devices/virtio/virtio_api.c
   devices/virtio/virtio_pci_legacy.c
   devices/virtio/virtio_pci_modern.c
+  devices/virtio/virtio_process.c
   devices/virtio/virtio_types_api.c
 )
 
