@@ -395,13 +395,13 @@ rebuild-g2-release:
 .PHONY: rebuild-ehs
 
 rebuild-ehs:
-	cd $(BR)/build-vpp_debug-native/vpp; ninja g2_rebuild
+	cd $(BR)/build-vpp_debug-native/vpp; ninja ehs_rebuild
 	$(call make,$(PLATFORM)_debug,$(addsuffix -install,$(TARGETS)))
 
 .PHONY: rebuild-ehs-release
 
 rebuild-ehs-release:
-	cd $(BR)/build-vpp-native/vpp; ninja g2_rebuild
+	cd $(BR)/build-vpp-native/vpp; ninja ehs_rebuild
 	$(call make,$(PLATFORM),$(addsuffix -install,$(TARGETS)))
 
 libexpand = $(subst $(subst ,, ),:,$(foreach lib,$(1),$(BR)/install-$(2)-native/vpp/$(lib)/$(3)))
