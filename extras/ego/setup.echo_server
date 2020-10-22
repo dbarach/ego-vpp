@@ -1,0 +1,6 @@
+set term pag off
+loop create
+set int ip addres loop0 192.168.10.1/24
+set int state loop0 up
+echo-server attach
+echo-server listen
