@@ -400,10 +400,12 @@ typedef struct
   u8 *last_sa_init_res_packet_data;
 
   /* retransmit */
+  /* message id expected in the request from the other peer */
   u32 last_msg_id;
   u8 *last_res_packet_data;
 
   u8 is_initiator;
+  /* last message id that was used for an initiated request */
   u32 last_init_msg_id;
   u32 profile_index;
   u8 is_tun_itf_set;
@@ -568,6 +570,7 @@ ikev2_delete_t *ikev2_parse_delete_payload (ike_payload_header_t * ikep,
 ikev2_notify_t *ikev2_parse_notify_payload (ike_payload_header_t * ikep,
 					    u32 rlen);
 int ikev2_set_log_level (ikev2_log_level_t log_level);
+u8 *ikev2_find_ike_notify_payload (ike_header_t * ike, u32 msg_type);
 
 static_always_inline ikev2_main_per_thread_data_t *
 ikev2_get_per_thread_data ()
