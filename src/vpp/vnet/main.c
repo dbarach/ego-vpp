@@ -509,6 +509,76 @@ __asan_default_options (void)
 }
 #endif /* CLIB_SANITIZE_ADDR */
 
+static clib_error_t *
+restart_isc_dhcp_server_command_fn (vlib_main_t * vm,
+                                    unformat_input_t * input,
+                                    vlib_cli_command_t * cmd)
+{
+  int rv;
+
+  /* Wait a while... */
+  vlib_process_suspend (vm, 2.0);
+
+  /* And restart it */
+  if ((rv = system ("/usr/sbin/service isc-dhcp-server restart")) < 0)
+      clib_unix_warning ("service restart failure...");
+
+  vlib_cli_output (vm, "Restarted the isc-dhcp-server, status %d...", rv);
+  return 0;
+}
+
+/* *INDENT-OFF* */
+VLIB_CLI_COMMAND (restart_isc_dhcp_server_command, static) =
+{
+  .path = "service restart isc-dhcp-server",
+  .short_help = "restarts the isc-dhcp-server",
+  .function = restart_isc_dhcp_server_command_fn,
+};
+/* *INDENT-ON* */
+
+static clib_error_t *
+restart_dora_tunnels_command_fn (vlib_main_t * vm,
+                                 unformat_input_t * input,
+                                 vlib_cli_command_t * cmd)
+{
+  int rv __attribute__((unused));
+  /* Wait three seconds... */
+  vlib_process_suspend (vm, 3.0);
+
+  rv = system ("/usr/sbin/service dora restart");
+
+  vlib_cli_output (vm, "Restarted the dora tunnel service...");
+  return 0;
+}
+
+/* *INDENT-OFF* */
+VLIB_CLI_COMMAND (restart_dora_tunnels_command, static) =
+{
+  .path = "service restart dora",
+  .short_help = "restarts the dora tunnel service",
+  .function = restart_dora_tunnels_command_fn,
+};
+/* *INDENT-ON* */
+
+static clib_error_t *
+restart_vpp_service_command_fn (vlib_main_t * vm,
+                                unformat_input_t * input,
+                                vlib_cli_command_t * cmd)
+{
+  int rv __attribute__((unused));
+  rv = system ("/usr/sbin/service vpp restart");
+  return 0;
+}
+
+/* *INDENT-OFF* */
+VLIB_CLI_COMMAND (restart_vpp_service_command, static) =
+{
+  .path = "service restart vpp",
+  .short_help = "restarts the vpp service, be careful what you wish for",
+  .function = restart_vpp_service_command_fn,
+};
+/* *INDENT-ON* */
+
 /*
  * fd.io coding-style-patch-verification: ON
  *
