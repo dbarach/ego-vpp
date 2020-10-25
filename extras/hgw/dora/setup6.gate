@@ -1,0 +1,8 @@
+set ct6 inside GigabitEthernet3/0/0 
+set ct6 outside GigabitEthernet3/0/0
+ip6 nd address autoconfig GigabitEthernet3/0/0 default-route
+dhcp6 client GigabitEthernet3/0/0
+dhcp6 pd client GigabitEthernet3/0/0 prefix group hgw
+set ip6 address bvi0 prefix group hgw ::2/64
+comment { ip6 nd bvi0 ra-managed-config-flag   }
+comment {ip6 nd bvi0 prefix 2601:881:8000:258f::/64 86400 86400}

@@ -1,0 +1,72 @@
+comment { Old Linksys box yields a constant IP address }
+set int mac address GigabitEthernet3/0/0 48:f8:b3:e0:85:1a
+set dhcp client intfc GigabitEthernet3/0/0 hostname vppn1
+set int state GigabitEthernet3/0/0 up
+
+bvi create instance 0
+set int l2 bridge bvi0 1 bvi
+set int ip address bvi0 192.168.1.1/24
+set int state bvi0 up
+
+set int l2 bridge GigabitEthernet0/14/0 1
+set int state GigabitEthernet0/14/0 up
+set int l2 bridge GigabitEthernet0/14/1 1
+set int state GigabitEthernet0/14/1 up
+set int l2 bridge GigabitEthernet0/14/2 1
+set int state GigabitEthernet0/14/2 up
+set int l2 bridge GigabitEthernet0/14/3 1
+set int state GigabitEthernet0/14/3 up
+
+comment { dhcp server and host-stack access }
+create tap host-if-name lstack host-ip4-addr 192.168.1.2/24 host-ip4-gw 192.168.1.1
+set int l2 bridge tap0 1
+set int state tap0 up
+
+cnat snat with GigabitEthernet3/0/0
+set interface feature bvi0 ip4-cnat-snat arc ip4-unicast
+cnat translation add proto tcp real GigabitEthernet3/0/0 22432 to -> 192.168.1.2 22432
+cnat translation add proto udp real GigabitEthernet3/0/0 53053 to -> 192.168.1.1 53053
+
+service restart isc-dhcp-server
+service restart dora
+
+comment { bin dns_name_server_add_del 8.8.8.8 }
+comment { bin dns_enable_disable }
+
+bin mactime_add_del_range name alarm mac 00:d0:2d:5e:86:85 allow-static
+bin mactime_add_del_range name apple-ssdp mac 01:00:5e:7f:ff:fa allow-static
+bin mactime_add_del_range name broadcast mac ff:ff:ff:ff:ff:ff allow-static
+bin mactime_add_del_range name cisco-vpn mac a8:b4:56:e1:b8:3e allow-static
+bin mactime_add_del_range name dave-ipad mac ac:cf:5c:30:5b:fb allow-static
+bin mactime_add_del_range name dave-iphone mac d0:3f:aa:bf:2e:a4 allow-static
+bin mactime_add_del_range name dave-mac-wifi mac c4:b3:01:d7:fa:5f allow-static
+bin mactime_add_del_range name dave-mac-wired mac a8:20:66:15:8c:5e allow-static
+bin mactime_add_del_range name dave-old-iphone mac c0:cc:f8:74:a5:e9 allow-static
+bin mactime_add_del_range name dbarach-hb mac 04:d9:f5:7c:2b:b4 allow-static
+bin mactime_add_del_range name dbarach-ivy mac 70:54:d2:c4:2b:4d allow-static
+bin mactime_add_del_range name indoor-dvr mac ec:71:db:41:fd:36 allow-static no-udp-10001
+bin mactime_add_del_range name ip4-all-routers mac 01:00:5e:00:00:02 allow-static
+bin mactime_add_del_range name ip4-igmp mac 01:00:5e:00:00:16 allow-static
+bin mactime_add_del_range name ip4-llmnr2 mac 01:00:5e:00:00:fc allow-static
+bin mactime_add_del_range name ip4-llmnr mac 01:00:5e:00:00:fb allow-static
+bin mactime_add_del_range name ip6-mdns mac 33:33:00:00:00:fb allow-static
+bin mactime_add_del_range name ip6-nd mac 33:33:00:00:00:02 allow-static
+bin mactime_add_del_range name peg-iphone mac b8:c1:11:ed:ea:2a allow-static
+bin mactime_add_del_range name peg-iphone mac fc:e9:98:d9:76:bf allow-static
+bin mactime_add_del_range name peg-mac mac 8C:85:90:13:7E:05 allow-static
+bin mactime_add_del_range name printer mac 9c:30:5b:27:80:d8 allow-static
+bin mactime_add_del_range name ptz1 mac 14:6b:9c:e2:f9:91 allow-static no-udp-10001
+bin mactime_add_del_range name ptz2 mac 74:ee:2a:66:93:1a allow-static no-udp-10001
+bin mactime_add_del_range name ptz3 mac 74:ee:2a:66:92:7a allow-static no-udp-10001
+bin mactime_add_del_range name roku mac d8:31:34:dc:e4:bb allow-static
+bin mactime_add_del_range name thermostat mac 00:11:f6:a0:1f:74 allow-static
+bin mactime_add_del_range name weather-station mac 00:1D:0A:00:6E:C7 allow-static
+bin mactime_add_del_range name wifi-ap mac 88:DC:96:54:77:F2 allow-static
+
+uncomment { http static server www-root /home/dbarach/vpp-web uri tcp://0.0.0.0/1954 cache-size 5m fifo-size 4096 }
+uncomment { builtinurl enable }
+
+bin mactime_enable_disable GigabitEthernet0/14/0
+bin mactime_enable_disable GigabitEthernet0/14/1
+bin mactime_enable_disable GigabitEthernet0/14/2
+bin mactime_enable_disable GigabitEthernet0/14/3

@@ -1,0 +1,9 @@
+[Match]
+Name=enp4s0
+
+[Link]
+RequiredForOnline=no
+
+[Network]
+ConfigureWithoutCarrier=true
+Address=192.168.2.254/24

@@ -1,0 +1,5 @@
+create ipsec tunnel local-ip 67.162.160.215 remote-ip 162.255.170.167 local-spi 101 remote-spi 100 local-crypto-key 1BADDEADB0DE remote-crypto-key 1BADDEADB0DE crypto-alg aes-cbc-128
+set int unnum ipsec0 use GigabitEthernet3/0/0
+set int state ipsec0 up
+
+ip route add 192.168.1.0/24 via ipsec0
