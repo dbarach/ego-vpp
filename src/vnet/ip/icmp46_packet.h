@@ -302,6 +302,17 @@ typedef CLIB_PACKED (struct
     icmp46_header_t icmp; u32 reserved_must_be_zero;
 }) icmp6_neighbor_discovery_header_t;
 
+/* *INDENT-OFF* */
+typedef CLIB_PACKED (struct
+{
+    icmp6_neighbor_discovery_option_header_t header;
+    /* Option type. */
+    u8 prefix_length;
+    u8 flags;
+    u32 route_lifetime;
+    u8 prefix[16];
+}) icmp6_route_information_option_t;
+
 /* Router advertisement packet formats. */
 typedef CLIB_PACKED (struct
 {

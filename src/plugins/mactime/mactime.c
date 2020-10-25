@@ -559,6 +559,9 @@ show_mactime_command_fn (vlib_main_t * vm,
       (0,
        "Feature not initialized, suggest 'help mactime enable-disable'...");
 
+  if (pool_elts (mm->devices) == 0)
+    return clib_error_return (0, "No device data...");
+
   vec_reset_length (mm->arp_cache_copy);
   /* Walk all ip4 neighbours on all interfaces */
   ip_neighbor_walk (IP46_TYPE_IP4, ~0, mactime_ip_neighbor_copy, mm);
@@ -675,6 +678,9 @@ show_mactime_command_fn (vlib_main_t * vm,
 			 format_bytes_with_width, dp->data_quota, 10,
 			 "Use ", format_bytes_with_width,
 			 dp->data_used_in_range, 8);
+      if (dp->flags & MACTIME_DEVICE_FLAG_DROP_UDP_10001)
+        vlib_cli_output (vm, "    call-home acl");
+
       /* This is really only good for small N... */
       for (j = 0; j < vec_len (mm->arp_cache_copy); j++)
 	{

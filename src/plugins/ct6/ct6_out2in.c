@@ -179,6 +179,12 @@ ct6_out2in_inline (vlib_main_t * vm,
 
       udp0 = ip6_next_header (ip0);
 
+      /* $$$$ not to be merged... */
+      if (ip0->protocol == IP_PROTOCOL_TCP &&
+          clib_host_to_net_u16(udp0->dst_port) == 22432)
+        goto trace0;
+      /* $$$$ End not to be merged... */
+
       /*
        * See if we know about this flow.
        */

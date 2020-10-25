@@ -392,6 +392,8 @@ unix_config (vlib_main_t * vm, unformat_input_t * input)
   /* Defaults */
   um->cli_pager_buffer_limit = UNIX_CLI_DEFAULT_PAGER_LIMIT;
   um->cli_history_limit = UNIX_CLI_DEFAULT_HISTORY;
+  um->cli_no_banner = 1;
+  um->cli_no_pager = 1;
 
   while (unformat_check_input (input) != UNFORMAT_END_OF_INPUT)
     {
