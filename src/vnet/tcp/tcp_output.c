@@ -839,7 +839,8 @@ tcp_send_synack (tcp_connection_t * tc)
   vlib_buffer_t *b;
   u32 bi;
 
-  tcp_retransmit_timer_force_update (&wrk->timer_wheel, tc);
+  ASSERT (tc->snd_una != tc->snd_nxt);
+  tcp_retransmit_timer_update (&wrk->timer_wheel, tc);
 
   if (PREDICT_FALSE (!vlib_buffer_alloc (vm, &bi, 1)))
     {
@@ -889,7 +890,6 @@ tcp_send_fin (tcp_connection_t * tc)
   if ((tc->flags & TCP_CONN_SNDACK) && !tc->pending_dupacks)
     tc->flags &= ~TCP_CONN_SNDACK;
 
-  tcp_retransmit_timer_force_update (&wrk->timer_wheel, tc);
   b = vlib_get_buffer (vm, bi);
   tcp_init_buffer (vm, b);
   tcp_make_fin (tc, b);
@@ -897,11 +897,11 @@ tcp_send_fin (tcp_connection_t * tc)
   TCP_EVT (TCP_EVT_FIN_SENT, tc);
   /* Account for the FIN */
   tc->snd_nxt += 1;
+  tcp_retransmit_timer_update (&wrk->timer_wheel, tc);
   if (!fin_snt)
     {
       tc->flags |= TCP_CONN_FINSNT;
       tc->flags &= ~TCP_CONN_FINPNDG;
-      tc->snd_una_max = seq_max (tc->snd_una_max, tc->snd_nxt);
     }
 }
 
@@ -993,8 +993,7 @@ tcp_session_push_header (transport_connection_t * tconn, vlib_buffer_t * b)
   tcp_push_hdr_i (tc, b, tc->snd_nxt, /* compute opts */ 0, /* burst */ 1,
 		  /* update_snd_nxt */ 1);
 
-  tc->snd_una_max = seq_max (tc->snd_nxt, tc->snd_una_max);
-  tcp_validate_txf_size (tc, tc->snd_una_max - tc->snd_una);
+  tcp_validate_txf_size (tc, tc->snd_nxt - tc->snd_una);
   /* If not tracking an ACK, start tracking */
   if (tc->rtt_ts == 0 && !tcp_in_cong_recovery (tc))
     {
@@ -1325,11 +1324,8 @@ tcp_timer_retransmit_handler (tcp_connection_t * tc)
 	  return;
 	}
 
-      /* Shouldn't be here. This condition is tricky because it has to take
-       * into account boff > 0 due to persist timeout. */
-      if ((tc->rto_boff == 0 && tc->snd_una == tc->snd_nxt)
-	  || (tc->rto_boff > 0 && seq_geq (tc->snd_una, tc->snd_congestion)
-	      && !tcp_flight_size (tc)))
+      /* Shouldn't be here */
+      if (tc->snd_una == tc->snd_nxt)
 	{
 	  ASSERT (!tcp_in_recovery (tc));
 	  tc->rto_boff = 0;
@@ -1379,7 +1375,7 @@ tcp_timer_retransmit_handler (tcp_connection_t * tc)
       tcp_enqueue_to_output (wrk, b, bi, tc->c_is_ip4);
 
       tc->rto = clib_min (tc->rto << 1, TCP_RTO_MAX);
-      tcp_retransmit_timer_force_update (&wrk->timer_wheel, tc);
+      tcp_retransmit_timer_update (&wrk->timer_wheel, tc);
 
       tc->rto_boff += 1;
       if (tc->rto_boff == 1)
@@ -1422,7 +1418,8 @@ tcp_timer_retransmit_handler (tcp_connection_t * tc)
       if (tc->rto_boff > TCP_RTO_SYN_RETRIES)
 	tc->rto = clib_min (tc->rto << 1, TCP_RTO_MAX);
 
-      tcp_retransmit_timer_force_update (&wrk->timer_wheel, tc);
+      ASSERT (tc->snd_una != tc->snd_nxt);
+      tcp_retransmit_timer_update (&wrk->timer_wheel, tc);
 
       b = vlib_get_buffer (vm, bi);
       tcp_init_buffer (vm, b);
@@ -1561,7 +1558,7 @@ tcp_timer_persist_handler (tcp_connection_t * tc)
 					max_snd_bytes);
   b->current_length = n_bytes;
   ASSERT (n_bytes != 0 && (tcp_timer_is_active (tc, TCP_TIMER_RETRANSMIT)
-			   || tc->snd_nxt == tc->snd_una_max
+			   || tc->snd_una == tc->snd_nxt
 			   || tc->rto_boff > 1));
 
   if (tc->cfg_flags & TCP_CFG_F_RATE_SAMPLE)
@@ -1572,8 +1569,7 @@ tcp_timer_persist_handler (tcp_connection_t * tc)
 
   tcp_push_hdr_i (tc, b, tc->snd_nxt, /* compute opts */ 0,
 		  /* burst */ 0, /* update_snd_nxt */ 1);
-  tc->snd_una_max = seq_max (tc->snd_nxt, tc->snd_una_max);
-  tcp_validate_txf_size (tc, tc->snd_una_max - tc->snd_una);
+  tcp_validate_txf_size (tc, tc->snd_nxt - tc->snd_una);
   tcp_enqueue_to_output (wrk, b, bi, tc->c_is_ip4);
 
   /* Just sent new data, enable retransmit */
@@ -1639,7 +1635,6 @@ tcp_transmit_unsent (tcp_worker_ctx_t * wrk, tcp_connection_t * tc,
 	tcp_bt_track_tx (tc, n_written);
 
       tc->snd_nxt += n_written;
-      tc->snd_una_max = seq_max (tc->snd_nxt, tc->snd_una_max);
     }
 
 done:

@@ -19,7 +19,7 @@ PLATFORM?=vpp
 SAMPLE_PLUGIN?=no
 STARTUP_DIR?=$(PWD)
 MACHINE=$(shell uname -m)
-SUDO?=sudo
+SUDO?=sudo -E
 DPDK_CONFIG?=no-pci
 
 ,:=,
@@ -642,7 +642,9 @@ cscope: cscope.files
 
 .PHONY: compdb
 compdb:
-	@ninja -C build-root/build-vpp_debug-native/vpp -t compdb > compile_commands.json
+	@ninja -C build-root/build-vpp_debug-native/vpp build.ninja
+	@ninja -C build-root/build-vpp_debug-native/vpp -t compdb | \
+	  extras/scripts/compdb_cleanup.py > compile_commands.json
 
 .PHONY: checkstyle
 checkstyle: checkfeaturelist

@@ -680,7 +680,6 @@ tcp_init_snd_vars (tcp_connection_t * tc)
   tc->iss = tcp_generate_random_iss (tc);
   tc->snd_una = tc->iss;
   tc->snd_nxt = tc->iss + 1;
-  tc->snd_una_max = tc->snd_nxt;
   tc->srtt = 0.1 * THZ;		/* 100 ms */
 
   if (!tcp_cfg.csum_offload)
@@ -916,7 +915,10 @@ tcp_snd_space_inline (tcp_connection_t * tc)
 {
   int snd_space;
 
-  if (PREDICT_FALSE (tcp_in_fastrecovery (tc)
+  /* Fast path is disabled when recovery is on. @ref tcp_session_custom_tx
+   * controls both retransmits and the sending of new data while congested
+   */
+  if (PREDICT_FALSE (tcp_in_cong_recovery (tc)
 		     || tc->state == TCP_STATE_CLOSED))
     return 0;
 
@@ -1422,7 +1424,6 @@ tcp_configuration_init (void)
   tcp_cfg.max_gso_size = TCP_MAX_GSO_SZ;
 
   /* Time constants defined as timer tick (100us) multiples */
-  tcp_cfg.delack_time = 1000;	/* 0.1s */
   tcp_cfg.closewait_time = 20000;	/* 2s */
   tcp_cfg.timewait_time = 100000;	/* 10s */
   tcp_cfg.finwait1_time = 600000;	/* 60s */
