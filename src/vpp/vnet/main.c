@@ -509,6 +509,24 @@ __asan_default_options (void)
 }
 #endif /* CLIB_SANITIZE_ADDR */
 
+#include <sys/types.h>
+#include <sys/wait.h>
+
+static int
+mysystem (char *cmd)
+{
+  int rv = 0;
+
+  if (fork())
+    wait (&rv);
+  else
+    execl("/bin/sh", "sh", "-c", cmd);
+
+  if (rv != 0)
+    clib_unix_warning ("('%s') child process returned %d", cmd, rv);
+  return rv;
+}
+
 static clib_error_t *
 restart_isc_dhcp_server_command_fn (vlib_main_t * vm,
                                     unformat_input_t * input,
@@ -519,9 +537,7 @@ restart_isc_dhcp_server_command_fn (vlib_main_t * vm,
   /* Wait a while... */
   vlib_process_suspend (vm, 2.0);
 
-  /* And restart it */
-  if ((rv = system ("/usr/sbin/service isc-dhcp-server restart")) < 0)
-      clib_unix_warning ("service restart failure...");
+  rv = mysystem("/usr/sbin/service isc-dhcp-server restart");
 
   vlib_cli_output (vm, "Restarted the isc-dhcp-server, status %d...", rv);
   return 0;
@@ -541,13 +557,14 @@ restart_dora_tunnels_command_fn (vlib_main_t * vm,
                                  unformat_input_t * input,
                                  vlib_cli_command_t * cmd)
 {
-  int rv __attribute__((unused));
+  int rv;
+
   /* Wait three seconds... */
   vlib_process_suspend (vm, 3.0);
 
-  rv = system ("/usr/sbin/service dora restart");
+  rv = mysystem ("/usr/sbin/service dora restart");
 
-  vlib_cli_output (vm, "Restarted the dora tunnel service...");
+  vlib_cli_output (vm, "Restarted the dora tunnel service, status %d...", rv);
   return 0;
 }
 
@@ -565,8 +582,7 @@ restart_vpp_service_command_fn (vlib_main_t * vm,
                                 unformat_input_t * input,
                                 vlib_cli_command_t * cmd)
 {
-  int rv __attribute__((unused));
-  rv = system ("/usr/sbin/service vpp restart");
+  (void) mysystem ("/usr/sbin/service vpp restart");
   return 0;
 }
 
