@@ -543,7 +543,7 @@ arp_reply (vlib_main_t * vm, vlib_node_runtime_t * node, vlib_frame_t * frame)
 	  dst_fei = ip4_fib_table_lookup (ip4_fib_get (fib_index0),
 					  &arp0->ip4_over_ethernet[1].ip4,
 					  32);
-	  conn_sw_if_index0 = fib_entry_get_resolving_interface (dst_fei);
+	  conn_sw_if_index0 = fib_entry_get_any_resolving_interface (dst_fei);
 
 	  switch (arp_dst_fib_check (dst_fei, &dst_flags))
 	    {
@@ -627,8 +627,7 @@ arp_reply (vlib_main_t * vm, vlib_node_runtime_t * node, vlib_frame_t * frame)
 	       * interface on which the covering prefix is configured.
 	       * Maybe this is a case for unnumbered.
 	       */
-              /* $$$$$$$$$$$$$ HACK REMOVE ME */
-	      if (0 && !arp_unnumbered (p0, sw_if_index0, conn_sw_if_index0))
+	      if (!arp_unnumbered (p0, sw_if_index0, conn_sw_if_index0))
 		{
 		  error0 = ETHERNET_ARP_ERROR_unnumbered_mismatch;
 		  goto drop;
