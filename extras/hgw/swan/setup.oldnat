@@ -22,23 +22,25 @@ create tap host-if-name lstack host-ip4-addr 192.168.1.2/24 host-ip4-gw 192.168.
 set int l2 bridge tap0 1
 set int state tap0 up
 
-cnat snat with GigabitEthernet3/0/0
-set interface feature bvi0 ip4-cnat-snat arc ip4-unicast
-cnat translation add proto tcp real GigabitEthernet3/0/0 22432 to -> 192.168.1.2 22432
-cnat translation add proto udp real GigabitEthernet3/0/0 53053 to -> 192.168.1.1 53053
+nat44 enable sessions 16384
+nat44 add interface address GigabitEthernet3/0/0
+set interface nat44 in bvi0 out GigabitEthernet3/0/0
+
+nat44 add static mapping local 192.168.1.2 22432 external GigabitEthernet3/0/0 22432 tcp
 
 service restart isc-dhcp-server
 service restart dora
 
-comment { bin dns_name_server_add_del 8.8.8.8 }
-comment { bin dns_enable_disable }
+uncomment { nat44 add identity mapping external GigabitEthernet3/0/0 udp 53053 }
+uncomment { bin dns_name_server_add_del 8.8.8.8 }
+uncomment { bin dns_enable_disable }
 
 bin mactime_add_del_range name alarm mac 00:d0:2d:5e:86:85 allow-static
 bin mactime_add_del_range name apple-ssdp mac 01:00:5e:7f:ff:fa allow-static
 bin mactime_add_del_range name broadcast mac ff:ff:ff:ff:ff:ff allow-static
 bin mactime_add_del_range name cisco-vpn mac a8:b4:56:e1:b8:3e allow-static
 bin mactime_add_del_range name dave-ipad mac ac:cf:5c:30:5b:fb allow-static
-bin mactime_add_del_range name dave-iphone mac d0:3f:aa:bf:2e:a4 allow-static
+bin mactime_add_del_range name dave-iphone mac 16:db:b8:0d:6e:20 allow-static
 bin mactime_add_del_range name dave-mac-wifi mac c4:b3:01:d7:fa:5f allow-static
 bin mactime_add_del_range name dave-mac-wired mac a8:20:66:15:8c:5e allow-static
 bin mactime_add_del_range name dave-old-iphone mac c0:cc:f8:74:a5:e9 allow-static
