@@ -541,25 +541,18 @@ virtio_find_free_desc (virtio_vring_t * vring, u16 size, u16 mask,
     }
 }
 
-static_always_inline uword
+static_always_inline u16
 virtio_interface_tx_gso_inline (vlib_main_t * vm, vlib_node_runtime_t * node,
-				vlib_frame_t * frame, virtio_if_t * vif,
+				virtio_if_t * vif,
 				virtio_if_type_t type, virtio_vring_t * vring,
-				int do_gso, int csum_offload)
+				u32 * buffers, u16 n_left, int do_gso,
+				int csum_offload)
 {
-  u16 n_left = frame->n_vectors;
   u16 used, next, avail, n_buffers = 0, n_buffers_left = 0;
   u16 sz = vring->size;
   u16 mask = sz - 1;
+  u16 n_vectors = n_left;
   u16 retry_count = 2;
-  u32 *buffers = vlib_frame_vector_args (frame);
-  u32 to[GRO_TO_VECTOR_SIZE (n_left)];
-
-  if (do_gso && vif->packet_coalesce)
-    {
-      n_left = vnet_gro_inline (vm, vring->flow_table, buffers, n_left, to);
-      buffers = to;
-    }
 
 retry:
   /* free consumed buffers */
@@ -642,7 +635,7 @@ retry:
       free_desc_count -= n_added;
     }
 
-  if (n_left != frame->n_vectors || n_buffers != n_buffers_left)
+  if (n_left != n_vectors || n_buffers != n_buffers_left)
     {
       CLIB_MEMORY_STORE_BARRIER ();
       vring->avail->idx = avail;
@@ -652,47 +645,33 @@ retry:
 	virtio_kick (vm, vring, vif);
     }
 
-  if (n_left)
-    {
-      if (retry_count--)
-	goto retry;
+  if (n_left && retry_count--)
+    goto retry;
 
-      if (vif->packet_buffering)
-	{
-
-	  u16 n_buffered =
-	    virtio_vring_buffering_store_packets (vring->buffering, buffers,
-						  n_left);
-	  buffers += n_buffered;
-	  n_left -= n_buffered;
-	}
-      if (n_left)
-	virtio_interface_drop_inline (vm, node->node_index,
-				      buffers, n_left,
-				      VIRTIO_TX_ERROR_NO_FREE_SLOTS);
-    }
-
-  return frame->n_vectors - n_left;
+  return n_left;
 }
 
-static_always_inline uword
+static_always_inline u16
 virtio_interface_tx_inline (vlib_main_t * vm, vlib_node_runtime_t * node,
-			    vlib_frame_t * frame, virtio_if_t * vif,
-			    virtio_vring_t * vring, virtio_if_type_t type)
+			    virtio_if_t * vif,
+			    virtio_vring_t * vring, virtio_if_type_t type,
+			    u32 * buffers, u16 n_left)
 {
   vnet_main_t *vnm = vnet_get_main ();
   vnet_hw_interface_t *hw = vnet_get_hw_interface (vnm, vif->hw_if_index);
 
   if (hw->flags & VNET_HW_INTERFACE_FLAG_SUPPORTS_GSO)
-    return virtio_interface_tx_gso_inline (vm, node, frame, vif, type, vring,
-					   1 /* do_gso */ ,
+    return virtio_interface_tx_gso_inline (vm, node, vif, type, vring,
+					   buffers, n_left, 1 /* do_gso */ ,
 					   1 /* checksum offload */ );
   else if (hw->flags & VNET_HW_INTERFACE_FLAG_SUPPORTS_TX_L4_CKSUM_OFFLOAD)
-    return virtio_interface_tx_gso_inline (vm, node, frame, vif, type, vring,
+    return virtio_interface_tx_gso_inline (vm, node, vif, type, vring,
+					   buffers, n_left,
 					   0 /* no do_gso */ ,
 					   1 /* checksum offload */ );
   else
-    return virtio_interface_tx_gso_inline (vm, node, frame, vif, type, vring,
+    return virtio_interface_tx_gso_inline (vm, node, vif, type, vring,
+					   buffers, n_left,
 					   0 /* no do_gso */ ,
 					   0 /* no checksum offload */ );
 }
@@ -706,7 +685,9 @@ VNET_DEVICE_CLASS_TX_FN (virtio_device_class) (vlib_main_t * vm,
   virtio_if_t *vif = pool_elt_at_index (nm->interfaces, rund->dev_instance);
   u16 qid = vm->thread_index % vif->num_txqs;
   virtio_vring_t *vring = vec_elt_at_index (vif->txq_vrings, qid);
-  uword rv = 0;
+  u16 n_left = frame->n_vectors;
+  u32 *buffers = vlib_frame_vector_args (frame);
+  u32 to[GRO_TO_VECTOR_SIZE (n_left)];
 
   clib_spinlock_lock_if_init (&vring->lockp);
 
@@ -714,21 +695,40 @@ VNET_DEVICE_CLASS_TX_FN (virtio_device_class) (vlib_main_t * vm,
       (vring->last_kick_avail_idx != vring->avail->idx))
     virtio_kick (vm, vring, vif);
 
+  if (vif->packet_coalesce)
+    {
+      n_left = vnet_gro_inline (vm, vring->flow_table, buffers, n_left, to);
+      buffers = to;
+    }
+
   if (vif->type == VIRTIO_IF_TYPE_TAP)
-    rv = virtio_interface_tx_inline (vm, node, frame, vif, vring,
-				     VIRTIO_IF_TYPE_TAP);
+    n_left = virtio_interface_tx_inline (vm, node, vif, vring,
+					 VIRTIO_IF_TYPE_TAP, buffers, n_left);
   else if (vif->type == VIRTIO_IF_TYPE_PCI)
-    rv = virtio_interface_tx_inline (vm, node, frame, vif, vring,
-				     VIRTIO_IF_TYPE_PCI);
+    n_left = virtio_interface_tx_inline (vm, node, vif, vring,
+					 VIRTIO_IF_TYPE_PCI, buffers, n_left);
   else if (vif->type == VIRTIO_IF_TYPE_TUN)
-    rv = virtio_interface_tx_inline (vm, node, frame, vif, vring,
-				     VIRTIO_IF_TYPE_TUN);
+    n_left = virtio_interface_tx_inline (vm, node, vif, vring,
+					 VIRTIO_IF_TYPE_TUN, buffers, n_left);
   else
     ASSERT (0);
 
+  if (vif->packet_buffering && n_left)
+    {
+      u16 n_buffered =
+	virtio_vring_buffering_store_packets (vring->buffering, buffers,
+					      n_left);
+      buffers += n_buffered;
+      n_left -= n_buffered;
+    }
+  if (n_left)
+    virtio_interface_drop_inline (vm, node->node_index,
+				  buffers + frame->n_vectors - n_left, n_left,
+				  VIRTIO_TX_ERROR_NO_FREE_SLOTS);
+
   clib_spinlock_unlock_if_init (&vring->lockp);
 
-  return rv;
+  return frame->n_vectors - n_left;
 }
 
 static void
