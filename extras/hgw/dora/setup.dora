@@ -1,0 +1,20 @@
+define HOSTNAME vppn1
+define TRUNK GigabitEthernet3/0/0
+
+comment { Old Linksys box MAC address yields a constant IP address }
+define TRUNK_MACADDR 48:f8:b3:e0:85:1a
+define BVI_MACADDR 48:f8:b3:e0:85:1b
+
+comment { inside subnet 192.168.<inside_subnet>.0/24 }
+define INSIDE_SUBNET 2
+
+define INSIDE_PORT1 GigabitEthernet6/0/0
+define INSIDE_PORT2 GigabitEthernet6/0/1
+define INSIDE_PORT3 GigabitEthernet8/0/0
+define INSIDE_PORT4 GigabitEthernet8/0/1
+
+comment { feature selections }
+define FEATURE_NAT44 uncomment
+define FEATURE_CNAT comment
+
+exec /home/dbarach/setup.tmpl
