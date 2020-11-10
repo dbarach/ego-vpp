@@ -3397,12 +3397,12 @@ unix_cli_exec (vlib_main_t * vm,
     }
 
   /* Read the file */
-  vec_validate(file_data, s.st_size);
+  vec_validate (file_data, s.st_size);
 
   if (read (fd, file_data, s.st_size) != s.st_size)
     {
       error = clib_error_return_unix (0, "Failed to read %d bytes from '%s'",
-                                      s.st_size, file_name);
+				      s.st_size, file_name);
       vec_free (file_data);
       goto done;
     }
@@ -3419,15 +3419,16 @@ unix_cli_exec (vlib_main_t * vm,
       clib_macro_main_t *mm = 0;
 
       /* Initial config process? Use the global macro table. */
-      if (pool_is_free_index (cm->cli_file_pool, cm->current_input_file_index))
-          mm = &cm->macro_main;
+      if (pool_is_free_index
+	  (cm->cli_file_pool, cm->current_input_file_index))
+	mm = &cm->macro_main;
       else
-        {
-          /* Otherwise, use the per-cli-process macro table */
-          cf = pool_elt_at_index (cm->cli_file_pool,
-                                  cm->current_input_file_index);
-          mm = &cf->macro_main;
-        }
+	{
+	  /* Otherwise, use the per-cli-process macro table */
+	  cf = pool_elt_at_index (cm->cli_file_pool,
+				  cm->current_input_file_index);
+	  mm = &cf->macro_main;
+	}
 
       expanded = (u8 *) clib_macro_eval (mm,
 					 (i8 *) sub_input.buffer,

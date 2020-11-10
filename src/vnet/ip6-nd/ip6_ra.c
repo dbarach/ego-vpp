@@ -1635,11 +1635,11 @@ ip6_ra_event_process (vlib_main_t * vm,
 	}
       else
 	{
-          for (i = 0; i < vec_len(event_data); i++)
-            {
-              r = (void *)(event_data[i]);
-              ip6_ra_handle_report (r);
-            }
+	  for (i = 0; i < vec_len (event_data); i++)
+	    {
+	      r = (void *) (event_data[i]);
+	      ip6_ra_handle_report (r);
+	    }
 	  vec_reset_length (event_data);
 	}
     }
@@ -1667,8 +1667,7 @@ ip6_ra_signal_report (ip6_ra_report_t * r)
   q = clib_mem_alloc (sizeof (*q));
   *q = *r;
 
-  vlib_process_signal_event (vm, ip6_ra_process_node.index,
-                             0, (uword) q);
+  vlib_process_signal_event (vm, ip6_ra_process_node.index, 0, (uword) q);
 }
 
 static int

@@ -32,10 +32,10 @@ $(FEATURE_NAT44) { nat44 add static mapping local 192.168.$(INSIDE_SUBNET).2 224
 $(FEATURE_NAT44) { nat44 add identity mapping external $(TRUNK) udp 500 }
 $(FEATURE_NAT44) { nat44 add identity mapping external $(TRUNK) udp 4500 }
 
-$(FEATURE_CNAT) { cnat snat with GigabitEthernet3/0/0 }
+$(FEATURE_CNAT) { cnat snat with $(TRUNK) }
 $(FEATURE_CNAT) { set interface feature bvi0 ip4-cnat-snat arc ip4-unicast }
-$(FEATURE_CNAT) { cnat translation add proto tcp real GigabitEthernet3/0/0 22432 to -> 192.168.1.2 22432 }
-$(FEATURE_CNAT) { cnat translation add proto udp real GigabitEthernet3/0/0 53053 to -> 192.168.1.1 53053 }
+$(FEATURE_CNAT) { cnat translation add proto tcp real $(TRUNK) 22432 to -> 192.168.$(INSIDE_SUBNET).2 22432 }
+$(FEATURE_CNAT) { cnat translation add proto udp real $(TRUNK) 53053 to -> 192.168.$(INSIDE_SUBNET).1 53053 }
 
 service restart isc-dhcp-server
 
