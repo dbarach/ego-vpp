@@ -247,6 +247,23 @@ VLIB_CLI_COMMAND (show_ikev2_sa_command, static) = {
 };
 /* *INDENT-ON* */
 
+static clib_error_t *
+ikev2_disable_dpd_command_fn (vlib_main_t * vm,
+			      unformat_input_t * input,
+			      vlib_cli_command_t * cmd)
+{
+  ikev2_disable_dpd ();
+  return 0;
+}
+
+/* *INDENT-OFF* */
+VLIB_CLI_COMMAND (ikev2_cli_disable_dpd_command, static) = {
+  .path = "ikev2 dpd disable",
+  .short_help = "ikev2 dpd disable",
+  .function = ikev2_disable_dpd_command_fn,
+};
+/* *INDENT-ON* */
+
 static uword
 unformat_ikev2_token (unformat_input_t * input, va_list * va)
 {
@@ -493,6 +510,12 @@ ikev2_profile_add_del_command_fn (vlib_main_t * vm,
 	    r = clib_error_return (0, "Error: %U", format_vnet_api_errno, rv);
 	  goto done;
 	}
+      else if (unformat (line_input, "set %U disable natt",
+			 unformat_ikev2_token, &name))
+	{
+	  r = ikev2_profile_natt_disable (name);
+	  goto done;
+	}
       else
 	break;
     }
@@ -524,7 +547,8 @@ VLIB_CLI_COMMAND (ikev2_profile_add_del_command, static) = {
     "ikev2 profile set <id> ike-crypto-alg <crypto alg> <key size> ike-integ-alg <integ alg> ike-dh <dh type>\n"
     "ikev2 profile set <id> esp-crypto-alg <crypto alg> <key size> "
       "[esp-integ-alg <integ alg>]\n"
-    "ikev2 profile set <id> sa-lifetime <seconds> <jitter> <handover> <max bytes>",
+    "ikev2 profile set <id> sa-lifetime <seconds> <jitter> <handover> <max bytes>"
+    "ikev2 profile set <id> disable natt\n",
     .function = ikev2_profile_add_del_command_fn,
 };
 /* *INDENT-ON* */
@@ -608,6 +632,9 @@ show_ikev2_profile_command_fn (vlib_main_t * vm,
                       format_ip_address, &p->responder.addr);
     if (p->udp_encap)
       vlib_cli_output(vm, "  udp-encap");
+
+    if (p->natt_disabled)
+      vlib_cli_output(vm, "  NAT-T disabled");
 
     if (p->ipsec_over_udp_port != IPSEC_UDP_PORT_NONE)
       vlib_cli_output(vm, "  ipsec-over-udp port %d", p->ipsec_over_udp_port);
@@ -775,7 +802,7 @@ VLIB_CLI_COMMAND (ikev2_initiate_command, static) = {
         "ikev2 initiate sa-init <profile id>\n"
         "ikev2 initiate del-child-sa <child sa ispi>\n"
         "ikev2 initiate del-sa <sa ispi>\n"
-        "ikev2 initiate rekey-child-sa <profile id> <child sa ispi>\n",
+        "ikev2 initiate rekey-child-sa <child sa ispi>\n",
     .function = ikev2_initiate_command_fn,
 };
 /* *INDENT-ON* */

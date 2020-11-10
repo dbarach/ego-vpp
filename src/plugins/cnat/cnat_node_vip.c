@@ -22,6 +22,9 @@
 #include <vnet/dpo/load_balance.h>
 #include <vnet/dpo/load_balance_map.h>
 
+#include <vnet/ip/ip4_inlines.h>
+#include <vnet/ip/ip6_inlines.h>
+
 typedef struct cnat_translation_trace_t_
 {
   cnat_session_t session;
@@ -62,11 +65,11 @@ format_cnat_translation_trace (u8 * s, va_list * args)
 }
 
 /* CNat sub for NAT behind a fib entry (VIP or interposed real IP) */
-always_inline uword
-cnat_vip_inline (vlib_main_t * vm,
-		 vlib_node_runtime_t * node,
-		 vlib_buffer_t * b,
-		 cnat_node_ctx_t * ctx, int rv, cnat_session_t * session)
+static uword
+cnat_vip_node_fn (vlib_main_t * vm,
+		  vlib_node_runtime_t * node,
+		  vlib_buffer_t * b,
+		  cnat_node_ctx_t * ctx, int rv, cnat_session_t * session)
 {
   vlib_combined_counter_main_t *cntm = &cnat_translation_counters;
   const cnat_translation_t *ct = NULL;
@@ -103,17 +106,15 @@ cnat_vip_inline (vlib_main_t * vm,
       goto trace;
     }
 
-  ct = cnat_find_translation (cc->parent_cci,
-			      clib_host_to_net_u16 (udp0->dst_port), iproto);
-
   if (!rv)
     {
       /* session table hit */
       cnat_timestamp_update (session->value.cs_ts_index, ctx->now);
 
-      if (NULL != ct)
+      if (INDEX_INVALID != session->value.cs_lbi)
 	{
 	  /* Translate & follow the translation given LB */
+	  ct = cnat_translation_get (session->value.ct_index);
 	  next0 = ct->ct_lb.dpoi_next_node;
 	  vnet_buffer (b)->ip.adj_index[VLIB_TX] = session->value.cs_lbi;
 	}
@@ -132,6 +133,9 @@ cnat_vip_inline (vlib_main_t * vm,
     }
   else
     {
+      ct =
+	cnat_find_translation (cc->parent_cci,
+			       clib_host_to_net_u16 (udp0->dst_port), iproto);
       if (NULL == ct)
 	{
 	  /* Dont translate & Follow the fib programming */
@@ -189,7 +193,7 @@ cnat_vip_inline (vlib_main_t * vm,
       session->value.cs_port[VLIB_RX] =
 	clib_host_to_net_u16 (trk0->ct_ep[VLIB_RX].ce_port);
 
-      session->value.flags = 0;
+      session->value.ct_index = ct - cnat_translation_pool;
       session->value.cs_lbi = dpo0->dpoi_index;
 
       rv = cspm->vip_policy (vm, b, session, &rsession_flags, ct, ctx);
@@ -248,9 +252,9 @@ VLIB_NODE_FN (cnat_vip_ip4_node) (vlib_main_t * vm,
 				  vlib_frame_t * frame)
 {
   if (PREDICT_FALSE ((node->flags & VLIB_NODE_FLAG_TRACE)))
-    return cnat_node_inline (vm, node, frame, cnat_vip_inline, AF_IP4,
+    return cnat_node_inline (vm, node, frame, cnat_vip_node_fn, AF_IP4,
 			     1 /* do_trace */ );
-  return cnat_node_inline (vm, node, frame, cnat_vip_inline, AF_IP4,
+  return cnat_node_inline (vm, node, frame, cnat_vip_node_fn, AF_IP4,
 			   0 /* do_trace */ );
 }
 
@@ -259,9 +263,9 @@ VLIB_NODE_FN (cnat_vip_ip6_node) (vlib_main_t * vm,
 				  vlib_frame_t * frame)
 {
   if (PREDICT_FALSE ((node->flags & VLIB_NODE_FLAG_TRACE)))
-    return cnat_node_inline (vm, node, frame, cnat_vip_inline, AF_IP6,
+    return cnat_node_inline (vm, node, frame, cnat_vip_node_fn, AF_IP6,
 			     1 /* do_trace */ );
-  return cnat_node_inline (vm, node, frame, cnat_vip_inline, AF_IP6,
+  return cnat_node_inline (vm, node, frame, cnat_vip_node_fn, AF_IP6,
 			   0 /* do_trace */ );
 }
 

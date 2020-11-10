@@ -96,7 +96,7 @@ format_ipsec_crypto_alg (u8 * s, va_list * args)
 uword
 unformat_ipsec_crypto_alg (unformat_input_t * input, va_list * args)
 {
-  u32 *r = va_arg (*args, u32 *);
+  ipsec_crypto_alg_t *r = va_arg (*args, ipsec_crypto_alg_t *);
 
   if (0);
 #define _(v,f,s) else if (unformat (input, s)) *r = IPSEC_CRYPTO_ALG_##f;
@@ -128,7 +128,7 @@ format_ipsec_integ_alg (u8 * s, va_list * args)
 uword
 unformat_ipsec_integ_alg (unformat_input_t * input, va_list * args)
 {
-  u32 *r = va_arg (*args, u32 *);
+  ipsec_integ_alg_t *r = va_arg (*args, ipsec_integ_alg_t *);
 
   if (0);
 #define _(v,f,s) else if (unformat (input, s)) *r = IPSEC_INTEG_ALG_##f;
@@ -322,10 +322,12 @@ format_ipsec_sa (u8 * s, va_list * args)
     {
       tx_table_id = fib_table_get_table_id (sa->tx_fib_index,
 					    FIB_PROTOCOL_IP4);
-      s = format (s, "\n   table-ID %d tunnel src %U dst %U",
+      s = format (s, "\n   table-ID %d tunnel %U src %U dst %U flags %U",
 		  tx_table_id,
+		  format_ip_dscp, sa->dscp,
 		  format_ip46_address, &sa->tunnel_src_addr, IP46_TYPE_ANY,
-		  format_ip46_address, &sa->tunnel_dst_addr, IP46_TYPE_ANY);
+		  format_ip46_address, &sa->tunnel_dst_addr, IP46_TYPE_ANY,
+		  format_tunnel_encap_decap_flags, sa->tunnel_flags);
       if (!ipsec_sa_is_set_IS_INBOUND (sa))
 	{
 	  s =

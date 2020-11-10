@@ -1,4 +1,5 @@
 import os
+import time
 from socket import inet_pton
 from cryptography import x509
 from cryptography.hazmat.backends import default_backend
@@ -151,10 +152,28 @@ PRF_ALGOS = {
                                   hashes.SHA256, 32),
 }
 
+CRYPTO_IDS = {
+    12: 'AES-CBC',
+    20: 'AES-GCM-16ICV',
+}
+
+INTEG_IDS = {
+    2: 'HMAC-SHA1-96',
+    12: 'SHA2-256-128',
+    13: 'SHA2-384-192',
+    14: 'SHA2-512-256',
+}
+
 
 class IKEv2ChildSA(object):
-    def __init__(self, local_ts, remote_ts, spi=None):
-        self.spi = spi or os.urandom(4)
+    def __init__(self, local_ts, remote_ts, is_initiator):
+        spi = os.urandom(4)
+        if is_initiator:
+            self.ispi = spi
+            self.rspi = None
+        else:
+            self.rspi = spi
+            self.ispi = None
         self.local_ts = local_ts
         self.remote_ts = remote_ts
 
@@ -163,7 +182,9 @@ class IKEv2SA(object):
     def __init__(self, test, is_initiator=True, i_id=None, r_id=None,
                  spi=b'\x01\x02\x03\x04\x05\x06\x07\x08', id_type='fqdn',
                  nonce=None, auth_data=None, local_ts=None, remote_ts=None,
-                 auth_method='shared-key', priv_key=None, natt=False):
+                 auth_method='shared-key', priv_key=None, natt=False,
+                 udp_encap=False):
+        self.udp_encap = udp_encap
         self.natt = natt
         if natt:
             self.sport = 4500
@@ -193,7 +214,8 @@ class IKEv2SA(object):
             self.rspi = spi
             self.ispi = 8 * b'\x00'
             self.r_nonce = nonce
-        self.child_sas = [IKEv2ChildSA(local_ts, remote_ts)]
+        self.child_sas = [IKEv2ChildSA(local_ts, remote_ts,
+                          self.is_initiator)]
 
     def new_msg_id(self):
         self.msg_id += 1
@@ -559,7 +581,8 @@ class IkePeer(VppTestCase):
         self.config_tc()
         self.p.add_vpp_config()
         self.assertIsNotNone(self.p.query_vpp_config())
-        self.sa.generate_dh_data()
+        if self.sa.is_initiator:
+            self.sa.generate_dh_data()
         self.vapi.cli('ikev2 set logging level 4')
         self.vapi.cli('event-lo clear')
 
@@ -641,19 +664,41 @@ class IkePeer(VppTestCase):
         assert(len(res) == tlen)
         return res
 
-    def verify_ipsec_sas(self):
-        sas = self.vapi.ipsec_sa_dump()
-        self.assertEqual(len(sas), 2)
+    def verify_udp_encap(self, ipsec_sa):
         e = VppEnum.vl_api_ipsec_sad_flags_t
-        if self.sa.is_initiator:
-            sa0 = sas[0].entry
-            sa1 = sas[1].entry
+        if self.sa.udp_encap or self.sa.natt:
+            self.assertIn(e.IPSEC_API_SAD_FLAG_UDP_ENCAP, ipsec_sa.flags)
         else:
-            sa1 = sas[0].entry
-            sa0 = sas[1].entry
+            self.assertNotIn(e.IPSEC_API_SAD_FLAG_UDP_ENCAP, ipsec_sa.flags)
+
+    def verify_ipsec_sas(self, is_rekey=False):
+        sas = self.vapi.ipsec_sa_dump()
+        if is_rekey:
+            # after rekey there is a short period of time in which old
+            # inbound SA is still present
+            sa_count = 3
+        else:
+            sa_count = 2
+        self.assertEqual(len(sas), sa_count)
+        if self.sa.is_initiator:
+            if is_rekey:
+                sa0 = sas[0].entry
+                sa1 = sas[2].entry
+            else:
+                sa0 = sas[0].entry
+                sa1 = sas[1].entry
+        else:
+            if is_rekey:
+                sa0 = sas[2].entry
+                sa1 = sas[0].entry
+            else:
+                sa1 = sas[0].entry
+                sa0 = sas[1].entry
 
         c = self.sa.child_sas[0]
 
+        self.verify_udp_encap(sa0)
+        self.verify_udp_encap(sa1)
         vpp_crypto_alg = self.vpp_enums[self.sa.vpp_esp_cypto_alg]
         self.assertEqual(sa0.crypto_algorithm, vpp_crypto_alg)
         self.assertEqual(sa1.crypto_algorithm, vpp_crypto_alg)
@@ -738,6 +783,8 @@ class IkePeer(VppTestCase):
             self.verify_keymat(csa.keys, c, 'sk_ar')
         self.verify_keymat(csa.keys, c, 'sk_ei')
         self.verify_keymat(csa.keys, c, 'sk_er')
+        self.assertEqual(csa.i_spi.to_bytes(4, 'big'), c.ispi)
+        self.assertEqual(csa.r_spi.to_bytes(4, 'big'), c.rspi)
 
         tsi, tsr = self.sa.generate_ts(self.p.ts_is_ip4)
         tsi = tsi[0]
@@ -888,8 +935,22 @@ class TemplateInitiator(IkePeer):
                          self.p.ike_transforms['dh_group'])
 
         self.verify_nat_detection(packet)
+        self.sa.set_ike_props(
+                    crypto='AES-GCM-16ICV', crypto_key_len=32,
+                    integ='NULL', prf='PRF_HMAC_SHA2_256', dh='3072MODPgr')
+        self.sa.set_esp_props(crypto='AES-CBC', crypto_key_len=32,
+                              integ='SHA2-256-128')
+        self.sa.generate_dh_data()
         self.sa.complete_dh_data()
         self.sa.calc_keys()
+
+    def update_esp_transforms(self, trans, sa):
+        while trans:
+            if trans.transform_type == 1:  # ecryption
+                sa.esp_crypto = CRYPTO_IDS[trans.transform_id]
+            elif trans.transform_type == 3:  # integrity
+                sa.esp_integ = INTEG_IDS[trans.transform_id]
+            trans = trans.payload
 
     def verify_sa_auth_req(self, packet):
         ih = self.get_ike_header(packet)
@@ -908,6 +969,11 @@ class TemplateInitiator(IkePeer):
         idr = ikev2.IKEv2_payload_IDr(idi.payload)
         self.assertEqual(idi.load, self.sa.i_id)
         self.assertEqual(idr.load, self.sa.r_id)
+        prop = idi[ikev2.IKEv2_payload_Proposal]
+        c = self.sa.child_sas[0]
+        c.ispi = prop.SPI
+        self.update_esp_transforms(
+                prop[ikev2.IKEv2_payload_Transform], self.sa)
 
     def send_init_response(self):
         tr_attr = self.sa.ike_crypto_attr()
@@ -961,8 +1027,9 @@ class TemplateInitiator(IkePeer):
                  transform_type='Extended Sequence Number',
                  transform_id='ESN'))
 
+        c = self.sa.child_sas[0]
         props = (ikev2.IKEv2_payload_Proposal(proposal=1, proto='ESP',
-                 SPIsize=4, SPI=os.urandom(4), trans_nb=4, trans=trans))
+                 SPIsize=4, SPI=c.rspi, trans_nb=4, trans=trans))
 
         tsi, tsr = self.sa.generate_ts(self.p.ts_is_ip4)
         plain = (ikev2.IKEv2_payload_IDi(next_payload='IDr',
@@ -1103,8 +1170,9 @@ class TemplateResponder(IkePeer):
         capture = self.pg0.get_capture(1)
         self.verify_sa_init(capture[0])
 
-    def send_sa_auth(self):
+    def generate_auth_payload(self, last_payload=None, is_rekey=False):
         tr_attr = self.sa.esp_crypto_attr()
+        last_payload = last_payload or 'Notify'
         trans = (ikev2.IKEv2_payload_Transform(transform_type='Encryption',
                  transform_id=self.sa.esp_crypto, length=tr_attr[1],
                  key_length=tr_attr[0]) /
@@ -1117,32 +1185,45 @@ class TemplateResponder(IkePeer):
                  transform_type='Extended Sequence Number',
                  transform_id='ESN'))
 
+        c = self.sa.child_sas[0]
         props = (ikev2.IKEv2_payload_Proposal(proposal=1, proto='ESP',
-                 SPIsize=4, SPI=os.urandom(4), trans_nb=4, trans=trans))
+                 SPIsize=4, SPI=c.ispi, trans_nb=4, trans=trans))
 
         tsi, tsr = self.sa.generate_ts(self.p.ts_is_ip4)
-        plain = (ikev2.IKEv2_payload_IDi(next_payload='IDr',
-                 IDtype=self.sa.id_type, load=self.sa.i_id) /
-                 ikev2.IKEv2_payload_IDr(next_payload='AUTH',
-                 IDtype=self.sa.id_type, load=self.sa.r_id) /
-                 ikev2.IKEv2_payload_AUTH(next_payload='SA',
+        plain = (ikev2.IKEv2_payload_AUTH(next_payload='SA',
                  auth_type=AuthMethod.value(self.sa.auth_method),
                  load=self.sa.auth_data) /
                  ikev2.IKEv2_payload_SA(next_payload='TSi', prop=props) /
                  ikev2.IKEv2_payload_TSi(next_payload='TSr',
-                 number_of_TSs=len(tsi),
-                 traffic_selector=tsi) /
-                 ikev2.IKEv2_payload_TSr(next_payload='Notify',
-                 number_of_TSs=len(tsr),
-                 traffic_selector=tsr) /
-                 ikev2.IKEv2_payload_Notify(type='INITIAL_CONTACT'))
+                 number_of_TSs=len(tsi), traffic_selector=tsi) /
+                 ikev2.IKEv2_payload_TSr(next_payload=last_payload,
+                 number_of_TSs=len(tsr), traffic_selector=tsr))
 
+        if is_rekey:
+            first_payload = 'Nonce'
+            plain = (ikev2.IKEv2_payload_Nonce(load=self.sa.i_nonce,
+                     next_payload='SA') / plain /
+                     ikev2.IKEv2_payload_Notify(type='REKEY_SA',
+                     proto='ESP', SPI=c.ispi))
+        else:
+            first_payload = 'IDi'
+            ids = (ikev2.IKEv2_payload_IDi(next_payload='IDr',
+                   IDtype=self.sa.id_type, load=self.sa.i_id) /
+                   ikev2.IKEv2_payload_IDr(next_payload='AUTH',
+                   IDtype=self.sa.id_type, load=self.sa.r_id))
+            plain = ids / plain
+        return plain, first_payload
+
+    def send_sa_auth(self):
+        plain, first_payload = self.generate_auth_payload(
+                    last_payload='Notify')
+        plain = plain / ikev2.IKEv2_payload_Notify(type='INITIAL_CONTACT')
         header = ikev2.IKEv2(
                 init_SPI=self.sa.ispi,
                 resp_SPI=self.sa.rspi, id=self.sa.new_msg_id(),
                 flags='Initiator', exch_type='IKE_AUTH')
 
-        ike_msg = self.encrypt_ike_msg(header, plain, 'IDi')
+        ike_msg = self.encrypt_ike_msg(header, plain, first_payload)
         packet = self.create_packet(self.pg0, ike_msg, self.sa.sport,
                                     self.sa.dport, self.sa.natt, self.ip6)
         self.pg0.add_stream(packet)
@@ -1178,6 +1259,10 @@ class TemplateResponder(IkePeer):
         self.verify_udp(udp)
         self.assertEqual(ike.id, self.sa.msg_id)
         plain = self.sa.hmac_and_decrypt(ike)
+        idr = ikev2.IKEv2_payload_IDr(plain)
+        prop = idr[ikev2.IKEv2_payload_Proposal]
+        self.assertEqual(prop.SPIsize, 4)
+        self.sa.child_sas[0].rspi = prop.SPI
         self.sa.calc_child_keys()
 
     def test_responder(self):
@@ -1204,6 +1289,10 @@ class Ikev2Params(object):
                 'SHA2-384-192': ei.IPSEC_API_INTEG_ALG_SHA_384_192,
                 'SHA2-512-256': ei.IPSEC_API_INTEG_ALG_SHA_512_256}
 
+        dpd_disabled = True if 'dpd_disabled' not in params else\
+            params['dpd_disabled']
+        if dpd_disabled:
+            self.vapi.cli('ikev2 dpd disable')
         self.del_sa_from_responder = False if 'del_sa_from_responder'\
             not in params else params['del_sa_from_responder']
         is_natt = 'natt' in params and params['natt'] or False
@@ -1257,31 +1346,36 @@ class Ikev2Params(object):
         if 'esp_transforms' in params:
             self.p.add_esp_transforms(params['esp_transforms'])
 
+        udp_encap = False if 'udp_encap' not in params else\
+            params['udp_encap']
+        if udp_encap:
+            self.p.set_udp_encap(True)
+
         self.sa = IKEv2SA(self, i_id=idi['data'], r_id=idr['data'],
                           is_initiator=is_init,
                           id_type=self.p.local_id['id_type'], natt=is_natt,
                           priv_key=client_priv, auth_method=auth_method,
-                          auth_data=auth_data,
+                          auth_data=auth_data, udp_encap=udp_encap,
                           local_ts=self.p.remote_ts, remote_ts=self.p.local_ts)
+        if is_init:
+            ike_crypto = ('AES-CBC', 32) if 'ike-crypto' not in params else\
+                params['ike-crypto']
+            ike_integ = 'HMAC-SHA1-96' if 'ike-integ' not in params else\
+                params['ike-integ']
+            ike_dh = '2048MODPgr' if 'ike-dh' not in params else\
+                params['ike-dh']
 
-        ike_crypto = ('AES-CBC', 32) if 'ike-crypto' not in params else\
-            params['ike-crypto']
-        ike_integ = 'HMAC-SHA1-96' if 'ike-integ' not in params else\
-            params['ike-integ']
-        ike_dh = '2048MODPgr' if 'ike-dh' not in params else\
-            params['ike-dh']
+            esp_crypto = ('AES-CBC', 32) if 'esp-crypto' not in params else\
+                params['esp-crypto']
+            esp_integ = 'HMAC-SHA1-96' if 'esp-integ' not in params else\
+                params['esp-integ']
 
-        esp_crypto = ('AES-CBC', 32) if 'esp-crypto' not in params else\
-            params['esp-crypto']
-        esp_integ = 'HMAC-SHA1-96' if 'esp-integ' not in params else\
-            params['esp-integ']
-
-        self.sa.set_ike_props(
-                crypto=ike_crypto[0], crypto_key_len=ike_crypto[1],
-                integ=ike_integ, prf='PRF_HMAC_SHA2_256', dh=ike_dh)
-        self.sa.set_esp_props(
-                crypto=esp_crypto[0], crypto_key_len=esp_crypto[1],
-                integ=esp_integ)
+            self.sa.set_ike_props(
+                    crypto=ike_crypto[0], crypto_key_len=ike_crypto[1],
+                    integ=ike_integ, prf='PRF_HMAC_SHA2_256', dh=ike_dh)
+            self.sa.set_esp_props(
+                    crypto=esp_crypto[0], crypto_key_len=esp_crypto[1],
+                    integ=esp_integ)
 
 
 class TestApi(VppTestCase):
@@ -1317,6 +1411,8 @@ class TestApi(VppTestCase):
             p.set_lifetime_data(cfg['lifetime_data'])
         if 'tun_itf' in cfg:
             p.set_tunnel_interface(cfg['tun_itf'])
+        if 'natt_disabled' in cfg and cfg['natt_disabled']:
+            p.disable_natt()
         p.add_vpp_config()
         return p
 
@@ -1355,6 +1451,7 @@ class TestApi(VppTestCase):
         conf = {
             'p1': {
                 'name': 'p1',
+                'natt_disabled': True,
                 'loc_id': ('fqdn', b'vpp.home'),
                 'rem_id': ('fqdn', b'roadwarrior.example.com'),
                 'loc_ts': loc_ts4,
@@ -1458,6 +1555,9 @@ class TestApi(VppTestCase):
         self.verify_ike_transforms(ap.ike_ts, cp['ike_ts'])
         self.verify_esp_transforms(ap.esp_ts, cp['esp_ts'])
         self.verify_auth(ap.auth, cp['auth'])
+        natt_dis = False if 'natt_disabled' not in cp else cp['natt_disabled']
+        self.assertTrue(natt_dis == ap.natt_disabled)
+
         if 'lifetime_data' in cp:
             self.verify_lifetime_data(ap, cp['lifetime_data'])
         self.assertEqual(ap.ipsec_over_udp_port, cp['ipsec_over_udp_port'])
@@ -1489,6 +1589,44 @@ class TestInitiatorPsk(TemplateInitiator, Ikev2Params):
                 'crypto_key_size': 256,
                 # "hmac-sha2-256-128"
                 'integ_alg': 12}})
+
+
+class TestInitiatorRekey(TestInitiatorPsk):
+    """ test ikev2 initiator - rekey """
+
+    def rekey_from_initiator(self):
+        ispi = int.from_bytes(self.sa.child_sas[0].ispi, 'little')
+        self.pg0.enable_capture()
+        self.pg_start()
+        self.vapi.ikev2_initiate_rekey_child_sa(ispi=ispi)
+        capture = self.pg0.get_capture(1)
+        ih = self.get_ike_header(capture[0])
+        self.assertEqual(ih.exch_type, 36)  # CHILD_SA
+        self.assertNotIn('Response', ih.flags)
+        self.assertIn('Initiator', ih.flags)
+        plain = self.sa.hmac_and_decrypt(ih)
+        sa = ikev2.IKEv2_payload_SA(plain)
+        prop = sa[ikev2.IKEv2_payload_Proposal]
+        nonce = sa[ikev2.IKEv2_payload_Nonce]
+        self.sa.i_nonce = sa[ikev2.IKEv2_payload_Nonce].load
+        self.sa.r_nonce = self.sa.i_nonce
+        # update new responder SPI
+        self.sa.child_sas[0].ispi = prop.SPI
+        self.sa.child_sas[0].rspi = prop.SPI
+        self.sa.calc_child_keys()
+        header = ikev2.IKEv2(init_SPI=self.sa.ispi, resp_SPI=self.sa.rspi,
+                             flags='Response', exch_type=36,
+                             id=ih.id, next_payload='Encrypted')
+        resp = self.encrypt_ike_msg(header, sa, 'SA')
+        packet = self.create_packet(self.pg0, resp, self.sa.sport,
+                                    self.sa.dport, self.sa.natt, self.ip6)
+        self.send_and_assert_no_replies(self.pg0, packet)
+
+    def test_initiator(self):
+        super(TestInitiatorRekey, self).test_initiator()
+        self.rekey_from_initiator()
+        self.verify_ike_sas()
+        self.verify_ipsec_sas(is_rekey=True)
 
 
 class TestInitiatorDelSAFromResponder(TemplateInitiator, Ikev2Params):
@@ -1529,10 +1667,74 @@ class TestResponderPsk(TemplateResponder, Ikev2Params):
         self.config_params()
 
 
+class TestResponderDpd(TestResponderPsk):
+    """
+    Dead peer detection test
+    """
+    def config_tc(self):
+        self.config_params({'dpd_disabled': False})
+
+    def tearDown(self):
+        pass
+
+    def test_responder(self):
+        self.vapi.ikev2_profile_set_liveness(period=2, max_retries=1)
+        super(TestResponderDpd, self).test_responder()
+        self.pg0.enable_capture()
+        self.pg_start()
+        # capture empty request but don't reply
+        capture = self.pg0.get_capture(expected_count=1, timeout=5)
+        ih = self.get_ike_header(capture[0])
+        self.assertEqual(ih.exch_type, 37)  # INFORMATIONAL
+        plain = self.sa.hmac_and_decrypt(ih)
+        self.assertEqual(plain, b'')
+        # wait for SA expiration
+        time.sleep(3)
+        ike_sas = self.vapi.ikev2_sa_dump()
+        self.assertEqual(len(ike_sas), 0)
+        ipsec_sas = self.vapi.ipsec_sa_dump()
+        self.assertEqual(len(ipsec_sas), 0)
+
+
+class TestResponderRekey(TestResponderPsk):
+    """ test ikev2 responder - rekey """
+
+    def rekey_from_initiator(self):
+        sa, first_payload = self.generate_auth_payload(is_rekey=True)
+        header = ikev2.IKEv2(
+                init_SPI=self.sa.ispi,
+                resp_SPI=self.sa.rspi, id=self.sa.new_msg_id(),
+                flags='Initiator', exch_type='CREATE_CHILD_SA')
+
+        ike_msg = self.encrypt_ike_msg(header, sa, first_payload)
+        packet = self.create_packet(self.pg0, ike_msg, self.sa.sport,
+                                    self.sa.dport, self.sa.natt, self.ip6)
+        self.pg0.add_stream(packet)
+        self.pg0.enable_capture()
+        self.pg_start()
+        capture = self.pg0.get_capture(1)
+        ih = self.get_ike_header(capture[0])
+        plain = self.sa.hmac_and_decrypt(ih)
+        sa = ikev2.IKEv2_payload_SA(plain)
+        prop = sa[ikev2.IKEv2_payload_Proposal]
+        nonce = sa[ikev2.IKEv2_payload_Nonce]
+        self.sa.r_nonce = sa[ikev2.IKEv2_payload_Nonce].load
+        # update new responder SPI
+        self.sa.child_sas[0].rspi = prop.SPI
+
+    def test_responder(self):
+        super(TestResponderRekey, self).test_responder()
+        self.rekey_from_initiator()
+        self.sa.calc_child_keys()
+        self.verify_ike_sas()
+        self.verify_ipsec_sas(is_rekey=True)
+
+
 class TestResponderRsaSign(TemplateResponder, Ikev2Params):
     """ test ikev2 responder - cert based auth """
     def config_tc(self):
         self.config_params({
+            'udp_encap': True,
             'auth': 'rsa-sig',
             'server-key': 'server-key.pem',
             'client-key': 'client-key.pem',
@@ -1584,6 +1786,34 @@ class Test_IKE_AES_GCM_16_256(TemplateResponder, Ikev2Params):
                        'end_addr': 'ab:cd::10'},
             'rem_ts': {'start_addr': '11::0',
                        'end_addr': '11::100'}})
+
+
+class TestInitiatorKeepaliveMsg(TestInitiatorPsk):
+    """
+    Test for keep alive messages
+    """
+
+    def send_empty_req_from_responder(self):
+        header = ikev2.IKEv2(init_SPI=self.sa.ispi, resp_SPI=self.sa.rspi,
+                             id=self.sa.new_msg_id(), flags='Initiator',
+                             exch_type='INFORMATIONAL',
+                             next_payload='Encrypted')
+
+        msg = self.encrypt_ike_msg(header, b'', None)
+        packet = self.create_packet(self.pg0, msg, self.sa.sport,
+                                    self.sa.dport, self.sa.natt, self.ip6)
+        self.pg0.add_stream(packet)
+        self.pg0.enable_capture()
+        self.pg_start()
+        capture = self.pg0.get_capture(1)
+        ih = self.get_ike_header(capture[0])
+        self.assertEqual(ih.id, self.sa.msg_id)
+        plain = self.sa.hmac_and_decrypt(ih)
+        self.assertEqual(plain, b'')
+
+    def test_initiator(self):
+        super(TestInitiatorKeepaliveMsg, self).test_initiator()
+        self.send_empty_req_from_responder()
 
 
 class TestMalformedMessages(TemplateResponder, Ikev2Params):

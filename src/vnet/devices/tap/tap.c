@@ -18,10 +18,13 @@
 #define _GNU_SOURCE
 #include <sys/types.h>
 #include <sys/stat.h>
+#include <sys/socket.h>
 #include <fcntl.h>
 #include <net/if.h>
 #include <linux/if_tun.h>
 #include <sys/ioctl.h>
+#include <linux/ethtool.h>
+#include <linux/sockios.h>
 #include <sys/eventfd.h>
 #include <net/if_arp.h>
 #include <sched.h>
@@ -109,8 +112,11 @@ tap_free (vlib_main_t * vm, virtio_if_t * vif)
     virtio_vring_free_tx (vm, vif, TX_QUEUE (i));
   /* *INDENT-ON* */
 
-  _IOCTL (vif->tap_fds[0], TUNSETPERSIST, (void *) (uintptr_t) 0);
-  tap_log_dbg (vif, "TUNSETPERSIST: unset");
+  if (vif->tap_fds)
+    {
+      _IOCTL (vif->tap_fds[0], TUNSETPERSIST, (void *) (uintptr_t) 0);
+      tap_log_dbg (vif, "TUNSETPERSIST: unset");
+    }
 error:
   vec_foreach_index (i, vif->tap_fds) close (vif->tap_fds[i]);
 
@@ -748,6 +754,12 @@ tap_create_if (vlib_main_t * vm, tap_create_if_args_t * args)
   vif->flags |= VIRTIO_IF_FLAG_ADMIN_UP;
   vnet_hw_interface_set_flags (vnm, vif->hw_if_index,
 			       VNET_HW_INTERFACE_FLAG_LINK_UP);
+  /*
+   * Host tun/tap driver link carrier state is "up" at creation. The
+   * driver never changes this unless the backend (VPP) changes it using
+   * TUNSETCARRIER ioctl(). See tap_set_carrier().
+   */
+  vif->host_carrier_up = 1;
   vif->cxq_vring = NULL;
 
   goto done;
@@ -984,6 +996,41 @@ tap_dump_ifs (tap_interface_details_t ** out_tapids)
   return 0;
 }
 
+/*
+ * Set host tap/tun interface carrier state so it will appear to host
+ * applications that the interface's link state changed.
+ *
+ * If the kernel we're building against does not have support for the
+ * TUNSETCARRIER ioctl command, do nothing.
+ */
+int
+tap_set_carrier (u32 hw_if_index, u32 carrier_up)
+{
+  int ret = 0;
+#ifdef TUNSETCARRIER
+  vnet_main_t *vnm = vnet_get_main ();
+  vnet_hw_interface_t *hi = vnet_get_hw_interface (vnm, hw_if_index);
+  virtio_main_t *mm = &virtio_main;
+  virtio_if_t *vif;
+  int *fd;
+
+  vif = pool_elt_at_index (mm->interfaces, hi->dev_instance);
+  vec_foreach (fd, vif->tap_fds)
+  {
+    ret = ioctl (*fd, TUNSETCARRIER, &carrier_up);
+    if (ret < 0)
+      {
+	clib_warning ("ioctl (TUNSETCARRIER) returned %d", ret);
+	break;
+      }
+  }
+  if (!ret)
+    vif->host_carrier_up = (carrier_up != 0);
+#endif
+
+  return ret;
+}
+
 static clib_error_t *
 tap_mtu_config (vlib_main_t * vm, unformat_input_t * input)
 {
@@ -999,6 +1046,85 @@ tap_mtu_config (vlib_main_t * vm, unformat_input_t * input)
     }
 
   return 0;
+}
+
+/*
+ * Set host tap/tun interface speed in Mbps.
+ */
+int
+tap_set_speed (u32 hw_if_index, u32 speed)
+{
+  vnet_main_t *vnm = vnet_get_main ();
+  vnet_hw_interface_t *hi = vnet_get_hw_interface (vnm, hw_if_index);
+  virtio_main_t *mm = &virtio_main;
+  virtio_if_t *vif;
+  int old_netns_fd = -1;
+  int nfd = -1;
+  int ctl_fd = -1;
+  struct ifreq ifr;
+  struct ethtool_cmd ecmd;
+  int ret = -1;
+
+  vif = pool_elt_at_index (mm->interfaces, hi->dev_instance);
+
+  if (vif->net_ns)
+    {
+      old_netns_fd = open ("/proc/self/ns/net", O_RDONLY);
+      if ((nfd = open_netns_fd ((char *) vif->net_ns)) == -1)
+	{
+	  clib_warning ("Cannot open netns");
+	  goto done;
+	}
+      if (setns (nfd, CLONE_NEWNET) == -1)
+	{
+	  clib_warning ("Cannot set ns");
+	  goto done;
+	}
+    }
+
+  if ((ctl_fd = socket (AF_INET, SOCK_STREAM, 0)) == -1)
+    {
+      clib_warning ("Cannot open control socket");
+      goto done;
+    }
+
+  ecmd.cmd = ETHTOOL_GSET;
+  clib_memset (&ifr, 0, sizeof (ifr));
+  clib_memcpy (ifr.ifr_name, vif->host_if_name,
+	       strlen ((const char *) vif->host_if_name));
+  ifr.ifr_data = (void *) &ecmd;
+  if ((ret = ioctl (ctl_fd, SIOCETHTOOL, &ifr)) < 0)
+    {
+      clib_warning ("Cannot get device settings");
+      goto done;
+    }
+
+  if (ethtool_cmd_speed (&ecmd) != speed)
+    {
+      ecmd.cmd = ETHTOOL_SSET;
+      ethtool_cmd_speed_set (&ecmd, speed);
+      if ((ret = ioctl (ctl_fd, SIOCETHTOOL, &ifr)) < 0)
+	{
+	  clib_warning ("Cannot set device settings");
+	  goto done;
+	}
+    }
+
+done:
+  if (old_netns_fd != -1)
+    {
+      if (setns (old_netns_fd, CLONE_NEWNET) == -1)
+	{
+	  clib_warning ("Cannot set old ns");
+	}
+      close (old_netns_fd);
+    }
+  if (nfd != -1)
+    close (nfd);
+  if (ctl_fd != -1)
+    close (ctl_fd);
+
+  return ret;
 }
 
 /* tap { host-mtu <size> } configuration. */
