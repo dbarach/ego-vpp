@@ -105,7 +105,7 @@ typedef u32 ikev2_non_esp_marker;
 static_always_inline u16
 ikev2_get_port (ikev2_sa_t * sa)
 {
-  return sa->natt ? IKEV2_PORT_NATT : IKEV2_PORT;
+  return ikev2_natt_active (sa) ? IKEV2_PORT_NATT : IKEV2_PORT;
 }
 
 static_always_inline int
@@ -427,6 +427,7 @@ ikev2_complete_sa_data (ikev2_sa_t * sa, ikev2_sa_t * sai)
   sa->profile_index = sai->profile_index;
   sa->tun_itf = sai->tun_itf;
   sa->is_tun_itf_set = sai->is_tun_itf_set;
+  sa->natt_state = sai->natt_state;
   sa->i_id.data = _(sai->i_id.data);
   sa->r_id.data = _(sai->r_id.data);
   sa->i_auth.method = sai->i_auth.method;
@@ -434,6 +435,7 @@ ikev2_complete_sa_data (ikev2_sa_t * sa, ikev2_sa_t * sai)
   sa->i_auth.data = _(sai->i_auth.data);
   sa->i_auth.key = _(sai->i_auth.key);
   sa->last_sa_init_req_packet_data = _(sai->last_sa_init_req_packet_data);
+  sa->last_init_msg_id = sai->last_init_msg_id;
   sa->childs = _(sai->childs);
   sa->udp_encap = sai->udp_encap;
   sa->ipsec_over_udp_port = sai->ipsec_over_udp_port;
@@ -743,7 +745,8 @@ ikev2_process_sa_init_req (vlib_main_t * vm,
 						    udp->src_port);
 	      if (clib_memcmp (src_sha, n->data, vec_len (src_sha)))
 		{
-		  sa->natt = 1;
+		  if (sa->natt_state == IKEV2_NATT_ENABLED)
+		    sa->natt_state = IKEV2_NATT_ACTIVE;
 		  ikev2_elog_uint (IKEV2_LOG_DEBUG, "ispi %lx initiator"
 				   " behind NAT", sa->ispi);
 		}
@@ -756,7 +759,8 @@ ikev2_process_sa_init_req (vlib_main_t * vm,
 						    udp->dst_port);
 	      if (clib_memcmp (dst_sha, n->data, vec_len (dst_sha)))
 		{
-		  sa->natt = 1;
+		  if (sa->natt_state == IKEV2_NATT_ENABLED)
+		    sa->natt_state = IKEV2_NATT_ACTIVE;
 		  ikev2_elog_uint (IKEV2_LOG_DEBUG, "ispi %lx responder"
 				   " (self) behind NAT", sa->ispi);
 		}
@@ -869,7 +873,8 @@ ikev2_process_sa_init_resp (vlib_main_t * vm,
 						    udp->dst_port);
 	      if (clib_memcmp (dst_sha, n->data, vec_len (dst_sha)))
 		{
-		  sa->natt = 1;
+		  if (sa->natt_state == IKEV2_NATT_ENABLED)
+		    sa->natt_state = IKEV2_NATT_ACTIVE;
 		  ikev2_elog_uint (IKEV2_LOG_DEBUG, "ispi %lx initiator"
 				   " (self) behind NAT", sa->ispi);
 		}
@@ -1404,7 +1409,8 @@ ikev2_process_create_child_sa_req (vlib_main_t * vm,
       p += plen;
     }
 
-  if (sa->is_initiator && proposal->protocol_id == IKEV2_PROTOCOL_ESP)
+  if (sa->is_initiator && proposal
+      && proposal->protocol_id == IKEV2_PROTOCOL_ESP)
     {
       ikev2_rekey_t *rekey = &sa->rekey[0];
       rekey->protocol_id = proposal->protocol_id;
@@ -1442,17 +1448,22 @@ ikev2_process_create_child_sa_req (vlib_main_t * vm,
       rekey->tsi = tsi;
       rekey->tsr = tsr;
       /* update Ni */
-      vec_free (sa->i_nonce);
+      vec_reset_length (sa->i_nonce);
       vec_add (sa->i_nonce, nonce, IKEV2_NONCE_SIZE);
       /* generate new Nr */
       vec_validate (sa->r_nonce, IKEV2_NONCE_SIZE - 1);
       RAND_bytes ((u8 *) sa->r_nonce, IKEV2_NONCE_SIZE);
-      vec_free (n);
     }
+  else
+    goto cleanup_and_exit;
+  vec_free (n);
   return 1;
 
 cleanup_and_exit:
   vec_free (n);
+  vec_free (proposal);
+  vec_free (tsr);
+  vec_free (tsi);
   return 0;
 }
 
@@ -1806,7 +1817,6 @@ ikev2_add_tunnel_from_main (ikev2_add_ipsec_tunnel_args_t * a)
   ikev2_main_t *km = &ikev2_main;
   u32 sw_if_index;
   int rv = 0;
-  ip46_address_t zero_addr = ip46_address_initializer;
 
   if (~0 == a->sw_if_index)
     {
@@ -1855,14 +1865,18 @@ ikev2_add_tunnel_from_main (ikev2_add_ipsec_tunnel_args_t * a)
 			       a->local_spi,
 			       IPSEC_PROTOCOL_ESP, a->encr_type,
 			       &a->loc_ckey, a->integ_type, &a->loc_ikey,
-			       a->flags, 0, a->salt_local, &zero_addr,
-			       &zero_addr, NULL, a->src_port, a->dst_port);
+			       a->flags, 0, a->salt_local, &a->local_ip,
+			       &a->remote_ip, TUNNEL_ENCAP_DECAP_FLAG_NONE,
+			       IP_DSCP_CS0, NULL, a->src_port, a->dst_port);
+
   rv |= ipsec_sa_add_and_lock (a->remote_sa_id, a->remote_spi,
 			       IPSEC_PROTOCOL_ESP, a->encr_type, &a->rem_ckey,
 			       a->integ_type, &a->rem_ikey,
 			       (a->flags | IPSEC_SA_FLAG_IS_INBOUND), 0,
-			       a->salt_remote, &zero_addr,
-			       &zero_addr, NULL, a->ipsec_over_udp_port,
+			       a->salt_remote, &a->remote_ip,
+			       &a->local_ip, TUNNEL_ENCAP_DECAP_FLAG_NONE,
+			       IP_DSCP_CS0, NULL,
+			       a->ipsec_over_udp_port,
 			       a->ipsec_over_udp_port);
 
   rv |= ipsec_tun_protect_update (sw_if_index, NULL, a->local_sa_id, sas_in);
@@ -1915,7 +1929,7 @@ ikev2_create_tunnel_interface (vlib_main_t * vm,
       a.flags |= IPSEC_SA_FLAG_IS_TUNNEL;
       a.flags |= IPSEC_SA_FLAG_UDP_ENCAP;
     }
-  if (sa->natt)
+  if (ikev2_natt_active (sa))
     a.flags |= IPSEC_SA_FLAG_UDP_ENCAP;
   a.is_rekey = is_rekey;
 
@@ -2041,7 +2055,8 @@ ikev2_create_tunnel_interface (vlib_main_t * vm,
 	  a.salt_remote = child->salt_ei;
 	  a.salt_local = child->salt_er;
 	}
-      a.dst_port = sa->natt ? sa->dst_port : sa->ipsec_over_udp_port;
+      a.dst_port =
+	ikev2_natt_active (sa) ? sa->dst_port : sa->ipsec_over_udp_port;
       a.src_port = sa->ipsec_over_udp_port;
     }
 
@@ -2449,11 +2464,6 @@ ikev2_generate_message (vlib_buffer_t * b, ikev2_sa_t * sa,
 
   if (sa->is_initiator)
     ike->flags |= IKEV2_HDR_FLAG_INITIATOR;
-
-  if (ike_hdr_is_request (ike))
-    {
-      sa->last_init_msg_id = clib_net_to_host_u32 (ike->msgid);
-    }
 
   if (ike->exchange == IKEV2_EXCHANGE_SA_INIT)
     {
@@ -2948,6 +2958,9 @@ ikev2_node_internal (vlib_main_t * vm,
 			  ikev2_calc_keys (sa0);
 			  ikev2_sa_auth_init (sa0);
 			  ike0->flags = IKEV2_HDR_FLAG_INITIATOR;
+			  ike0->msgid =
+			    clib_net_to_host_u32 (sai->last_init_msg_id);
+			  sa0->last_init_msg_id = sai->last_init_msg_id + 1;
 			  slen =
 			    ikev2_generate_message (b0, sa0, ike0, 0, udp0);
 			  if (~0 == slen)
@@ -3020,6 +3033,7 @@ ikev2_node_internal (vlib_main_t * vm,
 		}
 	      else
 		{
+		  ike0->flags = IKEV2_HDR_FLAG_RESPONSE;
 		  slen = ikev2_generate_message (b0, sa0, ike0, 0, udp0);
 		  if (~0 == slen)
 		    vlib_node_increment_counter (vm, node->node_index,
@@ -3146,7 +3160,7 @@ ikev2_node_internal (vlib_main_t * vm,
 		      ikev2_create_tunnel_interface (vm, sa0, child, p[0],
 						     child - sa0->childs, 1);
 		    }
-		  if (sa0->is_initiator)
+		  if (ike_hdr_is_response (ike0))
 		    {
 		      vec_free (sa0->rekey);
 		    }
@@ -3188,7 +3202,7 @@ ikev2_node_internal (vlib_main_t * vm,
 		clib_net_to_host_u16 (ikev2_get_port (sa0));
 
 	      if (udp0->dst_port == clib_net_to_host_u16 (IKEV2_PORT_NATT)
-		  && sa0->natt)
+		  && ikev2_natt_active (sa0))
 		{
 		  if (!has_non_esp_marker)
 		    slen = ikev2_insert_non_esp_marker (ike0, slen);
@@ -3620,13 +3634,13 @@ ikev2_initiate_delete_ike_sa_internal (vlib_main_t * vm,
       ike0->ispi = clib_host_to_net_u64 (sa->ispi);
       ike0->rspi = clib_host_to_net_u64 (sa->rspi);
       ike0->flags = 0;
-      ike0->msgid = clib_host_to_net_u32 (sa->last_init_msg_id + 1);
-      sa->last_init_msg_id = clib_net_to_host_u32 (ike0->msgid);
+      ike0->msgid = clib_host_to_net_u32 (sa->last_init_msg_id);
+      sa->last_init_msg_id += 1;
       len = ikev2_generate_message (b0, sa, ike0, 0, 0);
       if (~0 == len)
 	return;
 
-      if (sa->natt)
+      if (ikev2_natt_active (sa))
 	len = ikev2_insert_non_esp_marker (ike0, len);
 
       if (sa->is_initiator)
@@ -4144,6 +4158,8 @@ ikev2_initiate_sa_init (vlib_main_t * vm, u8 * name)
   sa.state = IKEV2_STATE_SA_INIT;
   sa.tun_itf = p->tun_itf;
   sa.udp_encap = p->udp_encap;
+  if (p->natt_disabled)
+    sa.natt_state = IKEV2_NATT_DISABLED;
   sa.ipsec_over_udp_port = p->ipsec_over_udp_port;
   sa.is_tun_itf_set = 1;
   sa.initial_contact = 1;
@@ -4201,6 +4217,7 @@ ikev2_initiate_sa_init (vlib_main_t * vm, u8 * name)
   ike0->ispi = clib_host_to_net_u64 (sa.ispi);
   ike0->rspi = 0;
   ike0->msgid = 0;
+  sa.last_init_msg_id += 1;
 
   /* store whole IKE payload - needed for PSK auth */
   vec_reset_length (sa.last_sa_init_req_packet_data);
@@ -4277,13 +4294,13 @@ ikev2_delete_child_sa_internal (vlib_main_t * vm, ikev2_sa_t * sa,
   vec_resize (sa->del, 1);
   sa->del->protocol_id = IKEV2_PROTOCOL_ESP;
   sa->del->spi = csa->i_proposals->spi;
-  ike0->msgid = clib_host_to_net_u32 (sa->last_init_msg_id + 1);
-  sa->last_init_msg_id = clib_net_to_host_u32 (ike0->msgid);
+  ike0->msgid = clib_host_to_net_u32 (sa->last_init_msg_id);
+  sa->last_init_msg_id += 1;
   len = ikev2_generate_message (b0, sa, ike0, 0, 0);
   if (~0 == len)
     return;
 
-  if (sa->natt)
+  if (ikev2_natt_active (sa))
     len = ikev2_insert_non_esp_marker (ike0, len);
   ikev2_send_ike (vm, &sa->iaddr, &sa->raddr, bi0, len,
 		  ikev2_get_port (sa), sa->dst_port, sa->sw_if_index);
@@ -4393,8 +4410,8 @@ ikev2_rekey_child_sa_internal (vlib_main_t * vm, ikev2_sa_t * sa,
   ike0->exchange = IKEV2_EXCHANGE_CREATE_CHILD_SA;
   ike0->ispi = clib_host_to_net_u64 (sa->ispi);
   ike0->rspi = clib_host_to_net_u64 (sa->rspi);
-  ike0->msgid = clib_host_to_net_u32 (sa->last_init_msg_id + 1);
-  sa->last_init_msg_id = clib_net_to_host_u32 (ike0->msgid);
+  ike0->msgid = clib_host_to_net_u32 (sa->last_init_msg_id);
+  sa->last_init_msg_id += 1;
 
   ikev2_rekey_t *rekey;
   vec_add2 (sa->rekey, rekey, 1);
@@ -4408,7 +4425,7 @@ ikev2_rekey_child_sa_internal (vlib_main_t * vm, ikev2_sa_t * sa,
   if (~0 == len)
     return;
 
-  if (sa->natt)
+  if (ikev2_natt_active (sa))
     len = ikev2_insert_non_esp_marker (ike0, len);
   ikev2_send_ike (vm, &sa->iaddr, &sa->raddr, bi0, len,
 		  ikev2_get_port (sa), ikev2_get_port (sa), sa->sw_if_index);
@@ -4711,6 +4728,17 @@ ikev2_set_liveness_params (u32 period, u32 max_retries)
   return 0;
 }
 
+clib_error_t *
+ikev2_profile_natt_disable (u8 * name)
+{
+  ikev2_profile_t *p = ikev2_profile_index_by_name (name);
+  if (!p)
+    return clib_error_return (0, "unknown profile %v", name);
+
+  p->natt_disabled = 1;
+  return 0;
+}
+
 static void
 ikev2_mngr_process_ipsec_sa (ipsec_sa_t * ipsec_sa)
 {
@@ -4841,14 +4869,14 @@ ikev2_send_informational_request (ikev2_sa_t * sa)
   ike0->exchange = IKEV2_EXCHANGE_INFORMATIONAL;
   ike0->ispi = clib_host_to_net_u64 (sa->ispi);
   ike0->rspi = clib_host_to_net_u64 (sa->rspi);
-  ike0->msgid = clib_host_to_net_u32 (sa->last_init_msg_id + 1);
+  ike0->msgid = clib_host_to_net_u32 (sa->last_init_msg_id);
   ike0->flags = 0;
-  sa->last_init_msg_id = clib_net_to_host_u32 (ike0->msgid);
+  sa->last_init_msg_id += 1;
   len = ikev2_generate_message (b0, sa, ike0, 0, 0);
   if (~0 == len)
     return;
 
-  if (sa->natt)
+  if (ikev2_natt_active (sa))
     len = ikev2_insert_non_esp_marker (ike0, len);
 
   if (sa->is_initiator)
@@ -4865,6 +4893,13 @@ ikev2_send_informational_request (ikev2_sa_t * sa)
   dp = sa->dst_port ? sa->dst_port : ikev2_get_port (sa);
   ikev2_send_ike (km->vlib_main, src, dst, bi0, len, ikev2_get_port (sa), dp,
 		  sa->sw_if_index);
+}
+
+void
+ikev2_disable_dpd (void)
+{
+  ikev2_main_t *km = &ikev2_main;
+  km->dpd_disabled = 1;
 }
 
 static_always_inline int
@@ -4902,8 +4937,7 @@ ikev2_mngr_process_fn (vlib_main_t * vm, vlib_node_runtime_t * rt,
 
   while (1)
     {
-      u8 req_sent = 0;
-      vlib_process_wait_for_event_or_clock (vm, 1);
+      vlib_process_wait_for_event_or_clock (vm, 2);
       vlib_process_get_events (vm, NULL);
 
       /* process ike child sas */
@@ -4930,11 +4964,9 @@ ikev2_mngr_process_fn (vlib_main_t * vm, vlib_node_runtime_t * rt,
             sa->old_id_expiration -= 1;
 
           vec_foreach (c, sa->childs)
-            {
-            req_sent |= ikev2_mngr_process_child_sa(sa, c, del_old_ids);
-            }
+            ikev2_mngr_process_child_sa(sa, c, del_old_ids);
 
-          if (ikev2_mngr_process_responder_sas (sa))
+          if (!km->dpd_disabled && ikev2_mngr_process_responder_sas (sa))
             vec_add1 (to_be_deleted, sa - tkm->sas);
         }));
         /* *INDENT-ON* */
@@ -4973,14 +5005,6 @@ ikev2_mngr_process_fn (vlib_main_t * vm, vlib_node_runtime_t * rt,
       /* *INDENT-ON* */
 
       ikev2_process_pending_sa_init (km);
-
-      if (req_sent)
-	{
-	  vlib_process_wait_for_event_or_clock (vm, 5);
-	  vlib_process_get_events (vm, NULL);
-	  req_sent = 0;
-	}
-
     }
   return 0;
 }

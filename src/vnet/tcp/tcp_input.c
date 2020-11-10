@@ -1298,6 +1298,10 @@ tcp_segment_rcv (tcp_worker_ctx_t * wrk, tcp_connection_t * tc,
   ASSERT (n_data_bytes);
   tc->data_segs_in += 1;
 
+  /* Make sure we don't consume trailing bytes */
+  if (PREDICT_FALSE (b->current_length != n_data_bytes))
+    b->current_length = n_data_bytes;
+
   /* Handle out-of-order data */
   if (PREDICT_FALSE (vnet_buffer (b)->tcp.seq_number != tc->rcv_nxt))
     {
@@ -1963,6 +1967,7 @@ tcp46_syn_sent_inline (vlib_main_t * vm, vlib_node_runtime_t * node,
 	      goto cleanup_ho;
 	    }
 
+	  transport_fifos_init_ooo (&new_tc0->connection);
 	  new_tc0->tx_fifo_size =
 	    transport_tx_fifo_size (&new_tc0->connection);
 	  /* Update rtt with the syn-ack sample */
@@ -1986,6 +1991,7 @@ tcp46_syn_sent_inline (vlib_main_t * vm, vlib_node_runtime_t * node,
 	      goto cleanup_ho;
 	    }
 
+	  transport_fifos_init_ooo (&new_tc0->connection);
 	  new_tc0->tx_fifo_size =
 	    transport_tx_fifo_size (&new_tc0->connection);
 	  new_tc0->rtt_ts = 0;
@@ -2642,6 +2648,7 @@ tcp46_listen_inline (vlib_main_t * vm, vlib_node_runtime_t * node,
 	  goto done;
 	}
 
+      transport_fifos_init_ooo (&child->connection);
       child->tx_fifo_size = transport_tx_fifo_size (&child->connection);
 
       tcp_send_synack (child);
