@@ -1,0 +1,42 @@
+#!/bin/bash
+
+buildroot=/scratch/vpp-gw2/build-root
+
+echo Save current software...
+ssh -p 22432 192.168.4.254 "rm -rf /home/dbarach/gate_debians.prev"
+ssh -p 22432 192.168.4.254 "mv /home/dbarach/gate_debians /home/dbarach/gate_debians.prev"
+ssh -p 22432 192.168.4.254 "mkdir /home/dbarach/gate_debians"
+echo Copy new software to the gateway...
+scp -P 22432 $buildroot/*.deb 192.168.4.254:/home/dbarach/gate_debians
+echo Install new software
+ssh -p 22432 192.168.4.254 "cd /home/dbarach/gate_debians; sudo dpkg -i *.deb"
+
+for i in 10 9 8 7 6 5 4 3 2 1
+do
+    echo Wait for $i seconds...
+    sleep 1
+done
+echo Ping test for connectivity...
+
+ssh -p 22432 192.168.4.254 "ping -4 -c 3 yahoo.com"
+if [ $? == 0 ] ; then
+    echo Ping test OK...
+else
+    echo Ping test Not OK, restore old software...
+    ssh -p 22432 192.168.4.254 "cd /home/dbarach/gate_debians.prev; sudo dpkg -i *.deb"
+    for i in 10 9 8 7 6 5 4 3 2 1
+    do
+        echo Wait for $i seconds...
+        sleep 1
+    done
+    echo Ping test for connectivity...
+    ssh -p 22432 192.168.4.254 "ping -c 5 yahoo.com"
+    if [ $? == 0 ] ; then
+        echo Ping test OK after restoring software
+        exit 1
+    else
+        echo Ping test still fails, manual intervention required.
+        exit 2
+    fi
+fi
+exit 0

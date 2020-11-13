@@ -1,0 +1,89 @@
+show macro
+
+set int mac address $(TRUNK) $(TRUNK_MACADDR)
+set dhcp client intfc $(TRUNK) hostname $(HOSTNAME)
+set int state $(TRUNK) up
+
+bvi create instance 0
+set int mac address bvi0 $(BVI_MACADDR)
+set int l2 bridge bvi0 1 bvi
+set int ip address bvi0 192.168.$(INSIDE_SUBNET).1/24
+set int state bvi0 up
+
+set int l2 bridge $(INSIDE_PORT1) 1
+set int state $(INSIDE_PORT1) up
+set int l2 bridge $(INSIDE_PORT2) 1
+set int state $(INSIDE_PORT2) up
+set int l2 bridge $(INSIDE_PORT3) 1
+set int state $(INSIDE_PORT3) up
+set int l2 bridge $(INSIDE_PORT4) 1
+set int state $(INSIDE_PORT4) up
+
+comment { dhcp server and host-stack access }
+create tap host-if-name lstack host-ip4-addr 192.168.$(INSIDE_SUBNET).2/24 host-ip4-gw 192.168.$(INSIDE_SUBNET).1
+set int l2 bridge tap0 1
+set int state tap0 up
+
+$(FEATURE_NAT44) { nat44 enable users 50 user-sessions 750 sessions 63000 }
+$(FEATURE_NAT44) { nat44 add interface address $(TRUNK) }
+$(FEATURE_NAT44) { set interface nat44 in bvi0 out $(TRUNK) }
+
+$(FEATURE_NAT44) { nat44 add static mapping local 192.168.$(INSIDE_SUBNET).2 22432 external $(TRUNK) 22432 tcp }
+$(FEATURE_NAT44) { nat44 add identity mapping external $(TRUNK) udp 500 }
+$(FEATURE_NAT44) { nat44 add identity mapping external $(TRUNK) udp 4500 }
+
+$(FEATURE_CNAT) { cnat snat with $(TRUNK) }
+$(FEATURE_CNAT) { set interface feature bvi0 ip4-cnat-snat arc ip4-unicast }
+$(FEATURE_CNAT) { cnat translation add proto tcp real $(TRUNK) 22432 to -> 192.168.$(INSIDE_SUBNET).2 22432 }
+$(FEATURE_CNAT) { cnat translation add proto udp real $(TRUNK) 53053 to -> 192.168.$(INSIDE_SUBNET).1 53053 }
+
+service restart isc-dhcp-server
+
+comment { nat44 add identity mapping external $(TRUNK) udp 53053 }
+comment { bin dns_name_server_add_del 8.8.8.8 }
+comment { bin dns_enable_disable }
+
+comment { set ct6 inside $(TRUNK) }
+comment { set ct6 outside $(TRUNK) }
+
+set int ip6 table $(TRUNK) 0
+ip6 nd address autoconfig $(TRUNK) default-route
+dhcp6 client $(TRUNK)
+dhcp6 pd client $(TRUNK) prefix group hgw
+set ip6 address bvi0 prefix group hgw ::1/64
+ip6 nd address autoconfig bvi0 default-route
+comment { iPhones seem to need lots of RA messages... }
+ip6 nd bvi0 ra-managed-config-flag ra-other-config-flag ra-interval 5 3 ra-lifetime 180
+comment { ip6 nd bvi0 prefix 0::0/0  ra-lifetime 100000 }
+
+comment { responder profile }
+ikev2 profile add swan
+ikev2 profile set swan auth rsa-sig cert-file /home/dbarach/certs/swancert.pem
+set ikev2 local key /home/dbarach/certs/dorakey.pem
+ikev2 profile set swan id remote fqdn swan.barachs.net
+ikev2 profile set swan id local fqdn broiler2.barachs.net
+ikev2 profile set swan traffic-selector remote ip-range 192.168.1.0 - 192.168.1.255 port-range 0 - 65535 protocol 0
+ikev2 profile set swan traffic-selector local ip-range 192.168.$(INSIDE_SUBNET).0 - 192.168.$(INSIDE_SUBNET).255 port-range 0 - 65535 protocol 0
+create ipip tunnel src 73.120.164.15 dst 162.255.170.167
+ikev2 profile set swan tunnel ipip0
+
+set int mtu packet 1390 ipip0
+set int unnum ipip0 use $(TRUNK)
+
+comment { kill ptz camera "ET call home" nonsense }
+bin mactime_add_del_range name cisco-vpn mac a8:b4:56:e1:b8:3e allow-static
+bin mactime_add_del_range name dave-ipad mac ac:cf:5c:30:5b:fb allow-static
+bin mactime_add_del_range name dave-iphone mac c0:cc:f8:74:a5:e9 allow-static
+bin mactime_add_del_range name dbarach-hb mac 04:d9:f5:7c:2b:b4 allow-static
+bin mactime_add_del_range name dora-bridge mac 88:DC:96:58:A6:EC allow-static
+bin mactime_add_del_range name dora-dvr mac 00:23:63:24:56:c2  allow-static no-udp-10001
+bin mactime_add_del_range name dora-ptz mac 5c:ff:ff:1d:1c:71 allow-static no-udp-10001
+bin mactime_add_del_range name lg-tv mac 38:8c:50:b5:03:e3  allow-static
+bin mactime_add_del_range name old-mac mac 78:31:c1:cf:1d:88 allow-static
+bin mactime_add_del_range name peg-iphone mac b8:c1:11:ed:ea:2a allow-static
+bin mactime_add_del_range name peg-mac mac 8c:85:90:13:7e:05 allow-static
+bin mactime_add_del_range name roku mac c8:3a:6b:54:bf:62 allow-static
+bin mactime_enable_disable $(INSIDE_PORT1)
+bin mactime_enable_disable $(INSIDE_PORT2)
+bin mactime_enable_disable $(INSIDE_PORT3)
+bin mactime_enable_disable $(INSIDE_PORT4)

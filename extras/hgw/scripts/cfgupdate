@@ -1,0 +1,64 @@
+#!/bin/bash
+
+extras=/scratch/vpp-gw2/extras/hgw
+
+if [ $1x = "testx" ] ; then
+    subdir="test"
+elif [ $1x = "swanx" ] ; then
+    subdir="swan"
+elif [ $1x = "dorax" ] ; then
+    subdir="dora"
+else
+    subdir="test"
+fi
+
+echo $subdir gateway configuration selected
+
+# Save the old config
+echo Save the old configs in /tmp/setup.\*...
+ssh -p 22432 192.168.4.254 "cp /home/dbarach/setup.gate /tmp/setup.gate.save"
+ssh -p 22432 192.168.4.254 "cp /home/dbarach/setup.tmpl /tmp/setup.tmpl.save"
+
+# copy new config to the gateway.
+echo Copy new configuration to the gateway...
+scp -P 22432 $extras/$subdir/setup.gate 192.168.4.254:/home/dbarach/setup.gate
+scp -P 22432 $extras/setup.tmpl 192.168.4.254:/home/dbarach
+
+# restart vpp
+echo Restart vpp...
+ssh -p 22432 192.168.4.254 "vppctl service restart vpp"
+
+for i in 10 9 8 7 6 5 4 3 2 1
+do
+    echo Wait for $i seconds...
+    sleep 1
+done
+echo Ping test for connectivity...
+
+ssh -p 22432 192.168.4.254 "ping -4 -c 3 yahoo.com"
+if [ $? == 0 ] ; then
+    echo Ping test OK...
+    echo Remove saved configuration files...
+    ssh -p 22432 192.168.4.254 "rm -f /tmp/setup.*.save"
+else
+    echo Ping test Not OK, restore configuration ...
+    ssh -p 22432 192.168.4.254 "cp /tmp/setup.gate.save /home/dbarach/setup.gate"
+    ssh -p 22432 192.168.4.254 "cp /tmp/setup.tmpl.save /home/dbarach/setup.tmpl"
+    echo Restart vpp...
+    ssh -p 22432 192.168.4.254 "vppctl service restart vpp"
+    for i in 10 9 8 7 6 5 4 3 2 1
+    do
+        echo Wait for $i seconds...
+        sleep 1
+    done
+    echo Ping test for connectivity...
+    ssh -p 22432 192.168.4.254 "ping -c 5 yahoo.com"
+    if [ $? == 0 ] ; then
+        echo Ping test OK after restoring configuration
+        exit 1
+    else
+        echo Ping test still fails, manual intervention required.
+        exit 2
+    fi
+fi
+exit 0
