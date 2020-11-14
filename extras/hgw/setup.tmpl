@@ -39,36 +39,36 @@ $(FEATURE_CNAT) { cnat translation add proto udp real $(TRUNK) 53053 to -> 192.1
 
 service restart isc-dhcp-server
 
-comment { nat44 add identity mapping external $(TRUNK) udp 53053 }
-comment { bin dns_name_server_add_del 8.8.8.8 }
-comment { bin dns_enable_disable }
+$(FEATURE_DNS) { nat44 add identity mapping external $(TRUNK) udp 53053 }
+$(FEATURE_DNS) { bin dns_name_server_add_del 8.8.8.8 }
+$(FEATURE_DNS) { bin dns_enable_disable }
 
 comment { set ct6 inside $(TRUNK) }
 comment { set ct6 outside $(TRUNK) }
 
-set int ip6 table $(TRUNK) 0
-ip6 nd address autoconfig $(TRUNK) default-route
-dhcp6 client $(TRUNK)
-dhcp6 pd client $(TRUNK) prefix group hgw
-set ip6 address bvi0 prefix group hgw ::1/64
-ip6 nd address autoconfig bvi0 default-route
+$(FEATURE_IP6) { set int ip6 table $(TRUNK) 0 }
+$(FEATURE_IP6) { ip6 nd address autoconfig $(TRUNK) default-route }
+$(FEATURE_IP6) { dhcp6 client $(TRUNK) }
+$(FEATURE_IP6) { dhcp6 pd client $(TRUNK) prefix group hgw }
+$(FEATURE_IP6) { set ip6 address bvi0 prefix group hgw ::1/64 }
+$(FEATURE_IP6) { ip6 nd address autoconfig bvi0 default-route }
 comment { iPhones seem to need lots of RA messages... }
-ip6 nd bvi0 ra-managed-config-flag ra-other-config-flag ra-interval 5 3 ra-lifetime 180
+$(FEATURE_IP6) { ip6 nd bvi0 ra-managed-config-flag ra-other-config-flag ra-interval 5 3 ra-lifetime 180 }
 comment { ip6 nd bvi0 prefix 0::0/0  ra-lifetime 100000 }
 
 comment { responder profile }
-ikev2 profile add swan
-ikev2 profile set swan auth rsa-sig cert-file /home/dbarach/certs/swancert.pem
-set ikev2 local key /home/dbarach/certs/dorakey.pem
-ikev2 profile set swan id remote fqdn swan.barachs.net
-ikev2 profile set swan id local fqdn broiler2.barachs.net
-ikev2 profile set swan traffic-selector remote ip-range 192.168.1.0 - 192.168.1.255 port-range 0 - 65535 protocol 0
-ikev2 profile set swan traffic-selector local ip-range 192.168.$(INSIDE_SUBNET).0 - 192.168.$(INSIDE_SUBNET).255 port-range 0 - 65535 protocol 0
-create ipip tunnel src 73.120.164.15 dst 162.255.170.167
-ikev2 profile set swan tunnel ipip0
+$(FEATURE_IKE_RESPONDER) { ikev2 profile add swan }
+$(FEATURE_IKE_RESPONDER) { ikev2 profile set swan auth rsa-sig cert-file /home/dbarach/certs/swancert.pem }
+$(FEATURE_IKE_RESPONDER) { set ikev2 local key /home/dbarach/certs/dorakey.pem }
+$(FEATURE_IKE_RESPONDER) { ikev2 profile set swan id remote fqdn swan.barachs.net }
+$(FEATURE_IKE_RESPONDER) { ikev2 profile set swan id local fqdn broiler2.barachs.net }
+$(FEATURE_IKE_RESPONDER) { ikev2 profile set swan traffic-selector remote ip-range 192.168.1.0 - 192.168.1.255 port-range 0 - 65535 protocol 0 }
+$(FEATURE_IKE_RESPONDER) { ikev2 profile set swan traffic-selector local ip-range 192.168.$(INSIDE_SUBNET).0 - 192.168.$(INSIDE_SUBNET).255 port-range 0 - 65535 protocol 0 }
+$(FEATURE_IKE_RESPONDER) { create ipip tunnel src 73.120.164.15 dst 162.255.170.167 }
+$(FEATURE_IKE_RESPONDER) { ikev2 profile set swan tunnel ipip0 }
 
-set int mtu packet 1390 ipip0
-set int unnum ipip0 use $(TRUNK)
+$(FEATURE_IKE_RESPONDER) { set int mtu packet 1390 ipip0 }
+$(FEATURE_IKE_RESPONDER) { set int unnum ipip0 use $(TRUNK) }
 
 comment { kill ptz camera "ET call home" nonsense }
 bin mactime_add_del_range name cisco-vpn mac a8:b4:56:e1:b8:3e allow-static
