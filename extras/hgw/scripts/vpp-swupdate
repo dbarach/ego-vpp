@@ -1,0 +1,36 @@
+#!/bin/bash
+
+logger "About to update vpp software..."
+cd /home/dbarach/gate_debians
+sudo dpkg -i *.deb >/dev/null 2>&1 &
+sleep 20
+logger "Ping connectivity test..."
+for i in 1 2 3 4 5 6 7 8 9 10
+do
+    ping -4 -c 1 yahoo.com
+    if [ $? == 0 ] ; then
+        logger "Ping test OK..."
+        exit 0
+    fi
+done
+
+logger "Ping test NOT OK, restore old software..."
+rm -rf /home/dbarach/gate_debians
+mv /home/dbarach/gate_debians.prev /home/dbarach/gate_debians
+cd /home/dbarach/gate_debians
+nohup sudo dpkg -i *.deb >/dev/null 2>&1 &
+sleep 20
+logger "Repeat connectivity test..."
+for i in 1 2 3 4 5 6 7 8 9 10
+do
+    ping -4 -c 1 yahoo.com
+    if [ $? == 0 ] ; then
+        logger "Ping test OK after restoring old software..."
+        exit 0
+    fi
+done
+
+logger "Ping test FAIL after restoring software, manual intervention required"
+exit 2
+
+
