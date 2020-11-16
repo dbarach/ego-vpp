@@ -1,0 +1,29 @@
+#!/bin/bash
+
+logger "About to restart vpp..."
+vppctl "service restart vpp"
+logger "Wait ten seconds..."
+sleep 10
+
+logger "Ping connectivity test..."
+ping -4 -c 3 yahoo.com
+if [ $? == 0 ] ; then
+    logger "Ping test OK..."
+    rm -f /tmp/setup.*.save
+else
+    logger "Ping test Not OK, restore configuration ..."
+    cp /tmp/setup.gate.save /home/dbarach/setup.gate
+    cp /tmp/setup.tmpl.save /home/dbarach/setup.tmpl
+    vppctl service restart vpp
+    sleep 10 
+    logger "Repeat connectivity test..."
+    ping -4 -c 3 yahoo.com
+    if [ $? == 0 ] ; then
+        logger "Connectivity OK after restoring configuration"
+        exit 1
+    else
+        logger "Connectivity FAIL after restore, manual intervention required"
+        exit 2
+    fi
+fi
+exit 0

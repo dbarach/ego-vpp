@@ -1,0 +1,65 @@
+#!/bin/bash
+
+extras=/scratch/vpp-gw2/extras/hgw
+
+if [ $1x = "testx" ] ; then
+    subdir="test"
+    ipaddr="192.168.2.48"
+elif [ $1x = "swanx" ] ; then
+    subdir="swan"
+    ipaddr="swan.barachs.net"
+elif [ $1x = "dorax" ] ; then
+    subdir="dora"
+    ipaddr="broiler2.barachs.net"
+else
+    subdir="test"
+    ipaddr="192.168.2.48"
+fi
+
+echo $subdir gateway configuration selected, host/ip address $ipaddr
+
+# Save the old config
+echo Save the old configs in /tmp/setup.\*...
+ssh -p 22432 $ipaddr "cp /home/dbarach/setup.gate /tmp/setup.gate.save"
+ssh -p 22432 $ipaddr "cp /home/dbarach/setup.tmpl /tmp/setup.tmpl.save"
+
+# copy new config to the gateway.
+echo Copy new configuration to the gateway...
+scp -P 22432 $extras/$subdir/setup.gate $ipaddr:/home/dbarach/setup.gate
+scp -P 22432 $extras/setup.tmpl $ipaddr:/home/dbarach
+
+# restart vpp
+echo Restart vpp...
+ssh -p 22432 $ipaddr "nohup /home/dbarach/bin/vpp-reconfigure > /dev/null 2>&1 &"
+echo Reconfiguration in progress...
+
+for i in 10 9 8 7 6 5 4 3 2 1
+do
+    echo Wait for $i seconds...
+    sleep 1
+done
+
+echo Try to access the device...
+
+ssh -p 22432 -o ConnectTimeout=5 $ipaddr "tail -20 /var/log/syslog | grep Ping"
+if [ $? == 0 ] ; then
+    echo Access test OK...
+else
+    echo Access failed, wait for configuration restoration...
+    for i in 20 19 18 17 16 15 14 13 12 11 10 9 8 7 6 5 4 3 2 1
+    do
+        echo Wait for $i seconds...
+        sleep 1
+    done
+    echo Retry access test
+    ssh -p 22432 -o ConnectTimeout=5 $ipaddr "tail -20 /var/log/syslog | grep Ping"
+    if [ $? == 0 ] ; then
+        echo Access test OK, check syslog on the device
+        exit 1
+    else
+        echo Access test still fails, manual intervention required.
+        exit 2
+    fi
+fi
+
+exit 0
