@@ -1,5 +1,7 @@
 #!/bin/sh -e
 
+start-stop-daemon --stop --exec /usr/bin/vpp || true
+
 removed=
 
 # Unbind user-mode PCI drivers
@@ -18,4 +20,3 @@ if [ -n "${removed}" ]; then
 else
     echo "There weren't PCI devices binded"
 fi
-

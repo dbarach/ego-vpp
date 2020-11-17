@@ -16,17 +16,19 @@ set(CMAKE_VERBOSE_MAKEFILE ON)
 add_vpp_library(nat
   SOURCES
   lib/ipfix_logging.c
+  lib/nat_syslog.c
   lib/alloc.c
 
   INSTALL_HEADERS
   lib/ipfix_logging.h
+  lib/nat_syslog.h
   lib/alloc.h
 )
 
 add_vpp_plugin(nat
   SOURCES
   nat.c
-  nat_api.c
+  nat44_api.c
   in2out.c
   in2out_ed.c
   out2in.c
@@ -38,7 +40,6 @@ add_vpp_plugin(nat
   nat44_classify.c
   nat_affinity.c
   nat_format.c
-  nat_syslog.c
   nat_ha.c
 
   MULTIARCH_SOURCES
@@ -51,22 +52,14 @@ add_vpp_plugin(nat
   out2in_ed.c
 
   API_FILES
-  nat.api
+  nat44.api
   nat_types.api
-
-  API_TEST_SOURCES
-  nat_test.c
-
-  INSTALL_HEADERS
-  nat_all_api_h.h
-  nat_msg_enum.h
 
   LINK_LIBRARIES nat
 )
 
 add_vpp_plugin(dslite
   SOURCES
-  nat_syslog.c
   dslite/dslite_api.c
   dslite/dslite_dpo.c
   dslite/dslite.c
@@ -90,7 +83,6 @@ add_vpp_plugin(dslite
 
 add_vpp_plugin(nat66
   SOURCES
-  nat_syslog.c
   nat66/nat66.c
   nat66/nat66_cli.c
   nat66/nat66_api.c
@@ -129,7 +121,6 @@ add_vpp_plugin(det44
 
 add_vpp_plugin(nat64
   SOURCES
-  nat_syslog.c
   nat64/nat64.c
   nat64/nat64_db.c
   nat64/nat64_cli.c
