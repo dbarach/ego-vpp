@@ -19,5 +19,6 @@ define FEATURE_CNAT uncomment
 define FEATURE_DNS comment
 define FEATURE_IP6 comment
 define FEATURE_IKE_RESPONDER comment
+define FEATURE_MACTIME uncomment
 
 exec /home/dbarach/setup.tmpl

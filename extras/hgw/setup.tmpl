@@ -37,9 +37,9 @@ $(FEATURE_NAT44) { $(FEATURE_IKE_RESPONDER) { nat44 add identity mapping externa
 $(FEATURE_CNAT) { cnat snat with $(TRUNK) }
 $(FEATURE_CNAT) { set interface feature bvi0 ip4-cnat-snat arc ip4-unicast }
 $(FEATURE_CNAT) { cnat translation add proto tcp real $(TRUNK) 22432 to -> 192.168.$(INSIDE_SUBNET).2 22432 }
-$(FEATURE_CNAT) { $(FEATURE_DNS) cnat translation add proto udp real $(TRUNK) 53053 to -> 192.168.$(INSIDE_SUBNET).1 53053 } }
+$(FEATURE_CNAT) { $(FEATURE_DNS) { cnat translation add proto udp real $(TRUNK) 53053 to -> 192.168.$(INSIDE_SUBNET).1 53053 } }
 
-$(FEATURE_DNS) { nat44 add identity mapping external $(TRUNK) udp 53053 }
+$(FEATURE_DNS) { $(FEATURE_NAT44) { nat44 add identity mapping external $(TRUNK) udp 53053 } }
 $(FEATURE_DNS) { bin dns_name_server_add_del 8.8.8.8 }
 $(FEATURE_DNS) { bin dns_enable_disable }
 
@@ -71,19 +71,19 @@ $(FEATURE_IKE_RESPONDER) { set int mtu packet 1390 ipip0 }
 $(FEATURE_IKE_RESPONDER) { set int unnum ipip0 use $(TRUNK) }
 
 comment { kill ptz camera "ET call home" nonsense }
-bin mactime_add_del_range name cisco-vpn mac a8:b4:56:e1:b8:3e allow-static
-bin mactime_add_del_range name dave-ipad mac ac:cf:5c:30:5b:fb allow-static
-bin mactime_add_del_range name dave-iphone mac c0:cc:f8:74:a5:e9 allow-static
-bin mactime_add_del_range name dbarach-hb mac 04:d9:f5:7c:2b:b4 allow-static
-bin mactime_add_del_range name dora-bridge mac 88:DC:96:58:A6:EC allow-static
-bin mactime_add_del_range name dora-dvr mac 00:23:63:24:56:c2  allow-static no-udp-10001
-bin mactime_add_del_range name dora-ptz mac 5c:ff:ff:1d:1c:71 allow-static no-udp-10001
-bin mactime_add_del_range name lg-tv mac 38:8c:50:b5:03:e3  allow-static
-bin mactime_add_del_range name old-mac mac 78:31:c1:cf:1d:88 allow-static
-bin mactime_add_del_range name peg-iphone mac b8:c1:11:ed:ea:2a allow-static
-bin mactime_add_del_range name peg-mac mac 8c:85:90:13:7e:05 allow-static
-bin mactime_add_del_range name roku mac c8:3a:6b:54:bf:62 allow-static
-bin mactime_enable_disable $(INSIDE_PORT1)
-bin mactime_enable_disable $(INSIDE_PORT2)
-bin mactime_enable_disable $(INSIDE_PORT3)
-bin mactime_enable_disable $(INSIDE_PORT4)
+$(FEATURE_MACTIME) { bin mactime_add_del_range name cisco-vpn mac a8:b4:56:e1:b8:3e allow-static }
+$(FEATURE_MACTIME) { bin mactime_add_del_range name dave-ipad mac ac:cf:5c:30:5b:fb allow-static }
+$(FEATURE_MACTIME) { bin mactime_add_del_range name dave-iphone mac c0:cc:f8:74:a5:e9 allow-static }
+$(FEATURE_MACTIME) { bin mactime_add_del_range name dbarach-hb mac 04:d9:f5:7c:2b:b4 allow-static }
+$(FEATURE_MACTIME) { bin mactime_add_del_range name dora-bridge mac 88:DC:96:58:A6:EC allow-static }
+$(FEATURE_MACTIME) { bin mactime_add_del_range name dora-dvr mac 00:23:63:24:56:c2  allow-static no-udp-10001 }
+$(FEATURE_MACTIME) { bin mactime_add_del_range name dora-ptz mac 5c:ff:ff:1d:1c:71 allow-static no-udp-10001 }
+$(FEATURE_MACTIME) { bin mactime_add_del_range name lg-tv mac 38:8c:50:b5:03:e3  allow-static }
+$(FEATURE_MACTIME) { bin mactime_add_del_range name old-mac mac 78:31:c1:cf:1d:88 allow-static }
+$(FEATURE_MACTIME) { bin mactime_add_del_range name peg-iphone mac b8:c1:11:ed:ea:2a allow-static }
+$(FEATURE_MACTIME) { bin mactime_add_del_range name peg-mac mac 8c:85:90:13:7e:05 allow-static }
+$(FEATURE_MACTIME) { bin mactime_add_del_range name roku mac c8:3a:6b:54:bf:62 allow-static }
+$(FEATURE_MACTIME) { bin mactime_enable_disable $(INSIDE_PORT1) }
+$(FEATURE_MACTIME) { bin mactime_enable_disable $(INSIDE_PORT2) }
+$(FEATURE_MACTIME) { bin mactime_enable_disable $(INSIDE_PORT3) }
+$(FEATURE_MACTIME) { bin mactime_enable_disable $(INSIDE_PORT4) }
