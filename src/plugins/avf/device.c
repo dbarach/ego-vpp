@@ -767,7 +767,7 @@ avf_op_add_del_eth_addr (vlib_main_t * vm, avf_device_t * ad, u8 count,
 		     format_ethernet_address, &al->list[i].addr);
     }
   return avf_send_to_pf (vm, ad, is_add ? VIRTCHNL_OP_ADD_ETH_ADDR :
-			 VIRTCHNL_OP_ADD_ETH_ADDR, msg, msg_len, 0, 0);
+			 VIRTCHNL_OP_DEL_ETH_ADDR, msg, msg_len, 0, 0);
 }
 
 clib_error_t *
@@ -1165,23 +1165,6 @@ error:
   vlib_log_err (avf_log.class, "%U", format_clib_error, ad->error);
 }
 
-static clib_error_t *
-avf_process_request (vlib_main_t * vm, avf_process_req_t * req)
-{
-  uword *event_data = 0;
-  req->calling_process_index = vlib_get_current_process_node_index (vm);
-  vlib_process_signal_event_pointer (vm, avf_process_node.index,
-				     AVF_PROCESS_EVENT_REQ, req);
-
-  vlib_process_wait_for_event_or_clock (vm, 5.0);
-
-  if (vlib_process_get_events (vm, &event_data) != 0)
-    clib_panic ("avf process node failed to reply in 5 seconds");
-  vec_free (event_data);
-
-  return req->error;
-}
-
 static void
 avf_process_handle_request (vlib_main_t * vm, avf_process_req_t * req)
 {
@@ -1195,7 +1178,31 @@ avf_process_handle_request (vlib_main_t * vm, avf_process_req_t * req)
   else
     clib_panic ("BUG: unknown avf proceess request type");
 
-  vlib_process_signal_event (vm, req->calling_process_index, 0, 0);
+  if (req->calling_process_index != avf_process_node.index)
+    vlib_process_signal_event (vm, req->calling_process_index, 0, 0);
+}
+
+static clib_error_t *
+avf_process_request (vlib_main_t * vm, avf_process_req_t * req)
+{
+  uword *event_data = 0;
+  req->calling_process_index = vlib_get_current_process_node_index (vm);
+
+  if (req->calling_process_index != avf_process_node.index)
+    {
+      vlib_process_signal_event_pointer (vm, avf_process_node.index,
+					 AVF_PROCESS_EVENT_REQ, req);
+
+      vlib_process_wait_for_event_or_clock (vm, 5.0);
+
+      if (vlib_process_get_events (vm, &event_data) != 0)
+	clib_panic ("avf process node failed to reply in 5 seconds");
+      vec_free (event_data);
+    }
+  else
+    avf_process_handle_request (vm, req);
+
+  return req->error;
 }
 
 static u32
@@ -1629,7 +1636,9 @@ avf_create_if (vlib_main_t * vm, avf_create_if_args_t * args)
   /* Indicate ability to support L3 DMAC filtering and
    * initialize interface to L3 non-promisc mode */
   vnet_hw_interface_t *hi = vnet_get_hw_interface (vnm, ad->hw_if_index);
-  hi->flags |= VNET_HW_INTERFACE_FLAG_SUPPORTS_MAC_FILTER;
+  hi->flags |=
+    VNET_HW_INTERFACE_FLAG_SUPPORTS_MAC_FILTER |
+    VNET_HW_INTERFACE_FLAG_SUPPORTS_TX_L4_CKSUM_OFFLOAD;
   ethernet_set_flags (vnm, ad->hw_if_index,
 		      ETHERNET_INTERFACE_FLAG_DEFAULT_L3);
 

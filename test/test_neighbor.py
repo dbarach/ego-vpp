@@ -204,6 +204,8 @@ class ARPTestCase(VppTestCase):
         dyn_arp.add_vpp_config()
         self.assertTrue(dyn_arp.query_vpp_config())
 
+        self.logger.info(self.vapi.cli("show ip neighbor-watcher"))
+
         # this matches all of the listnerers
         es = [self.vapi.wait_for_event(1, "ip_neighbor_event")
               for i in range(3)]
@@ -761,8 +763,10 @@ class ARPTestCase(VppTestCase):
         #
         # Configure Proxy ARP for the subnet on PG0addresses on pg0
         #
-        self.vapi.proxy_arp_add_del(self.pg0._local_ip4_subnet,
-                                    self.pg0._local_ip4_bcast)
+        self.vapi.proxy_arp_add_del(proxy={'table_id': 0,
+                                           'low': self.pg0._local_ip4_subnet,
+                                           'hi': self.pg0._local_ip4_bcast},
+                                    is_add=1)
 
         # Make pg2 un-numbered to pg0
         #
@@ -836,9 +840,9 @@ class ARPTestCase(VppTestCase):
         #
         # cleanup
         #
-        self.pg2.set_proxy_arp(0)
-        self.vapi.proxy_arp_add_del(self.pg0._local_ip4_subnet,
-                                    self.pg0._local_ip4_bcast,
+        self.vapi.proxy_arp_add_del(proxy={'table_id': 0,
+                                           'low': self.pg0._local_ip4_subnet,
+                                           'hi': self.pg0._local_ip4_bcast},
                                     is_add=0)
 
     def test_proxy_arp(self):
@@ -884,8 +888,10 @@ class ARPTestCase(VppTestCase):
         #
         # Configure Proxy ARP for 10.10.10.0 -> 10.10.10.124
         #
-        self.vapi.proxy_arp_add_del(inet_pton(AF_INET, "10.10.10.2"),
-                                    inet_pton(AF_INET, "10.10.10.124"))
+        self.vapi.proxy_arp_add_del(proxy={'table_id': 0,
+                                           'low': "10.10.10.2",
+                                           'hi': "10.10.10.124"},
+                                    is_add=1)
 
         #
         # No responses are sent when the interfaces are not enabled for proxy
@@ -1394,13 +1400,8 @@ class ARPTestCase(VppTestCase):
         #
         # change the interface's MAC
         #
-        mac = [scapy.compat.chb(0x00), scapy.compat.chb(0x00),
-               scapy.compat.chb(0x00), scapy.compat.chb(0x33),
-               scapy.compat.chb(0x33), scapy.compat.chb(0x33)]
-        mac_string = ''.join(mac)
-
         self.vapi.sw_interface_set_mac_address(self.pg1.sw_if_index,
-                                               mac_string)
+                                               "00:00:00:33:33:33")
 
         #
         # now ARP requests come from the new source mac
@@ -1426,7 +1427,7 @@ class ARPTestCase(VppTestCase):
         # configured subnet and thus no glean
         #
         self.vapi.sw_interface_set_mac_address(self.pg2.sw_if_index,
-                                               mac_string)
+                                               "00:00:00:33:33:33")
 
     def test_garp(self):
         """ GARP """
@@ -1557,7 +1558,7 @@ class ARPTestCase(VppTestCase):
         self.assertEqual(4, self.statistics.get_err_counter(
             "/err/arp-reply/IP4 destination address not local to subnet"))
 
-    def test_arp_incomplete(self):
+    def test_arp_incomplete2(self):
         """ Incomplete Entries """
 
         #

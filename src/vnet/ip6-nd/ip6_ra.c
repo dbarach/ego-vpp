@@ -368,11 +368,15 @@ icmp6_router_solicitation (vlib_main_t * vm,
 	  if (PREDICT_TRUE (error0 == ICMP6_ERROR_NONE && o0 != 0 &&
 			    !is_unspecified && !is_link_local))
 	    {
+              /* *INDENT-OFF* */
 	      ip_neighbor_learn_t learn = {
-		.type = IP46_TYPE_IP6,
 		.sw_if_index = sw_if_index0,
-		.ip.ip6 = ip0->src_address,
+		.ip = {
+                  .ip.ip6 = ip0->src_address,
+                  .version = AF_IP6,
+                },
 	      };
+              /* *INDENT-ON* */
 	      memcpy (&learn.mac, o0->ethernet_address, sizeof (learn.mac));
 	      ip_neighbor_learn_dp (&learn);
 	    }
@@ -477,7 +481,7 @@ icmp6_router_solicitation (vlib_main_t * vm,
 
 			  /* copy ll address */
 			  clib_memcpy (&h.ethernet_address[0],
-				       eth_if0->address, 6);
+				       &eth_if0->address, 6);
 
 			  if (vlib_buffer_add_data
 			      (vm, &bi0, (void *) &h,
@@ -633,7 +637,7 @@ icmp6_router_solicitation (vlib_main_t * vm,
 			  eth0 = vlib_buffer_get_current (p0);
 			  clib_memcpy (eth0->dst_address, eth0->src_address,
 				       6);
-			  clib_memcpy (eth0->src_address, eth_if0->address,
+			  clib_memcpy (eth0->src_address, &eth_if0->address,
 				       6);
 			  next0 =
 			    is_dropped ? next0 :
