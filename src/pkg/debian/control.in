@@ -90,7 +90,7 @@ Description: VPP Python3 API bindings
 
 Package: vpp-plugin-g2
 Architecture: any
-Depends: vpp (= ${source:Version}),
+Depends: vpp (>= 21.01),
          ${shlibs:Depends}
 Description: VPP G2 Viewer Plugin
  This package contains the g2 live-data plugin
