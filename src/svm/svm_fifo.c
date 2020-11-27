@@ -389,11 +389,13 @@ svm_fifo_init (svm_fifo_t * f, u32 size)
    */
   f->start_chunk->start_byte = 0;
   prev = f->start_chunk;
+  prev->enq_rb_index = prev->deq_rb_index = RBTREE_TNIL_INDEX;
   c = prev->next;
 
   while (c)
     {
       c->start_byte = prev->start_byte + prev->length;
+      c->enq_rb_index = c->deq_rb_index = RBTREE_TNIL_INDEX;
       prev = c;
       c = c->next;
     }
@@ -951,6 +953,87 @@ svm_fifo_enqueue_nocopy (svm_fifo_t * f, u32 len)
 
   /* store-rel: producer owned index (paired with load-acq in consumer) */
   clib_atomic_store_rel_n (&f->tail, tail);
+}
+
+int
+svm_fifo_enqueue_segments (svm_fifo_t * f, const svm_fifo_seg_t segs[],
+			   u32 n_segs, u8 allow_partial)
+{
+  u32 tail, head, free_count, len = 0, i;
+  svm_fifo_chunk_t *old_tail_c;
+
+  f->ooos_newest = OOO_SEGMENT_INVALID_INDEX;
+
+  f_load_head_tail_prod (f, &head, &tail);
+
+  /* free space in fifo can only increase during enqueue: SPSC */
+  free_count = f_free_count (f, head, tail);
+
+  if (PREDICT_FALSE (free_count == 0))
+    return SVM_FIFO_EFULL;
+
+  for (i = 0; i < n_segs; i++)
+    len += segs[i].len;
+
+  old_tail_c = f->tail_chunk;
+
+  if (!allow_partial)
+    {
+      if (PREDICT_FALSE (free_count < len))
+	return SVM_FIFO_EFULL;
+
+      if (f_pos_gt (tail + len, f_chunk_end (f->end_chunk)))
+	{
+	  if (PREDICT_FALSE (f_try_chunk_alloc (f, head, tail, len)))
+	    return SVM_FIFO_EGROW;
+	}
+
+      for (i = 0; i < n_segs; i++)
+	{
+	  svm_fifo_copy_to_chunk (f, f->tail_chunk, tail, segs[i].data,
+				  segs[i].len, &f->tail_chunk);
+	  tail += segs[i].len;
+	}
+    }
+  else
+    {
+      len = clib_min (free_count, len);
+
+      if (f_pos_gt (tail + len, f_chunk_end (f->end_chunk)))
+	{
+	  if (PREDICT_FALSE (f_try_chunk_alloc (f, head, tail, len)))
+	    {
+	      len = f_chunk_end (f->end_chunk) - tail;
+	      if (!len)
+		return SVM_FIFO_EGROW;
+	    }
+	}
+
+      i = 0;
+      while (len)
+	{
+	  u32 to_copy = clib_min (segs[i].len, len);
+	  svm_fifo_copy_to_chunk (f, f->tail_chunk, tail, segs[i].data,
+				  to_copy, &f->tail_chunk);
+	  len -= to_copy;
+	  tail += to_copy;
+	  i++;
+	}
+    }
+
+  /* collect out-of-order segments */
+  if (PREDICT_FALSE (f->ooos_list_head != OOO_SEGMENT_INVALID_INDEX))
+    {
+      len += ooo_segment_try_collect (f, len, &tail);
+      /* Tail chunk might've changed even if nothing was collected */
+      f->tail_chunk = f_lookup_clear_enq_chunks (f, old_tail_c, tail);
+      f->ooo_enq = 0;
+    }
+
+  /* store-rel: producer owned index (paired with load-acq in consumer) */
+  clib_atomic_store_rel_n (&f->tail, tail);
+
+  return len;
 }
 
 always_inline svm_fifo_chunk_t *

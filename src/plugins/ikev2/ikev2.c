@@ -61,6 +61,37 @@ format_ikev2_trace (u8 * s, va_list * args)
   return s;
 }
 
+#define IKEV2_GENERATE_SA_INIT_OK_str ""
+#define IKEV2_GENERATE_SA_INIT_OK_ERR_NO_DH_STR \
+  "no DH group configured for IKE proposals!"
+#define IKEV2_GENERATE_SA_INIT_OK_ERR_UNSUPP_STR \
+  "DH group not supported!"
+
+typedef enum
+{
+  IKEV2_GENERATE_SA_INIT_OK,
+  IKEV2_GENERATE_SA_INIT_ERR_NO_DH,
+  IKEV2_GENERATE_SA_INIT_ERR_UNSUPPORTED_DH,
+} ikev2_generate_sa_error_t;
+
+static u8 *
+format_ikev2_gen_sa_error (u8 * s, va_list * args)
+{
+  ikev2_generate_sa_error_t e = va_arg (*args, ikev2_generate_sa_error_t);
+  switch (e)
+    {
+    case IKEV2_GENERATE_SA_INIT_OK:
+      break;
+    case IKEV2_GENERATE_SA_INIT_ERR_NO_DH:
+      s = format (s, IKEV2_GENERATE_SA_INIT_OK_ERR_NO_DH_STR);
+      break;
+    case IKEV2_GENERATE_SA_INIT_ERR_UNSUPPORTED_DH:
+      s = format (s, IKEV2_GENERATE_SA_INIT_OK_ERR_UNSUPP_STR);
+      break;
+    }
+  return s;
+}
+
 #define foreach_ikev2_error \
 _(PROCESSED, "IKEv2 packets processed") \
 _(IKE_SA_INIT_RETRANSMIT, "IKE_SA_INIT retransmit ") \
@@ -357,16 +388,14 @@ ikev2_delete_sa (ikev2_main_per_thread_data_t * ptd, ikev2_sa_t * sa)
     }
 }
 
-static void
+static ikev2_generate_sa_error_t
 ikev2_generate_sa_init_data (ikev2_sa_t * sa)
 {
   ikev2_sa_transform_t *t = 0, *t2;
   ikev2_main_t *km = &ikev2_main;
 
   if (sa->dh_group == IKEV2_TRANSFORM_DH_TYPE_NONE)
-    {
-      return;
-    }
+    return IKEV2_GENERATE_SA_INIT_ERR_NO_DH;
 
   /* check if received DH group is on our list of supported groups */
   vec_foreach (t2, km->supported_transforms)
@@ -381,7 +410,7 @@ ikev2_generate_sa_init_data (ikev2_sa_t * sa)
   if (!t)
     {
       sa->dh_group = IKEV2_TRANSFORM_DH_TYPE_NONE;
-      return;
+      return IKEV2_GENERATE_SA_INIT_ERR_UNSUPPORTED_DH;
     }
 
   if (sa->is_initiator)
@@ -406,6 +435,7 @@ ikev2_generate_sa_init_data (ikev2_sa_t * sa)
   /* generate dh keys */
   ikev2_generate_dh (sa, t);
 
+  return IKEV2_GENERATE_SA_INIT_OK;
 }
 
 static void
@@ -1412,7 +1442,9 @@ ikev2_process_create_child_sa_req (vlib_main_t * vm,
   if (sa->is_initiator && proposal
       && proposal->protocol_id == IKEV2_PROTOCOL_ESP)
     {
-      ikev2_rekey_t *rekey = &sa->rekey[0];
+      ikev2_rekey_t *rekey = sa->rekey;
+      if (vec_len (rekey) == 0)
+	goto cleanup_and_exit;
       rekey->protocol_id = proposal->protocol_id;
       rekey->i_proposal =
 	ikev2_select_proposal (proposal, IKEV2_PROTOCOL_ESP);
@@ -1861,25 +1893,39 @@ ikev2_add_tunnel_from_main (ikev2_add_ipsec_tunnel_args_t * a)
       vec_add1 (sas_in, a->old_remote_sa_id);
     }
 
-  rv |= ipsec_sa_add_and_lock (a->local_sa_id,
-			       a->local_spi,
-			       IPSEC_PROTOCOL_ESP, a->encr_type,
-			       &a->loc_ckey, a->integ_type, &a->loc_ikey,
-			       a->flags, 0, a->salt_local, &a->local_ip,
-			       &a->remote_ip, TUNNEL_ENCAP_DECAP_FLAG_NONE,
-			       IP_DSCP_CS0, NULL, a->src_port, a->dst_port);
+  rv = ipsec_sa_add_and_lock (a->local_sa_id,
+			      a->local_spi,
+			      IPSEC_PROTOCOL_ESP, a->encr_type,
+			      &a->loc_ckey, a->integ_type, &a->loc_ikey,
+			      a->flags, 0, a->salt_local, &a->local_ip,
+			      &a->remote_ip, TUNNEL_ENCAP_DECAP_FLAG_NONE,
+			      IP_DSCP_CS0, NULL, a->src_port, a->dst_port);
+  if (rv)
+    goto err0;
 
-  rv |= ipsec_sa_add_and_lock (a->remote_sa_id, a->remote_spi,
-			       IPSEC_PROTOCOL_ESP, a->encr_type, &a->rem_ckey,
-			       a->integ_type, &a->rem_ikey,
-			       (a->flags | IPSEC_SA_FLAG_IS_INBOUND), 0,
-			       a->salt_remote, &a->remote_ip,
-			       &a->local_ip, TUNNEL_ENCAP_DECAP_FLAG_NONE,
-			       IP_DSCP_CS0, NULL,
-			       a->ipsec_over_udp_port,
-			       a->ipsec_over_udp_port);
+  rv = ipsec_sa_add_and_lock (a->remote_sa_id, a->remote_spi,
+			      IPSEC_PROTOCOL_ESP, a->encr_type, &a->rem_ckey,
+			      a->integ_type, &a->rem_ikey,
+			      (a->flags | IPSEC_SA_FLAG_IS_INBOUND), 0,
+			      a->salt_remote, &a->remote_ip,
+			      &a->local_ip, TUNNEL_ENCAP_DECAP_FLAG_NONE,
+			      IP_DSCP_CS0, NULL,
+			      a->ipsec_over_udp_port, a->ipsec_over_udp_port);
+  if (rv)
+    goto err1;
 
-  rv |= ipsec_tun_protect_update (sw_if_index, NULL, a->local_sa_id, sas_in);
+  rv = ipsec_tun_protect_update (sw_if_index, NULL, a->local_sa_id, sas_in);
+  if (rv)
+    goto err2;
+
+  return;
+
+err2:
+  ipsec_sa_unlock_id (a->remote_sa_id);
+err1:
+  ipsec_sa_unlock_id (a->local_sa_id);
+err0:
+  vec_free (sas_in);
 }
 
 static int
@@ -2772,6 +2818,20 @@ ikev2_elog_uint_peers_addr (u32 exchange, ip4_header_t * ip4,
 			 exchange, src, dst);
 }
 
+static void
+ikev2_generate_sa_init_data_and_log (ikev2_sa_t * sa)
+{
+  ikev2_generate_sa_error_t rc = ikev2_generate_sa_init_data (sa);
+
+  if (PREDICT_TRUE (rc == IKEV2_GENERATE_SA_INIT_OK))
+    return;
+
+  if (rc == IKEV2_GENERATE_SA_INIT_ERR_NO_DH)
+    ikev2_elog_error (IKEV2_GENERATE_SA_INIT_OK_ERR_NO_DH_STR);
+  else if (rc == IKEV2_GENERATE_SA_INIT_ERR_UNSUPPORTED_DH)
+    ikev2_elog_error (IKEV2_GENERATE_SA_INIT_OK_ERR_UNSUPP_STR);
+}
+
 static_always_inline uword
 ikev2_node_internal (vlib_main_t * vm,
 		     vlib_node_runtime_t * node, vlib_frame_t * frame,
@@ -2803,7 +2863,13 @@ ikev2_node_internal (vlib_main_t * vm,
       int ip_hdr_sz = 0;
       int is_req = 0, has_non_esp_marker = 0;
 
-      if (b0->punt_reason == ipsec_punt_reason[IPSEC_PUNT_IP4_SPI_UDP_0])
+      ASSERT (0 == b0->punt_reason
+	      || (is_ip4
+		  && b0->punt_reason ==
+		  ipsec_punt_reason[IPSEC_PUNT_IP4_SPI_UDP_0]));
+
+      if (is_ip4
+	  && b0->punt_reason == ipsec_punt_reason[IPSEC_PUNT_IP4_SPI_UDP_0])
 	{
 	  u8 *ptr = vlib_buffer_get_current (b0);
 	  ip40 = (ip4_header_t *) ptr;
@@ -2903,7 +2969,7 @@ ikev2_node_internal (vlib_main_t * vm,
 		      sa0->r_proposals =
 			ikev2_select_proposal (sa0->i_proposals,
 					       IKEV2_PROTOCOL_IKE);
-		      ikev2_generate_sa_init_data (sa0);
+		      ikev2_generate_sa_init_data_and_log (sa0);
 		    }
 
 		  if (sa0->state == IKEV2_STATE_SA_INIT
@@ -4128,15 +4194,6 @@ ikev2_initiate_sa_init (vlib_main_t * vm, u8 * name)
       valid_ip = 1;
     }
 
-  bi0 = ikev2_get_new_ike_header_buff (vm, &b0);
-  if (!bi0)
-    {
-      char *errmsg = "buffer alloc failure";
-      ikev2_log_error (errmsg);
-      return clib_error_return (0, errmsg);
-    }
-  ike0 = vlib_buffer_get_current (b0);
-
   /* Prepare the SA and the IKE payload */
   ikev2_sa_t sa;
   clib_memset (&sa, 0, sizeof (ikev2_sa_t));
@@ -4164,7 +4221,15 @@ ikev2_initiate_sa_init (vlib_main_t * vm, u8 * name)
   sa.is_tun_itf_set = 1;
   sa.initial_contact = 1;
   sa.dst_port = IKEV2_PORT;
-  ikev2_generate_sa_init_data (&sa);
+
+  ikev2_generate_sa_error_t rc = ikev2_generate_sa_init_data (&sa);
+  if (rc != IKEV2_GENERATE_SA_INIT_OK)
+    {
+      ikev2_sa_free_all_vec (&sa);
+      ikev2_payload_destroy_chain (chain);
+      return clib_error_return (0, "%U", format_ikev2_gen_sa_error, rc);
+    }
+
   ikev2_payload_add_ke (chain, sa.dh_group, sa.i_dh_data);
   ikev2_payload_add_nonce (chain, sa.i_nonce);
 
@@ -4203,6 +4268,17 @@ ikev2_initiate_sa_init (vlib_main_t * vm, u8 * name)
 			    IKEV2_NOTIFY_MSG_SIGNATURE_HASH_ALGORITHMS,
 			    sig_hash_algo);
   vec_free (sig_hash_algo);
+
+  bi0 = ikev2_get_new_ike_header_buff (vm, &b0);
+  if (!bi0)
+    {
+      ikev2_sa_free_all_vec (&sa);
+      ikev2_payload_destroy_chain (chain);
+      char *errmsg = "buffer alloc failure";
+      ikev2_log_error (errmsg);
+      return clib_error_return (0, errmsg);
+    }
+  ike0 = vlib_buffer_get_current (b0);
 
   /* Buffer update and boilerplate */
   len += vec_len (chain->data);
@@ -4414,6 +4490,7 @@ ikev2_rekey_child_sa_internal (vlib_main_t * vm, ikev2_sa_t * sa,
   sa->last_init_msg_id += 1;
 
   ikev2_rekey_t *rekey;
+  vec_reset_length (sa->rekey);
   vec_add2 (sa->rekey, rekey, 1);
   ikev2_sa_proposal_t *proposals = vec_dup (csa->i_proposals);
 
@@ -4692,7 +4769,10 @@ ikev2_mngr_process_child_sa (ikev2_sa_t * sa, ikev2_child_sa_t * csa,
       u32 *sas_in = NULL;
       vec_add1 (sas_in, csa->remote_sa_id);
       vlib_worker_thread_barrier_sync (vm);
-      ipsec_tun_protect_update (sw_if_index, NULL, csa->local_sa_id, sas_in);
+      int rv = ipsec_tun_protect_update (sw_if_index, NULL,
+					 csa->local_sa_id, sas_in);
+      if (rv)
+	vec_free (sas_in);
       ipsec_sa_unlock_id (ikev2_flip_alternate_sa_bit (csa->remote_sa_id));
       vlib_worker_thread_barrier_release (vm);
     }
@@ -4989,7 +5069,12 @@ ikev2_mngr_process_fn (vlib_main_t * vm, vlib_node_runtime_t * rt,
 	      p = pool_elt_at_index (km->profiles, sa->profile_index);
 	      if (p)
 		{
-		  ikev2_initiate_sa_init (vm, p->name);
+		  clib_error_t *e = ikev2_initiate_sa_init (vm, p->name);
+		  if (e)
+		    {
+		      ikev2_log_error ("%U", format_clib_error, e);
+		      clib_error_free (e);
+		    }
 		}
 	    }
 	}
