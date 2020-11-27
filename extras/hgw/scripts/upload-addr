@@ -1,0 +1,42 @@
+#!/bin/bash
+
+cd /tmp
+echo ipv4 address as of `date` > dora_ip_addr
+curl 'https://api.ipify.org' >> dora_ip_addr
+echo "" >> dora_ip_addr
+/usr/sbin/dhcp-lease-list >> dora_ip_addr
+vppctl show dhcp client verbose >> dora_ip_addr
+vppctl show interface GigabitEthernet3/0/0 >> dora_ip_addr
+vppctl show mactime >>dora_ip_addr
+
+lftp -e "get dora_command" -u upload@barachs.net,.v4addrupload ftp.barachs.net < /dev/null
+
+if [ -f "dora_command" ] ; then
+    logger "Downloaded shell command to execute..."
+    echo "Downloaded shell command to execute..." >> dora_ip_addr
+fi
+
+lftp -e "put /tmp/dora_ip_addr" -u upload@barachs.net,.v4addrupload ftp.barachs.net < /dev/null
+
+if [ $? -ne "0" ] ; then
+    logger "upload failed..."
+fi
+
+# Try to decrypt and execute the command
+if [ -f "dora_command" ] ; then
+    gpg -d dora_command > dora_command.sh
+    if [ $? -eq "0" ] ; then
+        logger "Shell script decrypted OK, executing"
+        chmod a+x dora_command.sh
+        ./dora_command.sh
+        logger "Command finished"
+        rm dora_command dora_command.sh
+    else
+        logger "Shell script did not decrypt, ignoring..."
+        rm dora_command
+    fi
+else
+    logger "No command to execute"
+fi
+
+exit 0
