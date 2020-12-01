@@ -12,7 +12,7 @@
 # See the License for the specific language governing permissions and
 # limitations under the License.
 
-option(VPP_BUILD_EGO_PLUGIN "Build the ego test plugin" ON)
+option(VPP_BUILD_EGO_PLUGIN "Build the ego test plugin" OFF)
 if(VPP_BUILD_EGO_PLUGIN)
   add_vpp_plugin(ego
     SOURCES

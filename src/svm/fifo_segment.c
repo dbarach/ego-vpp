@@ -485,6 +485,8 @@ fsh_try_alloc_fifo_hdr_batch (fifo_segment_header_t * fsh,
   u8 *fmem;
   int i;
 
+  ASSERT (batch_size != 0);
+
   size = (uword) sizeof (*f) * batch_size;
 
   oldheap = ssvm_push_heap (fsh->ssvm_sh);
@@ -507,6 +509,8 @@ fsh_try_alloc_fifo_hdr_batch (fifo_segment_header_t * fsh,
       fmem += sizeof (*f);
     }
 
+  fsh_free_bytes_sub (fsh, size);
+
   return 0;
 }
 
@@ -521,6 +525,8 @@ fsh_try_alloc_chunk_batch (fifo_segment_header_t * fsh,
   void *oldheap;
   u8 *cmem;
   int i;
+
+  ASSERT (batch_size != 0);
 
   rounded_data_size = fs_freelist_index_to_size (fl_index);
   total_chunk_bytes = (uword) batch_size *rounded_data_size;
@@ -881,38 +887,9 @@ fifo_segment_prealloc_fifo_hdrs (fifo_segment_t * fs, u32 slice_index,
 {
   fifo_segment_header_t *fsh = fs->h;
   fifo_segment_slice_t *fss;
-  svm_fifo_t *f;
-  void *oldheap;
-  uword size;
-  u8 *fmem;
-  int i;
 
   fss = fsh_slice_get (fsh, slice_index);
-  size = (uword) (sizeof (*f)) * batch_size;
-
-  oldheap = ssvm_push_heap (fsh->ssvm_sh);
-  fmem = clib_mem_alloc_aligned_at_offset (size, CLIB_CACHE_LINE_BYTES,
-					   0 /* align_offset */ ,
-					   0 /* os_out_of_memory */ );
-  ssvm_pop_heap (oldheap);
-
-  /* Out of space.. */
-  if (fmem == 0)
-    return -1;
-
-  /* Carve fifo + chunk space */
-  for (i = 0; i < batch_size; i++)
-    {
-      f = (svm_fifo_t *) fmem;
-      memset (f, 0, sizeof (*f));
-      f->next = fss->free_fifos;
-      fss->free_fifos = f;
-      fmem += sizeof (*f);
-    }
-
-  fsh_free_bytes_sub (fsh, size);
-
-  return 0;
+  return fsh_try_alloc_fifo_hdr_batch (fsh, fss, batch_size);
 }
 
 int
@@ -986,8 +963,11 @@ fifo_segment_preallocate_fifo_pairs (fifo_segment_t * fs,
 
   for (i = 0; i < fs->n_slices; i++)
     {
-      fss = fsh_slice_get (fsh, i);
       alloc_now = clib_min (pairs_per_slice, *n_fifo_pairs);
+      if (0 == alloc_now)
+	break;
+
+      fss = fsh_slice_get (fsh, i);
       if (fs_try_alloc_fifo_batch (fsh, fss, rx_fl_index, alloc_now))
 	clib_warning ("rx prealloc failed: pairs %u", alloc_now);
       if (fs_try_alloc_fifo_batch (fsh, fss, tx_fl_index, alloc_now))
