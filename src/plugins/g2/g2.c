@@ -37,7 +37,7 @@ ego_g2_thread_fn (void *arg)
   clib_mem_set_heap (w->thread_mheap);
   pthread_mutex_init(&g2_thread_lock, NULL);
   pthread_cond_init(&g2_thread_cv, NULL);
-
+  __os_thread_index = 0;
 
   while (1) {
     pthread_mutex_lock (&g2_thread_lock);
