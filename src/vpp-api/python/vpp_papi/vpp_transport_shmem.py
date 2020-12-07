@@ -2,9 +2,13 @@
 # A transport class. With two implementations.
 # One for socket and one for shared memory.
 #
+import logging
 
 from cffi import FFI
 import cffi
+
+logger = logging.getLogger('vpp_papi.transport')
+logger.addHandler(logging.NullHandler())
 
 ffi = FFI()
 ffi.cdef("""
@@ -62,7 +66,7 @@ class VppTransportShmemIOError(IOError):
         super(VppTransportShmemIOError, self).__init__(rv, descr)
 
 
-class VppTransport(object):
+class VppTransport:
     VppTransportShmemIOError = VppTransportShmemIOError
 
     def __init__(self, parent, read_timeout, server_address):

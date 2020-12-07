@@ -1,7 +1,6 @@
 #!/usr/bin/env python3
 
 import abc
-import six
 import unittest
 
 from scapy.fields import BitField, ByteField, FlagsField, IntField
@@ -12,7 +11,7 @@ from scapy.layers.inet6 import IPv6
 from framework import VppTestCase, VppTestRunner
 from lisp import VppLocalMapping, VppLispAdjacency, VppLispLocator, \
     VppLispLocatorSet, VppRemoteMapping, LispRemoteLocator
-from util import ppp, ForeignAddressFactory
+from util import ppp
 
 # From py_lispnetworking.lisp.py:  # GNU General Public License v2.0
 
@@ -32,8 +31,20 @@ bind_layers(LISP_GPE_Header, IPv6, next_proto=2)
 bind_layers(LISP_GPE_Header, Ether, next_proto=3)
 
 
-@six.add_metaclass(abc.ABCMeta)
-class Driver(object):
+class ForeignAddressFactory(object):
+    count = 0
+    prefix_len = 24
+    net_template = '10.10.10.{}'
+    net = net_template.format(0) + '/' + str(prefix_len)
+
+    def get_ip4(self):
+        if self.count > 255:
+            raise Exception("Network host address exhaustion")
+        self.count += 1
+        return self.net_template.format(self.count)
+
+
+class Driver(metaclass=abc.ABCMeta):
 
     config_order = ['locator-sets',
                     'locators',

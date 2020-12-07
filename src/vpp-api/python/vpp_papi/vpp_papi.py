@@ -21,6 +21,7 @@ import ipaddress
 import sys
 import multiprocessing as mp
 import os
+import queue
 import logging
 import functools
 import json
@@ -30,7 +31,7 @@ import weakref
 import atexit
 import time
 from . vpp_format import verify_enum_hint
-from . vpp_serializer import VPPType, VPPEnumType, VPPUnionType
+from . vpp_serializer import VPPType, VPPEnumType, VPPEnumFlagType, VPPUnionType
 from . vpp_serializer import VPPMessage, vpp_get_type, VPPTypeAlias
 
 try:
@@ -43,16 +44,11 @@ except ModuleNotFoundError:
 
     VppTransport = V
 
-logger = logging.getLogger(__name__)
+logger = logging.getLogger('vpp_papi')
 logger.addHandler(logging.NullHandler())
 
-if sys.version[0] == '2':
-    import Queue as queue
-else:
-    import queue as queue
-
 __all__ = ('FuncWrapper', 'VPP', 'VppApiDynamicMethodHolder',
-           'VppEnum', 'VppEnumType',
+           'VppEnum', 'VppEnumType', 'VppEnumFlag',
            'VPPIOError', 'VPPRuntimeError', 'VPPValueError',
            'VPPApiClient', )
 
@@ -72,7 +68,12 @@ class VppEnumType(type):
 
 
 @metaclass(VppEnumType)
-class VppEnum(object):
+class VppEnum:
+    pass
+
+
+@metaclass(VppEnumType)
+class VppEnumFlag:
     pass
 
 
@@ -80,16 +81,8 @@ def vpp_atexit(vpp_weakref):
     """Clean up VPP connection on shutdown."""
     vpp_instance = vpp_weakref()
     if vpp_instance and vpp_instance.transport.connected:
-        vpp_instance.logger.debug('Cleaning up VPP on exit')
+        logger.debug('Cleaning up VPP on exit')
         vpp_instance.disconnect()
-
-
-if sys.version[0] == '2':
-    def vpp_iterator(d):
-        return d.iteritems()
-else:
-    def vpp_iterator(d):
-        return d.items()
 
 
 def add_convenience_methods():
@@ -112,11 +105,11 @@ def add_convenience_methods():
     ipaddress._IPAddressBase.vapi_af_name = property(_vapi_af_name)
 
 
-class VppApiDynamicMethodHolder(object):
+class VppApiDynamicMethodHolder:
     pass
 
 
-class FuncWrapper(object):
+class FuncWrapper:
     def __init__(self, func):
         self._func = func
         self.__name__ = func.__name__
@@ -149,7 +142,7 @@ class VPPValueError(ValueError):
     pass
 
 
-class VPPApiJSONFiles(object):
+class VPPApiJSONFiles:
     @classmethod
     def find_api_dir(cls, dirs):
         """Attempt to find the best directory in which API definition
@@ -291,7 +284,12 @@ class VPPApiJSONFiles(object):
                 types[t[0]] = {'type': 'enum', 'data': t}
         except KeyError:
             pass
-
+        try:
+            for t in api['enumflags']:
+                t[0] = 'vl_api_' + t[0] + '_t'
+                types[t[0]] = {'type': 'enum', 'data': t}
+        except KeyError:
+            pass
         try:
             for t in api['unions']:
                 t[0] = 'vl_api_' + t[0] + '_t'
@@ -328,6 +326,12 @@ class VPPApiJSONFiles(object):
                             VPPEnumType(t[0], t[1:])
                         except ValueError:
                             unresolved[k] = v
+                if not vpp_get_type(k):
+                    if v['type'] == 'enumflag':
+                        try:
+                            VPPEnumFlagType(t[0], t[1:])
+                        except ValueError:
+                            unresolved[k] = v
                     elif v['type'] == 'union':
                         try:
                             VPPUnionType(t[0], t[1:])
@@ -362,7 +366,7 @@ class VPPApiJSONFiles(object):
         return messages, services
 
 
-class VPPApiClient(object):
+class VPPApiClient:
     """VPP interface.
 
     This class provides the APIs to VPP.  The APIs are loaded
@@ -464,7 +468,7 @@ class VPPApiClient(object):
     def get_function(self, name):
         return getattr(self._api, name)
 
-    class ContextId(object):
+    class ContextId:
         """Multiprocessing-safe provider of unique context IDs."""
         def __init__(self):
             self.context = mp.Value(ctypes.c_uint, 0)
@@ -506,7 +510,7 @@ class VPPApiClient(object):
         self.id_names = [None] * (self.vpp_dictionary_maxid + 1)
         self.id_msgdef = [None] * (self.vpp_dictionary_maxid + 1)
         self._api = VppApiDynamicMethodHolder()
-        for name, msg in vpp_iterator(self.messages):
+        for name, msg in self.messages.items():
             n = name + '_' + msg.crc[2:]
             i = self.transport.get_msg_index(n)
             if i > 0:
@@ -621,7 +625,7 @@ class VPPApiClient(object):
 
     def decode_incoming_msg(self, msg, no_type_conversion=False):
         if not msg:
-            self.logger.warning('vpp_api.read failed')
+            logger.warning('vpp_api.read failed')
             return
 
         (i, ci), size = self.header.unpack(msg, 0)

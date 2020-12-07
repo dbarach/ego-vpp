@@ -27,12 +27,11 @@ from . import vpp_format
 # logger = logging.getLogger('vpp_serializer')
 # logger.setLevel(logging.DEBUG)
 #
-logger = logging.getLogger(__name__)
+logger = logging.getLogger('vpp_papi.serializer')
 
-if sys.version[0] == '2':
-    def check(d): type(d) is dict
-else:
-    def check(d): type(d) is dict or type(d) is bytes
+
+def check(d):
+    return type(d) is dict or type(d) is bytes
 
 
 def conversion_required(data, field_type):
@@ -57,8 +56,7 @@ def conversion_unpacker(data, field_type):
     return vpp_format.conversion_unpacker_table[field_type](data)
 
 
-# TODO: post 20.01, remove inherit from object.
-class Packer(object):
+class Packer:
     options = {}
 
     def pack(self, data, kwargs):
@@ -358,7 +356,10 @@ class VLAList_legacy(Packer):
         )
 
 
+# Will change to IntEnum after 21.04 release
 class VPPEnumType(Packer):
+    output_class = IntFlag
+
     def __init__(self, name, msgdef, options=None):
         self.size = types['u32'].size
         self.name = name
@@ -373,9 +374,9 @@ class VPPEnumType(Packer):
                 continue
             ename, evalue = f
             e_hash[ename] = evalue
-        self.enum = IntFlag(name, e_hash)
+        self.enum = self.output_class(name, e_hash)
         types[name] = self
-        class_types[name] = VPPEnumType
+        class_types[name] = self.__class__
         self.options = options
 
     def __getattr__(self, name):
@@ -383,10 +384,6 @@ class VPPEnumType(Packer):
 
     def __bool__(self):
         return True
-
-    # TODO: Remove post 20.01.
-    if sys.version[0] == '2':
-        __nonzero__ = __bool__
 
     def pack(self, data, kwargs=None):
         if data is None:  # Default to zero if not specified
@@ -401,14 +398,21 @@ class VPPEnumType(Packer):
         x, size = types[self.enumtype].unpack(data, offset)
         return self.enum(x), size
 
-    @staticmethod
-    def _get_packer_with_options(f_type, options):
-        return VPPEnumType(f_type, types[f_type].msgdef, options=options)
+    @classmethod
+    def _get_packer_with_options(cls, f_type, options):
+        return cls(f_type, types[f_type].msgdef, options=options)
 
     def __repr__(self):
-        return "VPPEnumType(name=%s, msgdef=%s, options=%s)" % (
-            self.name, self.msgdef, self.options
+        return "%s(name=%s, msgdef=%s, options=%s)" % (
+            self.__class__.__name__, self.name, self.msgdef, self.options
         )
+
+
+class VPPEnumFlagType(VPPEnumType):
+    output_class = IntFlag
+
+    def __init__(self, name, msgdef, options=None):
+        super(VPPEnumFlagType, self).__init__(name, msgdef, options)
 
 
 class VPPUnionType(Packer):

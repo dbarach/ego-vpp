@@ -1,13 +1,9 @@
 """ abstract vpp object and object registry """
 
 import abc
-import six
-
-from six import moves
 
 
-@six.add_metaclass(abc.ABCMeta)
-class VppObject(object):
+class VppObject(metaclass=abc.ABCMeta):
     """ Abstract vpp object """
 
     @abc.abstractmethod
@@ -52,7 +48,7 @@ class VppObject(object):
         return not self.__eq__(other)
 
 
-class VppObjectRegistry(object):
+class VppObjectRegistry:
     """ Class which handles automatic configuration cleanup. """
     _shared_state = {}
 
