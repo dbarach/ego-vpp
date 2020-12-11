@@ -71,6 +71,34 @@ void ego_start_thread (vlib_cli_command_function_t *fp)
   pthread_cond_signal(&g2_thread_cv);
 }
 
+#include <sys/types.h>
+
+int ego_gtk_start_check (void)
+{
+  extern int getresuid (uid_t *__ruid, uid_t *euid, uid_t *__suid);
+  extern int getresgid (uid_t *__ruid, uid_t *euid, uid_t *__suid);
+  uid_t ruid, euid, suid; /* Real, effective and saved user ID's */
+  gid_t rgid, egid, sgid; /* Real, effective and saved group ID's */
+
+  if (getresuid (&ruid, &euid, &suid) != 0 ||
+      getresgid (&rgid, &egid, &sgid) != 0)
+    {
+      suid = ruid = getuid ();
+      sgid = rgid = getgid ();
+      euid = geteuid ();
+      egid = getegid ();
+    }
+
+  /* gtk certainly won't start... */
+  if (ruid != euid || ruid != suid ||
+      rgid != egid || rgid != sgid)
+    {
+      return (1);
+    }
+  /* gtk may start, e.g. if $DISPLAY is OK, etc. */
+  return (0);
+}
+
 /*
  * fd.io coding-style-patch-verification: ON
  *
