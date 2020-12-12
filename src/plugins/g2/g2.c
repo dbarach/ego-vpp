@@ -95,6 +95,10 @@ int ego_gtk_start_check (void)
     {
       return (1);
     }
+
+  /* Some chance this might work... */
+  (void) setenv ("DISPLAY", ":1", 0 /* don't overwrite */);
+
   /* gtk may start, e.g. if $DISPLAY is OK, etc. */
   return (0);
 }
