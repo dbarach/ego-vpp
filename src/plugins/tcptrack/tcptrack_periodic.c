@@ -39,11 +39,11 @@ handle_timeout (tcptrack_main_t *ttm, f64 now)
       vec_reset_length (timed_out_indices);
 
       /* *INDENT-OFF* */
-      pool_foreach (tc, ttm->connections[i],
-      ({
-        if (now - tc->last_heard > 60.0)
-          vec_add1 (timed_out_indices, tc - ttm->connections[i]);
-      }));
+      pool_foreach(tc, ttm->connections[i])
+        {
+          if (now - tc->last_heard > 60.0)
+            vec_add1 (timed_out_indices, tc - ttm->connections[i]);
+        }
       /* *INDENT-ON* */
 
       for (j = 0; j < vec_len (timed_out_indices); j++)

@@ -174,22 +174,24 @@ tcptrack_show_command_fn (vlib_main_t * vm,
   for (i = 0; i < vec_len (ttm->connections); i++)
     {
       /* *INDENT-OFF* */
-      pool_foreach (tc, ttm->connections[i],
-      ({
-        in_order_pkts += tc->in_order_pkts;
-        out_of_order_pkts += tc->out_of_order_pkts;
-        if (verbose || (detail && tc->in_order_pkts) ||
-            (tc->in_order_pkts + tc->out_of_order_pkts > 1000))
-          {
-            vlib_cli_output (vm, "%U:%d ooo rate %.4f ooo %d total %d last heard %.3fs ago",
-                             format_ip4_address, &tc->src_address,
-                             tc->dst_port,
-                             (f64)(tc->out_of_order_pkts) /
-                             (f64)(tc->out_of_order_pkts + tc->in_order_pkts),
-                             tc->out_of_order_pkts,
-                             (tc->out_of_order_pkts + tc->in_order_pkts),
-                             now - tc->last_heard);
-          }}));
+      pool_foreach(tc, ttm->connections[i])
+        {
+          in_order_pkts += tc->in_order_pkts;
+          out_of_order_pkts += tc->out_of_order_pkts;
+          if (verbose || (detail && tc->in_order_pkts) ||
+              (tc->in_order_pkts + tc->out_of_order_pkts > 1000))
+            {
+              vlib_cli_output (vm,
+                   "%U:%d ooo rate %.4f ooo %d total %d last heard %.3fs ago",
+                               format_ip4_address, &tc->src_address,
+                               tc->dst_port,
+                               (f64)(tc->out_of_order_pkts) /
+                               (f64)(tc->out_of_order_pkts + tc->in_order_pkts),
+                               tc->out_of_order_pkts,
+                               (tc->out_of_order_pkts + tc->in_order_pkts),
+                               now - tc->last_heard);
+            }
+        }
       /* *INDENT-ON* */
     }
 
