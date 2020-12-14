@@ -141,10 +141,6 @@ typedef enum fib_path_oper_attribute_t_ {
      */
     FIB_PATH_OPER_ATTRIBUTE_RESOLVED,
     /**
-     * The path is attached, despite what the next-hop may say.
-     */
-    FIB_PATH_OPER_ATTRIBUTE_ATTACHED,
-    /**
      * The path has become a permanent drop.
      */
     FIB_PATH_OPER_ATTRIBUTE_DROP,
@@ -178,7 +174,6 @@ typedef enum fib_path_oper_flags_t_ {
     FIB_PATH_OPER_FLAG_RECURSIVE_LOOP = (1 << FIB_PATH_OPER_ATTRIBUTE_RECURSIVE_LOOP),
     FIB_PATH_OPER_FLAG_DROP = (1 << FIB_PATH_OPER_ATTRIBUTE_DROP),
     FIB_PATH_OPER_FLAG_RESOLVED = (1 << FIB_PATH_OPER_ATTRIBUTE_RESOLVED),
-    FIB_PATH_OPER_FLAG_ATTACHED = (1 << FIB_PATH_OPER_ATTRIBUTE_ATTACHED),
 } __attribute__ ((packed)) fib_path_oper_flags_t;
 
 /**
@@ -272,16 +267,10 @@ typedef struct fib_path_t_ {
                     mpls_eos_bit_t fp_eos;
                 };
 	    } fp_nh;
-            union {
-                /**
-                 * The FIB table index in which to find the next-hop.
-                 */
-                fib_node_index_t fp_tbl_id;
-                /**
-                 * The BIER FIB the fmask is in
-                 */
-                index_t fp_bier_fib;
-            };
+            /**
+             * The FIB table index in which to find the next-hop.
+             */
+            fib_node_index_t fp_tbl_id;
 	} recursive;
 	struct {
             /**
@@ -359,7 +348,7 @@ typedef struct fib_path_t_ {
     STRUCT_MARK(path_hash_end);
 
     /**
-     * Memebers in this last section represent information that is
+     * Members in this last section represent information that is
      * dervied during resolution. It should not be copied to new paths
      * nor compared.
      */
@@ -2832,11 +2821,11 @@ show_fib_path_command (vlib_main_t * vm,
     else
     {
 	vlib_cli_output (vm, "FIB Paths");
-	pool_foreach_index (pi, fib_path_pool,
-	({
+	pool_foreach_index (pi, fib_path_pool)
+	 {
 	    vlib_cli_output (vm, "%U", format_fib_path, pi, 0,
                              FIB_PATH_FORMAT_FLAGS_NONE);
-	}));
+	}
     }
 
     return (NULL);

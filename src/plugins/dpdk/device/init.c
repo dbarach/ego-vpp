@@ -707,10 +707,10 @@ dpdk_lib_init (dpdk_main_t * dm)
 	{
 	  int i;
 	  q = 0;
-	  clib_bitmap_foreach (i, devconf->workers, ({
+	  clib_bitmap_foreach (i, devconf->workers)  {
 	    vnet_hw_interface_assign_rx_thread (dm->vnet_main, xd->hw_if_index, q++,
 					     vdm->first_worker_thread_index + i);
-	  }));
+	  }
 	}
       else
 	for (q = 0; q < xd->rx_q_used; q++)
@@ -1354,7 +1354,7 @@ dpdk_config (vlib_main_t * vm, unformat_input_t * input)
       default_hugepage_sz = clib_mem_get_default_hugepage_size ();
 
       /* *INDENT-OFF* */
-      clib_bitmap_foreach (x, tm->cpu_socket_bitmap, (
+      clib_bitmap_foreach (x, tm->cpu_socket_bitmap)
 	{
 	  clib_error_t *e;
 	  uword n_pages;
@@ -1365,7 +1365,7 @@ dpdk_config (vlib_main_t * vm, unformat_input_t * input)
 
 	  if ((e = clib_sysfs_prealloc_hugepages(x, 0, n_pages)))
 	    clib_error_report (e);
-      }));
+        }
       /* *INDENT-ON* */
     }
 
@@ -1429,7 +1429,7 @@ dpdk_config (vlib_main_t * vm, unformat_input_t * input)
       devconf->x = conf->default_devconf.x ;
 
   /* *INDENT-OFF* */
-  pool_foreach (devconf, conf->dev_confs, ({
+  pool_foreach (devconf, conf->dev_confs)  {
 
     /* default per-device config items */
     foreach_dpdk_device_config_item
@@ -1452,7 +1452,7 @@ dpdk_config (vlib_main_t * vm, unformat_input_t * input)
     /* add DPDK EAL whitelist/blacklist entry */
     if (num_whitelisted > 0 && devconf->is_blacklisted == 0)
     {
-	  tmp = format (0, "-w%c", 0);
+	  tmp = format (0, "-a%c", 0);
 	  vec_add1 (conf->eal_init_args, tmp);
 	  if (devconf->devargs)
 	  {
@@ -1471,13 +1471,13 @@ dpdk_config (vlib_main_t * vm, unformat_input_t * input)
 	  tmp = format (0, "%U%c", format_vlib_pci_addr, &devconf->pci_addr, 0);
 	  vec_add1 (conf->eal_init_args, tmp);
     }
-  }));
+  }
   /* *INDENT-ON* */
 
 #undef _
 
   /* set master-lcore */
-  tmp = format (0, "--master-lcore%c", 0);
+  tmp = format (0, "--main-lcore%c", 0);
   vec_add1 (conf->eal_init_args, tmp);
   tmp = format (0, "%u%c", tm->main_lcore, 0);
   vec_add1 (conf->eal_init_args, tmp);

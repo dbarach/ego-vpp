@@ -457,10 +457,10 @@ compute_prefix_lengths_in_search_order (ip6_mfib_table_instance_t *table)
     int i;
     vec_reset_length (table->prefix_lengths_in_search_order);
     /* Note: bitmap reversed so this is in fact a longest prefix match */
-    clib_bitmap_foreach (i, table->non_empty_dst_address_length_bitmap,
-    ({
+    clib_bitmap_foreach (i, table->non_empty_dst_address_length_bitmap)
+     {
 	vec_add1(table->prefix_lengths_in_search_order, (256 - i));
-    }));
+    }
 }
 
 void
@@ -691,8 +691,8 @@ ip6_show_mfib (vlib_main_t * vm,
             break;
     }
 
-    pool_foreach (mfib_table, im6->mfibs,
-    ({
+    pool_foreach (mfib_table, im6->mfibs)
+     {
         ip6_mfib_t *mfib = &mfib_table->v6;
 
         if (table_id >= 0 && table_id != (int)mfib->table_id)
@@ -726,7 +726,7 @@ ip6_show_mfib (vlib_main_t * vm,
         {
             ip6_mfib_table_show_one(mfib, vm, &src, &grp, mask, cover);
         }
-    }));
+    }
 
     return 0;
 }

@@ -677,8 +677,8 @@ ip4_add_del_interface_address_internal (vlib_main_t * vm,
       ip_interface_address_t *ia;
       vnet_sw_interface_t *sif;
 
-      pool_foreach(sif, vnm->interface_main.sw_interfaces,
-      ({
+      pool_foreach (sif, vnm->interface_main.sw_interfaces)
+       {
           if (im->fib_index_by_sw_if_index[sw_if_index] ==
               im->fib_index_by_sw_if_index[sif->sw_if_index])
             {
@@ -728,7 +728,7 @@ ip4_add_del_interface_address_internal (vlib_main_t * vm,
                      }
                  }));
             }
-      }));
+      }
     }
   /* *INDENT-ON* */
 
@@ -2109,8 +2109,11 @@ ip4_rewrite_inline_with_gso (vlib_main_t * vm,
       u32 tx_sw_if_index0, tx_sw_if_index1;
       u8 *p;
 
-      vlib_prefetch_buffer_header (b[6], LOAD);
-      vlib_prefetch_buffer_header (b[7], LOAD);
+      if (is_midchain)
+	{
+	  vlib_prefetch_buffer_header (b[6], LOAD);
+	  vlib_prefetch_buffer_header (b[7], LOAD);
+	}
 
       adj_index0 = vnet_buffer (b[0])->ip.adj_index[VLIB_TX];
       adj_index1 = vnet_buffer (b[1])->ip.adj_index[VLIB_TX];
