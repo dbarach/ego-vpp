@@ -32,6 +32,7 @@ import shutil
 
 process_imports = False
 
+
 ###############################################################################
 class ToJSON():
     '''Class to generate functions converting from VPP binary API to JSON.'''
@@ -89,7 +90,7 @@ class ToJSON():
             return 'cJSON_AddBoolToObject', '', False
 
         # Lookup type name check if it's enum
-        if vt.type == 'Enum':
+        if vt.type == 'Enum' or vt.type == 'EnumFlag':
             return '{t}_tojson'.format(t=t), '', True
         return '{t}_tojson'.format(t=t), '&', True
 
@@ -186,6 +187,21 @@ class ToJSON():
         write('}\n')
 
     _dispatch['Enum'] = print_enum
+
+    def print_enum_flag(self, o):
+        '''Create cJSON object (string) for VPP API enum'''
+        write = self.stream.write
+        write('static inline cJSON *vl_api_{name}_t_tojson '
+              '(vl_api_{name}_t a) {{\n'.format(name=o.name))
+        write('    cJSON *array = cJSON_CreateArray();\n')
+
+        for b in o.block:
+            write('    if (a & {})\n'.format(b[0]))
+            write('       cJSON_AddItemToArray(array, cJSON_CreateString("{}"));\n'.format(b[0]))
+        write('    return array;\n')
+        write('}\n')
+
+    _dispatch['EnumFlag'] = print_enum_flag
 
     def print_typedef(self, o):
         '''Create cJSON (dictionary) object from VPP API typedef'''
@@ -454,6 +470,27 @@ class FromJSON():
         write('}\n')
 
     _dispatch['Enum'] = print_enum
+
+    def print_enum_flag(self, o):
+        '''Convert to JSON enum(string) to VPP API enum (int)'''
+        write = self.stream.write
+        write('static inline void *vl_api_{n}_t_fromjson '
+              '(void *mp, int *len, cJSON *o, vl_api_{n}_t *a) {{\n'
+              .format(n=o.name))
+        write('   int i;\n')
+        write('   *a = 0;\n')
+        write('   for (i = 0; i < cJSON_GetArraySize(o); i++) {\n')
+        write('       cJSON *e = cJSON_GetArrayItem(o, i);\n')
+        write('       char *p = cJSON_GetStringValue(e);\n')
+        write('       if (!p) return 0;\n')
+        for b in o.block:
+            write('       if (strcmp(p, "{}") == 0) *a |= {};\n'
+                  .format(b[0], b[1]))
+        write('    }\n')
+        write('   return mp;\n')
+        write('}\n')
+
+    _dispatch['EnumFlag'] = print_enum_flag
 
     def print_typedef(self, o):
         '''Convert from JSON object to VPP API binary representation'''
@@ -845,6 +882,7 @@ class Printfun():
         write('    }\n')
 
     _dispatch['Enum'] = print_enum
+    _dispatch['EnumFlag'] = print_enum
 
     def print_obj(self, o, stream):
         '''Entry point'''
@@ -935,7 +973,7 @@ static inline u8 *format_vl_api_{name}_t (u8 *s, va_list * args)
 '''
 
     for t in objs:
-        if t.__class__.__name__ == 'Enum':
+        if t.__class__.__name__ == 'Enum' or t.__class__.__name__ == 'EnumFlag':
             write(signature.format(name=t.name))
             pp.print_enum(t.block, stream)
             write('    return s;\n')
@@ -1071,7 +1109,7 @@ static inline void vl_api_{name}_t_endian (vl_api_{name}_t *a)
 '''
 
     for t in objs:
-        if t.__class__.__name__ == 'Enum':
+        if t.__class__.__name__ == 'Enum' or t.__class__.__name__ == 'EnumFlag' :
             output += signature.format(name=t.name)
             if t.enumtype in ENDIAN_STRINGS:
                 output += ('    *a = {}(*a);\n'
@@ -1191,7 +1229,7 @@ def generate_include_types(s, module, stream):
                       (o.alias['type'], o.name, o.alias['length']))
             else:
                 write('typedef %s vl_api_%s_t;\n' % (o.alias['type'], o.name))
-        elif tname == 'Enum':
+        elif tname == 'Enum' or tname == 'EnumFlag':
             if o.enumtype == 'u32':
                 write("typedef enum {\n")
             else:

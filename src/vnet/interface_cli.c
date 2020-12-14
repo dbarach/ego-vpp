@@ -112,8 +112,8 @@ show_or_clear_hw_interfaces (vlib_main_t * vm,
 
   /* Gather interfaces. */
   if (vec_len (hw_if_indices) == 0)
-    pool_foreach (hi, im->hw_interfaces,
-		  vec_add1 (hw_if_indices, hi - im->hw_interfaces));
+    pool_foreach (hi, im->hw_interfaces)
+      vec_add1 (hw_if_indices, hi - im->hw_interfaces);
 
   if (verbose < 0)
     verbose = 1;		/* default to verbose (except bond) */
@@ -139,12 +139,12 @@ show_or_clear_hw_interfaces (vlib_main_t * vm,
 			       hi, verbose);
 
               /* *INDENT-OFF* */
-	      clib_bitmap_foreach (hw_idx, hi->bond_info,
-              ({
+	      clib_bitmap_foreach (hw_idx, hi->bond_info)
+               {
                 shi = vnet_get_hw_interface(vnm, hw_idx);
                 vlib_cli_output (vm, "%U\n",
                                  format_vnet_hw_interface, vnm, shi, verbose);
-              }));
+              }
               /* *INDENT-ON* */
 	    }
 	}
@@ -395,12 +395,12 @@ show_sw_interfaces (vlib_main_t * vm,
 	vec_new (vnet_sw_interface_t, pool_elts (im->sw_interfaces));
       _vec_len (sorted_sis) = 0;
       /* *INDENT-OFF* */
-      pool_foreach (si, im->sw_interfaces,
-      ({
+      pool_foreach (si, im->sw_interfaces)
+       {
         int visible = vnet_swif_is_api_visible (si);
         if (visible)
-          vec_add1 (sorted_sis, si[0]);}
-        ));
+          vec_add1 (sorted_sis, si[0]);
+        }
       /* *INDENT-ON* */
       /* Sort by name. */
       vec_sort_with_function (sorted_sis, sw_interface_name_compare);
@@ -1207,12 +1207,12 @@ show_interface_sec_mac_addr_fn (vlib_main_t * vm, unformat_input_t * input,
 	vec_new (vnet_sw_interface_t, pool_elts (im->sw_interfaces));
       _vec_len (sorted_sis) = 0;
       /* *INDENT-OFF* */
-      pool_foreach (si, im->sw_interfaces,
-      ({
+      pool_foreach (si, im->sw_interfaces)
+       {
         int visible = vnet_swif_is_api_visible (si);
         if (visible)
-          vec_add1 (sorted_sis, si[0]);}
-        ));
+          vec_add1 (sorted_sis, si[0]);
+        }
       /* *INDENT-ON* */
       /* Sort by name. */
       vec_sort_with_function (sorted_sis, sw_interface_name_compare);
@@ -1663,8 +1663,8 @@ show_interface_rx_placement_fn (vlib_main_t * vm, unformat_input_t * input,
 
   /* *INDENT-OFF* */
   foreach_vlib_main (({
-    clib_bitmap_foreach (si, pn->sibling_bitmap,
-      ({
+    clib_bitmap_foreach (si, pn->sibling_bitmap)
+       {
         rt = vlib_node_get_runtime_data (this_vlib_main, si);
 
         if (vec_len (rt->devices_and_queues))
@@ -1679,7 +1679,7 @@ show_interface_rx_placement_fn (vlib_main_t * vm, unformat_input_t * input,
 			dq->queue_id,
 			format_vnet_hw_if_rx_mode, dq->mode);
 	  }
-      }));
+      }
     if (vec_len (s) > 0)
       {
         vlib_cli_output(vm, "Thread %u (%s):\n%v", index,

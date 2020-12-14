@@ -2,9 +2,13 @@
 # A transport class. With two implementations.
 # One for socket and one for shared memory.
 #
+import logging
 
 from cffi import FFI
 import cffi
+
+logger = logging.getLogger('vpp_papi.transport')
+logger.addHandler(logging.NullHandler())
 
 ffi = FFI()
 ffi.cdef("""
@@ -29,8 +33,12 @@ void vac_mem_init (size_t size);
 
 vpp_object = None
 
-# Barfs on failure, no need to check success.
-vpp_api = ffi.dlopen('libvppapiclient.so')
+# allow file to be imported so it can be mocked in tests.
+# If the shared library fails, VppTransport cannot be initialized.
+try:
+    vpp_api = ffi.dlopen('libvppapiclient.so')
+except OSError:
+    vpp_api = None
 
 
 @ffi.callback("void(unsigned char *, int)")
@@ -58,7 +66,7 @@ class VppTransportShmemIOError(IOError):
         super(VppTransportShmemIOError, self).__init__(rv, descr)
 
 
-class VppTransport(object):
+class VppTransport:
     VppTransportShmemIOError = VppTransportShmemIOError
 
     def __init__(self, parent, read_timeout, server_address):

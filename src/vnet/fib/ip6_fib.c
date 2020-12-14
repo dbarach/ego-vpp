@@ -264,11 +264,11 @@ compute_prefix_lengths_in_search_order (ip6_fib_table_instance_t *table)
     old = table->prefix_lengths_in_search_order;
 
     /* Note: bitmap reversed so this is in fact a longest prefix match */
-    clib_bitmap_foreach (i, table->non_empty_dst_address_length_bitmap,
-    ({
+    clib_bitmap_foreach (i, table->non_empty_dst_address_length_bitmap)
+     {
 	int dst_address_length = 128 - i;
 	vec_add1(prefix_lengths_in_search_order, dst_address_length);
-    }));
+    }
 
     table->prefix_lengths_in_search_order = prefix_lengths_in_search_order;
 
@@ -696,8 +696,8 @@ ip6_show_fib (vlib_main_t * vm,
         return (NULL);
     }
 
-    pool_foreach (fib_table, im6->fibs,
-    ({
+    pool_foreach (fib_table, im6->fibs)
+     {
         fib_source_t source;
         u8 *s = NULL;
 
@@ -762,7 +762,7 @@ ip6_show_fib (vlib_main_t * vm,
 	{
 	    ip6_fib_table_show_one(fib, vm, &matching_address, mask_len, detail);
 	}
-    }));
+    }
 
     return 0;
 }

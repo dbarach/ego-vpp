@@ -304,7 +304,7 @@ vlib_cli_get_possible_completions (u8 * str)
    * autocomplete the next level of subcommands */
   help_next_level = (vec_len (str) == 0) || isspace (str[vec_len (str) - 1]);
   /* *INDENT-OFF* */
-  clib_bitmap_foreach(index, match_bitmap, {
+  clib_bitmap_foreach (index, match_bitmap) {
     if (help_next_level && is_unique) {
 	c = get_sub_command (vcm, c, index);
 	vec_foreach (sc, c->sub_commands) {
@@ -314,7 +314,7 @@ vlib_cli_get_possible_completions (u8 * str)
     }
     sc = &c->sub_commands[index];
     vec_add1(result, (u8*) sc->name);
-  });
+  }
   /* *INDENT-ON* */
 
 done:
@@ -1077,11 +1077,11 @@ restart_cmd_fn (vlib_main_t * vm, unformat_input_t * input,
 
   /* Close all known open files */
   /* *INDENT-OFF* */
-  pool_foreach(f, fm->file_pool,
-    ({
+  pool_foreach (f, fm->file_pool)
+     {
       if (f->file_descriptor > 2)
         close(f->file_descriptor);
-    }));
+    }
   /* *INDENT-ON* */
 
   /* Exec ourself */

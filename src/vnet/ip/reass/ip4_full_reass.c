@@ -464,6 +464,7 @@ ip4_full_reass_drop_all (vlib_main_t * vm, vlib_node_runtime_t * node,
     {
       vlib_buffer_free (vm, to_free, vec_len (to_free));
     }
+  vec_free (to_free);
 }
 
 always_inline void
@@ -1575,13 +1576,13 @@ ip4_full_reass_walk_expired (vlib_main_t * vm,
 
 	  vec_reset_length (pool_indexes_to_free);
           /* *INDENT-OFF* */
-          pool_foreach_index (index, rt->pool, ({
+          pool_foreach_index (index, rt->pool)  {
                                 reass = pool_elt_at_index (rt->pool, index);
                                 if (now > reass->last_heard + rm->timeout)
                                   {
                                     vec_add1 (pool_indexes_to_free, index);
                                   }
-                              }));
+                              }
           /* *INDENT-ON* */
 	  int *i;
           /* *INDENT-OFF* */
@@ -1695,9 +1696,9 @@ show_ip4_reass (vlib_main_t * vm,
       if (details)
 	{
           /* *INDENT-OFF* */
-          pool_foreach (reass, rt->pool, {
+          pool_foreach (reass, rt->pool) {
             vlib_cli_output (vm, "%U", format_ip4_reass, vm, reass);
-          });
+          }
           /* *INDENT-ON* */
 	}
       sum_reass_n += rt->reass_n;

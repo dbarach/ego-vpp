@@ -130,10 +130,10 @@ vlib_node_runtime_update (vlib_main_t * vm, u32 node_index, u32 next_index)
 	  pf->next_frame_index += n_insert;
       }
       /* *INDENT-OFF* */
-      pool_foreach (pf, nm->suspended_process_frames, ({
+      pool_foreach (pf, nm->suspended_process_frames)  {
 	  if (pf->next_frame_index != ~0 && pf->next_frame_index >= i)
 	    pf->next_frame_index += n_insert;
-      }));
+      }
       /* *INDENT-ON* */
 
       r->n_next_nodes = vec_len (node->next_nodes);
@@ -223,14 +223,14 @@ vlib_node_add_next_with_slot (vlib_main_t * vm,
     uword sib_node_index, sib_slot;
     vlib_node_t *sib_node;
     /* *INDENT-OFF* */
-    clib_bitmap_foreach (sib_node_index, node->sibling_bitmap, ({
+    clib_bitmap_foreach (sib_node_index, node->sibling_bitmap)  {
       sib_node = vec_elt (nm->nodes, sib_node_index);
       if (sib_node != node)
 	{
 	  sib_slot = vlib_node_add_next_with_slot (vm, sib_node_index, next_node_index, slot);
 	  ASSERT (sib_slot == slot);
 	}
-    }));
+    }
     /* *INDENT-ON* */
   }
 
@@ -627,7 +627,7 @@ vlib_node_main_init (vlib_main_t * vm)
 	  }
 
         /* *INDENT-OFF* */
-	clib_bitmap_foreach (si, sib->sibling_bitmap, ({
+	clib_bitmap_foreach (si, sib->sibling_bitmap)  {
 	      vlib_node_t * m = vec_elt (nm->nodes, si);
 
 	      /* Connect all of sibling's siblings to us. */
@@ -635,7 +635,7 @@ vlib_node_main_init (vlib_main_t * vm)
 
 	      /* Connect us to all of sibling's siblings. */
 	      n->sibling_bitmap = clib_bitmap_ori (n->sibling_bitmap, si);
-	    }));
+	    }
         /* *INDENT-ON* */
 
 	/* Connect sibling to us. */

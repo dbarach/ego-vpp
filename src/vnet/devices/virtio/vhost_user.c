@@ -598,7 +598,8 @@ vhost_user_socket_read (clib_file_t * uf)
 
       if ((msg.state.num > 32768) ||	/* maximum ring size is 32768 */
 	  (msg.state.num == 0) ||	/* it cannot be zero */
-	  ((msg.state.num - 1) & msg.state.num))	/* must be power of 2 */
+	  ((msg.state.num - 1) & msg.state.num) ||	/* must be power of 2 */
+	  (msg.state.index >= VHOST_VRING_MAX_N))
 	goto close_socket;
       vui->vrings[msg.state.index].qsz_mask = msg.state.num - 1;
       break;
@@ -678,6 +679,8 @@ vhost_user_socket_read (clib_file_t * uf)
 		    vui->hw_if_index, msg.u64);
 
       q = (u8) (msg.u64 & 0xFF);
+      if (q >= VHOST_VRING_MAX_N)
+	goto close_socket;
 
       /* if there is old fd, delete and close it */
       if (vui->vrings[q].callfd_idx != ~0)
@@ -711,6 +714,8 @@ vhost_user_socket_read (clib_file_t * uf)
 		    vui->hw_if_index, msg.u64);
 
       q = (u8) (msg.u64 & 0xFF);
+      if (q >= VHOST_VRING_MAX_N)
+	goto close_socket;
 
       if (vui->vrings[q].kickfd_idx != ~0)
 	{
@@ -750,6 +755,8 @@ vhost_user_socket_read (clib_file_t * uf)
 		    vui->hw_if_index, msg.u64);
 
       q = (u8) (msg.u64 & 0xFF);
+      if (q >= VHOST_VRING_MAX_N)
+	goto close_socket;
 
       if (vui->vrings[q].errfd != -1)
 	close (vui->vrings[q].errfd);
@@ -769,6 +776,8 @@ vhost_user_socket_read (clib_file_t * uf)
       vu_log_debug (vui,
 		    "if %d msg VHOST_USER_SET_VRING_BASE idx %d num 0x%x",
 		    vui->hw_if_index, msg.state.index, msg.state.num);
+      if (msg.state.index >= VHOST_VRING_MAX_N)
+	goto close_socket;
       vlib_worker_thread_barrier_sync (vm);
       vui->vrings[msg.state.index].last_avail_idx = msg.state.num;
       if (vhost_user_is_packed_ring_supported (vui))
@@ -1117,7 +1126,7 @@ vhost_user_send_interrupt_process (vlib_main_t * vm,
 
 	case ~0:
 	  /* *INDENT-OFF* */
-	  pool_foreach (vui, vum->vhost_user_interfaces, {
+	  pool_foreach (vui, vum->vhost_user_interfaces) {
 	      next_timeout = timeout;
 	      for (qid = 0; qid < VHOST_VRING_MAX_N / 2; qid += 2)
 		{
@@ -1145,7 +1154,7 @@ vhost_user_send_interrupt_process (vlib_main_t * vm,
 		  if ((next_timeout < timeout) && (next_timeout > 0.0))
 		    timeout = next_timeout;
 		}
-	  });
+	  }
           /* *INDENT-ON* */
 	  break;
 
@@ -1196,7 +1205,7 @@ vhost_user_process (vlib_main_t * vm,
       timeout = 3.0;
 
       /* *INDENT-OFF* */
-      pool_foreach (vui, vum->vhost_user_interfaces, {
+      pool_foreach (vui, vum->vhost_user_interfaces) {
 
 	  if (vui->unix_server_index == ~0) { //Nothing to do for server sockets
 	      if (vui->clib_file_index == ~0)
@@ -1221,6 +1230,7 @@ vhost_user_process (vlib_main_t * vm,
 		  /* try to connect */
 		  strncpy (sun.sun_path, (char *) vui->sock_filename,
 			   sizeof (sun.sun_path) - 1);
+		  sun.sun_path[sizeof (sun.sun_path) - 1] = 0;
 
 		  /* Avoid hanging VPP if the other end does not accept */
 		  if (fcntl(sockfd, F_SETFL, O_NONBLOCK) < 0)
@@ -1263,7 +1273,7 @@ vhost_user_process (vlib_main_t * vm,
 		    }
 		}
 	  }
-      });
+      }
       /* *INDENT-ON* */
     }
   return 0;
@@ -1398,9 +1408,9 @@ vhost_user_exit (vlib_main_t * vm)
 
   vlib_worker_thread_barrier_sync (vlib_get_main ());
   /* *INDENT-OFF* */
-  pool_foreach (vui, vum->vhost_user_interfaces, {
+  pool_foreach (vui, vum->vhost_user_interfaces) {
       vhost_user_delete_if (vnm, vm, vui->sw_if_index);
-  });
+  }
   /* *INDENT-ON* */
   vlib_worker_thread_barrier_release (vlib_get_main ());
   return 0;
@@ -1822,9 +1832,8 @@ vhost_user_dump_ifs (vnet_main_t * vnm, vlib_main_t * vm,
   if (!out_vuids)
     return -1;
 
-  pool_foreach (vui, vum->vhost_user_interfaces,
-		vec_add1 (hw_if_indices, vui->hw_if_index);
-    );
+  pool_foreach (vui, vum->vhost_user_interfaces)
+    vec_add1 (hw_if_indices, vui->hw_if_index);
 
   for (i = 0; i < vec_len (hw_if_indices); i++)
     {
@@ -2100,9 +2109,8 @@ show_vhost_user_command_fn (vlib_main_t * vm,
     }
   if (vec_len (hw_if_indices) == 0)
     {
-      pool_foreach (vui, vum->vhost_user_interfaces,
-		    vec_add1 (hw_if_indices, vui->hw_if_index);
-	);
+      pool_foreach (vui, vum->vhost_user_interfaces)
+	vec_add1 (hw_if_indices, vui->hw_if_index);
     }
   vlib_cli_output (vm, "Virtio vhost-user interfaces");
   vlib_cli_output (vm, "Global:\n  coalesce frames %d time %e",
@@ -2499,9 +2507,8 @@ vhost_user_unmap_all (void)
 
   if (vum->dont_dump_vhost_user_memory)
     {
-      pool_foreach (vui, vum->vhost_user_interfaces,
-		    unmap_all_mem_regions (vui);
-	);
+      pool_foreach (vui, vum->vhost_user_interfaces)
+	unmap_all_mem_regions (vui);
     }
 }
 
