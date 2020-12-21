@@ -47,7 +47,6 @@
 #include <vppinfra/pool.h>
 #include <vppinfra/random_buffer.h>
 #include <vppinfra/time.h>
-#include <vppinfra/pmc.h>
 #include <vppinfra/pcap.h>
 
 #include <pthread.h>
@@ -77,8 +76,7 @@ typedef struct
 typedef struct
 {
   u8 trace_filter_enable;
-  u32 trace_classify_table_index;
-  u32 trace_filter_set_index;
+  u32 classify_table_index;
 } vlib_trace_filter_t;
 
 typedef enum
@@ -150,6 +148,9 @@ typedef struct vlib_main_t
 
   /* Main loop hw / sw performance counters */
   vlib_node_runtime_perf_callback_set_t vlib_node_runtime_perf_callbacks;
+
+  /* dispatch wrapper function */
+  vlib_node_function_t *dispatch_wrapper_fn;
 
   /* Every so often we switch to the next counter. */
 #define VLIB_LOG2_MAIN_LOOPS_PER_STATS_UPDATE 7

@@ -2881,6 +2881,7 @@ nat44_plugin_enable (nat44_config_t c)
   sm->endpoint_dependent = c.endpoint_dependent;
   sm->static_mapping_only = c.static_mapping_only;
   sm->static_mapping_connection_tracking = c.connection_tracking;
+  sm->out2in_dpo = c.out2in_dpo;
   sm->forwarding_enabled = 0;
   sm->mss_clamping = 0;
 
@@ -4387,16 +4388,13 @@ nat44_sessions_clear ()
   /* *INDENT-OFF* */
   vec_foreach (tsm, sm->per_thread_data)
     {
-      u32 ti;
-
       nat44_db_free (tsm);
       nat44_db_init (tsm);
-
-      ti = tsm->snat_thread_index;
-      vlib_set_simple_counter (&sm->total_users, ti, 0, 0);
-      vlib_set_simple_counter (&sm->total_sessions, ti, 0, 0);
     }
   /* *INDENT-ON* */
+
+  vlib_zero_simple_counter (&sm->total_users, 0);
+  vlib_zero_simple_counter (&sm->total_sessions, 0);
 }
 
 static void

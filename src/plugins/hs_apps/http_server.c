@@ -136,9 +136,10 @@ static void
 http_server_session_free (http_session_t * hs)
 {
   http_server_main_t *hsm = &http_server_main;
-  pool_put (hsm->sessions[hs->thread_index], hs);
+  u32 thread = hs->thread_index;
   if (CLIB_DEBUG)
     memset (hs, 0xfa, sizeof (*hs));
+  pool_put (hsm->sessions[thread], hs);
 }
 
 static void
@@ -238,7 +239,7 @@ static const char *http_response =
     "Expires: Mon, 11 Jan 1970 10:10:10 GMT\r\n"
     "Connection: close \r\n"
     "Pragma: no-cache\r\n"
-    "Content-Length: %d\r\n\r\n%s";
+    "Content-Length: %d\r\n\r\n%v";
 
 static const char *http_error_template =
     "HTTP/1.1 %s\r\n"
