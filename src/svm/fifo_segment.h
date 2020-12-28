@@ -67,7 +67,9 @@ typedef struct
 {
   ssvm_private_t ssvm;		/**< ssvm segment data */
   fifo_segment_header_t *h;	/**< fifo segment data */
+  uword max_byte_index;
   u8 n_slices;			/**< number of fifo segment slices */
+  fifo_slice_private_t *slices; /**< private slice information */
 } fifo_segment_t;
 
 typedef struct
@@ -94,6 +96,7 @@ int fifo_segment_create (fifo_segment_main_t * sm,
 int fifo_segment_attach (fifo_segment_main_t * sm,
 			 fifo_segment_create_args_t * a);
 void fifo_segment_delete (fifo_segment_main_t * sm, fifo_segment_t * fs);
+void fifo_segment_cleanup (fifo_segment_t *fs);
 fifo_segment_t *fifo_segment_get_segment (fifo_segment_main_t * sm,
 					  u32 fs_index);
 u32 fifo_segment_index (fifo_segment_main_t * sm, fifo_segment_t * fs);
@@ -111,6 +114,8 @@ svm_fifo_t *fifo_segment_alloc_fifo_w_slice (fifo_segment_t * fs,
 					     u32 slice_index,
 					     u32 data_bytes,
 					     fifo_segment_ftype_t ftype);
+svm_fifo_t *fifo_segment_alloc_fifo_w_shared (fifo_segment_t *fs,
+					      svm_fifo_shared_t *sf);
 
 /**
  * Free fifo allocated in fifo segment
@@ -206,6 +211,14 @@ u8 fsh_has_reached_mem_limit (fifo_segment_header_t * fsh);
 void fsh_reset_mem_limit (fifo_segment_header_t * fsh);
 
 /**
+ * Fifo segment reset mem limit flag
+ *
+ * @param fs            fifo segment
+ * @param size		size requested
+ * @return		pointer to memory allocated or 0
+ */
+void *fifo_segment_alloc (fifo_segment_t *fs, uword size);
+/**
  * Fifo segment allocated size
  *
  * Returns fifo segment's allocated size
@@ -226,16 +239,6 @@ uword fifo_segment_size (fifo_segment_t * fs);
  * @return		free bytes estimate
  */
 uword fifo_segment_free_bytes (fifo_segment_t * fs);
-
-/**
- * Update fifo segment free bytes estimate
- *
- * Forces fifo segment free bytes estimate synchronization with underlying
- * memory allocator.
- *
- * @param fs		fifo segment
- */
-void fifo_segment_update_free_bytes (fifo_segment_t * fs);
 
 /**
  * Fifo segment number of cached bytes
