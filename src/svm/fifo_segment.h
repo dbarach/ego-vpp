@@ -17,6 +17,7 @@
 
 #include <svm/ssvm.h>
 #include <svm/fifo_types.h>
+#include <svm/message_queue.h>
 #include <svm/svm_fifo.h>
 
 typedef enum
@@ -70,6 +71,7 @@ typedef struct
   uword max_byte_index;
   u8 n_slices;			/**< number of fifo segment slices */
   fifo_slice_private_t *slices; /**< private slice information */
+  svm_msg_q_t *mqs;		/**< private vec of attached mqs */
 } fifo_segment_t;
 
 typedef struct
@@ -102,6 +104,18 @@ fifo_segment_t *fifo_segment_get_segment (fifo_segment_main_t * sm,
 u32 fifo_segment_index (fifo_segment_main_t * sm, fifo_segment_t * fs);
 void fifo_segment_info (fifo_segment_t * seg, char **address, size_t * size);
 
+always_inline void *
+fifo_segment_ptr (fifo_segment_t *fs, uword offset)
+{
+  return (void *) ((u8 *) fs->h + offset);
+}
+
+always_inline uword
+fifo_segment_offset (fifo_segment_t *fs, void *p)
+{
+  return (uword) ((u8 *) p - (u8 *) fs->h);
+}
+
 /**
  * Allocate fifo in fifo segment
  *
@@ -114,8 +128,8 @@ svm_fifo_t *fifo_segment_alloc_fifo_w_slice (fifo_segment_t * fs,
 					     u32 slice_index,
 					     u32 data_bytes,
 					     fifo_segment_ftype_t ftype);
-svm_fifo_t *fifo_segment_alloc_fifo_w_shared (fifo_segment_t *fs,
-					      svm_fifo_shared_t *sf);
+svm_fifo_t *fifo_segment_alloc_fifo_w_offset (fifo_segment_t *fs,
+					      uword offset);
 
 /**
  * Free fifo allocated in fifo segment
@@ -128,6 +142,38 @@ void fifo_segment_free_fifo (fifo_segment_t * fs, svm_fifo_t * f);
 void fifo_segment_detach_fifo (fifo_segment_t * fs, svm_fifo_t * f);
 void fifo_segment_attach_fifo (fifo_segment_t * fs, svm_fifo_t * f,
 			       u32 slice_index);
+uword fifo_segment_fifo_offset (svm_fifo_t *f);
+
+/**
+ * Allocate message queue on segment
+ *
+ * @param fs		fifo segment for mq
+ * @param mq_index	index in private mqs vector to use to attach
+ * @param cfg		configuration for mq
+ * @return		attached message queue
+ */
+svm_msg_q_t *fifo_segment_msg_q_alloc (fifo_segment_t *fs, u32 mq_index,
+				       svm_msg_q_cfg_t *cfg);
+
+/**
+ *  Attach message queue at fifo segment offset
+ *
+ *  @param fs		fifo segment for mq
+ *  @param offset	offset for shared mq on the segment
+ *  @param mq_index	index in private mqs vector to use to attach
+ *  @return		attached message queue
+ */
+svm_msg_q_t *fifo_segment_msg_q_attach (fifo_segment_t *fs, uword offset,
+					u32 mq_index);
+
+/**
+ * Message queue offset on segment
+ *
+ * @param fs		fifo segment for mq
+ * @param mq_index	index of mq in private mqs vector
+ * @return		offset of the shared mq the private mq is attached to
+ */
+uword fifo_segment_msg_q_offset (fifo_segment_t *fs, u32 mq_index);
 
 /**
  * Try to preallocate fifo headers

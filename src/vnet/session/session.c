@@ -1505,10 +1505,9 @@ void
 session_vpp_event_queues_allocate (session_main_t * smm)
 {
   u32 evt_q_length = 2048, evt_size = sizeof (session_event_t);
-  ssvm_private_t *eqs = &smm->evt_qs_segment;
+  fifo_segment_t *eqs = &smm->evt_qs_segment;
   uword eqs_size = 64 << 20;
   pid_t vpp_pid = getpid ();
-  void *oldheap;
   int i;
 
   if (smm->configured_event_queue_length)
@@ -1517,19 +1516,22 @@ session_vpp_event_queues_allocate (session_main_t * smm)
   if (smm->evt_qs_segment_size)
     eqs_size = smm->evt_qs_segment_size;
 
-  eqs->ssvm_size = eqs_size;
-  eqs->my_pid = vpp_pid;
-  eqs->name = format (0, "%s%c", "session: evt-qs-segment", 0);
+  eqs->ssvm.ssvm_size = eqs_size;
+  eqs->ssvm.my_pid = vpp_pid;
+  eqs->ssvm.name = format (0, "%s%c", "session: evt-qs-segment", 0);
   /* clib_mem_vm_map_shared consumes first page before requested_va */
-  eqs->requested_va = smm->session_baseva + clib_mem_get_page_size ();
+  eqs->ssvm.requested_va = smm->session_baseva + clib_mem_get_page_size ();
 
-  if (ssvm_server_init (eqs, SSVM_SEGMENT_MEMFD))
+  if (ssvm_server_init (&eqs->ssvm, SSVM_SEGMENT_MEMFD))
     {
       clib_warning ("failed to initialize queue segment");
       return;
     }
 
-  oldheap = ssvm_push_heap (eqs->sh);
+  fifo_segment_init (eqs);
+
+  /* Special fifo segment that's filled only with mqs */
+  eqs->h->n_mqs = vec_len (smm->wrk);
 
   for (i = 0; i < vec_len (smm->wrk); i++)
     {
@@ -1543,15 +1545,15 @@ session_vpp_event_queues_allocate (session_main_t * smm)
       cfg->n_rings = 2;
       cfg->q_nitems = evt_q_length;
       cfg->ring_cfgs = rc;
-      smm->wrk[i].vpp_event_queue = svm_msg_q_alloc (cfg);
+
+      smm->wrk[i].vpp_event_queue = fifo_segment_msg_q_alloc (eqs, i, cfg);
+
       if (svm_msg_q_alloc_consumer_eventfd (smm->wrk[i].vpp_event_queue))
 	clib_warning ("eventfd returned");
     }
-
-  ssvm_pop_heap (oldheap);
 }
 
-ssvm_private_t *
+fifo_segment_t *
 session_main_get_evt_q_segment (void)
 {
   return &session_main.evt_qs_segment;
@@ -1668,11 +1670,9 @@ session_queue_run_on_main_thread (vlib_main_t * vm)
 static clib_error_t *
 session_manager_main_enable (vlib_main_t * vm)
 {
-  segment_manager_main_init_args_t _sm_args = { 0 }, *sm_args = &_sm_args;
   session_main_t *smm = &session_main;
   vlib_thread_main_t *vtm = vlib_get_thread_main ();
   u32 num_threads, preallocated_sessions_per_worker;
-  uword margin = 8 << 12;
   session_worker_t *wrk;
   int i;
 
@@ -1706,10 +1706,8 @@ session_manager_main_enable (vlib_main_t * vm)
   /* Allocate vpp event queues segment and queue */
   session_vpp_event_queues_allocate (smm);
 
-  /* Initialize fifo segment main baseva and timeout */
-  sm_args->baseva = smm->session_baseva + smm->evt_qs_segment_size + margin;
-  sm_args->size = smm->session_va_space_size;
-  segment_manager_main_init (sm_args);
+  /* Initialize segment manager properties */
+  segment_manager_main_init ();
 
   /* Preallocate sessions */
   if (smm->preallocated_sessions)
