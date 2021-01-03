@@ -27,6 +27,8 @@ else()
 endif()
 
 if(VPP_BUILD_G2_PLUGIN)
+  include(../../cmake/ego.cmake)
+
   add_vpp_plugin(g2
     SOURCES
     g2.c
@@ -52,16 +54,7 @@ if(VPP_BUILD_G2_PLUGIN)
     vpp-plugin-g2
     )
 
-  set(EGO_OPTIMIZE_FLAG "-O2")
+  ego_plugin_object(ego_g2
+    PACKAGE ego/tools/g2)
 
-  add_custom_command(
-    OUTPUT ego_g2.o
-    COMMAND ego -tags vpp -link-bitcode -build-dir `pwd` -g ${EGO_OPTIMIZE_FLAG} -fpic -o `pwd`/ego_g2.bc ego/tools/g2
-    COMMAND clang -Werror -Wall -march=corei7 -mtune=corei7-avx -c -g ${EGO_OPTIMIZE_FLAG} -fstack-protector -DFORTIFY_SOURCE=2 -maes -mavx2 -fPIC `pwd`/ego_g2.bc
-    COMMENT "build g2 golang code..."
-    )
-
-  add_custom_target(g2_rebuild
-    COMMAND rm -f ego_g2.o
-    )
 endif()
