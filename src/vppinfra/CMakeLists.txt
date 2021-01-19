@@ -63,6 +63,7 @@ set(VPPINFRA_SRCS
   macros.c
   maplog.c
   mem.c
+  mem_bulk.c
   mem_dlmalloc.c
   mhash.c
   mpcap.c
@@ -150,7 +151,6 @@ set(VPPINFRA_HEADERS
   pcap_funcs.h
   pmalloc.h
   pool.h
-  pmc.h
   ptclosure.h
   random_buffer.h
   random.h
