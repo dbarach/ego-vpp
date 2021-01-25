@@ -1627,6 +1627,57 @@ static void *vl_api_modify_vhost_user_if_t_print
   FINISH;
 }
 
+static void *vl_api_create_vhost_user_if_v2_t_print
+  (vl_api_create_vhost_user_if_v2_t * mp, void *handle)
+{
+  u8 *s;
+
+  s = format (0, "SCRIPT: create_vhost_user_if_v2 ");
+
+  s = format (s, "socket %s ", mp->sock_filename);
+  if (mp->is_server)
+    s = format (s, "server ");
+  if (mp->renumber)
+    s = format (s, "renumber %d ", (mp->custom_dev_instance));
+  if (mp->disable_mrg_rxbuf)
+    s = format (s, "disable_mrg_rxbuf ");
+  if (mp->disable_indirect_desc)
+    s = format (s, "disable_indirect_desc ");
+  if (mp->tag[0])
+    s = format (s, "tag %s ", mp->tag);
+  if (mp->enable_gso)
+    s = format (s, "gso ");
+  if (mp->enable_event_idx)
+    s = format (s, "event-idx ");
+  if (mp->enable_packed)
+    s = format (s, "packed");
+
+  FINISH;
+}
+
+static void *vl_api_modify_vhost_user_if_v2_t_print
+  (vl_api_modify_vhost_user_if_v2_t * mp, void *handle)
+{
+  u8 *s;
+
+  s = format (0, "SCRIPT: modify_vhost_user_if_v2 ");
+
+  s = format (s, "sw_if_index %d ", (mp->sw_if_index));
+  s = format (s, "socket %s ", mp->sock_filename);
+  if (mp->is_server)
+    s = format (s, "server ");
+  if (mp->renumber)
+    s = format (s, "renumber %d ", (mp->custom_dev_instance));
+  if (mp->enable_gso)
+    s = format (s, "gso ");
+  if (mp->enable_event_idx)
+    s = format (s, "event-idx ");
+  if (mp->enable_packed)
+    s = format (s, "packed");
+
+  FINISH;
+}
+
 static void *vl_api_delete_vhost_user_if_t_print
   (vl_api_delete_vhost_user_if_t * mp, void *handle)
 {
@@ -2464,48 +2515,6 @@ static void *vl_api_ip_source_and_port_range_check_interface_add_del_t_print
   FINISH;
 }
 
-static void *vl_api_ipsec_tunnel_if_add_del_t_print
-  (vl_api_ipsec_tunnel_if_add_del_t * mp, void *handle)
-{
-  u8 *s;
-
-  s = format (0, "SCRIPT: ipsec_tunnel_if_add_del ");
-
-  if (mp->esn)
-    s = format (s, "esn");
-  if (mp->anti_replay)
-    s = format (s, "anti-replay");
-  if (mp->udp_encap)
-    s = format (s, "udp-encap");
-
-  s = format (s, "local-ip %U ", format_vl_api_address, &mp->remote_ip);
-
-  s = format (s, "remote-ip %U ", format_vl_api_address, &mp->local_ip);
-  s = format (s, "tx-table-id %d ", (mp->tx_table_id));
-
-  s = format (s, "local-spi %d ", (mp->local_spi));
-
-  s = format (s, "remote-spi %d ", (mp->remote_spi));
-
-  s = format (s, "local-crypto-key-len %d ", mp->local_crypto_key_len);
-  s = format (s, "local-crypto-key %U ", format_hex_bytes,
-	      mp->local_crypto_key, mp->local_crypto_key_len, 0);
-  s = format (s, "remote-crypto-key-len %d ", mp->remote_crypto_key_len);
-  s = format (s, "remote-crypto-key %U ", format_hex_bytes,
-	      mp->remote_crypto_key, mp->remote_crypto_key_len, 0);
-  s = format (s, "local-integ-key-len %d ", mp->local_integ_key_len);
-  s = format (s, "local-integ-key %U ", format_hex_bytes,
-	      mp->local_integ_key, mp->local_integ_key_len, 0);
-  s = format (s, "remote-integ-key-len %d ", mp->remote_integ_key_len);
-  s = format (s, "remote-integ-key %U ", format_hex_bytes,
-	      mp->remote_integ_key, mp->remote_integ_key_len, 0);
-
-  if (mp->is_add == 0)
-    s = format (s, "del ");
-
-  FINISH;
-}
-
 /* static u8 * */
 /* format_nsh_address_vat (u8 * s, va_list * args) */
 /* { */
@@ -3037,6 +3046,8 @@ _(L2_INTERFACE_EFP_FILTER, l2_interface_efp_filter)                     \
 _(L2_INTERFACE_VLAN_TAG_REWRITE, l2_interface_vlan_tag_rewrite)         \
 _(CREATE_VHOST_USER_IF, create_vhost_user_if)				\
 _(MODIFY_VHOST_USER_IF, modify_vhost_user_if)				\
+_(CREATE_VHOST_USER_IF_V2, create_vhost_user_if_v2)			\
+_(MODIFY_VHOST_USER_IF_V2, modify_vhost_user_if_v2)     		\
 _(DELETE_VHOST_USER_IF, delete_vhost_user_if)				\
 _(SW_INTERFACE_DUMP, sw_interface_dump)					\
 _(CONTROL_PING, control_ping)						\
@@ -3099,7 +3110,6 @@ _(IPSEC_INTERFACE_ADD_DEL_SPD, ipsec_interface_add_del_spd)		\
 _(IPSEC_SAD_ENTRY_ADD_DEL, ipsec_sad_entry_add_del)			\
 _(IPSEC_SPD_ADD_DEL, ipsec_spd_add_del)					\
 _(IPSEC_SPD_ENTRY_ADD_DEL, ipsec_spd_entry_add_del)			\
-_(IPSEC_TUNNEL_IF_ADD_DEL, ipsec_tunnel_if_add_del)                     \
 _(DELETE_SUBIF, delete_subif)                                           \
 _(L2_INTERFACE_PBB_TAG_REWRITE, l2_interface_pbb_tag_rewrite)           \
 _(SET_PUNT, set_punt)                                                   \

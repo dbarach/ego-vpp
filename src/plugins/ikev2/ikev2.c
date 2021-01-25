@@ -716,9 +716,8 @@ ikev2_check_payload_length (const ike_payload_header_t * ikep, int rlen,
 }
 
 static int
-ikev2_process_sa_init_req (vlib_main_t * vm,
-			   ikev2_sa_t * sa, ike_header_t * ike,
-			   udp_header_t * udp, u32 len)
+ikev2_process_sa_init_req (vlib_main_t *vm, ikev2_sa_t *sa, ike_header_t *ike,
+			   udp_header_t *udp, u32 len, u32 sw_if_index)
 {
   u8 nonce[IKEV2_NONCE_SIZE];
   int p = 0;
@@ -733,6 +732,7 @@ ikev2_process_sa_init_req (vlib_main_t * vm,
 		       ip_addr_version (&sa->iaddr) == AF_IP4);
 
   sa->ispi = clib_net_to_host_u64 (ike->ispi);
+  sa->sw_if_index = sw_if_index;
 
   /* store whole IKE payload - needed for PSK auth */
   vec_reset_length (sa->last_sa_init_req_packet_data);
@@ -2834,9 +2834,8 @@ ikev2_generate_sa_init_data_and_log (ikev2_sa_t * sa)
 }
 
 static_always_inline uword
-ikev2_node_internal (vlib_main_t * vm,
-		     vlib_node_runtime_t * node, vlib_frame_t * frame,
-		     u8 is_ip4)
+ikev2_node_internal (vlib_main_t *vm, vlib_node_runtime_t *node,
+		     vlib_frame_t *frame, u8 is_ip4, u8 natt)
 {
   u32 n_left = frame->n_vectors, *from;
   ikev2_main_t *km = &ikev2_main;
@@ -2862,15 +2861,9 @@ ikev2_node_internal (vlib_main_t * vm,
       ikev2_sa_t sa;		/* temporary store for SA */
       u32 rlen, slen = 0;
       int ip_hdr_sz = 0;
-      int is_req = 0, has_non_esp_marker = 0;
+      int is_req = 0;
 
-      ASSERT (0 == b0->punt_reason
-	      || (is_ip4
-		  && b0->punt_reason ==
-		  ipsec_punt_reason[IPSEC_PUNT_IP4_SPI_UDP_0]));
-
-      if (is_ip4
-	  && b0->punt_reason == ipsec_punt_reason[IPSEC_PUNT_IP4_SPI_UDP_0])
+      if (natt)
 	{
 	  u8 *ptr = vlib_buffer_get_current (b0);
 	  ip40 = (ip4_header_t *) ptr;
@@ -2903,12 +2896,12 @@ ikev2_node_internal (vlib_main_t * vm,
       rlen = b0->current_length - ip_hdr_sz - sizeof (*udp0);
 
       /* check for non-esp marker */
-      if (*((u32 *) ike0) == 0)
+      if (natt)
 	{
+	  ASSERT (*((u32 *) ike0) == 0);
 	  ike0 =
 	    (ike_header_t *) ((u8 *) ike0 + sizeof (ikev2_non_esp_marker));
 	  rlen -= sizeof (ikev2_non_esp_marker);
-	  has_non_esp_marker = 1;
 	}
 
       if (clib_net_to_host_u32 (ike0->length) != rlen)
@@ -2958,7 +2951,9 @@ ikev2_node_internal (vlib_main_t * vm,
 		      goto dispatch0;
 		    }
 
-		  res = ikev2_process_sa_init_req (vm, sa0, ike0, udp0, rlen);
+		  res = ikev2_process_sa_init_req (
+		    vm, sa0, ike0, udp0, rlen,
+		    vnet_buffer (b0)->sw_if_index[VLIB_RX]);
 		  if (!res)
 		    vlib_node_increment_counter (vm, node->node_index,
 						 IKEV2_ERROR_MALFORMED_PACKET,
@@ -3271,13 +3266,13 @@ ikev2_node_internal (vlib_main_t * vm,
 	      if (udp0->dst_port == clib_net_to_host_u16 (IKEV2_PORT_NATT)
 		  && ikev2_natt_active (sa0))
 		{
-		  if (!has_non_esp_marker)
+		  if (!natt)
 		    slen = ikev2_insert_non_esp_marker (ike0, slen);
 		}
 	    }
 	  else
 	    {
-	      if (has_non_esp_marker)
+	      if (natt)
 		slen += sizeof (ikev2_non_esp_marker);
 
 	      u16 tp = udp0->dst_port;
@@ -3332,19 +3327,43 @@ ikev2_node_internal (vlib_main_t * vm,
 static uword
 ikev2_ip4 (vlib_main_t * vm, vlib_node_runtime_t * node, vlib_frame_t * frame)
 {
-  return ikev2_node_internal (vm, node, frame, 1 /* is_ip4 */ );
+  return ikev2_node_internal (vm, node, frame, 1 /* is_ip4 */, 0);
+}
+
+static uword
+ikev2_ip4_natt (vlib_main_t *vm, vlib_node_runtime_t *node,
+		vlib_frame_t *frame)
+{
+  return ikev2_node_internal (vm, node, frame, 1 /* is_ip4 */, 1 /* natt */);
 }
 
 static uword
 ikev2_ip6 (vlib_main_t * vm, vlib_node_runtime_t * node, vlib_frame_t * frame)
 {
-  return ikev2_node_internal (vm, node, frame, 0 /* is_ip4 */ );
+  return ikev2_node_internal (vm, node, frame, 0 /* is_ip4 */, 0);
 }
 
 /* *INDENT-OFF* */
 VLIB_REGISTER_NODE (ikev2_node_ip4,static) = {
   .function = ikev2_ip4,
   .name = "ikev2-ip4",
+  .vector_size = sizeof (u32),
+  .format_trace = format_ikev2_trace,
+  .type = VLIB_NODE_TYPE_INTERNAL,
+
+  .n_errors = ARRAY_LEN(ikev2_error_strings),
+  .error_strings = ikev2_error_strings,
+
+  .n_next_nodes = IKEV2_IP4_N_NEXT,
+  .next_nodes = {
+    [IKEV2_NEXT_IP4_LOOKUP] = "ip4-lookup",
+    [IKEV2_NEXT_IP4_ERROR_DROP] = "error-drop",
+  },
+};
+
+VLIB_REGISTER_NODE (ikev2_node_ip4_natt,static) = {
+  .function = ikev2_ip4_natt,
+  .name = "ikev2-ip4-natt",
   .vector_size = sizeof (u32),
   .format_trace = format_ikev2_trace,
   .type = VLIB_NODE_TYPE_INTERNAL,
@@ -4664,9 +4683,9 @@ ikev2_init (vlib_main_t * vm)
   udp_register_dst_port (vm, IKEV2_PORT_NATT, ikev2_node_ip4.index, 1);
   udp_register_dst_port (vm, IKEV2_PORT_NATT, ikev2_node_ip6.index, 0);
 
-  vlib_punt_hdl_t punt_hdl = vlib_punt_client_register ("ikev2-ip4");
+  vlib_punt_hdl_t punt_hdl = vlib_punt_client_register ("ikev2-ip4-natt");
   vlib_punt_register (punt_hdl, ipsec_punt_reason[IPSEC_PUNT_IP4_SPI_UDP_0],
-		      "ikev2-ip4");
+		      "ikev2-ip4-natt");
   ikev2_cli_reference ();
 
   km->log_level = IKEV2_LOG_ERROR;
