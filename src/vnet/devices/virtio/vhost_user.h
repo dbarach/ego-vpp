@@ -109,6 +109,7 @@ typedef struct
   u8 enable_gso;
   u8 enable_packed;
   u8 enable_event_idx;
+  u8 use_custom_mac;
 
   /* return */
   u32 sw_if_index;
@@ -227,9 +228,9 @@ typedef struct
 
   u16 used_wrap_counter;
   u16 avail_wrap_counter;
-
   u16 last_kick;
   u8 first_kick;
+  u32 queue_index;
 } vhost_user_vring_t;
 
 #define VHOST_USER_EVENT_START_TIMER 1

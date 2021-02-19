@@ -292,6 +292,7 @@ fifo_segment_init (fifo_segment_t * fs)
 
   seg_start = round_pow2_u64 (pointer_to_uword (seg_data), align);
   fsh = uword_to_pointer (seg_start, void *);
+  CLIB_MEM_UNPOISON (fsh, seg_sz);
   memset (fsh, 0, sizeof (*fsh) + slices_sz);
 
   fsh->byte_index = sizeof (*fsh) + slices_sz;
@@ -301,6 +302,7 @@ fifo_segment_init (fifo_segment_t * fs)
   fsh->max_log2_fifo_size = min_log2 (max_fifo);
   fsh->n_cached_bytes = 0;
   fsh->n_reserved_bytes = fsh->byte_index;
+  fsh->start_byte_index = fsh->byte_index;
   ASSERT (fsh->max_byte_index <= sh->ssvm_size - offset);
 
   fs->max_byte_index = fsh->max_byte_index;
@@ -786,6 +788,9 @@ fs_fifo_free (fifo_segment_t *fs, svm_fifo_t *f)
   u32 slice_index = f->shr->slice_index;
   fifo_slice_private_t *pfss;
 
+  if (CLIB_DEBUG)
+    clib_memset (f, 0xfc, sizeof (*f));
+
   pfss = &fs->slices[slice_index];
   clib_mem_bulk_free (pfss->fifos, f);
 }
@@ -975,6 +980,7 @@ fifo_segment_attach_fifo (fifo_segment_t *fs, svm_fifo_t **f, u32 slice_index)
   fss = fsh_slice_get (fs->h, slice_index);
   pfss = fs_slice_private_get (fs, slice_index);
   fss->virtual_mem += svm_fifo_size (nf);
+  nf->next = nf->prev = 0;
   if (nf->flags & SVM_FIFO_F_LL_TRACKED)
     pfss_fifo_add_active_list (pfss, nf);
 
@@ -1042,7 +1048,7 @@ fifo_segment_msg_q_attach (fifo_segment_t *fs, uword offset, u32 mq_index)
 
   mq = vec_elt_at_index (fs->mqs, mq_index);
 
-  if (!mq->q)
+  if (!mq->q.shr)
     {
       svm_msg_q_shared_t *smq;
       smq = (svm_msg_q_shared_t *) ((u8 *) fs->h + offset);
@@ -1054,15 +1060,48 @@ fifo_segment_msg_q_attach (fifo_segment_t *fs, uword offset, u32 mq_index)
   return mq;
 }
 
+void
+fifo_segment_msg_qs_discover (fifo_segment_t *fs, int *fds, u32 n_fds)
+{
+  svm_msg_q_shared_t *smq;
+  u32 n_mqs, size, i;
+  uword offset = 0, n_alloced;
+  svm_msg_q_t *mq;
+
+  n_mqs = fs->h->n_mqs;
+  if (n_fds && n_mqs != n_fds)
+    {
+      clib_warning ("expected %u fds got %u", n_mqs, n_fds);
+      return;
+    }
+
+  vec_validate (fs->mqs, n_mqs - 1);
+  n_alloced = fs->h->n_reserved_bytes - fs->h->start_byte_index;
+  ASSERT (n_alloced % n_mqs == 0);
+  size = n_alloced / n_mqs;
+
+  offset = fs->h->start_byte_index;
+  for (i = 0; i < n_mqs; i++)
+    {
+      mq = vec_elt_at_index (fs->mqs, i);
+      smq = (svm_msg_q_shared_t *) ((u8 *) fs->h + offset);
+      svm_msg_q_attach (mq, smq);
+      if (n_fds)
+	svm_msg_q_set_eventfd (mq, fds[i]);
+      offset += size;
+    }
+}
+
 uword
 fifo_segment_msg_q_offset (fifo_segment_t *fs, u32 mq_index)
 {
   svm_msg_q_t *mq = vec_elt_at_index (fs->mqs, mq_index);
 
-  if (mq->q == 0)
+  if (mq->q.shr == 0)
     return ~0ULL;
 
-  return (uword) ((u8 *) mq->q - (u8 *) fs->h) - sizeof (svm_msg_q_shared_t);
+  return (uword) ((u8 *) mq->q.shr - (u8 *) fs->h) -
+	 sizeof (svm_msg_q_shared_t);
 }
 
 int

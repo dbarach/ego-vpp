@@ -22,6 +22,7 @@
 #include <vlib/log.h>
 
 #include <vnet/ethernet/ethernet.h>
+#include <vnet/interface/rx_queue_funcs.h>
 #include <dpdk/buffer.h>
 #include <dpdk/device/dpdk.h>
 #include <dpdk/cryptodev/cryptodev.h>
@@ -290,8 +291,8 @@ dpdk_lib_init (dpdk_main_t * dm)
 	  if (unformat (&input_vmbus, "%U", unformat_vlib_vmbus_addr,
 			&vmbus_addr))
 	    {
-	      p = hash_get (dm->conf->device_config_index_by_vmbus_addr,
-			    vmbus_addr.as_u32[0]);
+	      p = mhash_get (&dm->conf->device_config_index_by_vmbus_addr,
+			     &vmbus_addr);
 	    }
 	}
 
@@ -413,6 +414,9 @@ dpdk_lib_init (dpdk_main_t * dm)
 	}
       else
 	xd->rx_q_used = 1;
+
+      vec_validate_aligned (xd->rx_queues, xd->rx_q_used - 1,
+			    CLIB_CACHE_LINE_BYTES);
 
       xd->flags |= DPDK_DEVICE_FLAG_PMD;
 
@@ -724,24 +728,29 @@ dpdk_lib_init (dpdk_main_t * dm)
 
       sw = vnet_get_hw_sw_interface (dm->vnet_main, xd->hw_if_index);
       xd->sw_if_index = sw->sw_if_index;
-      vnet_hw_interface_set_input_node (dm->vnet_main, xd->hw_if_index,
-					dpdk_input_node.index);
+      vnet_hw_if_set_input_node (dm->vnet_main, xd->hw_if_index,
+				 dpdk_input_node.index);
 
       if (devconf->workers)
 	{
 	  int i;
 	  q = 0;
 	  clib_bitmap_foreach (i, devconf->workers)  {
-	    vnet_hw_interface_assign_rx_thread (dm->vnet_main, xd->hw_if_index, q++,
-					     vdm->first_worker_thread_index + i);
+	      dpdk_rx_queue_t *rxq = vec_elt_at_index (xd->rx_queues, q);
+	      rxq->queue_index = vnet_hw_if_register_rx_queue (
+		dm->vnet_main, xd->hw_if_index, q++,
+		vdm->first_worker_thread_index + i);
 	  }
 	}
       else
 	for (q = 0; q < xd->rx_q_used; q++)
 	  {
-	    vnet_hw_interface_assign_rx_thread (dm->vnet_main, xd->hw_if_index, q,	/* any */
-						~1);
+	    dpdk_rx_queue_t *rxq = vec_elt_at_index (xd->rx_queues, q);
+	    rxq->queue_index = vnet_hw_if_register_rx_queue (
+	      dm->vnet_main, xd->hw_if_index, q, VNET_HW_IF_RXQ_THREAD_ANY);
 	  }
+
+      vnet_hw_if_update_runtime_data (dm->vnet_main, xd->hw_if_index);
 
       /*Get vnet hardware interface */
       hi = vnet_get_hw_interface (dm->vnet_main, xd->hw_if_index);
@@ -1053,15 +1062,15 @@ dpdk_bind_vmbus_devices_to_uio (dpdk_config_main_t * conf)
       dpdk_device_config_t *devconf = 0;
       if (num_whitelisted)
 	{
-	  uword *p = hash_get (conf->device_config_index_by_vmbus_addr,
-			       addr->as_u32[0]);
+	  uword *p =
+	    mhash_get (&conf->device_config_index_by_vmbus_addr, addr);
 	  if (!p)
 	    {
 	      /* No devices blacklisted, but have whitelisted. blacklist all
 	       * non-whitelisted */
 	      pool_get (conf->dev_confs, devconf);
-	      hash_set (conf->device_config_index_by_vmbus_addr,
-			addr->as_u32[0], devconf - conf->dev_confs);
+	      mhash_set (&conf->device_config_index_by_vmbus_addr, addr,
+			 devconf - conf->dev_confs, 0);
 	      devconf->vmbus_addr = *addr;
 	      devconf->dev_addr_type = VNET_DEV_ADDR_VMBUS;
 	      devconf->is_blacklisted = 1;
@@ -1075,15 +1084,16 @@ dpdk_bind_vmbus_devices_to_uio (dpdk_config_main_t * conf)
       /* Enforce Device blacklist by vmbus_addr */
       for (i = 0; i < vec_len (conf->blacklist_by_vmbus_addr); i++)
 	{
-	  u32 vmbus_as_u32 = conf->blacklist_by_vmbus_addr[i];
-	  if (vmbus_as_u32 == addr->as_u32[0])
+	  vlib_vmbus_addr_t *a1 = &conf->blacklist_by_vmbus_addr[i];
+	  vlib_vmbus_addr_t *a2 = addr;
+	  if (memcmp (a1, a2, sizeof (vlib_vmbus_addr_t)) == 0)
 	    {
 	      if (devconf == 0)
 		{
 		  /* Device not whitelisted */
 		  pool_get (conf->dev_confs, devconf);
-		  hash_set (conf->device_config_index_by_vmbus_addr,
-			    addr->as_u32[0], devconf - conf->dev_confs);
+		  mhash_set (&conf->device_config_index_by_vmbus_addr, addr,
+			     devconf - conf->dev_confs, 0);
 		  devconf->vmbus_addr = *addr;
 		  devconf->dev_addr_type = VNET_DEV_ADDR_VMBUS;
 		  devconf->is_blacklisted = 1;
@@ -1102,8 +1112,8 @@ dpdk_bind_vmbus_devices_to_uio (dpdk_config_main_t * conf)
 	  if (devconf == 0)
 	    {
 	      pool_get (conf->dev_confs, devconf);
-	      hash_set (conf->device_config_index_by_vmbus_addr,
-			addr->as_u32[0], devconf - conf->dev_confs);
+	      mhash_set (&conf->device_config_index_by_vmbus_addr, addr,
+			 devconf - conf->dev_confs, 0);
 	      devconf->vmbus_addr = *addr;
 	    }
 	  devconf->dev_addr_type = VNET_DEV_ADDR_VMBUS;
@@ -1147,15 +1157,14 @@ dpdk_device_config (dpdk_config_main_t *conf, void *addr,
     }
   else if (addr_type == VNET_DEV_ADDR_VMBUS)
     {
-      p = hash_get (conf->device_config_index_by_vmbus_addr,
-		    ((vlib_vmbus_addr_t *) (addr))->as_u32[0]);
+      p = mhash_get (&conf->device_config_index_by_vmbus_addr,
+		     (vlib_vmbus_addr_t *) (addr));
 
       if (!p)
 	{
 	  pool_get (conf->dev_confs, devconf);
-	  hash_set (conf->device_config_index_by_vmbus_addr,
-		    ((vlib_vmbus_addr_t *) (addr))->as_u32[0],
-		    devconf - conf->dev_confs);
+	  mhash_set (&conf->device_config_index_by_vmbus_addr, addr,
+		     devconf - conf->dev_confs, 0);
 	}
       else
 	return clib_error_return (
@@ -1301,7 +1310,8 @@ dpdk_config (vlib_main_t * vm, unformat_input_t * input)
     format (0, "%s/hugepages%c", vlib_unix_get_runtime_dir (), 0);
 
   conf->device_config_index_by_pci_addr = hash_create (0, sizeof (uword));
-  conf->device_config_index_by_vmbus_addr = hash_create (0, sizeof (uword));
+  mhash_init (&conf->device_config_index_by_vmbus_addr, sizeof (uword),
+	      sizeof (vlib_vmbus_addr_t));
 
   while (unformat_check_input (input) != UNFORMAT_END_OF_INPUT)
     {
@@ -1398,7 +1408,7 @@ dpdk_config (vlib_main_t * vm, unformat_input_t * input)
       else if (unformat (input, "blacklist %U", unformat_vlib_vmbus_addr,
 			 &vmbus_addr))
 	{
-	  vec_add1 (conf->blacklist_by_vmbus_addr, vmbus_addr.as_u32[0]);
+	  vec_add1 (conf->blacklist_by_vmbus_addr, vmbus_addr);
 	}
       else
 	if (unformat
@@ -1595,7 +1605,8 @@ dpdk_config (vlib_main_t * vm, unformat_input_t * input)
 	  vec_add1 (conf->eal_init_args, tmp);
 	  if (devconf->devargs)
 	  {
-	    tmp = format (0, "%U,%s", format_vlib_pci_addr, &devconf->pci_addr, devconf->devargs, 0);
+	    tmp = format (0, "%U,%s%c", format_vlib_pci_addr,
+			  &devconf->pci_addr, devconf->devargs, 0);
 	  }
 	  else
 	  {

@@ -165,6 +165,7 @@ typedef struct
 {
   CLIB_CACHE_LINE_ALIGN_MARK (cacheline0);
   u8 buffer_pool_index;
+  u32 queue_index;
 } dpdk_rx_queue_t;
 
 typedef struct
@@ -316,12 +317,12 @@ typedef struct
   dpdk_device_config_t default_devconf;
   dpdk_device_config_t *dev_confs;
   uword *device_config_index_by_pci_addr;
-  uword *device_config_index_by_vmbus_addr;
+  mhash_t device_config_index_by_vmbus_addr;
 
   /* devices blacklist by pci vendor_id, device_id */
   u32 *blacklist_by_pci_vendor_and_device;
   /* devices blacklist by VMBUS address */
-  u32 *blacklist_by_vmbus_addr;
+  vlib_vmbus_addr_t *blacklist_by_vmbus_addr;
 
 } dpdk_config_main_t;
 
