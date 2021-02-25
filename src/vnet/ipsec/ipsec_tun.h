@@ -17,10 +17,11 @@
 
 #include <vnet/ipsec/ipsec.h>
 
-#define foreach_ipsec_protect_flags \
-  _(L2, 1, "l2")                    \
-  _(ENCAPED, 2, "encapped")         \
-  _(ITF, 4, "itf")                  \
+#define foreach_ipsec_protect_flags                                           \
+  _ (L2, 1, "l2")                                                             \
+  _ (ENCAPED, 2, "encapped")                                                  \
+  _ (ITF, 4, "itf")                                                           \
+  _ (FEAT, 8, "feat")
 
 typedef enum ipsec_protect_flags_t_
 {
@@ -161,10 +162,6 @@ extern u8 *format_ipsec_tun_protect_index (u8 * s, va_list * args);
 
 extern void ipsec_tun_register_nodes (ip_address_family_t af);
 extern void ipsec_tun_unregister_nodes (ip_address_family_t af);
-
-// FIXME
-extern vlib_node_registration_t ipsec4_tun_input_node;
-extern vlib_node_registration_t ipsec6_tun_input_node;
 
 /*
  * DP API

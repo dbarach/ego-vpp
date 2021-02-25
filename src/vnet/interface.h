@@ -326,7 +326,6 @@ CLIB_MARCH_SFX (devclass##_tx_fn_multiarch_register) (void)		\
   vlib_node_fn_registration_t *r;					\
   r = &CLIB_MARCH_SFX (devclass##_tx_fn_registration);			\
   r->priority = CLIB_MARCH_FN_PRIORITY();				\
-  r->name = CLIB_MARCH_VARIANT_STR;					\
   r->next_registration = devclass.tx_fn_registrations;			\
   devclass.tx_fn_registrations = r;					\
 }									\
@@ -365,11 +364,17 @@ typedef enum vnet_link_t_
        _link <= VNET_LINK_NSH;       \
        _link++)
 
+#define FOR_EACH_VNET_IP_LINK(_link)    \
+  for (_link = VNET_LINK_IP4;           \
+       _link <= VNET_LINK_IP6;          \
+       _link++)
+
 /**
- * @brief Number of link types. Not part of the enum so it does not have to be included in
- * switch statements
+ * @brief Number of link types. Not part of the enum so it does not have to be
+ * included in switch statements
  */
 #define VNET_LINK_NUM (VNET_LINK_NSH+1)
+#define VNET_N_LINKS VNET_LINK_NUM
 
 /**
  * @brief Convert a link to to an Ethertype
@@ -956,7 +961,7 @@ void vnet_pcap_drop_trace_filter_add_del (u32 error_index, int is_add);
 
 int vnet_interface_name_renumber (u32 sw_if_index, u32 new_show_dev_instance);
 
-vlib_node_function_t *vnet_interface_output_node_get (vlib_main_t * vm);
+vlib_node_function_t *vnet_interface_output_node_get (void);
 
 void vnet_register_format_buffer_opaque_helper
   (vnet_buffer_opquae_formatter_t fn);

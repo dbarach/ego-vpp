@@ -101,6 +101,8 @@ void fifo_segment_delete (fifo_segment_main_t * sm, fifo_segment_t * fs);
 void fifo_segment_cleanup (fifo_segment_t *fs);
 fifo_segment_t *fifo_segment_get_segment (fifo_segment_main_t * sm,
 					  u32 fs_index);
+fifo_segment_t *fifo_segment_get_segment_if_valid (fifo_segment_main_t *sm,
+						   u32 segment_index);
 u32 fifo_segment_index (fifo_segment_main_t * sm, fifo_segment_t * fs);
 void fifo_segment_info (fifo_segment_t * seg, char **address, size_t * size);
 
@@ -139,6 +141,14 @@ svm_fifo_t *fifo_segment_alloc_fifo_w_offset (fifo_segment_t *fs,
  */
 void fifo_segment_free_fifo (fifo_segment_t * fs, svm_fifo_t * f);
 
+/**
+ * Free fifo allocated by external applications
+ *
+ * @params fs		fifo segment for fifo
+ * @param f		fifo to be freed
+ */
+void fifo_segment_free_client_fifo (fifo_segment_t *fs, svm_fifo_t *f);
+
 void fifo_segment_detach_fifo (fifo_segment_t *fs, svm_fifo_t **f);
 void fifo_segment_attach_fifo (fifo_segment_t *fs, svm_fifo_t **f,
 			       u32 slice_index);
@@ -165,6 +175,15 @@ svm_msg_q_t *fifo_segment_msg_q_alloc (fifo_segment_t *fs, u32 mq_index,
  */
 svm_msg_q_t *fifo_segment_msg_q_attach (fifo_segment_t *fs, uword offset,
 					u32 mq_index);
+
+/**
+ *  Discover mqs on mq only segment
+ *
+ *  @param fs		fifo segment for mq
+ *  @param fds  	array of fds is mqs use eventfds
+ *  @param n_fds	number of fds
+ */
+void fifo_segment_msg_qs_discover (fifo_segment_t *fs, int *fds, u32 n_fds);
 
 /**
  * Message queue offset on segment

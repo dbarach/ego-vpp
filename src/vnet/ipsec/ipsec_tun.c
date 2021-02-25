@@ -263,15 +263,15 @@ ipsec_tun_protect_rx_db_add (ipsec_main_t * im,
           ipsec4_tunnel_mk_key(&key, &itp->itp_crypto.dst.ip4,
                                clib_host_to_net_u32 (sa->spi));
 
-          if (!im->tun4_protect_by_key.nbuckets)
-              clib_bihash_init_8_16 (&im->tun4_protect_by_key,
-			"IPSec IPv4 tunnels",
-			IPSEC_TUN_DEFAULT_HASH_NUM_BUCKETS,
-			IPSEC_TUN_DEFAULT_HASH_MEMORY_SIZE);
+	  if (!clib_bihash_is_initialised_8_16 (&im->tun4_protect_by_key))
+	    clib_bihash_init_8_16 (&im->tun4_protect_by_key,
+				   "IPSec IPv4 tunnels",
+				   IPSEC_TUN_DEFAULT_HASH_NUM_BUCKETS,
+				   IPSEC_TUN_DEFAULT_HASH_MEMORY_SIZE);
 
-          clib_bihash_add_del_8_16 (&im->tun4_protect_by_key, bkey, 1);
-          ipsec_tun_register_nodes(AF_IP4);
-        }
+	  clib_bihash_add_del_8_16 (&im->tun4_protect_by_key, bkey, 1);
+	  ipsec_tun_register_nodes (AF_IP4);
+	}
       else
         {
           ipsec6_tunnel_kv_t key = {
@@ -283,14 +283,14 @@ ipsec_tun_protect_rx_db_add (ipsec_main_t * im,
           };
           clib_bihash_kv_24_16_t *bkey = (clib_bihash_kv_24_16_t*)&key;
 
-          if (!im->tun4_protect_by_key.nbuckets)
-            clib_bihash_init_24_16 (&im->tun6_protect_by_key,
-                                   "IPSec IPv6 tunnels",
-                                   IPSEC_TUN_DEFAULT_HASH_NUM_BUCKETS,
-                                   IPSEC_TUN_DEFAULT_HASH_MEMORY_SIZE);
-          clib_bihash_add_del_24_16 (&im->tun6_protect_by_key, bkey, 1);
-          ipsec_tun_register_nodes(AF_IP6);
-        }
+	  if (!clib_bihash_is_initialised_24_16 (&im->tun6_protect_by_key))
+	    clib_bihash_init_24_16 (&im->tun6_protect_by_key,
+				    "IPSec IPv6 tunnels",
+				    IPSEC_TUN_DEFAULT_HASH_NUM_BUCKETS,
+				    IPSEC_TUN_DEFAULT_HASH_MEMORY_SIZE);
+	  clib_bihash_add_del_24_16 (&im->tun6_protect_by_key, bkey, 1);
+	  ipsec_tun_register_nodes (AF_IP6);
+	}
   }))
   /* *INDENT-ON* */
 }
@@ -470,13 +470,13 @@ ipsec_tun_protect_set_crypto_addr (ipsec_tun_protect_t * itp)
   ({
     if (ipsec_sa_is_set_IS_TUNNEL (sa))
       {
-        itp->itp_crypto.src = sa->tunnel_dst_addr;
-        itp->itp_crypto.dst = sa->tunnel_src_addr;
-        if (!(itp->itp_flags & IPSEC_PROTECT_ITF))
-          {
-            ipsec_sa_set_IS_PROTECT (sa);
-            itp->itp_flags |= IPSEC_PROTECT_ENCAPED;
-          }
+	itp->itp_crypto.src = ip_addr_46 (&sa->tunnel.t_dst);
+	itp->itp_crypto.dst = ip_addr_46 (&sa->tunnel.t_src);
+	if (!(itp->itp_flags & IPSEC_PROTECT_ITF))
+	  {
+	    ipsec_sa_set_IS_PROTECT (sa);
+	    itp->itp_flags |= IPSEC_PROTECT_ENCAPED;
+	  }
       }
     else
       {
@@ -779,6 +779,49 @@ ipsec_tun_protect_walk_itf (u32 sw_if_index,
 }
 
 static void
+ipsec_tun_feature_update (u32 sw_if_index, u8 arc_index, u8 is_enable,
+			  void *data)
+{
+  ipsec_tun_protect_t *itp;
+  index_t itpi;
+
+  if (arc_index != feature_main.device_input_feature_arc_index)
+    return;
+
+  /* Only p2p tunnels supported */
+  itpi = ipsec_tun_protect_find (sw_if_index, &IP_ADDR_ALL_0);
+  if (itpi == INDEX_INVALID)
+    return;
+
+  itp = ipsec_tun_protect_get (itpi);
+
+  if (is_enable)
+    {
+      u32 decrypt_tun = ip46_address_is_ip4 (&itp->itp_crypto.dst) ?
+			  ipsec_main.esp4_decrypt_tun_node_index :
+			  ipsec_main.esp6_decrypt_tun_node_index;
+
+      vnet_feature_modify_end_node (
+	feature_main.device_input_feature_arc_index, sw_if_index, decrypt_tun);
+      itp->itp_flags |= IPSEC_PROTECT_FEAT;
+    }
+  else
+    {
+      u32 eth_in =
+	vlib_get_node_by_name (vlib_get_main (), (u8 *) "ethernet-input")
+	  ->index;
+
+      vnet_feature_modify_end_node (
+	feature_main.device_input_feature_arc_index, sw_if_index, eth_in);
+      itp->itp_flags &= ~IPSEC_PROTECT_FEAT;
+    }
+
+  /* Propagate flag change into lookup entries */
+  ipsec_tun_protect_rx_db_remove (&ipsec_main, itp);
+  ipsec_tun_protect_rx_db_add (&ipsec_main, itp);
+}
+
+static void
 ipsec_tun_protect_adj_delegate_adj_deleted (adj_delegate_t * ad)
 {
   /* remove our delegate */
@@ -928,6 +971,8 @@ ipsec_tunnel_protect_init (vlib_main_t *vm)
   ipsec_tun_protect_logger = vlib_log_register_class ("ipsec", "tun");
 
   teib_register (&ipsec_tun_teib_vft);
+
+  vnet_feature_register (ipsec_tun_feature_update, NULL);
 
   return 0;
 }

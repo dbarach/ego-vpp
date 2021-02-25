@@ -109,7 +109,7 @@ typedef struct _svm_fifo
   struct _svm_fifo *next; /**< prev in active chain */
   struct _svm_fifo *prev; /**< prev in active chain */
 
-  svm_fifo_chunk_t **chunks_at_attach; /**< chunks to be accounted at detach */
+  svm_fifo_chunk_t *chunks_at_attach; /**< chunks to be accounted at detach */
 
 #if SVM_FIFO_TRACE
   svm_fifo_trace_elem_t *trace;
@@ -150,6 +150,7 @@ struct fifo_segment_header_
   CLIB_CACHE_LINE_ALIGN_MARK (allocator);
   uword byte_index;
   uword max_byte_index;
+  uword start_byte_index;
   CLIB_CACHE_LINE_ALIGN_MARK (slice);
   fifo_segment_slice_t slices[0]; /** Fixed array of slices */
 };

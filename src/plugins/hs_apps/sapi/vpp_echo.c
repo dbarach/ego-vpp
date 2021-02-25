@@ -256,6 +256,30 @@ echo_update_count_on_session_close (echo_main_t * em, echo_session_t * s)
 }
 
 static void
+echo_session_detach_fifos (echo_session_t *s)
+{
+  echo_main_t *em = &echo_main;
+  fifo_segment_t *fs;
+
+  if (!s->rx_fifo)
+    return;
+
+  clib_spinlock_lock (&em->segment_handles_lock);
+
+  fs = fifo_segment_get_segment_if_valid (&em->segment_main,
+					  s->rx_fifo->segment_index);
+
+  if (!fs)
+    goto done;
+
+  fifo_segment_free_client_fifo (fs, s->rx_fifo);
+  fifo_segment_free_client_fifo (fs, s->tx_fifo);
+
+done:
+  clib_spinlock_unlock (&em->segment_handles_lock);
+}
+
+static void
 echo_free_sessions (echo_main_t * em)
 {
   /* Free marked sessions */
@@ -273,6 +297,7 @@ echo_free_sessions (echo_main_t * em)
   {
     /* Free session */
     s = pool_elt_at_index (em->sessions, *session_index);
+    echo_session_detach_fifos (s);
     echo_session_handle_add_del (em, s->vpp_session_handle,
 				 SESSION_INVALID_INDEX);
     clib_memset (s, 0xfe, sizeof (*s));
@@ -808,15 +833,12 @@ echo_process_rpcs (echo_main_t * em)
 
   while (em->state < STATE_DATA_DONE && !em->time_to_stop)
     {
-      svm_msg_q_lock (mq);
       if (svm_msg_q_is_empty (mq) && svm_msg_q_timedwait (mq, 1))
 	{
-	  svm_msg_q_unlock (mq);
 	  continue;
 	}
-      svm_msg_q_sub_w_lock (mq, &msg);
+      svm_msg_q_sub_raw (mq, &msg);
       rpc = svm_msg_q_msg_data (mq, &msg);
-      svm_msg_q_unlock (mq);
       ((echo_rpc_t) rpc->fp) (em, &rpc->args);
       svm_msg_q_free_msg (mq, &msg);
     }
@@ -876,18 +898,15 @@ echo_mq_thread_fn (void *arg)
       if (em->periodic_stats_delta)
 	echo_print_periodic_stats (em);
 
-      svm_msg_q_lock (mq);
       if (svm_msg_q_is_empty (mq) && svm_msg_q_timedwait (mq, 1))
 	{
-	  svm_msg_q_unlock (mq);
 	  continue;
 	}
       for (i = 0; i < svm_msg_q_size (mq); i++)
 	{
 	  vec_add2 (msg_vec, msg, 1);
-	  svm_msg_q_sub_w_lock (mq, msg);
+	  svm_msg_q_sub_raw (mq, msg);
 	}
-      svm_msg_q_unlock (mq);
 
       for (i = 0; i < vec_len (msg_vec); i++)
 	{

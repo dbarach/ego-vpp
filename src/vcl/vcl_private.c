@@ -334,7 +334,7 @@ vcl_segment_attach (u64 segment_handle, char *name, ssvm_segment_type_t type,
 
   clib_rwlock_writer_unlock (&vcm->segment_table_lock);
 
-  vec_reset_length (a->new_segment_indices);
+  vec_free (a->new_segment_indices);
   return 0;
 }
 
@@ -404,6 +404,8 @@ vcl_segment_attach_session (uword segment_handle, uword rxf_offset,
   fs = fifo_segment_get_segment (&vcm->segment_main, fs_index);
   rxf = fifo_segment_alloc_fifo_w_offset (fs, rxf_offset);
   txf = fifo_segment_alloc_fifo_w_offset (fs, txf_offset);
+  rxf->segment_index = fs_index;
+  txf->segment_index = fs_index;
 
   if (!is_ct && mq_offset != (uword) ~0)
     {
@@ -432,6 +434,35 @@ vcl_segment_attach_session (uword segment_handle, uword rxf_offset,
   return 0;
 }
 
+void
+vcl_session_detach_fifos (vcl_session_t *s)
+{
+  fifo_segment_t *fs;
+
+  if (!s->rx_fifo)
+    return;
+
+  clib_rwlock_reader_lock (&vcm->segment_table_lock);
+
+  fs = fifo_segment_get_segment_if_valid (&vcm->segment_main,
+					  s->rx_fifo->segment_index);
+  if (!fs)
+    goto done;
+
+  fifo_segment_free_client_fifo (fs, s->rx_fifo);
+  fifo_segment_free_client_fifo (fs, s->tx_fifo);
+  if (s->ct_rx_fifo)
+    {
+      fs = fifo_segment_get_segment (&vcm->segment_main,
+				     s->ct_rx_fifo->segment_index);
+      fifo_segment_free_client_fifo (fs, s->ct_rx_fifo);
+      fifo_segment_free_client_fifo (fs, s->ct_tx_fifo);
+    }
+
+done:
+  clib_rwlock_reader_unlock (&vcm->segment_table_lock);
+}
+
 int
 vcl_segment_attach_mq (uword segment_handle, uword mq_offset, u32 mq_index,
 		       svm_msg_q_t **mq)
@@ -450,6 +481,29 @@ vcl_segment_attach_mq (uword segment_handle, uword mq_offset, u32 mq_index,
 
   fs = fifo_segment_get_segment (&vcm->segment_main, fs_index);
   *mq = fifo_segment_msg_q_attach (fs, mq_offset, mq_index);
+
+  clib_rwlock_reader_unlock (&vcm->segment_table_lock);
+
+  return 0;
+}
+
+int
+vcl_segment_discover_mqs (uword segment_handle, int *fds, u32 n_fds)
+{
+  fifo_segment_t *fs;
+  u32 fs_index;
+
+  fs_index = vcl_segment_table_lookup (segment_handle);
+  if (fs_index == VCL_INVALID_SEGMENT_INDEX)
+    {
+      VDBG (0, "ERROR: mq segment %lx for is not attached!", segment_handle);
+      return -1;
+    }
+
+  clib_rwlock_reader_lock (&vcm->segment_table_lock);
+
+  fs = fifo_segment_get_segment (&vcm->segment_main, fs_index);
+  fifo_segment_msg_qs_discover (fs, fds, n_fds);
 
   clib_rwlock_reader_unlock (&vcm->segment_table_lock);
 

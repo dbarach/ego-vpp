@@ -18,43 +18,60 @@ add_vpp_library(nat
   lib/ipfix_logging.c
   lib/nat_syslog.c
   lib/alloc.c
+  lib/lib.c
 
   INSTALL_HEADERS
   lib/ipfix_logging.h
   lib/nat_syslog.h
   lib/alloc.h
+  lib/lib.h
 )
 
 add_vpp_plugin(nat
   SOURCES
-  nat.c
-  nat44_api.c
-  in2out_ed.c
-  out2in_ed.c
-  nat_dpo.c
-  nat44_cli.c
-  nat44_handoff.c
-  nat44_hairpinning.c
-  nat44_classify.c
-  nat_affinity.c
-  nat_format.c
-  nat44-ei/nat44_ei.c
-  nat44-ei/nat44_ei_ha.c
-  nat44-ei/nat44_ei_in2out.c
-  nat44-ei/nat44_ei_out2in.c
+  nat44-ed/nat44_ed.c
+  nat44-ed/nat44_ed_api.c
+  nat44-ed/nat44_ed_in2out.c
+  nat44-ed/nat44_ed_out2in.c
+  nat44-ed/nat44_ed_cli.c
+  nat44-ed/nat44_ed_format.c
+  nat44-ed/nat44_ed_affinity.c
+  nat44-ed/nat44_ed_handoff.c
+  nat44-ed/nat44_ed_classify.c
 
   MULTIARCH_SOURCES
-  in2out_ed.c
-  out2in_ed.c
-  nat44_classify.c
-  nat44_hairpinning.c
-  nat44_handoff.c
-  nat44-ei/nat44_ei_in2out.c
-  nat44-ei/nat44_ei_out2in.c
+  nat44-ed/nat44_ed_in2out.c
+  nat44-ed/nat44_ed_out2in.c
+  nat44-ed/nat44_ed_handoff.c
+  nat44-ed/nat44_ed_classify.c
 
   API_FILES
-  nat44.api
-  nat_types.api
+  nat44-ed/nat44_ed.api
+  lib/nat_types.api
+
+  LINK_LIBRARIES nat
+)
+
+add_vpp_plugin(nat44_ei
+  SOURCES
+  nat44-ei/nat44_ei.c
+  nat44-ei/nat44_ei_ha.c
+  nat44-ei/nat44_ei_cli.c
+  nat44-ei/nat44_ei_api.c
+  nat44-ei/nat44_ei_dpo.c
+  nat44-ei/nat44_ei_in2out.c
+  nat44-ei/nat44_ei_out2in.c
+  nat44-ei/nat44_ei_handoff.c
+  nat44-ei/nat44_ei_hairpinning.c
+
+  MULTIARCH_SOURCES
+  nat44-ei/nat44_ei_in2out.c
+  nat44-ei/nat44_ei_out2in.c
+  nat44-ei/nat44_ei_hairpinning.c
+
+  API_FILES
+  nat44-ei/nat44_ei.api
+  lib/nat_types.api
 
   LINK_LIBRARIES nat
 )
@@ -96,7 +113,7 @@ add_vpp_plugin(nat66
 
   API_FILES
   nat66/nat66.api
-  nat_types.api
+  lib/nat_types.api
 
   LINK_LIBRARIES nat
 )
@@ -115,7 +132,7 @@ add_vpp_plugin(det44
 
   API_FILES
   det44/det44.api
-  nat_types.api
+  lib/nat_types.api
 
   LINK_LIBRARIES nat
 )
@@ -135,7 +152,66 @@ add_vpp_plugin(nat64
 
   API_FILES
   nat64/nat64.api
-  nat_types.api
+  lib/nat_types.api
 
   LINK_LIBRARIES nat
 )
+
+add_vpp_plugin(pnat
+  SOURCES
+  pnat/pnat.c
+  pnat/pnat_node.c
+  pnat/pnat_cli.c
+  pnat/pnat_api.c
+
+  MULTIARCH_SOURCES
+  pnat/pnat_node.c
+
+  API_FILES
+  pnat/pnat.api
+)
+
+# Unit tests
+add_vpp_executable(test_pnat
+  SOURCES
+  pnat/pnat_test.c
+  pnat/pnat_node.c
+  pnat/pnat.c
+  ../../vnet/ip/ip_checksum.c
+  LINK_LIBRARIES vppinfra vlib
+  NO_INSTALL
+)
+
+if("${CMAKE_VERSION}" VERSION_GREATER_EQUAL "3.13" AND "${CMAKE_C_COMPILER_ID}" MATCHES "(Apple)?[Cc]lang")
+  set(TARGET_NAME test_pnat)
+  set(COV_SOURCES ${CMAKE_SOURCE_DIR}/plugins/nat/pnat/pnat.c ${CMAKE_SOURCE_DIR}/plugins/nat/pnat/pnat_node.h ${CMAKE_SOURCE_DIR}/plugins/nat/pnat/pnat_node.c)
+
+  message("Building with llvm Code Coverage Tools ${TARGET_NAME}")
+  target_compile_options(${TARGET_NAME} PRIVATE -fprofile-instr-generate -fcoverage-mapping)
+  target_link_options(${TARGET_NAME} PRIVATE -fprofile-instr-generate -fcoverage-mapping)
+  target_compile_options(${TARGET_NAME} PRIVATE -fsanitize=address)
+  target_link_options(${TARGET_NAME} PRIVATE -fsanitize=address)
+
+  # llvm-cov
+  add_custom_target(${TARGET_NAME}-ccov-preprocessing
+    COMMAND LLVM_PROFILE_FILE=${TARGET_NAME}.profraw $<TARGET_FILE:${TARGET_NAME}>
+    COMMAND llvm-profdata merge -sparse ${TARGET_NAME}.profraw -o ${TARGET_NAME}.profdata
+    DEPENDS ${TARGET_NAME})
+
+  add_custom_target(${TARGET_NAME}-ccov-show
+    COMMAND llvm-cov show $<TARGET_FILE:${TARGET_NAME}> -instr-profile=${TARGET_NAME}.profdata -show-line-counts-or-regions ${COV_SOURCES}
+    DEPENDS ${TARGET_NAME}-ccov-preprocessing)
+
+  add_custom_target(${TARGET_NAME}-ccov-report
+    COMMAND llvm-cov report -show-functions $<TARGET_FILE:${TARGET_NAME}> -instr-profile=${TARGET_NAME}.profdata ${COV_SOURCES}
+    DEPENDS ${TARGET_NAME}-ccov-preprocessing)
+
+  add_custom_target(${TARGET_NAME}-ccov
+    COMMAND llvm-cov show $<TARGET_FILE:${TARGET_NAME}> -instr-profile=${TARGET_NAME}.profdata -show-line-counts-or-regions -output-dir=${CMAKE_RUNTIME_OUTPUT_DIRECTORY}/${TARGET_NAME}-llvm-cov -format="html" ${COV_SOURCES}
+    DEPENDS ${TARGET_NAME}-ccov-preprocessing)
+
+  add_custom_command(TARGET ${TARGET_NAME}-ccov POST_BUILD
+    COMMAND ;
+    COMMENT "Open ${CMAKE_RUNTIME_OUTPUT_DIRECTORY}/${TARGET_NAME}-llvm-cov/index.html in your browser to view the coverage report."
+)
+endif()

@@ -337,28 +337,24 @@ vnet_interface_output_node_inline (vlib_main_t * vm,
 
 	  if (do_tx_offloads)
 	    {
-	      u32 vnet_buffer_offload_flags =
-		(VNET_BUFFER_F_OFFLOAD_TCP_CKSUM |
-		 VNET_BUFFER_F_OFFLOAD_UDP_CKSUM |
-		 VNET_BUFFER_F_OFFLOAD_IP_CKSUM);
-	      if (or_flags & vnet_buffer_offload_flags)
+	      if (or_flags & VNET_BUFFER_F_OFFLOAD)
 		{
-		  if (b[0]->flags & vnet_buffer_offload_flags)
+		  if (b[0]->flags & VNET_BUFFER_F_OFFLOAD)
 		    vnet_calc_checksums_inline
 		      (vm, b[0],
 		       b[0]->flags & VNET_BUFFER_F_IS_IP4,
 		       b[0]->flags & VNET_BUFFER_F_IS_IP6);
-		  if (b[1]->flags & vnet_buffer_offload_flags)
+		  if (b[1]->flags & VNET_BUFFER_F_OFFLOAD)
 		    vnet_calc_checksums_inline
 		      (vm, b[1],
 		       b[1]->flags & VNET_BUFFER_F_IS_IP4,
 		       b[1]->flags & VNET_BUFFER_F_IS_IP6);
-		  if (b[2]->flags & vnet_buffer_offload_flags)
+		  if (b[2]->flags & VNET_BUFFER_F_OFFLOAD)
 		    vnet_calc_checksums_inline
 		      (vm, b[2],
 		       b[2]->flags & VNET_BUFFER_F_IS_IP4,
 		       b[2]->flags & VNET_BUFFER_F_IS_IP6);
-		  if (b[3]->flags & vnet_buffer_offload_flags)
+		  if (b[3]->flags & VNET_BUFFER_F_OFFLOAD)
 		    vnet_calc_checksums_inline
 		      (vm, b[3],
 		       b[3]->flags & VNET_BUFFER_F_IS_IP4,
@@ -406,10 +402,7 @@ vnet_interface_output_node_inline (vlib_main_t * vm,
 
 	  if (do_tx_offloads)
 	    {
-	      if (b[0]->flags &
-		  (VNET_BUFFER_F_OFFLOAD_TCP_CKSUM |
-		   VNET_BUFFER_F_OFFLOAD_UDP_CKSUM |
-		   VNET_BUFFER_F_OFFLOAD_IP_CKSUM))
+	      if (b[0]->flags & VNET_BUFFER_F_OFFLOAD)
 		vnet_calc_checksums_inline
 		  (vm, b[0],
 		   b[0]->flags & VNET_BUFFER_F_IS_IP4,
@@ -513,35 +506,9 @@ CLIB_MARCH_FN_REGISTRATION (vnet_interface_output_node);
 
 #ifndef CLIB_MARCH_VARIANT
 vlib_node_function_t *
-vnet_interface_output_node_get (vlib_main_t * vm)
+vnet_interface_output_node_get (void)
 {
-  vlib_node_function_t *fn = 0;
-  vlib_node_fn_registration_t *fnr;
-  char *name = 0;
-  vlib_node_t *node = vlib_get_node_by_name (vm, (u8 *) "interface-output");
-  ASSERT (node);
-
-  /* search for the same name */
-  fnr = node->node_fn_registrations;
-  while (fnr)
-    {
-      if (fnr->function == node->function)
-	{
-	  name = fnr->name;
-	  break;
-	}
-      fnr = fnr->next_registration;
-    }
-
-  if (name)
-    {
-      fn = CLIB_MARCH_FN_POINTER_BY_NAME (vnet_interface_output_node, name);
-    }
-  if (!fn)			/* revert to march type selection if search failed */
-    {
-      fn = CLIB_MARCH_FN_POINTER (vnet_interface_output_node);
-    }
-  return fn;
+  return CLIB_MARCH_FN_POINTER (vnet_interface_output_node);
 }
 #endif /* CLIB_MARCH_VARIANT */
 
