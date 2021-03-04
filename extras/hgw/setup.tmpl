@@ -34,12 +34,13 @@ $(FEATURE_NAT44) { nat44 add static mapping local 192.168.$(INSIDE_SUBNET).2 224
 $(FEATURE_NAT44) { $(FEATURE_IKE_RESPONDER) { nat44 add identity mapping external $(TRUNK) udp 500 } }
 $(FEATURE_NAT44) { $(FEATURE_IKE_RESPONDER) { nat44 add identity mapping external $(TRUNK) udp 4500 } }
 
-$(FEATURE_CNAT) { cnat snat with $(TRUNK) }
-$(FEATURE_CNAT) { set interface feature bvi0 ip4-cnat-snat arc ip4-unicast }
+$(FEATURE_CNAT) { set cnat snat-policy none }
+$(FEATURE_CNAT) { set cnat snat-policy addr $(TRUNK) }
+$(FEATURE_CNAT) { set interface feature bvi0 cnat-snat-ip4 arc ip4-unicast }
 $(FEATURE_CNAT) { cnat translation add proto tcp real $(TRUNK) 22432 to -> 192.168.$(INSIDE_SUBNET).2 22432 }
 $(FEATURE_CNAT) { $(FEATURE_DNS) { cnat translation add proto udp real $(TRUNK) 53053 to -> 192.168.$(INSIDE_SUBNET).1 53053 } }
 
-$(FEATURE_DNS) { $(FEATURE_NAT44) { nat44 add identity mapping external $(TRUNK) udp 53053 } }
+$(FEATURE_DNS) { nat44 add identity mapping external $(TRUNK) udp 53053 }
 $(FEATURE_DNS) { bin dns_name_server_add_del 8.8.8.8 }
 $(FEATURE_DNS) { bin dns_enable_disable }
 
@@ -71,7 +72,6 @@ $(FEATURE_IKE_RESPONDER) { set int mtu packet 1390 ipip0 }
 $(FEATURE_IKE_RESPONDER) { set int unnum ipip0 use $(TRUNK) }
 
 comment { kill ptz camera "ET call home" nonsense }
-$(FEATURE_MACTIME) { bin mactime_add_del_range name cisco-vpn mac a8:b4:56:e1:b8:3e allow-static }
 $(FEATURE_MACTIME) { bin mactime_add_del_range name dave-ipad mac ac:cf:5c:30:5b:fb allow-static }
 $(FEATURE_MACTIME) { bin mactime_add_del_range name dave-iphone mac c0:cc:f8:74:a5:e9 allow-static }
 $(FEATURE_MACTIME) { bin mactime_add_del_range name dbarach-hb mac 04:d9:f5:7c:2b:b4 allow-static }
