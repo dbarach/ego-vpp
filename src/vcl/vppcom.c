@@ -3636,6 +3636,23 @@ vppcom_session_attr (uint32_t session_handle, uint32_t op,
       *buflen = sizeof (u32);
       break;
 
+    case VPPCOM_ATTR_GET_DOMAIN:
+      if (!(buffer && buflen && (*buflen >= sizeof (int))))
+	{
+	  rv = VPPCOM_EINVAL;
+	  break;
+	}
+
+      if (session->transport.is_ip4)
+	*(int *) buffer = AF_INET;
+      else
+	*(int *) buffer = AF_INET6;
+      *buflen = sizeof (int);
+
+      VDBG (2, "VPPCOM_ATTR_GET_DOMAIN: %d, buflen %u", *(int *) buffer,
+	    *buflen);
+      break;
+
     default:
       rv = VPPCOM_EINVAL;
       break;

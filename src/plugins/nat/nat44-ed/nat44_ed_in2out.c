@@ -24,13 +24,13 @@
 #include <vnet/fib/ip4_fib.h>
 #include <vnet/udp/udp_local.h>
 #include <vppinfra/error.h>
-#include <nat/nat.h>
-#include <nat/lib/ipfix_logging.h>
-#include <nat/nat_inlines.h>
-#include <nat/nat44/inlines.h>
+
 #include <nat/lib/nat_syslog.h>
-#include <nat/nat44/ed_inlines.h>
 #include <nat/lib/nat_inlines.h>
+#include <nat/lib/ipfix_logging.h>
+
+#include <nat/nat44-ed/nat44_ed.h>
+#include <nat/nat44-ed/nat44_ed_inlines.h>
 
 /* number of attempts to get a port for ED overloading algorithm, if rolling
  * a dice this many times doesn't produce a free port, it's treated
@@ -95,92 +95,182 @@ format_nat_in2out_ed_trace (u8 * s, va_list * args)
   return s;
 }
 
+/**
+ * @brief Check if packet should be translated
+ *
+ * Packets aimed at outside interface and external address with active session
+ * should be translated.
+ *
+ * @param sm            NAT main
+ * @param rt            NAT runtime data
+ * @param sw_if_index0  index of the inside interface
+ * @param ip0           IPv4 header
+ * @param proto0        NAT protocol
+ * @param rx_fib_index0 RX FIB index
+ *
+ * @returns 0 if packet should be translated otherwise 1
+ */
+static inline int
+snat_not_translate_fast (snat_main_t *sm, vlib_node_runtime_t *node,
+			 u32 sw_if_index0, ip4_header_t *ip0, u32 proto0,
+			 u32 rx_fib_index0)
+{
+  fib_node_index_t fei = FIB_NODE_INDEX_INVALID;
+  nat_outside_fib_t *outside_fib;
+  fib_prefix_t pfx = {
+    .fp_proto = FIB_PROTOCOL_IP4,
+    .fp_len = 32,
+    .fp_addr = {
+		.ip4.as_u32 = ip0->dst_address.as_u32,
+		}
+    ,
+  };
+
+  /* Don't NAT packet aimed at the intfc address */
+  if (PREDICT_FALSE (
+	is_interface_addr (sm, node, sw_if_index0, ip0->dst_address.as_u32)))
+    return 1;
+
+  fei = fib_table_lookup (rx_fib_index0, &pfx);
+  if (FIB_NODE_INDEX_INVALID != fei)
+    {
+      u32 sw_if_index = fib_entry_get_resolving_interface (fei);
+      if (sw_if_index == ~0)
+	{
+	  vec_foreach (outside_fib, sm->outside_fibs)
+	    {
+	      fei = fib_table_lookup (outside_fib->fib_index, &pfx);
+	      if (FIB_NODE_INDEX_INVALID != fei)
+		{
+		  sw_if_index = fib_entry_get_resolving_interface (fei);
+		  if (sw_if_index != ~0)
+		    break;
+		}
+	    }
+	}
+      if (sw_if_index == ~0)
+	return 1;
+
+      snat_interface_t *i;
+      pool_foreach (i, sm->interfaces)
+	{
+	  /* NAT packet aimed at outside interface */
+	  if ((nat_interface_is_outside (i)) &&
+	      (sw_if_index == i->sw_if_index))
+	    return 0;
+	}
+    }
+
+  return 1;
+}
+
+static int
+nat_ed_alloc_addr_and_port_with_snat_address (
+  snat_main_t *sm, u32 nat_proto, u32 thread_index, snat_address_t *a,
+  u16 port_per_thread, u32 snat_thread_index, snat_session_t *s,
+  ip4_address_t *outside_addr, u16 *outside_port)
+{
+  const u16 port_thread_offset = (port_per_thread * snat_thread_index) + 1024;
+
+  s->o2i.match.daddr = a->addr;
+  /* first try port suggested by caller */
+  u16 port = clib_net_to_host_u16 (*outside_port);
+  u16 port_offset = port - port_thread_offset;
+  if (port <= port_thread_offset ||
+      port > port_thread_offset + port_per_thread)
+    {
+      /* need to pick a different port, suggested port doesn't fit in
+       * this thread's port range */
+      port_offset = snat_random_port (0, port_per_thread - 1);
+      port = port_thread_offset + port_offset;
+    }
+  u16 attempts = ED_PORT_ALLOC_ATTEMPTS;
+  do
+    {
+      if (NAT_PROTOCOL_ICMP == nat_proto)
+	{
+	  s->o2i.match.sport = clib_host_to_net_u16 (port);
+	}
+      s->o2i.match.dport = clib_host_to_net_u16 (port);
+      if (0 == nat_ed_ses_o2i_flow_hash_add_del (sm, thread_index, s, 2))
+	{
+#define _(N, i, n, s)                                                         \
+  case NAT_PROTOCOL_##N:                                                      \
+    ++a->busy_##n##_port_refcounts[port];                                     \
+    a->busy_##n##_ports_per_thread[thread_index]++;                           \
+    a->busy_##n##_ports++;                                                    \
+    break;
+	  switch (nat_proto)
+	    {
+	      foreach_nat_protocol;
+	    default:
+	      nat_elog_info (sm, "unknown protocol");
+	      return 1;
+	    }
+#undef _
+	  *outside_addr = a->addr;
+	  *outside_port = clib_host_to_net_u16 (port);
+	  return 0;
+	}
+      port_offset = snat_random_port (0, port_per_thread - 1);
+      port = port_thread_offset + port_offset;
+      --attempts;
+    }
+  while (attempts > 0);
+  return 1;
+}
+
 static int
 nat_ed_alloc_addr_and_port (snat_main_t *sm, u32 rx_fib_index, u32 nat_proto,
-			    u32 thread_index, ip4_address_t r_addr, u16 r_port,
-			    u8 proto, u16 port_per_thread,
-			    u32 snat_thread_index, snat_session_t *s,
-			    ip4_address_t *outside_addr, u16 *outside_port)
+			    u32 thread_index, ip4_address_t s_addr,
+			    u16 port_per_thread, u32 snat_thread_index,
+			    snat_session_t *s, ip4_address_t *outside_addr,
+			    u16 *outside_port)
 {
   int i;
   snat_address_t *a, *ga = 0;
 
-  const u16 port_thread_offset = (port_per_thread * snat_thread_index) + 1024;
-
-  for (i = 0; i < vec_len (sm->addresses); i++)
+  if (vec_len (sm->addresses) > 0)
     {
-      a = sm->addresses + i;
-      switch (nat_proto)
-	{
-#define _(N, j, n, unused)                                                    \
-  case NAT_PROTOCOL_##N:                                                      \
-    if (a->fib_index == rx_fib_index)                                         \
-      {                                                                       \
-	s->o2i.match.daddr = a->addr;                                         \
-	/* first try port suggested by caller */                              \
-	u16 port = clib_net_to_host_u16 (*outside_port);                      \
-	u16 port_offset = port - port_thread_offset;                          \
-	if (port <= port_thread_offset ||                                     \
-	    port > port_thread_offset + port_per_thread)                      \
-	  {                                                                   \
-	    /* need to pick a different port, suggested port doesn't fit in   \
-	     * this thread's port range */                                    \
-	    port_offset = snat_random_port (0, port_per_thread - 1);          \
-	    port = port_thread_offset + port_offset;                          \
-	  }                                                                   \
-	u16 attempts = ED_PORT_ALLOC_ATTEMPTS;                                \
-	do                                                                    \
-	  {                                                                   \
-	    if (NAT_PROTOCOL_ICMP == nat_proto)                               \
-	      {                                                               \
-		s->o2i.match.sport = clib_host_to_net_u16 (port);             \
-	      }                                                               \
-	    s->o2i.match.dport = clib_host_to_net_u16 (port);                 \
-	    if (0 ==                                                          \
-		nat_ed_ses_o2i_flow_hash_add_del (sm, thread_index, s, 2))    \
-	      {                                                               \
-		++a->busy_##n##_port_refcounts[port];                         \
-		a->busy_##n##_ports_per_thread[thread_index]++;               \
-		a->busy_##n##_ports++;                                        \
-		*outside_addr = a->addr;                                      \
-		*outside_port = clib_host_to_net_u16 (port);                  \
-		return 0;                                                     \
-	      }                                                               \
-	    port_offset = snat_random_port (0, port_per_thread - 1);          \
-	    port = port_thread_offset + port_offset;                          \
-	    --attempts;                                                       \
-	  }                                                                   \
-	while (attempts > 0);                                                 \
-      }                                                                       \
-    else if (a->fib_index == ~0)                                              \
-      {                                                                       \
-	ga = a;                                                               \
-      }                                                                       \
-    break;
+      int s_addr_offset = s_addr.as_u32 % vec_len (sm->addresses);
 
-	  foreach_nat_protocol;
-	default:
-	  nat_elog_info ("unknown protocol");
-	  return 1;
+      for (i = s_addr_offset; i < vec_len (sm->addresses); ++i)
+	{
+	  a = sm->addresses + i;
+	  if (a->fib_index == rx_fib_index)
+	    {
+	      return nat_ed_alloc_addr_and_port_with_snat_address (
+		sm, nat_proto, thread_index, a, port_per_thread,
+		snat_thread_index, s, outside_addr, outside_port);
+	    }
+	  else if (a->fib_index == ~0)
+	    {
+	      ga = a;
+	    }
+	}
+
+      for (i = 0; i < s_addr_offset; ++i)
+	{
+	  a = sm->addresses + i;
+	  if (a->fib_index == rx_fib_index)
+	    {
+	      return nat_ed_alloc_addr_and_port_with_snat_address (
+		sm, nat_proto, thread_index, a, port_per_thread,
+		snat_thread_index, s, outside_addr, outside_port);
+	    }
+	  else if (a->fib_index == ~0)
+	    {
+	      ga = a;
+	    }
+	}
+
+      if (ga)
+	{
+	  return nat_ed_alloc_addr_and_port_with_snat_address (
+	    sm, nat_proto, thread_index, a, port_per_thread, snat_thread_index,
+	    s, outside_addr, outside_port);
 	}
     }
-
-  if (ga)
-    {
-      /* fake fib_index to reuse macro */
-      rx_fib_index = ~0;
-      a = ga;
-      switch (nat_proto)
-	{
-	  foreach_nat_protocol;
-	default:
-	  nat_elog_info ("unknown protocol");
-	  return 1;
-	}
-    }
-
-#undef _
-
   /* Totally out of translations to use... */
   nat_ipfix_logging_addresses_exhausted (thread_index, 0);
   return 1;
@@ -198,7 +288,6 @@ nat_outside_fib_index_lookup (snat_main_t * sm, ip4_address_t addr)
     ,
   };
   // TODO: multiple vrfs none can resolve addr
-  /* *INDENT-OFF* */
   vec_foreach (outside_fib, sm->outside_fibs)
     {
       fei = fib_table_lookup (outside_fib->fib_index, &pfx);
@@ -210,7 +299,6 @@ nat_outside_fib_index_lookup (snat_main_t * sm, ip4_address_t addr)
             }
         }
     }
-  /* *INDENT-ON* */
   return ~0;
 }
 
@@ -279,7 +367,7 @@ slow_path_ed (snat_main_t *sm, vlib_buffer_t *b, ip4_address_t l_addr,
 	  b->error = node->errors[NAT_IN2OUT_ED_ERROR_MAX_SESSIONS_EXCEEDED];
 	  nat_ipfix_logging_max_sessions (thread_index,
 					  sm->max_translations_per_thread);
-	  nat_elog_notice ("maximum sessions exceeded");
+	  nat_elog_notice (sm, "maximum sessions exceeded");
 	  return NAT_NEXT_DROP;
 	}
     }
@@ -356,11 +444,11 @@ slow_path_ed (snat_main_t *sm, vlib_buffer_t *b, ip4_address_t l_addr,
       nat_6t_flow_txfib_rewrite_set (&s->o2i, rx_fib_index);
 
       if (nat_ed_alloc_addr_and_port (
-	    sm, rx_fib_index, nat_proto, thread_index, daddr, dport, proto,
+	    sm, rx_fib_index, nat_proto, thread_index, l_addr,
 	    sm->port_per_thread, tsm->snat_thread_index, s, &outside_addr,
 	    &outside_port))
 	{
-	  nat_elog_notice ("addresses exhausted");
+	  nat_elog_notice (sm, "addresses exhausted");
 	  b->error = node->errors[NAT_IN2OUT_ED_ERROR_OUT_OF_PORTS];
 	  nat_ed_session_delete (sm, s, thread_index, 1);
 	  return NAT_NEXT_DROP;
@@ -401,7 +489,7 @@ slow_path_ed (snat_main_t *sm, vlib_buffer_t *b, ip4_address_t l_addr,
       nat_6t_flow_txfib_rewrite_set (&s->o2i, rx_fib_index);
       if (nat_ed_ses_o2i_flow_hash_add_del (sm, thread_index, s, 2))
 	{
-	  nat_elog_notice ("out2in key add failed");
+	  nat_elog_notice (sm, "out2in key add failed");
 	  goto error;
 	}
     }
@@ -429,7 +517,7 @@ slow_path_ed (snat_main_t *sm, vlib_buffer_t *b, ip4_address_t l_addr,
 
   if (nat_ed_ses_i2o_flow_hash_add_del (sm, thread_index, s, 1))
     {
-      nat_elog_notice ("in2out key add failed");
+      nat_elog_notice (sm, "in2out key add failed");
       goto error;
     }
 
@@ -441,12 +529,10 @@ slow_path_ed (snat_main_t *sm, vlib_buffer_t *b, ip4_address_t l_addr,
 				      s->in2out.port,
 				      s->out2in.port, s->in2out.fib_index);
 
-  nat_syslog_nat44_sadd (s->user_index, s->in2out.fib_index,
-			 &s->in2out.addr, s->in2out.port,
-			 &s->ext_host_nat_addr, s->ext_host_nat_port,
-			 &s->out2in.addr, s->out2in.port,
-			 &s->ext_host_addr, s->ext_host_port, s->nat_proto,
-			 0);
+  nat_syslog_nat44_sadd (0, s->in2out.fib_index, &s->in2out.addr,
+			 s->in2out.port, &s->ext_host_nat_addr,
+			 s->ext_host_nat_port, &s->out2in.addr, s->out2in.port,
+			 &s->ext_host_addr, s->ext_host_port, s->nat_proto, 0);
 
   per_vrf_sessions_register_session (s, thread_index);
 
@@ -610,13 +696,11 @@ nat44_ed_not_translate_output_feature (snat_main_t * sm, ip4_header_t * ip,
 	return 0;
 
       /* hairpinning */
-      /* *INDENT-OFF* */
       pool_foreach (i, sm->output_feature_interfaces)
        {
         if ((nat_interface_is_inside (i)) && (rx_sw_if_index == i->sw_if_index))
            return 0;
       }
-      /* *INDENT-ON* */
       return 1;
     }
 
@@ -729,7 +813,7 @@ nat44_ed_in2out_slowpath_unknown_proto (snat_main_t *sm, vlib_buffer_t *b,
       b->error = node->errors[NAT_IN2OUT_ED_ERROR_MAX_SESSIONS_EXCEEDED];
       nat_ipfix_logging_max_sessions (thread_index,
 				      sm->max_translations_per_thread);
-      nat_elog_notice ("maximum sessions exceeded");
+      nat_elog_notice (sm, "maximum sessions exceeded");
       return 0;
     }
 
@@ -794,7 +878,7 @@ nat44_ed_in2out_slowpath_unknown_proto (snat_main_t *sm, vlib_buffer_t *b,
   if (!s)
     {
       b->error = node->errors[NAT_IN2OUT_ED_ERROR_MAX_SESSIONS_EXCEEDED];
-      nat_elog_warn ("create NAT session failed");
+      nat_elog_warn (sm, "create NAT session failed");
       return 0;
     }
 
@@ -831,14 +915,14 @@ nat44_ed_in2out_slowpath_unknown_proto (snat_main_t *sm, vlib_buffer_t *b,
 
   if (nat_ed_ses_i2o_flow_hash_add_del (sm, thread_index, s, 1))
     {
-      nat_elog_notice ("in2out flow hash add failed");
+      nat_elog_notice (sm, "in2out flow hash add failed");
       nat_ed_session_delete (sm, s, thread_index, 1);
       return NULL;
     }
 
   if (nat_ed_ses_o2i_flow_hash_add_del (sm, thread_index, s, 1))
     {
-      nat_elog_notice ("out2in flow hash add failed");
+      nat_elog_notice (sm, "out2in flow hash add failed");
       nat_ed_session_delete (sm, s, thread_index, 1);
       return NULL;
     }
@@ -855,10 +939,11 @@ nat44_ed_in2out_slowpath_unknown_proto (snat_main_t *sm, vlib_buffer_t *b,
 }
 
 static inline uword
-nat44_ed_in2out_fast_path_node_fn_inline (vlib_main_t * vm,
-					  vlib_node_runtime_t * node,
-					  vlib_frame_t * frame,
-					  int is_output_feature)
+nat44_ed_in2out_fast_path_node_fn_inline (vlib_main_t *vm,
+					  vlib_node_runtime_t *node,
+					  vlib_frame_t *frame,
+					  int is_output_feature,
+					  int is_multi_worker)
 {
   u32 n_left_from, *from;
   snat_main_t *sm = &snat_main;
@@ -885,9 +970,7 @@ nat44_ed_in2out_fast_path_node_fn_inline (vlib_main_t * vm,
       clib_bihash_kv_16_8_t kv0, value0;
       nat_translation_error_e translation_error = NAT_ED_TRNSL_ERR_SUCCESS;
       nat_6t_flow_t *f = 0;
-      ip4_address_t lookup_saddr, lookup_daddr;
-      u16 lookup_sport, lookup_dport;
-      u8 lookup_protocol;
+      nat_6t_t lookup;
       int lookup_skipped = 0;
 
       b0 = *b;
@@ -918,6 +1001,7 @@ nat44_ed_in2out_fast_path_node_fn_inline (vlib_main_t * vm,
       sw_if_index0 = vnet_buffer (b0)->sw_if_index[VLIB_RX];
       rx_fib_index0 =
 	fib_table_get_index_for_sw_if_index (FIB_PROTOCOL_IP4, sw_if_index0);
+      lookup.fib_index = rx_fib_index0;
 
       if (PREDICT_FALSE (ip0->ttl == 1))
 	{
@@ -953,8 +1037,8 @@ nat44_ed_in2out_fast_path_node_fn_inline (vlib_main_t * vm,
 	      goto trace0;
 	    }
 	  int err = nat_get_icmp_session_lookup_values (
-	    b0, ip0, &lookup_saddr, &lookup_sport, &lookup_daddr,
-	    &lookup_dport, &lookup_protocol);
+	    b0, ip0, &lookup.saddr, &lookup.sport, &lookup.daddr,
+	    &lookup.dport, &lookup.proto);
 	  if (err != 0)
 	    {
 	      b0->error = node->errors[err];
@@ -964,30 +1048,27 @@ nat44_ed_in2out_fast_path_node_fn_inline (vlib_main_t * vm,
 	}
       else
 	{
-	  lookup_protocol = ip0->protocol;
-	  lookup_saddr = ip0->src_address;
-	  lookup_daddr = ip0->dst_address;
-	  lookup_sport = vnet_buffer (b0)->ip.reass.l4_src_port;
-	  lookup_dport = vnet_buffer (b0)->ip.reass.l4_dst_port;
+	  lookup.proto = ip0->protocol;
+	  lookup.saddr.as_u32 = ip0->src_address.as_u32;
+	  lookup.daddr.as_u32 = ip0->dst_address.as_u32;
+	  lookup.sport = vnet_buffer (b0)->ip.reass.l4_src_port;
+	  lookup.dport = vnet_buffer (b0)->ip.reass.l4_dst_port;
 	}
 
       /* there might be a stashed index in vnet_buffer2 from handoff or
        * classify node, see if it can be used */
-      if (!pool_is_free_index (tsm->sessions,
+      if (is_multi_worker &&
+	  !pool_is_free_index (tsm->sessions,
 			       vnet_buffer2 (b0)->nat.cached_session_index))
 	{
 	  s0 = pool_elt_at_index (tsm->sessions,
 				  vnet_buffer2 (b0)->nat.cached_session_index);
 	  if (PREDICT_TRUE (
-		nat_6t_flow_match (&s0->i2o, b0, lookup_saddr, lookup_sport,
-				   lookup_daddr, lookup_dport, lookup_protocol,
-				   rx_fib_index0)
+		nat_6t_t_eq (&s0->i2o.match, &lookup)
 		// for some hairpinning cases there are two "i2i" flows instead
 		// of i2o and o2i as both hosts are on inside
 		|| (s0->flags & SNAT_SESSION_FLAG_HAIRPINNING &&
-		    nat_6t_flow_match (
-		      &s0->o2i, b0, lookup_saddr, lookup_sport, lookup_daddr,
-		      lookup_dport, lookup_protocol, rx_fib_index0))))
+		    nat_6t_t_eq (&s0->o2i.match, &lookup))))
 	    {
 	      /* yes, this is the droid we're looking for */
 	      lookup_skipped = 1;
@@ -996,8 +1077,8 @@ nat44_ed_in2out_fast_path_node_fn_inline (vlib_main_t * vm,
 	  s0 = NULL;
 	}
 
-      init_ed_k (&kv0, ip0->src_address, lookup_sport, ip0->dst_address,
-		 lookup_dport, rx_fib_index0, lookup_protocol);
+      init_ed_k (&kv0, lookup.saddr, lookup.sport, lookup.daddr, lookup.dport,
+		 lookup.fib_index, lookup.proto);
 
       // lookup flow
       if (clib_bihash_search_16_8 (&sm->flow_hash, &kv0, &value0))
@@ -1054,16 +1135,12 @@ nat44_ed_in2out_fast_path_node_fn_inline (vlib_main_t * vm,
 
       b0->flags |= VNET_BUFFER_F_IS_NATED;
 
-      if (nat_6t_flow_match (&s0->i2o, b0, lookup_saddr, lookup_sport,
-			     lookup_daddr, lookup_dport, lookup_protocol,
-			     rx_fib_index0))
+      if (nat_6t_t_eq (&s0->i2o.match, &lookup))
 	{
 	  f = &s0->i2o;
 	}
       else if (s0->flags & SNAT_SESSION_FLAG_HAIRPINNING &&
-	       nat_6t_flow_match (&s0->o2i, b0, lookup_saddr, lookup_sport,
-				  lookup_daddr, lookup_dport, lookup_protocol,
-				  rx_fib_index0))
+	       nat_6t_t_eq (&s0->o2i.match, &lookup))
 	{
 	  f = &s0->o2i;
 	}
@@ -1089,22 +1166,21 @@ nat44_ed_in2out_fast_path_node_fn_inline (vlib_main_t * vm,
       switch (proto0)
 	{
 	case NAT_PROTOCOL_TCP:
-	  vlib_increment_simple_counter (&sm->counters.fastpath.in2out_ed.tcp,
+	  vlib_increment_simple_counter (&sm->counters.fastpath.in2out.tcp,
 					 thread_index, sw_if_index0, 1);
 	  nat44_set_tcp_session_state_i2o (sm, now, s0, b0, thread_index);
 	  break;
 	case NAT_PROTOCOL_UDP:
-	  vlib_increment_simple_counter (&sm->counters.fastpath.in2out_ed.udp,
+	  vlib_increment_simple_counter (&sm->counters.fastpath.in2out.udp,
 					 thread_index, sw_if_index0, 1);
 	  break;
 	case NAT_PROTOCOL_ICMP:
-	  vlib_increment_simple_counter (&sm->counters.fastpath.in2out_ed.icmp,
+	  vlib_increment_simple_counter (&sm->counters.fastpath.in2out.icmp,
 					 thread_index, sw_if_index0, 1);
 	  break;
 	case NAT_PROTOCOL_OTHER:
-	  vlib_increment_simple_counter (
-	    &sm->counters.fastpath.in2out_ed.other, thread_index, sw_if_index0,
-	    1);
+	  vlib_increment_simple_counter (&sm->counters.fastpath.in2out.other,
+					 thread_index, sw_if_index0, 1);
 	  break;
 	}
 
@@ -1144,9 +1220,8 @@ nat44_ed_in2out_fast_path_node_fn_inline (vlib_main_t * vm,
 
       if (next[0] == NAT_NEXT_DROP)
 	{
-	  vlib_increment_simple_counter (&sm->counters.fastpath.
-					 in2out_ed.drops, thread_index,
-					 sw_if_index0, 1);
+	  vlib_increment_simple_counter (&sm->counters.fastpath.in2out.drops,
+					 thread_index, sw_if_index0, 1);
 	}
 
       n_left_from--;
@@ -1231,9 +1306,8 @@ nat44_ed_in2out_slow_path_node_fn_inline (vlib_main_t * vm,
 	      goto trace0;
 	    }
 
-	  vlib_increment_simple_counter (&sm->counters.slowpath.
-					 in2out_ed.other, thread_index,
-					 sw_if_index0, 1);
+	  vlib_increment_simple_counter (&sm->counters.slowpath.in2out.other,
+					 thread_index, sw_if_index0, 1);
 	  goto trace0;
 	}
 
@@ -1250,9 +1324,8 @@ nat44_ed_in2out_slow_path_node_fn_inline (vlib_main_t * vm,
 	      goto trace0;
 	    }
 
-	  vlib_increment_simple_counter (&sm->counters.slowpath.
-					 in2out_ed.icmp, thread_index,
-					 sw_if_index0, 1);
+	  vlib_increment_simple_counter (&sm->counters.slowpath.in2out.icmp,
+					 thread_index, sw_if_index0, 1);
 	  goto trace0;
 	}
 
@@ -1336,13 +1409,13 @@ nat44_ed_in2out_slow_path_node_fn_inline (vlib_main_t * vm,
 
       if (PREDICT_TRUE (proto0 == NAT_PROTOCOL_TCP))
 	{
-	  vlib_increment_simple_counter (&sm->counters.slowpath.in2out_ed.tcp,
+	  vlib_increment_simple_counter (&sm->counters.slowpath.in2out.tcp,
 					 thread_index, sw_if_index0, 1);
 	  nat44_set_tcp_session_state_i2o (sm, now, s0, b0, thread_index);
 	}
       else
 	{
-	  vlib_increment_simple_counter (&sm->counters.slowpath.in2out_ed.udp,
+	  vlib_increment_simple_counter (&sm->counters.slowpath.in2out.udp,
 					 thread_index, sw_if_index0, 1);
 	}
 
@@ -1381,9 +1454,8 @@ nat44_ed_in2out_slow_path_node_fn_inline (vlib_main_t * vm,
 
       if (next[0] == NAT_NEXT_DROP)
 	{
-	  vlib_increment_simple_counter (&sm->counters.slowpath.
-					 in2out_ed.drops, thread_index,
-					 sw_if_index0, 1);
+	  vlib_increment_simple_counter (&sm->counters.slowpath.in2out.drops,
+					 thread_index, sw_if_index0, 1);
 	}
 
       n_left_from--;
@@ -1401,10 +1473,16 @@ VLIB_NODE_FN (nat44_ed_in2out_node) (vlib_main_t * vm,
 				     vlib_node_runtime_t * node,
 				     vlib_frame_t * frame)
 {
-  return nat44_ed_in2out_fast_path_node_fn_inline (vm, node, frame, 0);
+  if (snat_main.num_workers > 1)
+    {
+      return nat44_ed_in2out_fast_path_node_fn_inline (vm, node, frame, 0, 1);
+    }
+  else
+    {
+      return nat44_ed_in2out_fast_path_node_fn_inline (vm, node, frame, 0, 0);
+    }
 }
 
-/* *INDENT-OFF* */
 VLIB_REGISTER_NODE (nat44_ed_in2out_node) = {
   .name = "nat44-ed-in2out",
   .vector_size = sizeof (u32),
@@ -1415,16 +1493,21 @@ VLIB_REGISTER_NODE (nat44_ed_in2out_node) = {
   .error_strings = nat_in2out_ed_error_strings,
   .runtime_data_bytes = sizeof (snat_runtime_t),
 };
-/* *INDENT-ON* */
 
 VLIB_NODE_FN (nat44_ed_in2out_output_node) (vlib_main_t * vm,
 					    vlib_node_runtime_t * node,
 					    vlib_frame_t * frame)
 {
-  return nat44_ed_in2out_fast_path_node_fn_inline (vm, node, frame, 1);
+  if (snat_main.num_workers > 1)
+    {
+      return nat44_ed_in2out_fast_path_node_fn_inline (vm, node, frame, 1, 1);
+    }
+  else
+    {
+      return nat44_ed_in2out_fast_path_node_fn_inline (vm, node, frame, 1, 0);
+    }
 }
 
-/* *INDENT-OFF* */
 VLIB_REGISTER_NODE (nat44_ed_in2out_output_node) = {
   .name = "nat44-ed-in2out-output",
   .vector_size = sizeof (u32),
@@ -1435,7 +1518,6 @@ VLIB_REGISTER_NODE (nat44_ed_in2out_output_node) = {
   .error_strings = nat_in2out_ed_error_strings,
   .runtime_data_bytes = sizeof (snat_runtime_t),
 };
-/* *INDENT-ON* */
 
 VLIB_NODE_FN (nat44_ed_in2out_slowpath_node) (vlib_main_t * vm,
 					      vlib_node_runtime_t *
@@ -1444,7 +1526,6 @@ VLIB_NODE_FN (nat44_ed_in2out_slowpath_node) (vlib_main_t * vm,
   return nat44_ed_in2out_slow_path_node_fn_inline (vm, node, frame, 0);
 }
 
-/* *INDENT-OFF* */
 VLIB_REGISTER_NODE (nat44_ed_in2out_slowpath_node) = {
   .name = "nat44-ed-in2out-slowpath",
   .vector_size = sizeof (u32),
@@ -1455,7 +1536,6 @@ VLIB_REGISTER_NODE (nat44_ed_in2out_slowpath_node) = {
   .error_strings = nat_in2out_ed_error_strings,
   .runtime_data_bytes = sizeof (snat_runtime_t),
 };
-/* *INDENT-ON* */
 
 VLIB_NODE_FN (nat44_ed_in2out_output_slowpath_node) (vlib_main_t * vm,
 						     vlib_node_runtime_t
@@ -1465,7 +1545,6 @@ VLIB_NODE_FN (nat44_ed_in2out_output_slowpath_node) (vlib_main_t * vm,
   return nat44_ed_in2out_slow_path_node_fn_inline (vm, node, frame, 1);
 }
 
-/* *INDENT-OFF* */
 VLIB_REGISTER_NODE (nat44_ed_in2out_output_slowpath_node) = {
   .name = "nat44-ed-in2out-output-slowpath",
   .vector_size = sizeof (u32),
@@ -1476,7 +1555,6 @@ VLIB_REGISTER_NODE (nat44_ed_in2out_output_slowpath_node) = {
   .error_strings = nat_in2out_ed_error_strings,
   .runtime_data_bytes = sizeof (snat_runtime_t),
 };
-/* *INDENT-ON* */
 
 static u8 *
 format_nat_pre_trace (u8 * s, va_list * args)
@@ -1502,7 +1580,6 @@ VLIB_NODE_FN (nat_pre_in2out_output_node)
 				 NAT_NEXT_IN2OUT_ED_OUTPUT_FAST_PATH);
 }
 
-/* *INDENT-OFF* */
 VLIB_REGISTER_NODE (nat_pre_in2out_node) = {
   .name = "nat-pre-in2out",
   .vector_size = sizeof (u32),
@@ -1520,7 +1597,6 @@ VLIB_REGISTER_NODE (nat_pre_in2out_output_node) = {
   .type = VLIB_NODE_TYPE_INTERNAL,
   .n_errors = 0,
 };
-/* *INDENT-ON* */
 
 /*
  * fd.io coding-style-patch-verification: ON
