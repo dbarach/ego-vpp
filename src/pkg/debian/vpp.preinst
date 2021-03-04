@@ -1,5 +1,6 @@
 #!/bin/sh -e
 
+/usr/sbin/service vpp stop || true
+
 # Add the vpp group
 groupadd -f -r vpp
-start-stop-daemon --stop --exec /usr/bin/vpp || true

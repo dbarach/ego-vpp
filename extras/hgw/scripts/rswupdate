@@ -1,6 +1,6 @@
 #!/bin/bash
 
-buildroot=/scratch/vpp-gw2/build-root
+buildroot=/scratch/vpp-gate/build-root
 if [ $1x = "testx" ] ; then
     subdir="test"
     ipaddr="192.168.2.48"
@@ -24,20 +24,28 @@ scp -P 22432 $buildroot/*.deb $ipaddr:/home/dbarach/gate_debians
 echo Install new software...
 ssh -p 22432 $ipaddr "nohup /home/dbarach/bin/vpp-swupdate > /dev/null 2>&1 &"
 
-for i in 25 24 23 22 21 20 19 18 17 16 15 14 13 12 11 10 9 8 7 6 5 4 3 2 1
+for i in 30 29 28 27 26 25 24 23 22 21 20 19 18 17 16 15 14 13 12 11 10 9 8 7 6 5 4 3 2 1
 do
     echo Wait for $i seconds...
-    sleep 1
+    if [ $i -le "15" ] ; then
+        ssh -p 22432 -o ConnectTimeout=1 $ipaddr "date"
+        if [ $? == "0" ] ; then
+            echo "Device reachable with $i seconds remaining"
+            break
+        fi
+    else
+        sleep 1
+    fi
 done
 
-echo Try to access the device...
+echo Check device ping result...
 
 ssh -p 22432 -o ConnectTimeout=10 $ipaddr "tail -20 /var/log/syslog | grep Ping"
 if [ $? == 0 ] ; then
-    echo Access test OK...
+    echo Device ping test OK...
 else
-    echo Access failed, wait for configuration restoration...
-    for i in 25 24 23 22 21 20 19 18 17 16 15 14 13 12 11 10 9 8 7 6 5 4 3 2 1
+    echo FAIL: wait for configuration restoration...
+    for i in 29 28 27 26 25 24 23 22 21 20 19 18 17 16 15 14 13 12 11 10 9 8 7 6 5 4 3 2 1
     do
         echo Wait for $i seconds...
         sleep 1

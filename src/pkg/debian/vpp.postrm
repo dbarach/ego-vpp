@@ -1,6 +1,6 @@
 #!/bin/sh -e
 
-start-stop-daemon --stop --exec /usr/bin/vpp || true
+/usr/sbin/service vpp stop || true
 
 removed=
 
