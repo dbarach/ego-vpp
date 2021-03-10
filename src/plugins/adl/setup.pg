@@ -56,7 +56,7 @@ ip6 table 1
 ip route add 2001:db01::1/128 via drop
 ip route add table 1 2001:db01::2/128 via local
 
-comment { bin adl_interface_enable_disable loop0 }
-comment { bin adl_allowlist_enable_disable loop0 fib-id 1 ip4 ip6 }
-uncomment {bin cop_interface_enable_disable loop0 }
-uncomment {bin cop_whitelist_enable_disable loop0 fib-id 1 ip4 ip6 }
+uncomment { bin adl_interface_enable_disable loop0 }
+uncomment { bin adl_allowlist_enable_disable loop0 fib-id 1 ip4 ip6 }
+comment {bin cop_interface_enable_disable loop0 }
+comment {bin cop_whitelist_enable_disable loop0 fib-id 1 ip4 ip6 }

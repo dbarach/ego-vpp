@@ -1,0 +1,12 @@
+#!/bin/bash
+
+logger "Wait 30 seconds for vpp to start"
+sleep 30
+
+logger "Replay banned bozo list"
+cp /var/log/banned_bozos /var/log/banned_bozos.prev
+cat /var/log/banned_bozos | xargs -L 1 /usr/local/bin/ban_one_bozo
+cp /var/log/banned_bozos.prev /var/log/banned_bozos
+
+logger "Watch for new clowns"
+tail -f /var/log/auth.log | grep -E "Disconnected.*\[preauth\]"  | grep -E -o "(25[0-5]|2[0-4][0-9]|[01]?[0-9][0-9]?)\.(25[0-5]|2[0-4][0-9]|[01]?[0-9][0-9]?)\.(25[0-5]|2[0-4][0-9]|[01]?[0-9][0-9]?)\.(25[0-5]|2[0-4][0-9]|[01]?[0-9][0-9]?)" | xargs -L 1 /usr/local/bin/ban_one_bozo

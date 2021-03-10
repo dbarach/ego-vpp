@@ -1,0 +1,5 @@
+#!/bin/bash
+
+logger Ban bozo $1
+echo $1 >> /var/log/banned_bozos
+vppctl ip route add table 1 $1/32 via drop

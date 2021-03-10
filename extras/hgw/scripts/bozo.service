@@ -1,0 +1,11 @@
+[Unit]
+Description=bozo blocker service
+After=network.target
+
+[Service]
+Type=simple
+Restart=always
+ExecStart=/usr/local/bin/ban_bozos
+
+[Install]
+WantedBy=multi-user.target
