@@ -4,31 +4,34 @@ buildroot=/scratch/vpp-gate/build-root
 if [ $1x = "testx" ] ; then
     subdir="test"
     ipaddr="192.168.2.48"
+    port=22432
 elif [ $1x = "swanx" ] ; then
     subdir="swan"
     ipaddr="swan.barachs.net"
+    port=22432
 elif [ $1x = "dorax" ] ; then
     subdir="dora"
     ipaddr="broiler2.barachs.net"
+    port=22342
 else
     subdir="test"
     ipaddr="192.168.2.48"
 fi
 
 echo Save current software...
-ssh -p 22432 $ipaddr "rm -rf /home/dbarach/gate_debians.prev"
-ssh -p 22432 $ipaddr "mv /home/dbarach/gate_debians /home/dbarach/gate_debians.prev"
-ssh -p 22432 $ipaddr "mkdir /home/dbarach/gate_debians"
+ssh -p $port $ipaddr "rm -rf /home/dbarach/gate_debians.prev"
+ssh -p $port $ipaddr "mv /home/dbarach/gate_debians /home/dbarach/gate_debians.prev"
+ssh -p $port $ipaddr "mkdir /home/dbarach/gate_debians"
 echo Copy new software to the gateway...
-scp -P 22432 $buildroot/*.deb $ipaddr:/home/dbarach/gate_debians
+scp -P $port $buildroot/*.deb $ipaddr:/home/dbarach/gate_debians
 echo Install new software...
-ssh -p 22432 $ipaddr "nohup /home/dbarach/bin/vpp-swupdate > /dev/null 2>&1 &"
+ssh -p $port $ipaddr "nohup /home/dbarach/bin/vpp-swupdate > /dev/null 2>&1 &"
 
 for i in 30 29 28 27 26 25 24 23 22 21 20 19 18 17 16 15 14 13 12 11 10 9 8 7 6 5 4 3 2 1
 do
     echo Wait for $i seconds...
     if [ $i -le "15" ] ; then
-        ssh -p 22432 -o ConnectTimeout=1 $ipaddr "date"
+        ssh -p $port -o ConnectTimeout=1 $ipaddr "date"
         if [ $? == "0" ] ; then
             echo "Device reachable with $i seconds remaining"
             break
@@ -40,7 +43,7 @@ done
 
 echo Check device ping result...
 
-ssh -p 22432 -o ConnectTimeout=10 $ipaddr "tail -20 /var/log/syslog | grep Ping"
+ssh -p $port -o ConnectTimeout=10 $ipaddr "tail -20 /var/log/syslog | grep Ping"
 if [ $? == 0 ] ; then
     echo Device ping test OK...
 else
@@ -51,7 +54,7 @@ else
         sleep 1
     done
     echo Retry access test
-    ssh -p 22432 -o ConnectTimeout=10 $ipaddr "tail -20 /var/log/syslog | grep Ping"
+    ssh -p $port -o ConnectTimeout=10 $ipaddr "tail -20 /var/log/syslog | grep Ping"
     if [ $? == 0 ] ; then
         echo Access test OK, check syslog on the device
         exit 1

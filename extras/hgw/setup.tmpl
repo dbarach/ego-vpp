@@ -43,6 +43,10 @@ $(FEATURE_CNAT) { set cnat snat-policy addr $(TRUNK) }
 $(FEATURE_CNAT) { set interface feature bvi0 cnat-snat-ip4 arc ip4-unicast }
 $(FEATURE_CNAT) { cnat translation add proto tcp real $(TRUNK) 22342 to -> 192.168.$(INSIDE_SUBNET).2 22342 }
 $(FEATURE_CNAT) { $(FEATURE_DNS) { cnat translation add proto udp real $(TRUNK) 53053 to -> 192.168.$(INSIDE_SUBNET).1 53053 } }
+$(FEATURE_CNAT) { $(FEATURE_OVPN) { cnat translation add proto udp real $(TRUNK) 37979 to -> 192.168.$(INSIDE_SUBNET).2 37979 } }
+$(FEATURE_CNAT) { $(FEATURE_OVPN) { set interface feature bvi0 skipnat arc ip4-unicast } }
+$(FEATURE_CNAT) { $(FEATURE_OVPN) { ip route add 192.168.10.0/24 via 192.168.$(INSIDE_SUBNET).2 } }
+
 
 $(FEATURE_DNS) { nat44 add identity mapping external $(TRUNK) udp 53053 }
 $(FEATURE_DNS) { bin dns_name_server_add_del 8.8.8.8 }

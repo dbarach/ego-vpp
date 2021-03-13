@@ -14,9 +14,13 @@ define INSIDE_PORT3 GigabitEthernet8/0/0
 define INSIDE_PORT4 GigabitEthernet8/0/1
 
 comment { feature selections }
-define FEATURE_NAT44 uncomment
-define FEATURE_CNAT comment
-define FEATURE_DNS uncomment
+define FEATURE_ADL uncomment
+define FEATURE_NAT44 comment
+define FEATURE_CNAT uncomment
+define FEATURE_DNS comment
 define FEATURE_IP6 comment
+define FEATURE_IKE_RESPONDER comment
+define FEATURE_MACTIME uncomment
+define FEATURE_OVPN uncomment
 
 exec /home/dbarach/setup.tmpl
