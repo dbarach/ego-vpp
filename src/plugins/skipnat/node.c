@@ -72,7 +72,8 @@ typedef enum
 } skipnat_next_t;
 
 /*
- * Don't NAT home network inside addrs 192.168.1.*, 192.168.2.*
+ * Don't NAT home network inside addrs 192.168.1.*, 192.168.2.*,
+ * 192.168.3.*, and 192.168.40.*
  * And don't nat to-openvpn-tunnel pkts on 192.168.10.*
  */
 static inline int skip_nat_by_addr (u32 addr)
@@ -83,9 +84,11 @@ static inline int skip_nat_by_addr (u32 addr)
 
   sum = (addr ^ clib_host_to_net_u32(0xc0a80100)) != 0;
   sum += (addr ^ clib_host_to_net_u32(0xc0a80200)) != 0;
+  sum += (addr ^ clib_host_to_net_u32(0xc0a80300)) != 0;
   sum += (addr ^ clib_host_to_net_u32(0xc0a80a00)) != 0;
+  sum += (addr ^ clib_host_to_net_u32(0xc0a82800)) != 0;
 
-  return sum < 3;
+  return sum < 5;
 }
 
 always_inline uword
