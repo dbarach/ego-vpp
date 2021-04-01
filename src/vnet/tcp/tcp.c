@@ -657,9 +657,10 @@ tcp_init_mss (tcp_connection_t * tc)
   /* We should have enough space for 40 bytes of options */
   ASSERT (tc->snd_mss > 45);
 
-  /* If we use timestamp option, account for it */
+  /* If we use timestamp option, account for it and make sure
+   * the options are 4-byte aligned */
   if (tcp_opts_tstamp (&tc->rcv_opts))
-    tc->snd_mss -= TCP_OPTION_LEN_TIMESTAMP;
+    tc->snd_mss -= TCP_OPTION_LEN_TIMESTAMP + 2 /* alignment */;
 }
 
 /**
@@ -1329,7 +1330,7 @@ tcp_main_enable (vlib_main_t * vm)
       vec_reset_length (wrk->pending_deq_acked);
       vec_reset_length (wrk->pending_disconnects);
       vec_reset_length (wrk->pending_resets);
-      wrk->vm = vlib_mains[thread];
+      wrk->vm = vlib_get_main_by_index (thread);
       wrk->max_timers_per_loop = 10;
 
       if (thread > 0)

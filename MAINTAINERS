@@ -389,6 +389,11 @@ M:  Filip Varga <fivarga@cisco.com>
 M:  Klement Sekera <ksekera@cisco.com>
 F:	src/plugins/nat/
 
+Plugin - PNAT Static match and rewrite engine
+I:	pnat
+M:	Ole Troan <ot@cisco.com>
+F:	src/plugins/nat/pnat/
+
 Plugin - AVF Device driver
 I:	avf
 M:	Damjan Marion <damarion@cisco.com>
@@ -483,6 +488,11 @@ Plugin - IPv6 Segment Routing Dynamic Proxy
 I:	srv6-ad
 M:	Francois Clad <fclad@cisco.com>
 F:	src/plugins/srv6-ad/
+
+Plugin - IPv6 Segment Routing Flow-Based Dynamic Proxy
+I:	srv6-ad-flow
+M:	Francois Clad <fclad@cisco.com>
+F:	src/plugins/srv6-ad-flow/
 
 Plugin - IPv6 Segment Routing Masquerading Proxy
 I:	srv6-am

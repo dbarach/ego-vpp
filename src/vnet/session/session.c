@@ -1590,16 +1590,14 @@ session_register_transport (transport_proto_t transport_proto,
   vec_validate (smm->session_type_to_next, session_type);
   vec_validate (smm->session_tx_fns, session_type);
 
-  /* *INDENT-OFF* */
   if (output_node != ~0)
     {
-      foreach_vlib_main (({
-          next_index = vlib_node_add_next (this_vlib_main,
-                                           session_queue_node.index,
-                                           output_node);
-      }));
+      foreach_vlib_main ()
+	{
+	  next_index = vlib_node_add_next (
+	    this_vlib_main, session_queue_node.index, output_node);
+	}
     }
-  /* *INDENT-ON* */
 
   smm->session_type_to_next[session_type] = next_index;
   smm->session_tx_fns[session_type] =
@@ -1658,8 +1656,7 @@ void
 session_queue_run_on_main_thread (vlib_main_t * vm)
 {
   ASSERT (vlib_get_thread_index () == 0);
-  vlib_process_signal_event_mt (vm, session_queue_process_node.index,
-				SESSION_Q_PROCESS_RUN_ON_MAIN, 0);
+  vlib_node_set_interrupt_pending (vm, session_queue_node.index);
 }
 
 static clib_error_t *
@@ -1689,7 +1686,7 @@ session_manager_main_enable (vlib_main_t * vm)
       wrk->ctrl_head = clib_llist_make_head (wrk->event_elts, evt_list);
       wrk->new_head = clib_llist_make_head (wrk->event_elts, evt_list);
       wrk->old_head = clib_llist_make_head (wrk->event_elts, evt_list);
-      wrk->vm = vlib_mains[i];
+      wrk->vm = vlib_get_main_by_index (i);
       wrk->last_vlib_time = vlib_time_now (vm);
       wrk->last_vlib_us_time = wrk->last_vlib_time * CLIB_US_TIME_FREQ;
       vec_validate (wrk->session_to_enqueue, smm->last_transport_proto_type);
@@ -1751,35 +1748,42 @@ session_manager_main_disable (vlib_main_t * vm)
 void
 session_node_enable_disable (u8 is_en)
 {
+  u8 mstate = is_en ? VLIB_NODE_STATE_INTERRUPT : VLIB_NODE_STATE_DISABLED;
   u8 state = is_en ? VLIB_NODE_STATE_POLLING : VLIB_NODE_STATE_DISABLED;
-  vlib_thread_main_t *vtm = vlib_get_thread_main ();
-  u8 have_workers = vtm->n_threads != 0;
+  session_main_t *sm = &session_main;
+  vlib_main_t *vm;
+  vlib_node_t *n;
+  int n_vlibs, i;
 
-  /* *INDENT-OFF* */
-  foreach_vlib_main (({
-    if (have_workers && ii == 0)
-      {
-	if (is_en)
-	  {
-	    vlib_node_set_state (this_vlib_main,
-	                         session_queue_process_node.index, state);
-	    vlib_node_t *n = vlib_get_node (this_vlib_main,
-	                                    session_queue_process_node.index);
-	    vlib_start_process (this_vlib_main, n->runtime_index);
-	  }
-	else
-	  {
-	    vlib_process_signal_event_mt (this_vlib_main,
-	                                  session_queue_process_node.index,
-	                                  SESSION_Q_PROCESS_STOP, 0);
-	  }
-	if (!session_main.poll_main)
-	  continue;
-      }
-    vlib_node_set_state (this_vlib_main, session_queue_node.index,
-                         state);
-  }));
-  /* *INDENT-ON* */
+  n_vlibs = vlib_get_n_threads ();
+  for (i = 0; i < n_vlibs; i++)
+    {
+      vm = vlib_get_main_by_index (i);
+      /* main thread with workers and not polling */
+      if (i == 0 && n_vlibs > 1)
+	{
+	  vlib_node_set_state (vm, session_queue_node.index, mstate);
+	  if (is_en)
+	    {
+	      vlib_node_set_state (vm, session_queue_process_node.index,
+				   state);
+	      n = vlib_get_node (vm, session_queue_process_node.index);
+	      vlib_start_process (vm, n->runtime_index);
+	    }
+	  else
+	    {
+	      vlib_process_signal_event_mt (vm,
+					    session_queue_process_node.index,
+					    SESSION_Q_PROCESS_STOP, 0);
+	    }
+	  if (!sm->poll_main)
+	    continue;
+	}
+      vlib_node_set_state (vm, session_queue_node.index, state);
+    }
+
+  if (sm->use_private_rx_mqs)
+    application_enable_rx_mqs_nodes (is_en);
 }
 
 clib_error_t *
@@ -1812,6 +1816,7 @@ session_main_init (vlib_main_t * vm)
   smm->is_enabled = 0;
   smm->session_enable_asap = 0;
   smm->poll_main = 0;
+  smm->use_private_rx_mqs = 0;
   smm->session_baseva = HIGH_SEGMENT_BASEVA;
 
 #if (HIGH_SEGMENT_BASEVA > (4ULL << 30))
@@ -1931,6 +1936,8 @@ session_config_fn (vlib_main_t * vm, unformat_input_t * input)
 	appns_sapi_enable ();
       else if (unformat (input, "poll-main"))
 	smm->poll_main = 1;
+      else if (unformat (input, "use-private-rx-mqs"))
+	smm->use_private_rx_mqs = 1;
       else
 	return clib_error_return (0, "unknown input `%U'",
 				  format_unformat_error, input);

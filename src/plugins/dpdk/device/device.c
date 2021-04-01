@@ -22,6 +22,7 @@
 #include <dpdk/device/dpdk.h>
 #include <dpdk/device/dpdk_priv.h>
 #include <vppinfra/error.h>
+#include <vlib/unix/unix.h>
 
 #define foreach_dpdk_tx_func_error			\
   _(BAD_RETVAL, "DPDK tx function returned an error")	\
@@ -694,6 +695,41 @@ done:
   return err;
 }
 
+static clib_error_t *
+dpdk_interface_rx_mode_change (vnet_main_t *vnm, u32 hw_if_index, u32 qid,
+			       vnet_hw_if_rx_mode mode)
+{
+  dpdk_main_t *xm = &dpdk_main;
+  vnet_hw_interface_t *hw = vnet_get_hw_interface (vnm, hw_if_index);
+  dpdk_device_t *xd = vec_elt_at_index (xm->devices, hw->dev_instance);
+  clib_file_main_t *fm = &file_main;
+  dpdk_rx_queue_t *rxq;
+  clib_file_t *f;
+  int rv = 0;
+  if (!(xd->flags & DPDK_DEVICE_FLAG_INT_SUPPORTED))
+    return clib_error_return (0, "unsupported op (is the interface up?)", rv);
+  if (mode == VNET_HW_IF_RX_MODE_POLLING &&
+      !(xd->flags & DPDK_DEVICE_FLAG_INT_UNMASKABLE))
+    rv = rte_eth_dev_rx_intr_disable (xd->port_id, qid);
+  else if (mode == VNET_HW_IF_RX_MODE_POLLING)
+    {
+      rxq = vec_elt_at_index (xd->rx_queues, qid);
+      f = pool_elt_at_index (fm->file_pool, rxq->clib_file_index);
+      fm->file_update (f, UNIX_FILE_UPDATE_DELETE);
+    }
+  else if (!(xd->flags & DPDK_DEVICE_FLAG_INT_UNMASKABLE))
+    rv = rte_eth_dev_rx_intr_enable (xd->port_id, qid);
+  else
+    {
+      rxq = vec_elt_at_index (xd->rx_queues, qid);
+      f = pool_elt_at_index (fm->file_pool, rxq->clib_file_index);
+      fm->file_update (f, UNIX_FILE_UPDATE_ADD);
+    }
+  if (rv)
+    return clib_error_return (0, "dpdk_interface_rx_mode_change err %d", rv);
+  return 0;
+}
+
 /* *INDENT-OFF* */
 VNET_DEVICE_CLASS (dpdk_device_class) = {
   .name = "dpdk",
@@ -711,6 +747,7 @@ VNET_DEVICE_CLASS (dpdk_device_class) = {
   .format_flow = format_dpdk_flow,
   .flow_ops_function = dpdk_flow_ops_fn,
   .set_rss_queues_function = dpdk_interface_set_rss_queues,
+  .rx_mode_change_function = dpdk_interface_rx_mode_change,
 };
 /* *INDENT-ON* */
 

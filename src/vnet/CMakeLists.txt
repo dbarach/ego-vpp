@@ -111,16 +111,6 @@ list(APPEND VNET_API_FILES
 )
 
 ##############################################################################
-# Binary API compatibility until vpp 20.12, see the ADL plugin...
-##############################################################################
-
-list(APPEND VNET_SOURCES
-  cop/cop_api.c
-)
-
-list(APPEND VNET_API_FILES cop/cop.api)
-
-##############################################################################
 # Layer 2 protocols go here
 ##############################################################################
 
@@ -1224,7 +1214,10 @@ list(APPEND VNET_HEADERS
   fib/fib_source.h
 )
 
-list(APPEND VNET_API_FILES fib/fib_types.api)
+list(APPEND VNET_API_FILES
+  fib/fib_types.api
+  fib/fib.api
+)
 
 ##############################################################################
 # ADJ
@@ -1234,6 +1227,7 @@ list(APPEND VNET_SOURCES
   adj/adj_nbr.c
   adj/adj_glean.c
   adj/adj_midchain.c
+  adj/adj_midchain_node.c
   adj/adj_midchain_delegate.c
   adj/adj_mcast.c
   adj/adj_l2.c
@@ -1247,7 +1241,7 @@ list(APPEND VNET_SOURCES
 list(APPEND VNET_MULTIARCH_SOURCES
   adj/adj_nsh.c
   adj/adj_l2.c
-  adj/adj_midchain.c
+  adj/adj_midchain_node.c
 )
 
 list(APPEND VNET_HEADERS

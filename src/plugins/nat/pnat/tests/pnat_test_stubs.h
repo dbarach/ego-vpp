@@ -35,7 +35,8 @@ u8 *format_ip4_address(u8 *s, va_list *args) {
     return format(s, "%d.%d.%d.%d", a[0], a[1], a[2], a[3]);
 }
 
-u8 *format_pnat_5tuple(u8 *s, va_list *args) { return 0; }
+u8 *format_pnat_match_tuple(u8 *s, va_list *args) { return 0; }
+u8 *format_pnat_rewrite_tuple(u8 *s, va_list *args) { return 0; }
 
 vl_counter_t pnat_error_counters[10];
 
@@ -53,17 +54,6 @@ int vnet_feature_enable_disable(const char *arc_name, const char *node_name,
     return 0;
 }
 vnet_main_t *vnet_get_main(void) { return 0; }
-
-static struct {
-    vec_header_t h;
-    vlib_main_t *vm;
-} __attribute__((packed)) __bootstrap_vlib_main_vector
-    __attribute__((aligned(CLIB_CACHE_LINE_BYTES))) = {
-        .h.len = 1,
-        .vm = &vlib_global_main,
-};
-
-vlib_main_t **vlib_mains = &__bootstrap_vlib_main_vector.vm;
 
 /* Compute TCP/UDP/ICMP4 checksum in software. */
 u16 ip4_tcp_udp_compute_checksum(vlib_main_t *vm, vlib_buffer_t *p0,
@@ -140,6 +130,28 @@ u8 *format_tcp_header(u8 *s, va_list *args) {
     s = format(s, "\n%Uwindow %d, checksum 0x%04x", format_white_space, indent,
                clib_net_to_host_u16(tcp->window),
                clib_net_to_host_u16(tcp->checksum));
+    return s;
+}
+/* Format UDP header. */
+u8 *format_udp_header(u8 *s, va_list *args) {
+    udp_header_t *udp = va_arg(*args, udp_header_t *);
+    u32 max_header_bytes = va_arg(*args, u32);
+    u32 indent;
+
+    /* Nothing to do. */
+    if (max_header_bytes < sizeof(udp[0]))
+        return format(s, "UDP header truncated");
+
+    indent = format_get_indent(s);
+    indent += 2;
+
+    s = format(s, "UDP: %d -> %d", clib_net_to_host_u16(udp->src_port),
+               clib_net_to_host_u16(udp->dst_port));
+
+    s = format(s, "\n%Ulength %d, checksum 0x%04x", format_white_space, indent,
+               clib_net_to_host_u16(udp->length),
+               clib_net_to_host_u16(udp->checksum));
+
     return s;
 }
 

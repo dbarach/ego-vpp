@@ -303,7 +303,8 @@ vl_api_nat44_ei_ha_set_listener_t_handler (
   int rv;
 
   memcpy (&addr, &mp->ip_address, sizeof (addr));
-  rv = nat_ha_set_listener (&addr, clib_net_to_host_u16 (mp->port),
+  rv = nat_ha_set_listener (vlib_get_main (), &addr,
+			    clib_net_to_host_u16 (mp->port),
 			    clib_net_to_host_u32 (mp->path_mtu));
 
   REPLY_MACRO (VL_API_NAT44_EI_HA_SET_LISTENER_REPLY);
@@ -339,9 +340,9 @@ vl_api_nat44_ei_ha_set_failover_t_handler (
   int rv;
 
   memcpy (&addr, &mp->ip_address, sizeof (addr));
-  rv =
-    nat_ha_set_failover (&addr, clib_net_to_host_u16 (mp->port),
-			 clib_net_to_host_u32 (mp->session_refresh_interval));
+  rv = nat_ha_set_failover (
+    vlib_get_main (), &addr, clib_net_to_host_u16 (mp->port),
+    clib_net_to_host_u32 (mp->session_refresh_interval));
 
   REPLY_MACRO (VL_API_NAT44_EI_HA_SET_FAILOVER_REPLY);
 }
@@ -1066,8 +1067,9 @@ vl_api_nat44_ei_user_session_dump_t_handler (
   ukey.fib_index = fib_table_find (FIB_PROTOCOL_IP4, ntohl (mp->vrf_id));
   key.key = ukey.as_u64;
   if (nm->num_workers > 1)
-    tnm = vec_elt_at_index (nm->per_thread_data,
-			    nm->worker_in2out_cb (&ip, ukey.fib_index, 0));
+    tnm = vec_elt_at_index (
+      nm->per_thread_data,
+      nat44_ei_get_in2out_worker_index (&ip, ukey.fib_index, 0));
   else
     tnm = vec_elt_at_index (nm->per_thread_data, nm->num_workers);
 

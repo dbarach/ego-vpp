@@ -328,8 +328,9 @@ class IpsecTra4(object):
         p = self.params[socket.AF_INET]
         esn_en = p.vpp_tra_sa.esn_en
 
-        seq_cycle_node_name = ('/err/%s/sequence number cycled' %
-                               self.tra4_encrypt_node_name)
+        seq_cycle_node_name = \
+            ('/err/%s/sequence number cycled (packet dropped)' %
+             self.tra4_encrypt_node_name)
         replay_count = self.get_replay_counts(p)
         hash_failed_count = self.get_hash_failed_counts(p)
         seq_cycle_count = self.statistics.get_err_counter(seq_cycle_node_name)
@@ -1217,7 +1218,7 @@ class IpsecTun6Tests(IpsecTun6):
 
 class IpsecTun6HandoffTests(IpsecTun6):
     """ UT test methods for Tunnel v6 with multiple workers """
-    worker_config = "workers 2"
+    vpp_worker_count = 2
 
     def test_tun_handoff_66(self):
         """ ipsec 6o6 tunnel worker hand-off test """
@@ -1251,7 +1252,7 @@ class IpsecTun6HandoffTests(IpsecTun6):
 
 class IpsecTun4HandoffTests(IpsecTun4):
     """ UT test methods for Tunnel v4 with multiple workers """
-    worker_config = "workers 2"
+    vpp_worker_count = 2
 
     def test_tun_handooff_44(self):
         """ ipsec 4o4 tunnel worker hand-off test """

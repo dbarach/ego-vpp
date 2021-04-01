@@ -448,10 +448,11 @@ dpdk_lib_init (dpdk_main_t * dm)
 	  switch (xd->pmd)
 	    {
 	      /* Drivers with valid speed_capa set */
+	    case VNET_DPDK_PMD_I40E:
+	      xd->flags |= DPDK_DEVICE_FLAG_INT_UNMASKABLE;
 	    case VNET_DPDK_PMD_E1000EM:
 	    case VNET_DPDK_PMD_IGB:
 	    case VNET_DPDK_PMD_IXGBE:
-	    case VNET_DPDK_PMD_I40E:
 	    case VNET_DPDK_PMD_ICE:
 	      xd->port_type = port_type_from_speed_capa (&dev_info);
 	      xd->supported_flow_actions = VNET_FLOW_ACTION_MARK |
@@ -470,7 +471,7 @@ dpdk_lib_init (dpdk_main_t * dm)
 		    DPDK_DEVICE_FLAG_INTEL_PHDR_CKSUM;
 		}
 
-
+	      xd->port_conf.intr_conf.rxq = 1;
 	      break;
 	    case VNET_DPDK_PMD_CXGBE:
 	    case VNET_DPDK_PMD_MLX4:
@@ -481,9 +482,10 @@ dpdk_lib_init (dpdk_main_t * dm)
 	      break;
 
 	      /* SR-IOV VFs */
+	    case VNET_DPDK_PMD_I40EVF:
+	      xd->flags |= DPDK_DEVICE_FLAG_INT_UNMASKABLE;
 	    case VNET_DPDK_PMD_IGBVF:
 	    case VNET_DPDK_PMD_IXGBEVF:
-	    case VNET_DPDK_PMD_I40EVF:
 	      xd->port_type = VNET_DPDK_PORT_TYPE_ETH_VF;
 	      if (dm->conf->no_tx_checksum_offload == 0)
 		{
@@ -493,11 +495,14 @@ dpdk_lib_init (dpdk_main_t * dm)
 		    DPDK_DEVICE_FLAG_TX_OFFLOAD |
 		    DPDK_DEVICE_FLAG_INTEL_PHDR_CKSUM;
 		}
+	      /* sDPDK bug in multiqueue... */
+	      /* xd->port_conf.intr_conf.rxq = 1; */
 	      break;
 
 	      /* iAVF */
 	    case VNET_DPDK_PMD_IAVF:
-        xd->port_type = VNET_DPDK_PORT_TYPE_ETH_VF;
+	      xd->flags |= DPDK_DEVICE_FLAG_INT_UNMASKABLE;
+	      xd->port_type = VNET_DPDK_PORT_TYPE_ETH_VF;
 	      xd->supported_flow_actions = VNET_FLOW_ACTION_MARK |
 		VNET_FLOW_ACTION_REDIRECT_TO_NODE |
 		VNET_FLOW_ACTION_REDIRECT_TO_QUEUE |
@@ -512,7 +517,8 @@ dpdk_lib_init (dpdk_main_t * dm)
 		    DPDK_DEVICE_FLAG_TX_OFFLOAD |
 		    DPDK_DEVICE_FLAG_INTEL_PHDR_CKSUM;
 		}
-              break;
+	      xd->port_conf.intr_conf.rxq = 1;
+	      break;
 
 	    case VNET_DPDK_PMD_THUNDERX:
 	      xd->port_type = VNET_DPDK_PORT_TYPE_ETH_VF;
@@ -528,6 +534,7 @@ dpdk_lib_init (dpdk_main_t * dm)
 	    case VNET_DPDK_PMD_ENA:
 	      xd->port_type = VNET_DPDK_PORT_TYPE_ETH_VF;
 	      xd->port_conf.rxmode.offloads &= ~DEV_RX_OFFLOAD_SCATTER;
+	      xd->port_conf.intr_conf.rxq = 1;
 	      break;
 
 	    case VNET_DPDK_PMD_DPAA2:
@@ -766,24 +773,28 @@ dpdk_lib_init (dpdk_main_t * dm)
 
 	  /* Indicate ability to support L3 DMAC filtering and
 	   * initialize interface to L3 non-promisc mode */
-	  hi->flags |= VNET_HW_INTERFACE_FLAG_SUPPORTS_MAC_FILTER;
+	  hi->caps |= VNET_HW_INTERFACE_CAP_SUPPORTS_MAC_FILTER;
 	  ethernet_set_flags (dm->vnet_main, xd->hw_if_index,
 			     ETHERNET_INTERFACE_FLAG_DEFAULT_L3);
 	}
 
       if (dm->conf->no_tx_checksum_offload == 0)
 	if (xd->flags & DPDK_DEVICE_FLAG_TX_OFFLOAD && hi != NULL)
-	  hi->flags |= VNET_HW_INTERFACE_FLAG_SUPPORTS_TX_L4_CKSUM_OFFLOAD;
-
+	  {
+	    hi->caps |= VNET_HW_INTERFACE_CAP_SUPPORTS_TX_IP4_CKSUM |
+			VNET_HW_INTERFACE_CAP_SUPPORTS_TX_TCP_CKSUM |
+			VNET_HW_INTERFACE_CAP_SUPPORTS_TX_UDP_CKSUM;
+	  }
       if (devconf->tso == DPDK_DEVICE_TSO_ON && hi != NULL)
 	{
 	  /*tcp_udp checksum must be enabled*/
 	  if ((dm->conf->enable_tcp_udp_checksum) &&
-	      (hi->flags & VNET_HW_INTERFACE_FLAG_SUPPORTS_TX_L4_CKSUM_OFFLOAD))
+	      (hi->caps & VNET_HW_INTERFACE_CAP_SUPPORTS_TX_CKSUM))
 	    {
-		hi->flags |= VNET_HW_INTERFACE_FLAG_SUPPORTS_GSO;
-		xd->port_conf.txmode.offloads |= DEV_TX_OFFLOAD_TCP_TSO |
-		  DEV_TX_OFFLOAD_UDP_TSO;
+	      hi->caps |= VNET_HW_INTERFACE_CAP_SUPPORTS_TCP_GSO |
+			  VNET_HW_INTERFACE_CAP_SUPPORTS_UDP_GSO;
+	      xd->port_conf.txmode.offloads |=
+		DEV_TX_OFFLOAD_TCP_TSO | DEV_TX_OFFLOAD_UDP_TSO;
 	    }
 	  else
 	    clib_warning ("%s: TCP/UDP checksum offload must be enabled",
@@ -1719,7 +1730,6 @@ dpdk_update_link_state (dpdk_device_t * xd, f64 now)
 
   if (LINK_STATE_ELOGS)
     {
-      vlib_main_t *vm = vlib_get_main ();
       ELOG_TYPE_DECLARE (e) =
       {
       .format =
@@ -1733,7 +1743,7 @@ dpdk_update_link_state (dpdk_device_t * xd, f64 now)
 	u8 old_link_state;
 	u8 new_link_state;
       } *ed;
-      ed = ELOG_DATA (&vm->elog_main, e);
+      ed = ELOG_DATA (&vlib_global_main.elog_main, e);
       ed->sw_if_index = xd->sw_if_index;
       ed->admin_up = (xd->flags & DPDK_DEVICE_FLAG_ADMIN_UP) != 0;
       ed->old_link_state = (u8)
@@ -1772,8 +1782,6 @@ dpdk_update_link_state (dpdk_device_t * xd, f64 now)
     {
       if (LINK_STATE_ELOGS)
 	{
-	  vlib_main_t *vm = vlib_get_main ();
-
 	  ELOG_TYPE_DECLARE (e) =
 	  {
 	  .format =
@@ -1785,7 +1793,7 @@ dpdk_update_link_state (dpdk_device_t * xd, f64 now)
 	    u32 sw_if_index;
 	    u32 flags;
 	  } *ed;
-	  ed = ELOG_DATA (&vm->elog_main, e);
+	  ed = ELOG_DATA (&vlib_global_main.elog_main, e);
 	  ed->sw_if_index = xd->sw_if_index;
 	  ed->flags = hw_flags;
 	}

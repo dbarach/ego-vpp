@@ -632,16 +632,18 @@ session_tx_fifo_chain_tail (vlib_main_t * vm, session_tx_context_t * ctx,
 	      svm_fifo_t *f = ctx->s->tx_fifo;
 	      session_dgram_hdr_t *hdr = &ctx->hdr;
 	      u16 deq_now;
+	      u32 offset;
+
 	      deq_now = clib_min (hdr->data_length - hdr->data_offset,
 				  len_to_deq);
-	      n_bytes_read = svm_fifo_peek (f, hdr->data_offset, deq_now,
-					    data);
+	      offset = hdr->data_offset + SESSION_CONN_HDR_LEN;
+	      n_bytes_read = svm_fifo_peek (f, offset, deq_now, data);
 	      ASSERT (n_bytes_read > 0);
 
 	      hdr->data_offset += n_bytes_read;
 	      if (hdr->data_offset == hdr->data_length)
 		{
-		  u32 offset = hdr->data_length + SESSION_CONN_HDR_LEN;
+		  offset = hdr->data_length + SESSION_CONN_HDR_LEN;
 		  svm_fifo_dequeue_drop (f, offset);
 		  if (ctx->left_to_snd > n_bytes_read)
 		    svm_fifo_peek (ctx->s->tx_fifo, 0, sizeof (ctx->hdr),
@@ -1188,6 +1190,10 @@ session_tx_fifo_dequeue_internal (session_worker_t * wrk,
 	  session_evt_add_head_old (wrk, elt);
     }
 
+  if (sp->max_burst_size &&
+      svm_fifo_needs_deq_ntf (s->tx_fifo, sp->max_burst_size))
+    session_dequeue_notify (s);
+
   return n_packets;
 }
 
@@ -1393,19 +1399,35 @@ session_flush_pending_tx_buffers (session_worker_t * wrk,
   vec_reset_length (wrk->pending_tx_nexts);
 }
 
+int
+session_wrk_handle_mq (session_worker_t *wrk, svm_msg_q_t *mq)
+{
+  svm_msg_q_msg_t _msg, *msg = &_msg;
+  u32 i, n_to_dequeue = 0;
+  session_event_t *evt;
+
+  n_to_dequeue = svm_msg_q_size (mq);
+  for (i = 0; i < n_to_dequeue; i++)
+    {
+      svm_msg_q_sub_raw (mq, msg);
+      evt = svm_msg_q_msg_data (mq, msg);
+      session_evt_add_to_list (wrk, evt);
+      svm_msg_q_free_msg (mq, msg);
+    }
+
+  return n_to_dequeue;
+}
+
 static uword
 session_queue_node_fn (vlib_main_t * vm, vlib_node_runtime_t * node,
 		       vlib_frame_t * frame)
 {
-  session_main_t *smm = vnet_get_session_main ();
-  u32 thread_index = vm->thread_index, n_to_dequeue;
-  session_worker_t *wrk = &smm->wrk[thread_index];
+  u32 thread_index = vm->thread_index, __clib_unused n_evts;
   session_evt_elt_t *elt, *ctrl_he, *new_he, *old_he;
+  session_main_t *smm = vnet_get_session_main ();
+  session_worker_t *wrk = &smm->wrk[thread_index];
   clib_llist_index_t ei, next_ei, old_ti;
-  svm_msg_q_msg_t _msg, *msg = &_msg;
-  int i = 0, n_tx_packets;
-  session_event_t *evt;
-  svm_msg_q_t *mq;
+  int n_tx_packets;
 
   SESSION_EVT (SESSION_EVT_DISPATCH_START, wrk);
 
@@ -1420,25 +1442,11 @@ session_queue_node_fn (vlib_main_t * vm, vlib_node_runtime_t * node,
   SESSION_EVT (SESSION_EVT_DSP_CNTRS, UPDATE_TIME, wrk);
 
   /*
-   *  Dequeue and handle new events
+   *  Dequeue new internal mq events
    */
 
-  /* Try to dequeue what is available. Don't wait for lock.
-   * XXX: we may need priorities here */
-  mq = wrk->vpp_event_queue;
-  n_to_dequeue = svm_msg_q_size (mq);
-  if (n_to_dequeue)
-    {
-      for (i = 0; i < n_to_dequeue; i++)
-	{
-	  svm_msg_q_sub_raw (mq, msg);
-	  evt = svm_msg_q_msg_data (mq, msg);
-	  session_evt_add_to_list (wrk, evt);
-	  svm_msg_q_free_msg (mq, msg);
-	}
-    }
-
-  SESSION_EVT (SESSION_EVT_DSP_CNTRS, MQ_DEQ, wrk, n_to_dequeue, !i);
+  n_evts = session_wrk_handle_mq (wrk, wrk->vpp_event_queue);
+  SESSION_EVT (SESSION_EVT_DSP_CNTRS, MQ_DEQ, wrk, n_evts);
 
   /*
    * Handle control events
@@ -1446,12 +1454,10 @@ session_queue_node_fn (vlib_main_t * vm, vlib_node_runtime_t * node,
 
   ctrl_he = pool_elt_at_index (wrk->event_elts, wrk->ctrl_head);
 
-  /* *INDENT-OFF* */
   clib_llist_foreach_safe (wrk->event_elts, evt_list, ctrl_he, elt, ({
     clib_llist_remove (wrk->event_elts, evt_list, elt);
     session_event_dispatch_ctrl (wrk, elt);
   }));
-  /* *INDENT-ON* */
 
   SESSION_EVT (SESSION_EVT_DSP_CNTRS, CTRL_EVTS, wrk);
 
@@ -1528,7 +1534,7 @@ VLIB_REGISTER_NODE (session_queue_node) =
 static clib_error_t *
 session_queue_exit (vlib_main_t * vm)
 {
-  if (vec_len (vlib_mains) < 2)
+  if (vlib_get_n_threads () < 2)
     return 0;
 
   /*
