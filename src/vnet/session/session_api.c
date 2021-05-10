@@ -324,6 +324,11 @@ mq_send_session_connected_cb (u32 app_wrk_index, u32 api_context,
       m.ct_segment_handle = session_segment_handle (ss);
     }
 
+  /* Setup client session index in advance, in case data arrives
+   * before the app processes message and updates it */
+  s->rx_fifo->shr->client_session_index = api_context;
+  s->tx_fifo->shr->client_session_index = api_context;
+
 snd_msg:
 
   app_mq = app_wrk->event_queue;

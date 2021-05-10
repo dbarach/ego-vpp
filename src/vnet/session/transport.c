@@ -399,6 +399,17 @@ transport_get_listener_endpoint (transport_proto_t tp, u32 conn_index,
     }
 }
 
+int
+transport_connection_attribute (transport_proto_t tp, u32 conn_index,
+				u8 thread_index, u8 is_get,
+				transport_endpt_attr_t *attr)
+{
+  if (!tp_vfts[tp].attribute)
+    return -1;
+
+  return tp_vfts[tp].attribute (conn_index, thread_index, is_get, attr);
+}
+
 #define PORT_MASK ((1 << 16)- 1)
 
 void
@@ -760,6 +771,12 @@ transport_connection_tx_pacer_update_bytes (transport_connection_t * tc,
 					    u32 bytes)
 {
   spacer_update_bucket (&tc->pacer, bytes);
+}
+
+void
+transport_update_pacer_time (u32 thread_index, clib_time_type_t now)
+{
+  session_wrk_update_time (session_main_get_worker (thread_index), now);
 }
 
 void

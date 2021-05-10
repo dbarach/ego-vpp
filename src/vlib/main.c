@@ -934,29 +934,14 @@ vlib_elog_main_loop_event (vlib_main_t * vm,
     }
 }
 
-#if VLIB_BUFFER_TRACE_TRAJECTORY > 0
-void (*vlib_buffer_trace_trajectory_cb) (vlib_buffer_t * b, u32 node_index);
-void (*vlib_buffer_trace_trajectory_init_cb) (vlib_buffer_t * b);
-
-void
-vlib_buffer_trace_trajectory_init (vlib_buffer_t * b)
-{
-  if (PREDICT_TRUE (vlib_buffer_trace_trajectory_init_cb != 0))
-    {
-      (*vlib_buffer_trace_trajectory_init_cb) (b);
-    }
-}
-
-#endif
-
 static inline void
 add_trajectory_trace (vlib_buffer_t * b, u32 node_index)
 {
 #if VLIB_BUFFER_TRACE_TRAJECTORY > 0
-  if (PREDICT_TRUE (vlib_buffer_trace_trajectory_cb != 0))
-    {
-      (*vlib_buffer_trace_trajectory_cb) (b, node_index);
-    }
+  if (PREDICT_FALSE (b->trajectory_nb >= VLIB_BUFFER_TRACE_TRAJECTORY_MAX))
+    return;
+  b->trajectory_trace[b->trajectory_nb] = node_index;
+  b->trajectory_nb++;
 #endif
 }
 
@@ -1596,6 +1581,8 @@ vlib_main_or_worker_loop (vlib_main_t * vm, int is_main)
       if (PREDICT_FALSE (vm->check_frame_queues + frame_queue_check_counter))
 	{
 	  u32 processed = 0;
+	  vlib_frame_queue_dequeue_fn_t *fn =
+	    vlib_buffer_func_main.frame_queue_dequeue_fn;
 
 	  if (vm->check_frame_queues)
 	    {
@@ -1604,7 +1591,7 @@ vlib_main_or_worker_loop (vlib_main_t * vm, int is_main)
 	    }
 
 	  vec_foreach (fqm, tm->frame_queue_mains)
-	    processed += vlib_frame_queue_dequeue (vm, fqm);
+	    processed += (fn) (vm, fqm);
 
 	  /* No handoff queue work found? */
 	  if (processed)

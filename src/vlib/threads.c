@@ -166,33 +166,6 @@ sort_registrations_by_no_clone (void *a0, void *a1)
 	  - ((i32) ((*tr1)->no_data_structure_clone)));
 }
 
-static uword *
-clib_sysfs_list_to_bitmap (char *filename)
-{
-  FILE *fp;
-  uword *r = 0;
-
-  fp = fopen (filename, "r");
-
-  if (fp != NULL)
-    {
-      u8 *buffer = 0;
-      vec_validate (buffer, 256 - 1);
-      if (fgets ((char *) buffer, 256, fp))
-	{
-	  unformat_input_t in;
-	  unformat_init_string (&in, (char *) buffer,
-				strlen ((char *) buffer));
-	  if (unformat (&in, "%U", unformat_bitmap_list, &r) != 1)
-	    clib_warning ("unformat_bitmap_list failed");
-	  unformat_free (&in);
-	}
-      vec_free (buffer);
-      fclose (fp);
-    }
-  return r;
-}
-
 
 /* Called early in the init sequence */
 
@@ -681,6 +654,7 @@ start_workers (vlib_main_t * vm)
   u32 n_vlib_mains = tm->n_vlib_mains;
   u32 worker_thread_index;
   clib_mem_heap_t *main_heap = clib_mem_get_per_cpu_heap ();
+  vlib_stats_register_mem_heap (main_heap);
 
   vec_reset_length (vlib_worker_threads);
 
@@ -1128,6 +1102,7 @@ vlib_worker_thread_node_refork (void)
 
 	  /* keep previous node state */
 	  new_n_clone->state = old_n_clone->state;
+	  new_n_clone->flags = old_n_clone->flags;
 	}
       vec_add1 (nm_clone->nodes, new_n_clone);
       new_n_clone++;
@@ -1159,6 +1134,7 @@ vlib_worker_thread_node_refork (void)
     {
       rt = vlib_node_get_runtime (vm_clone, old_rt[j].node_index);
       rt->state = old_rt[j].state;
+      rt->flags = old_rt[j].flags;
       clib_memcpy_fast (rt->runtime_data, old_rt[j].runtime_data,
 			VLIB_NODE_RUNTIME_DATA_SIZE);
     }
@@ -1189,6 +1165,7 @@ vlib_worker_thread_node_refork (void)
     {
       rt = vlib_node_get_runtime (vm_clone, old_rt[j].node_index);
       rt->state = old_rt[j].state;
+      rt->flags = old_rt[j].flags;
       clib_memcpy_fast (rt->runtime_data, old_rt[j].runtime_data,
 			VLIB_NODE_RUNTIME_DATA_SIZE);
     }
@@ -1216,6 +1193,7 @@ vlib_worker_thread_node_refork (void)
     {
       rt = vlib_node_get_runtime (vm_clone, old_rt[j].node_index);
       rt->state = old_rt[j].state;
+      rt->flags = old_rt[j].flags;
       clib_memcpy_fast (rt->runtime_data, old_rt[j].runtime_data,
 			VLIB_NODE_RUNTIME_DATA_SIZE);
     }
@@ -1376,36 +1354,6 @@ cpu_config (vlib_main_t * vm, unformat_input_t * input)
 }
 
 VLIB_EARLY_CONFIG_FUNCTION (cpu_config, "cpu");
-
-void vnet_main_fixup (vlib_fork_fixup_t which) __attribute__ ((weak));
-void
-vnet_main_fixup (vlib_fork_fixup_t which)
-{
-}
-
-void
-vlib_worker_thread_fork_fixup (vlib_fork_fixup_t which)
-{
-  vlib_global_main_t *vgm = vlib_get_global_main ();
-  vlib_main_t *vm = vlib_get_main ();
-
-  if (vgm->vlib_mains == 0)
-    return;
-
-  ASSERT (vlib_get_thread_index () == 0);
-  vlib_worker_thread_barrier_sync (vm);
-
-  switch (which)
-    {
-    case VLIB_WORKER_THREAD_FORK_FIXUP_NEW_SW_IF_INDEX:
-      vnet_main_fixup (VLIB_WORKER_THREAD_FORK_FIXUP_NEW_SW_IF_INDEX);
-      break;
-
-    default:
-      ASSERT (0);
-    }
-  vlib_worker_thread_barrier_release (vm);
-}
 
   /*
    * Enforce minimum open time to minimize packet loss due to Rx overflow,
@@ -1699,145 +1647,6 @@ vlib_worker_wait_one_loop (void)
 
   vec_free (counts);
   return;
-}
-
-/*
- * Check the frame queue to see if any frames are available.
- * If so, pull the packets off the frames and put them to
- * the handoff node.
- */
-int
-vlib_frame_queue_dequeue (vlib_main_t * vm, vlib_frame_queue_main_t * fqm)
-{
-  u32 thread_id = vm->thread_index;
-  vlib_frame_queue_t *fq = fqm->vlib_frame_queues[thread_id];
-  vlib_frame_queue_elt_t *elt;
-  u32 *from, *to;
-  vlib_frame_t *f;
-  int msg_type;
-  int processed = 0;
-  u32 n_left_to_node;
-  u32 vectors = 0;
-
-  ASSERT (fq);
-  ASSERT (vm == vlib_global_main.vlib_mains[thread_id]);
-
-  if (PREDICT_FALSE (fqm->node_index == ~0))
-    return 0;
-  /*
-   * Gather trace data for frame queues
-   */
-  if (PREDICT_FALSE (fq->trace))
-    {
-      frame_queue_trace_t *fqt;
-      frame_queue_nelt_counter_t *fqh;
-      u32 elix;
-
-      fqt = &fqm->frame_queue_traces[thread_id];
-
-      fqt->nelts = fq->nelts;
-      fqt->head = fq->head;
-      fqt->head_hint = fq->head_hint;
-      fqt->tail = fq->tail;
-      fqt->threshold = fq->vector_threshold;
-      fqt->n_in_use = fqt->tail - fqt->head;
-      if (fqt->n_in_use >= fqt->nelts)
-	{
-	  // if beyond max then use max
-	  fqt->n_in_use = fqt->nelts - 1;
-	}
-
-      /* Record the number of elements in use in the histogram */
-      fqh = &fqm->frame_queue_histogram[thread_id];
-      fqh->count[fqt->n_in_use]++;
-
-      /* Record a snapshot of the elements in use */
-      for (elix = 0; elix < fqt->nelts; elix++)
-	{
-	  elt = fq->elts + ((fq->head + 1 + elix) & (fq->nelts - 1));
-	  if (1 || elt->valid)
-	    {
-	      fqt->n_vectors[elix] = elt->n_vectors;
-	    }
-	}
-      fqt->written = 1;
-    }
-
-  while (1)
-    {
-      vlib_buffer_t *b;
-      if (fq->head == fq->tail)
-	{
-	  fq->head_hint = fq->head;
-	  return processed;
-	}
-
-      elt = fq->elts + ((fq->head + 1) & (fq->nelts - 1));
-
-      if (!elt->valid)
-	{
-	  fq->head_hint = fq->head;
-	  return processed;
-	}
-
-      from = elt->buffer_index;
-      msg_type = elt->msg_type;
-
-      ASSERT (msg_type == VLIB_FRAME_QUEUE_ELT_DISPATCH_FRAME);
-      ASSERT (elt->n_vectors <= VLIB_FRAME_SIZE);
-
-      f = vlib_get_frame_to_node (vm, fqm->node_index);
-
-      /* If the first vector is traced, set the frame trace flag */
-      b = vlib_get_buffer (vm, from[0]);
-      if (b->flags & VLIB_BUFFER_IS_TRACED)
-	f->frame_flags |= VLIB_NODE_FLAG_TRACE;
-
-      to = vlib_frame_vector_args (f);
-
-      n_left_to_node = elt->n_vectors;
-
-      while (n_left_to_node >= 4)
-	{
-	  to[0] = from[0];
-	  to[1] = from[1];
-	  to[2] = from[2];
-	  to[3] = from[3];
-	  to += 4;
-	  from += 4;
-	  n_left_to_node -= 4;
-	}
-
-      while (n_left_to_node > 0)
-	{
-	  to[0] = from[0];
-	  to++;
-	  from++;
-	  n_left_to_node--;
-	}
-
-      vectors += elt->n_vectors;
-      f->n_vectors = elt->n_vectors;
-      vlib_put_frame_to_node (vm, fqm->node_index, f);
-
-      elt->valid = 0;
-      elt->n_vectors = 0;
-      elt->msg_type = 0xfefefefe;
-      CLIB_MEMORY_BARRIER ();
-      fq->head++;
-      processed++;
-
-      /*
-       * Limit the number of packets pushed into the graph
-       */
-      if (vectors >= fq->vector_threshold)
-	{
-	  fq->head_hint = fq->head;
-	  return processed;
-	}
-    }
-  ASSERT (0);
-  return processed;
 }
 
 void

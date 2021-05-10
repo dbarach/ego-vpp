@@ -99,6 +99,8 @@ clib_memcpy_fast (void *restrict dst, const void *restrict src, size_t n)
 
 #undef clib_memcpy_fast_arch
 
+#include <vppinfra/memcpy.h>
+
 /* c-11 string manipulation variants */
 
 #ifndef EOK
@@ -143,7 +145,7 @@ memcpy_s_inline (void *__restrict__ dest, rsize_t dmax,
    * Optimize constant-number-of-bytes calls without asking
    * "too many questions for someone from New Jersey"
    */
-  if (__builtin_constant_p (n))
+  if (COMPILE_TIME_CONST (n))
     {
       clib_memcpy_fast (dest, src, n);
       return EOK;
@@ -676,10 +678,7 @@ clib_count_equal_u8 (u8 * data, uword max_count)
       u64 bmp;
       bmp = u8x32_msb_mask ((u8x32) (u8x32_load_unaligned (data) == splat));
       if (bmp != 0xffffffff)
-	{
-	  count += count_trailing_zeros (~bmp);
-	  return max_count;
-	}
+	return max_count;
 
       data += 32;
       count += 32;

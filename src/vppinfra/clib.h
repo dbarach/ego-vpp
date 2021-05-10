@@ -39,7 +39,10 @@
 #define included_clib_h
 
 #include <stddef.h>
+
+#if __has_include(<vppinfra/config.h>)
 #include <vppinfra/config.h>
+#endif
 
 #ifdef  __x86_64__
 #include <x86intrin.h>
@@ -120,6 +123,7 @@
 /* Hints to compiler about hot/cold code. */
 #define PREDICT_FALSE(x) __builtin_expect((x),0)
 #define PREDICT_TRUE(x) __builtin_expect((x),1)
+#define COMPILE_TIME_CONST(x) __builtin_constant_p (x)
 
 /*
  * Compiler barrier
@@ -158,6 +162,16 @@
 #endif
 
 #if defined (count_leading_zeros)
+always_inline uword
+clear_lowest_set_bit (uword x)
+{
+#ifdef __BMI2__
+  return _blsr_u64 (x);
+#else
+  return x ^ (1ULL << count_trailing_zeros (x));
+#endif
+}
+
 always_inline uword
 min_log2 (uword x)
 {
@@ -358,6 +372,7 @@ void qsort (void *base, uword n, uword size,
 uword
 clib_backtrace (uword * callers, uword max_callers, uword n_frames_to_skip);
 
+#include <vppinfra/byte_order.h>
 #endif /* included_clib_h */
 
 /*

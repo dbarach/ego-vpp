@@ -44,11 +44,9 @@ typedef struct _session_endpoint_cfg
   u32 opaque;
   u32 ns_index;
   u8 original_tp;
-  u8 *hostname;
   u64 parent_handle;
-  u32 ckpair_index;
-  u8 crypto_engine;
   u8 flags;
+  transport_endpt_ext_cfg_t *ext_cfg;
 } session_endpoint_cfg_t;
 
 #define SESSION_IP46_ZERO			\
@@ -76,21 +74,15 @@ typedef struct _session_endpoint_cfg
   .peer = TRANSPORT_ENDPOINT_NULL,		\
   .transport_proto = 0,				\
 }
-#define SESSION_ENDPOINT_CFG_NULL 		\
-{						\
-  .sw_if_index = ENDPOINT_INVALID_INDEX,	\
-  .ip = SESSION_IP46_ZERO,			\
-  .fib_index = ENDPOINT_INVALID_INDEX,		\
-  .is_ip4 = 0,					\
-  .port = 0,					\
-  .peer = TRANSPORT_ENDPOINT_NULL,		\
-  .transport_proto = 0,				\
-  .app_wrk_index = ENDPOINT_INVALID_INDEX,	\
-  .opaque = ENDPOINT_INVALID_INDEX,		\
-  .hostname = 0,				\
-  .parent_handle = SESSION_INVALID_HANDLE,	\
-  .ckpair_index = 0				\
-}
+#define SESSION_ENDPOINT_CFG_NULL                                             \
+  {                                                                           \
+    .sw_if_index = ENDPOINT_INVALID_INDEX, .ip = SESSION_IP46_ZERO,           \
+    .fib_index = ENDPOINT_INVALID_INDEX, .is_ip4 = 0, .port = 0,              \
+    .peer = TRANSPORT_ENDPOINT_NULL, .transport_proto = 0,                    \
+    .app_wrk_index = ENDPOINT_INVALID_INDEX,                                  \
+    .opaque = ENDPOINT_INVALID_INDEX,                                         \
+    .parent_handle = SESSION_INVALID_HANDLE, .ext_cfg = 0,                    \
+  }
 
 #define session_endpoint_to_transport(_sep) ((transport_endpoint_t *)_sep)
 #define session_endpoint_to_transport_cfg(_sep)		\
@@ -360,33 +352,36 @@ typedef enum
   SESSION_CTRL_EVT_MIGRATED,
   SESSION_CTRL_EVT_CLEANUP,
   SESSION_CTRL_EVT_APP_WRK_RPC,
+  SESSION_CTRL_EVT_TRANSPORT_ATTR,
+  SESSION_CTRL_EVT_TRANSPORT_ATTR_REPLY,
 } session_evt_type_t;
 
-#define foreach_session_ctrl_evt				\
-  _(LISTEN, listen)						\
-  _(LISTEN_URI, listen_uri)					\
-  _(BOUND, bound)						\
-  _(UNLISTEN, unlisten)						\
-  _(UNLISTEN_REPLY, unlisten_reply)				\
-  _(ACCEPTED, accepted)						\
-  _(ACCEPTED_REPLY, accepted_reply)				\
-  _(CONNECT, connect)						\
-  _(CONNECT_URI, connect_uri)					\
-  _(CONNECTED, connected)					\
-  _(DISCONNECT, disconnect)					\
-  _(DISCONNECTED, disconnected)					\
-  _(DISCONNECTED_REPLY, disconnected_reply)			\
-  _(RESET_REPLY, reset_reply)					\
-  _(REQ_WORKER_UPDATE, req_worker_update)			\
-  _(WORKER_UPDATE, worker_update)				\
-  _(WORKER_UPDATE_REPLY, worker_update_reply)			\
-  _(APP_DETACH, app_detach)					\
-  _(APP_ADD_SEGMENT, app_add_segment)				\
-  _(APP_DEL_SEGMENT, app_del_segment)				\
-  _(MIGRATED, migrated)						\
-  _(CLEANUP, cleanup)						\
-  _(APP_WRK_RPC, app_wrk_rpc)					\
-
+#define foreach_session_ctrl_evt                                              \
+  _ (LISTEN, listen)                                                          \
+  _ (LISTEN_URI, listen_uri)                                                  \
+  _ (BOUND, bound)                                                            \
+  _ (UNLISTEN, unlisten)                                                      \
+  _ (UNLISTEN_REPLY, unlisten_reply)                                          \
+  _ (ACCEPTED, accepted)                                                      \
+  _ (ACCEPTED_REPLY, accepted_reply)                                          \
+  _ (CONNECT, connect)                                                        \
+  _ (CONNECT_URI, connect_uri)                                                \
+  _ (CONNECTED, connected)                                                    \
+  _ (DISCONNECT, disconnect)                                                  \
+  _ (DISCONNECTED, disconnected)                                              \
+  _ (DISCONNECTED_REPLY, disconnected_reply)                                  \
+  _ (RESET_REPLY, reset_reply)                                                \
+  _ (REQ_WORKER_UPDATE, req_worker_update)                                    \
+  _ (WORKER_UPDATE, worker_update)                                            \
+  _ (WORKER_UPDATE_REPLY, worker_update_reply)                                \
+  _ (APP_DETACH, app_detach)                                                  \
+  _ (APP_ADD_SEGMENT, app_add_segment)                                        \
+  _ (APP_DEL_SEGMENT, app_del_segment)                                        \
+  _ (MIGRATED, migrated)                                                      \
+  _ (CLEANUP, cleanup)                                                        \
+  _ (APP_WRK_RPC, app_wrk_rpc)                                                \
+  _ (TRANSPORT_ATTR, transport_attr)                                          \
+  _ (TRANSPORT_ATTR_REPLY, transport_attr_reply)                              \
 /* Deprecated and will be removed. Use types above */
 #define FIFO_EVENT_APP_RX SESSION_IO_EVT_RX
 #define FIFO_EVENT_APP_TX SESSION_IO_EVT_TX
@@ -480,7 +475,10 @@ STATIC_ASSERT (sizeof (session_dgram_hdr_t) == (SESSION_CONN_ID_LEN + 8),
   _ (BAPI_NO_REG, "app bapi registration not found")                          \
   _ (MQ_MSG_ALLOC, "failed to alloc mq msg")                                  \
   _ (TLS_HANDSHAKE, "failed tls handshake")                                   \
-  _ (EVENTFD_ALLOC, "failed to alloc eventfd")
+  _ (EVENTFD_ALLOC, "failed to alloc eventfd")                                \
+  _ (NOEXTCFG, "no extended transport config")                                \
+  _ (NOCRYPTOENG, "no crypto engine")                                         \
+  _ (NOCRYPTOCKP, "cert key pair not found ")
 
 typedef enum session_error_p_
 {

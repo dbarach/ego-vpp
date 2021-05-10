@@ -149,7 +149,7 @@ typedef volatile struct
 
 STATIC_ASSERT_SIZEOF (avf_rx_desc_t, 32);
 
-typedef volatile struct
+typedef struct
 {
   union
   {
@@ -182,12 +182,15 @@ typedef struct
   volatile u32 *qtx_tail;
   u16 next;
   u16 size;
-  u32 ctx_desc_placeholder_bi;
+  u32 *ph_bufs;
   clib_spinlock_t lock;
   avf_tx_desc_t *descs;
   u32 *bufs;
   u16 n_enqueued;
   u16 *rs_slots;
+
+  avf_tx_desc_t *tmp_descs;
+  u32 *tmp_bufs;
 } avf_txq_t;
 
 typedef struct
@@ -349,6 +352,9 @@ format_function_t format_avf_device;
 format_function_t format_avf_device_name;
 format_function_t format_avf_input_trace;
 format_function_t format_avf_vf_cap_flags;
+format_function_t format_avf_vlan_supported_caps;
+format_function_t format_avf_vlan_caps;
+format_function_t format_avf_vlan_support;
 vnet_flow_dev_ops_function_t avf_flow_ops_fn;
 
 static_always_inline avf_device_t *

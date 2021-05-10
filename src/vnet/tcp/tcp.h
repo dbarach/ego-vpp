@@ -91,14 +91,14 @@ typedef struct tcp_worker_ctx_
   /** convenience pointer to this thread's vlib main */
   vlib_main_t *vm;
 
+  /** Time used for high precision (us) measurements in seconds */
+  f64 time_us;
+
   /** Time measured in @ref TCP_TSTAMP_TICK used for time stamps */
-  u32 time_now;
+  u32 time_tstamp;
 
   /* Max timers to be handled per dispatch loop */
   u32 max_timers_per_loop;
-
-  /** Session layer edge indices to tcp output */
-  u32 tco_next_node[2];
 
   /* Fifo of pending timer expirations */
   u32 *pending_timers;
@@ -113,6 +113,9 @@ typedef struct tcp_worker_ctx_
 
   /* fifo of pending free requests */
   tcp_cleanup_req_t *pending_cleanups;
+
+  /** Session layer edge indices to tcp output */
+  u32 tco_next_node[2];
 
   /** worker timer wheel */
   tcp_timer_wheel_t timer_wheel;
@@ -285,15 +288,6 @@ tcp_get_worker (u32 thread_index)
   return &tcp_main.wrk_ctx[thread_index];
 }
 
-#if (VLIB_BUFFER_TRACE_TRAJECTORY)
-#define tcp_trajectory_add_start(b, start)			\
-{								\
-    (*vlib_buffer_trace_trajectory_cb) (b, start);		\
-}
-#else
-#define tcp_trajectory_add_start(b, start)
-#endif
-
 tcp_connection_t *tcp_connection_alloc (u8 thread_index);
 tcp_connection_t *tcp_connection_alloc_w_base (u8 thread_index,
 					       tcp_connection_t * base);
@@ -333,6 +327,7 @@ void tcp_connection_tx_pacer_update (tcp_connection_t * tc);
 void tcp_connection_tx_pacer_reset (tcp_connection_t * tc, u32 window,
 				    u32 start_bucket);
 void tcp_program_cleanup (tcp_worker_ctx_t * wrk, tcp_connection_t * tc);
+void tcp_check_gso (tcp_connection_t *tc);
 
 void tcp_punt_unknown (vlib_main_t * vm, u8 is_ip4, u8 is_add);
 int tcp_configure_v4_source_address_range (vlib_main_t * vm,

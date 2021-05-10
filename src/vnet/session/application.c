@@ -101,6 +101,8 @@ app_listener_lookup (application_t * app, session_endpoint_cfg_t * sep_ext)
   session_endpoint_t *sep;
   session_handle_t handle;
   session_t *ls;
+  void *iface_ip;
+  ip46_address_t original_ip;
 
   sep = (session_endpoint_t *) sep_ext;
   if (application_has_local_scope (app) && session_endpoint_is_local (sep))
@@ -121,6 +123,30 @@ app_listener_lookup (application_t * app, session_endpoint_cfg_t * sep_ext)
     {
       ls = listen_session_get_from_handle (handle);
       return app_listener_get_w_session ((session_t *) ls);
+    }
+
+  /*
+   * When binds to "inaddr_any", we add zero address in the local lookup table
+   * and interface address in the global lookup table. If local scope disable,
+   * the latter is the only clue to find the listener.
+   */
+  if (!application_has_local_scope (app) &&
+      ip_is_zero (&sep_ext->ip, sep_ext->is_ip4) &&
+      sep_ext->sw_if_index != ENDPOINT_INVALID_INDEX)
+    {
+      if ((iface_ip = ip_interface_get_first_ip (sep_ext->sw_if_index,
+						 sep_ext->is_ip4)))
+	{
+	  ip_copy (&original_ip, &sep_ext->ip, sep_ext->is_ip4);
+	  ip_set (&sep_ext->ip, iface_ip, sep_ext->is_ip4);
+	  handle = session_lookup_endpoint_listener (table_index, sep, 1);
+	  ip_copy (&sep_ext->ip, &original_ip, sep_ext->is_ip4);
+	  if (handle != SESSION_INVALID_HANDLE)
+	    {
+	      ls = listen_session_get_from_handle (handle);
+	      return app_listener_get_w_session ((session_t *) ls);
+	    }
+	}
     }
 
   return 0;
@@ -497,6 +523,9 @@ VLIB_NODE_FN (appsl_rx_mqs_input_node)
   if (aw->pending_rx_mqs)
     vlib_node_set_interrupt_pending (vm, appsl_rx_mqs_input_node.index);
 
+  if (n_msgs && wrk->state == SESSION_WRK_INTERRUPT)
+    vlib_node_set_interrupt_pending (vm, session_queue_node.index);
+
   return n_msgs;
 }
 
@@ -574,11 +603,10 @@ app_rx_mqs_epoll_del (application_t *app, app_rx_mq_elt_t *mqe)
 
   aw = &am->wrk[thread_index];
 
+  session_wrk_handle_mq (session_main_get_worker (thread_index), mqe->mq);
+
   if (mqe->flags & APP_RX_MQ_F_PENDING)
-    {
-      session_wrk_handle_mq (session_main_get_worker (thread_index), mqe->mq);
-      appsl_pending_rx_mqs_del (aw, mqe);
-    }
+    appsl_pending_rx_mqs_del (aw, mqe);
 
   clib_file_del_by_index (&file_main, mqe->file_index);
 }
@@ -613,7 +641,7 @@ app_rx_mqs_alloc (application_t *app)
   cfg->q_nitems = evt_q_length;
   cfg->ring_cfgs = rc;
 
-  eqs->ssvm.ssvm_size = svm_msg_q_size_to_alloc (cfg) * n_mqs + (16 << 10);
+  eqs->ssvm.ssvm_size = svm_msg_q_size_to_alloc (cfg) * n_mqs + (1 << 20);
   eqs->ssvm.name = format (0, "%s-rx-mqs-seg%c", app->name, 0);
 
   if (ssvm_server_init (&eqs->ssvm, SSVM_SEGMENT_MEMFD))
@@ -980,7 +1008,7 @@ application_alloc_worker_and_init (application_t * app, app_worker_t ** wrk)
   /*
    * Setup app worker
    */
-  app_wrk->first_segment_manager = segment_manager_index (sm);
+  app_wrk->connects_seg_manager = segment_manager_index (sm);
   app_wrk->listeners_table = hash_create (0, sizeof (u64));
   app_wrk->event_queue = segment_manager_event_queue (sm);
   app_wrk->app_is_builtin = application_is_builtin (app);
@@ -1013,7 +1041,7 @@ vnet_app_worker_add_del (vnet_app_worker_add_del_args_t * a)
       app_wrk->api_client_index = a->api_client_index;
       application_api_table_add (app->app_index, a->api_client_index);
 
-      sm = segment_manager_get (app_wrk->first_segment_manager);
+      sm = segment_manager_get (app_wrk->connects_seg_manager);
       fs = segment_manager_get_segment_w_lock (sm, 0);
       a->segment = &fs->ssvm;
       a->segment_handle = segment_manager_segment_handle (sm, fs);
@@ -1129,7 +1157,7 @@ vnet_application_attach (vnet_app_attach_args_t * a)
 
   a->app_evt_q = app_wrk->event_queue;
   app_wrk->api_client_index = a->api_client_index;
-  sm = segment_manager_get (app_wrk->first_segment_manager);
+  sm = segment_manager_get (app_wrk->connects_seg_manager);
   fs = segment_manager_get_segment_w_lock (sm, 0);
 
   if (application_is_proxy (app))
@@ -1137,7 +1165,7 @@ vnet_application_attach (vnet_app_attach_args_t * a)
       application_setup_proxy (app);
       /* The segment manager pool is reallocated because a new listener
        * is added. Re-grab segment manager to avoid dangling reference */
-      sm = segment_manager_get (app_wrk->first_segment_manager);
+      sm = segment_manager_get (app_wrk->connects_seg_manager);
     }
 
   ASSERT (vec_len (fs->ssvm.name) <= 128);

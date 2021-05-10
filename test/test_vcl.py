@@ -87,7 +87,7 @@ class VCLTestCase(VppTestCase):
         self.vapi.session_enable_disable(is_enable=0)
 
     def cut_thru_test(self, server_app, server_args, client_app, client_args):
-        self.env = {'VCL_VPP_API_SOCKET': self.api_sock,
+        self.env = {'VCL_VPP_API_SOCKET': self.get_api_sock_path(),
                     'VCL_APP_SCOPE_LOCAL': "true"}
         worker_server = VCLAppWorker(self.build_dir, server_app, server_args,
                                      self.logger, self.env)
@@ -192,7 +192,7 @@ class VCLTestCase(VppTestCase):
     @unittest.skipUnless(_have_iperf3, "'%s' not found, Skipping.")
     def thru_host_stack_test(self, server_app, server_args,
                              client_app, client_args):
-        self.env = {'VCL_VPP_API_SOCKET': self.api_sock,
+        self.env = {'VCL_VPP_API_SOCKET': self.get_api_sock_path(),
                     'VCL_APP_SCOPE_GLOBAL': "true",
                     'VCL_APP_NAMESPACE_ID': "1",
                     'VCL_APP_NAMESPACE_SECRET': "1234"}
@@ -262,8 +262,8 @@ class LDPCutThruTestCase(VCLTestCase):
         self.client_echo_test_args = ["-E", self.echo_phrase, "-X",
                                       self.server_addr, self.server_port]
         self.client_iperf3_timeout = 20
-        self.client_iperf3_args = ["-4d", "-t 2", "-c", self.server_addr]
-        self.server_iperf3_args = ["-4d", "-s"]
+        self.client_iperf3_args = ["-4", "-t 2", "-c", self.server_addr]
+        self.server_iperf3_args = ["-4", "-s"]
         self.client_uni_dir_nsock_timeout = 20
         self.client_uni_dir_nsock_test_args = ["-N", "1000", "-U", "-X",
                                                "-I", "2",
@@ -450,6 +450,46 @@ class VCLThruHostStackTLS(VCLTestCase):
         self.logger.debug(self.vapi.cli("show app mq"))
 
 
+class VCLThruHostStackDTLS(VCLTestCase):
+    """ VCL Thru Host Stack DTLS """
+
+    @classmethod
+    def setUpClass(cls):
+        super(VCLThruHostStackDTLS, cls).setUpClass()
+
+    @classmethod
+    def tearDownClass(cls):
+        super(VCLThruHostStackDTLS, cls).tearDownClass()
+
+    def setUp(self):
+        super(VCLThruHostStackDTLS, self).setUp()
+
+        self.thru_host_stack_setup()
+        self.client_uni_dir_dtls_timeout = 20
+        self.server_dtls_args = ["-p dtls", self.server_port]
+        self.client_uni_dir_dtls_test_args = ["-N", "1000", "-U", "-X",
+                                              "-p dtls", "-T 1400",
+                                              self.loop0.local_ip4,
+                                              self.server_port]
+
+    def test_vcl_thru_host_stack_dtls_uni_dir(self):
+        """ run VCL thru host stack uni-directional DTLS test """
+
+        self.timeout = self.client_uni_dir_dtls_timeout
+        self.thru_host_stack_test("vcl_test_server", self.server_dtls_args,
+                                  "vcl_test_client",
+                                  self.client_uni_dir_dtls_test_args)
+
+    def tearDown(self):
+        self.thru_host_stack_tear_down()
+        super(VCLThruHostStackDTLS, self).tearDown()
+
+    def show_commands_at_teardown(self):
+        self.logger.debug(self.vapi.cli("show app server"))
+        self.logger.debug(self.vapi.cli("show session verbose 2"))
+        self.logger.debug(self.vapi.cli("show app mq"))
+
+
 class VCLThruHostStackBidirNsock(VCLTestCase):
     """ VCL Thru Host Stack Bidir Nsock """
 
@@ -629,8 +669,8 @@ class LDPThruHostStackIperf(VCLTestCase):
 
         self.thru_host_stack_setup()
         self.client_iperf3_timeout = 20
-        self.client_iperf3_args = ["-4d", "-t 2", "-c", self.loop0.local_ip4]
-        self.server_iperf3_args = ["-4d", "-s"]
+        self.client_iperf3_args = ["-4", "-t 2", "-c", self.loop0.local_ip4]
+        self.server_iperf3_args = ["-4", "-s"]
 
     def tearDown(self):
         self.thru_host_stack_tear_down()
@@ -665,9 +705,9 @@ class LDPThruHostStackIperfUdp(VCLTestCase):
 
         self.thru_host_stack_setup()
         self.client_iperf3_timeout = 20
-        self.client_iperf3_args = ["-4d", "-t 2", "-u", "-l 1400",
+        self.client_iperf3_args = ["-4", "-t 2", "-u", "-l 1400",
                                    "-c", self.loop0.local_ip4]
-        self.server_iperf3_args = ["-4d", "-s"]
+        self.server_iperf3_args = ["-4", "-s"]
 
     def tearDown(self):
         self.thru_host_stack_tear_down()
@@ -711,9 +751,9 @@ class LDPIpv6CutThruTestCase(VCLTestCase):
         self.client_ipv6_echo_test_args = ["-6", "-E", self.echo_phrase, "-X",
                                            self.server_ipv6_addr,
                                            self.server_port]
-        self.client_ipv6_iperf3_args = ["-6d", "-t 2", "-c",
+        self.client_ipv6_iperf3_args = ["-6", "-t 2", "-c",
                                         self.server_ipv6_addr]
-        self.server_ipv6_iperf3_args = ["-6d", "-s"]
+        self.server_ipv6_iperf3_args = ["-6", "-s"]
         self.client_ipv6_uni_dir_nsock_test_args = ["-N", "1000", "-U", "-X",
                                                     "-6",
                                                     "-I", "2",

@@ -42,6 +42,8 @@ proxy_cb_fn (void *data, u32 data_len)
   a.app_index = pa->app_index;
   clib_memcpy (&a.sep_ext, &pa->sep, sizeof (pa->sep));
   vnet_connect (&a);
+  if (a.sep_ext.ext_cfg)
+    clib_mem_free (a.sep_ext.ext_cfg);
 }
 
 static void
@@ -50,6 +52,8 @@ proxy_call_main_thread (vnet_connect_args_t * a)
   if (vlib_get_thread_index () == 0)
     {
       vnet_connect (a);
+      if (a->sep_ext.ext_cfg)
+	clib_mem_free (a->sep_ext.ext_cfg);
     }
   else
     {
@@ -278,8 +282,13 @@ proxy_connected_callback (u32 app_index, u32 api_context,
 static int
 proxy_add_segment_callback (u32 client_index, u64 segment_handle)
 {
-  clib_warning ("called...");
-  return -1;
+  return 0;
+}
+
+static int
+proxy_transport_needs_crypto (transport_proto_t proto)
+{
+  return proto == TRANSPORT_PROTO_TLS;
 }
 
 static int
@@ -353,9 +362,16 @@ proxy_rx_callback (session_t * s)
       clib_spinlock_unlock_if_init (&pm->sessions_lock);
 
       clib_memcpy (&a->sep_ext, &pm->client_sep, sizeof (pm->client_sep));
-      a->sep_ext.ckpair_index = pm->ckpair_index;
       a->api_context = proxy_index;
       a->app_index = pm->active_open_app_index;
+
+      if (proxy_transport_needs_crypto (a->sep.transport_proto))
+	{
+	  session_endpoint_alloc_ext_cfg (&a->sep_ext,
+					  TRANSPORT_ENDPT_EXT_CFG_CRYPTO);
+	  a->sep_ext.ext_cfg->crypto.ckpair_index = pm->ckpair_index;
+	}
+
       proxy_call_main_thread (a);
     }
 
@@ -697,13 +713,24 @@ proxy_server_listen ()
 {
   proxy_main_t *pm = &proxy_main;
   vnet_listen_args_t _a, *a = &_a;
+  int rv;
+
   clib_memset (a, 0, sizeof (*a));
 
   a->app_index = pm->server_app_index;
   clib_memcpy (&a->sep_ext, &pm->server_sep, sizeof (pm->server_sep));
-  a->sep_ext.ckpair_index = pm->ckpair_index;
+  if (proxy_transport_needs_crypto (a->sep.transport_proto))
+    {
+      session_endpoint_alloc_ext_cfg (&a->sep_ext,
+				      TRANSPORT_ENDPT_EXT_CFG_CRYPTO);
+      a->sep_ext.ext_cfg->crypto.ckpair_index = pm->ckpair_index;
+    }
 
-  return vnet_listen (a);
+  rv = vnet_listen (a);
+  if (a->sep_ext.ext_cfg)
+    clib_mem_free (a->sep_ext.ext_cfg);
+
+  return rv;
 }
 
 static void
@@ -793,7 +820,8 @@ proxy_server_create_command_fn (vlib_main_t * vm, unformat_input_t * input,
   if (vlib_num_workers ())
     clib_spinlock_init (&pm->sessions_lock);
 
-  unformat_user (input, unformat_line_input, line_input);
+  if (!unformat_user (input, unformat_line_input, line_input))
+    return 0;
 
   while (unformat_check_input (line_input) != UNFORMAT_END_OF_INPUT)
     {
@@ -857,7 +885,7 @@ proxy_server_create_command_fn (vlib_main_t * vm, unformat_input_t * input,
     }
   if (parse_uri ((char *) client_uri, &pm->client_sep))
     {
-      error = clib_error_return (0, "Invalid client uri %v", server_uri);
+      error = clib_error_return (0, "Invalid client uri %v", client_uri);
       goto done;
     }
 

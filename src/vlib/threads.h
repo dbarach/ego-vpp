@@ -179,9 +179,6 @@ int vlib_frame_queue_enqueue (vlib_main_t * vm, u32 node_runtime_index,
 			      u32 frame_queue_index, vlib_frame_t * frame,
 			      vlib_frame_queue_msg_type_t type);
 
-int
-vlib_frame_queue_dequeue (vlib_main_t * vm, vlib_frame_queue_main_t * fqm);
-
 void vlib_worker_thread_node_runtime_update (void);
 
 void vlib_create_worker_threads (vlib_main_t * vm, int n,
@@ -229,24 +226,24 @@ vlib_smp_unsafe_warning (void)
     }
 }
 
-typedef enum
+always_inline int
+__foreach_vlib_main_helper (vlib_main_t *ii, vlib_main_t **p)
 {
-  VLIB_WORKER_THREAD_FORK_FIXUP_ILLEGAL = 0,
-  VLIB_WORKER_THREAD_FORK_FIXUP_NEW_SW_IF_INDEX,
-} vlib_fork_fixup_t;
+  vlib_main_t *vm;
+  u32 index = ii - (vlib_main_t *) 0;
 
-void vlib_worker_thread_fork_fixup (vlib_fork_fixup_t which);
+  if (index >= vec_len (vlib_global_main.vlib_mains))
+    return 0;
+
+  *p = vm = vlib_global_main.vlib_mains[index];
+  ASSERT (index == 0 || vm->parked_at_barrier == 1);
+  return 1;
+}
 
 #define foreach_vlib_main()                                                   \
-  for (vlib_main_t *ii = 0, *this_vlib_main = vlib_global_main.vlib_mains[0]; \
-       (ii - (vlib_main_t *) 0) < vec_len (vlib_global_main.vlib_mains);      \
-       ii++, this_vlib_main =                                                 \
-	       vlib_global_main.vlib_mains[ii - (vlib_main_t *) 0])           \
-    if (CLIB_ASSERT_ENABLE &&                                                 \
-	!(ii == 0 ||                                                          \
-	  (this_vlib_main && this_vlib_main->parked_at_barrier == 1)))        \
-      ASSERT (0);                                                             \
-    else if (this_vlib_main)
+  for (vlib_main_t *ii = 0, *this_vlib_main;                                  \
+       __foreach_vlib_main_helper (ii, &this_vlib_main); ii++)                \
+    if (this_vlib_main)
 
 #define foreach_sched_policy \
   _(SCHED_OTHER, OTHER, "other") \

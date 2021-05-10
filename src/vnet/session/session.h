@@ -69,6 +69,18 @@ typedef struct session_ctrl_evt_data_
   u8 data[SESSION_CTRL_MSG_MAX_SIZE];
 } session_evt_ctrl_data_t;
 
+typedef enum session_wrk_state_
+{
+  SESSION_WRK_POLLING,
+  SESSION_WRK_INTERRUPT,
+  SESSION_WRK_IDLE,
+} __clib_packed session_wrk_state_t;
+
+typedef enum session_wrk_flags_
+{
+  SESSION_WRK_F_ADAPTIVE = 1 << 0,
+} __clib_packed session_wrk_flag_t;
+
 typedef struct session_worker_
 {
   CLIB_CACHE_LINE_ALIGN_MARK (cacheline0);
@@ -90,6 +102,15 @@ typedef struct session_worker_
 
   /** Per-proto vector of sessions to enqueue */
   u32 **session_to_enqueue;
+
+  /** Timerfd used to periodically signal wrk session queue node */
+  int timerfd;
+
+  /** Worker flags */
+  session_wrk_flag_t flags;
+
+  /** Worker state */
+  session_wrk_state_t state;
 
   /** Context for session tx */
   session_tx_context_t ctx;
@@ -120,6 +141,9 @@ typedef struct session_worker_
 
   /** Vector of nexts for the pending tx buffers */
   u16 *pending_tx_nexts;
+
+  /** Clib file for timerfd. Used only if adaptive mode is on */
+  uword timerfd_file;
 
 #if SESSION_DEBUG
   /** last event poll time by thread */
@@ -176,6 +200,9 @@ typedef struct session_main_
 
   /** Allocate private rx mqs for external apps */
   u8 use_private_rx_mqs;
+
+  /** Do not enable session queue node adaptive mode */
+  u8 no_adaptive;
 
   /** vpp fifo event queue configured length */
   u32 configured_event_queue_length;
@@ -450,6 +477,8 @@ void sesssion_reschedule_tx (transport_connection_t * tc);
 transport_connection_t *session_get_transport (session_t * s);
 void session_get_endpoint (session_t * s, transport_endpoint_t * tep,
 			   u8 is_lcl);
+int session_transport_attribute (session_t *s, u8 is_get,
+				 transport_endpt_attr_t *attr);
 
 u8 *format_session (u8 * s, va_list * args);
 uword unformat_session (unformat_input_t * input, va_list * args);
@@ -543,6 +572,13 @@ transport_rx_fifo_has_ooo_data (transport_connection_t * tc)
 {
   session_t *s = session_get (tc->c_index, tc->thread_index);
   return svm_fifo_has_ooo_data (s->rx_fifo);
+}
+
+always_inline void
+transport_rx_fifo_req_deq_ntf (transport_connection_t *tc)
+{
+  session_t *s = session_get (tc->s_index, tc->thread_index);
+  svm_fifo_add_want_deq_ntf (s->rx_fifo, SVM_FIFO_WANT_DEQ_NOTIF);
 }
 
 always_inline clib_time_type_t
@@ -682,8 +718,18 @@ session_add_pending_tx_buffer (u32 thread_index, u32 bi, u32 next_node)
   session_worker_t *wrk = session_main_get_worker (thread_index);
   vec_add1 (wrk->pending_tx_buffers, bi);
   vec_add1 (wrk->pending_tx_nexts, next_node);
+  if (PREDICT_FALSE (wrk->state == SESSION_WRK_INTERRUPT))
+    vlib_node_set_interrupt_pending (wrk->vm, session_queue_node.index);
 }
 
+always_inline void
+session_wrk_update_time (session_worker_t *wrk, f64 now)
+{
+  wrk->last_vlib_time = now;
+  wrk->last_vlib_us_time = wrk->last_vlib_time * CLIB_US_TIME_FREQ;
+}
+
+void session_wrk_enable_adaptive_mode (session_worker_t *wrk);
 fifo_segment_t *session_main_get_evt_q_segment (void);
 void session_node_enable_disable (u8 is_en);
 clib_error_t *vnet_session_enable_disable (vlib_main_t * vm, u8 is_en);

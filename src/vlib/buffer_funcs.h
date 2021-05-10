@@ -51,6 +51,31 @@
     vlib buffer access methods.
 */
 
+typedef void (vlib_buffer_enqueue_to_next_fn_t) (vlib_main_t *vm,
+						 vlib_node_runtime_t *node,
+						 u32 *buffers, u16 *nexts,
+						 uword count);
+typedef void (vlib_buffer_enqueue_to_single_next_fn_t) (
+  vlib_main_t *vm, vlib_node_runtime_t *node, u32 *ers, u16 next_index,
+  u32 count);
+
+typedef u32 (vlib_buffer_enqueue_to_thread_fn_t) (
+  vlib_main_t *vm, u32 frame_queue_index, u32 *buffer_indices,
+  u16 *thread_indices, u32 n_packets, int drop_on_congestion);
+
+typedef u32 (vlib_frame_queue_dequeue_fn_t) (vlib_main_t *vm,
+					     vlib_frame_queue_main_t *fqm);
+
+typedef struct
+{
+  vlib_buffer_enqueue_to_next_fn_t *buffer_enqueue_to_next_fn;
+  vlib_buffer_enqueue_to_single_next_fn_t *buffer_enqueue_to_single_next_fn;
+  vlib_buffer_enqueue_to_thread_fn_t *buffer_enqueue_to_thread_fn;
+  vlib_frame_queue_dequeue_fn_t *frame_queue_dequeue_fn;
+} vlib_buffer_func_main_t;
+
+extern vlib_buffer_func_main_t vlib_buffer_func_main;
+
 always_inline void
 vlib_buffer_validate (vlib_main_t * vm, vlib_buffer_t * b)
 {
@@ -101,43 +126,7 @@ vlib_buffer_get_default_data_size (vlib_main_t * vm)
 static_always_inline void
 vlib_buffer_copy_indices (u32 * dst, u32 * src, u32 n_indices)
 {
-#if defined(CLIB_HAVE_VEC512)
-  while (n_indices >= 16)
-    {
-      u32x16_store_unaligned (u32x16_load_unaligned (src), dst);
-      dst += 16;
-      src += 16;
-      n_indices -= 16;
-    }
-#endif
-
-#if defined(CLIB_HAVE_VEC256)
-  while (n_indices >= 8)
-    {
-      u32x8_store_unaligned (u32x8_load_unaligned (src), dst);
-      dst += 8;
-      src += 8;
-      n_indices -= 8;
-    }
-#endif
-
-#if defined(CLIB_HAVE_VEC128)
-  while (n_indices >= 4)
-    {
-      u32x4_store_unaligned (u32x4_load_unaligned (src), dst);
-      dst += 4;
-      src += 4;
-      n_indices -= 4;
-    }
-#endif
-
-  while (n_indices)
-    {
-      dst[0] = src[0];
-      dst += 1;
-      src += 1;
-      n_indices -= 1;
-    }
+  clib_memcpy_u32 (dst, src, n_indices);
 }
 
 always_inline void
@@ -215,20 +204,61 @@ vlib_get_buffers_with_offset (vlib_main_t * vm, u32 * bi, void **b, int count,
 			      i32 offset)
 {
   uword buffer_mem_start = vm->buffer_main->buffer_mem_start;
-#ifdef CLIB_HAVE_VEC256
-  u64x4 off = u64x4_splat (buffer_mem_start + offset);
+#ifdef CLIB_HAVE_VEC512
+  u64x8 of8 = u64x8_splat (buffer_mem_start + offset);
+  u64x4 off = u64x8_extract_lo (of8);
   /* if count is not const, compiler will not unroll while loop
      se we maintain two-in-parallel variant */
+  while (count >= 32)
+    {
+      u64x8 b0 = u64x8_from_u32x8 (u32x8_load_unaligned (bi));
+      u64x8 b1 = u64x8_from_u32x8 (u32x8_load_unaligned (bi + 8));
+      u64x8 b2 = u64x8_from_u32x8 (u32x8_load_unaligned (bi + 16));
+      u64x8 b3 = u64x8_from_u32x8 (u32x8_load_unaligned (bi + 24));
+      /* shift and add to get vlib_buffer_t pointer */
+      u64x8_store_unaligned ((b0 << CLIB_LOG2_CACHE_LINE_BYTES) + of8, b);
+      u64x8_store_unaligned ((b1 << CLIB_LOG2_CACHE_LINE_BYTES) + of8, b + 8);
+      u64x8_store_unaligned ((b2 << CLIB_LOG2_CACHE_LINE_BYTES) + of8, b + 16);
+      u64x8_store_unaligned ((b3 << CLIB_LOG2_CACHE_LINE_BYTES) + of8, b + 24);
+      b += 32;
+      bi += 32;
+      count -= 32;
+    }
   while (count >= 8)
     {
-      u64x4 b0 = u64x4_from_u32x4 (u32x4_load_unaligned (bi));
-      u64x4 b1 = u64x4_from_u32x4 (u32x4_load_unaligned (bi + 4));
+      u64x8 b0 = u64x8_from_u32x8 (u32x8_load_unaligned (bi));
       /* shift and add to get vlib_buffer_t pointer */
-      u64x4_store_unaligned ((b0 << CLIB_LOG2_CACHE_LINE_BYTES) + off, b);
-      u64x4_store_unaligned ((b1 << CLIB_LOG2_CACHE_LINE_BYTES) + off, b + 4);
+      u64x8_store_unaligned ((b0 << CLIB_LOG2_CACHE_LINE_BYTES) + of8, b);
       b += 8;
       bi += 8;
       count -= 8;
+    }
+#elif defined CLIB_HAVE_VEC256
+  u64x4 off = u64x4_splat (buffer_mem_start + offset);
+  /* if count is not const, compiler will not unroll while loop
+     se we maintain two-in-parallel variant */
+  while (count >= 32)
+    {
+      u64x4 b0 = u64x4_from_u32x4 (u32x4_load_unaligned (bi));
+      u64x4 b1 = u64x4_from_u32x4 (u32x4_load_unaligned (bi + 4));
+      u64x4 b2 = u64x4_from_u32x4 (u32x4_load_unaligned (bi + 8));
+      u64x4 b3 = u64x4_from_u32x4 (u32x4_load_unaligned (bi + 12));
+      u64x4 b4 = u64x4_from_u32x4 (u32x4_load_unaligned (bi + 16));
+      u64x4 b5 = u64x4_from_u32x4 (u32x4_load_unaligned (bi + 20));
+      u64x4 b6 = u64x4_from_u32x4 (u32x4_load_unaligned (bi + 24));
+      u64x4 b7 = u64x4_from_u32x4 (u32x4_load_unaligned (bi + 28));
+      /* shift and add to get vlib_buffer_t pointer */
+      u64x4_store_unaligned ((b0 << CLIB_LOG2_CACHE_LINE_BYTES) + off, b);
+      u64x4_store_unaligned ((b1 << CLIB_LOG2_CACHE_LINE_BYTES) + off, b + 4);
+      u64x4_store_unaligned ((b2 << CLIB_LOG2_CACHE_LINE_BYTES) + off, b + 8);
+      u64x4_store_unaligned ((b3 << CLIB_LOG2_CACHE_LINE_BYTES) + off, b + 12);
+      u64x4_store_unaligned ((b4 << CLIB_LOG2_CACHE_LINE_BYTES) + off, b + 16);
+      u64x4_store_unaligned ((b5 << CLIB_LOG2_CACHE_LINE_BYTES) + off, b + 20);
+      u64x4_store_unaligned ((b6 << CLIB_LOG2_CACHE_LINE_BYTES) + off, b + 24);
+      u64x4_store_unaligned ((b7 << CLIB_LOG2_CACHE_LINE_BYTES) + off, b + 28);
+      b += 32;
+      bi += 32;
+      count -= 32;
     }
 #endif
   while (count >= 4)
@@ -786,11 +816,22 @@ vlib_buffer_free_inline (vlib_main_t * vm, u32 * buffers, u32 n_buffers,
   vlib_buffer_t bt = { };
 #if defined(CLIB_HAVE_VEC128)
   vlib_buffer_t bpi_mask = {.buffer_pool_index = ~0 };
-  vlib_buffer_t bpi_vec = {.buffer_pool_index = ~0 };
+  vlib_buffer_t bpi_vec = {};
   vlib_buffer_t flags_refs_mask = {
     .flags = VLIB_BUFFER_NEXT_PRESENT,
     .ref_count = ~1
   };
+#endif
+
+  if (PREDICT_FALSE (n_buffers == 0))
+    return;
+
+  vlib_buffer_t *b = vlib_get_buffer (vm, buffers[0]);
+  buffer_pool_index = b->buffer_pool_index;
+  bp = vlib_get_buffer_pool (vm, buffer_pool_index);
+  vlib_buffer_copy_template (&bt, &bp->buffer_template);
+#if defined(CLIB_HAVE_VEC128)
+  bpi_vec.buffer_pool_index = buffer_pool_index;
 #endif
 
   while (n_buffers)
@@ -798,16 +839,19 @@ vlib_buffer_free_inline (vlib_main_t * vm, u32 * buffers, u32 n_buffers,
       vlib_buffer_t *b[8];
       u32 bi, sum = 0, flags, next;
 
-      if (n_buffers < 12)
+      if (n_buffers < 4)
 	goto one_by_one;
 
       vlib_get_buffers (vm, buffers, b, 4);
-      vlib_get_buffers (vm, buffers + 8, b + 4, 4);
 
-      vlib_prefetch_buffer_header (b[4], LOAD);
-      vlib_prefetch_buffer_header (b[5], LOAD);
-      vlib_prefetch_buffer_header (b[6], LOAD);
-      vlib_prefetch_buffer_header (b[7], LOAD);
+      if (n_buffers >= 12)
+	{
+	  vlib_get_buffers (vm, buffers + 8, b + 4, 4);
+	  vlib_prefetch_buffer_header (b[4], LOAD);
+	  vlib_prefetch_buffer_header (b[5], LOAD);
+	  vlib_prefetch_buffer_header (b[6], LOAD);
+	  vlib_prefetch_buffer_header (b[7], LOAD);
+	}
 
 #if defined(CLIB_HAVE_VEC128)
       u8x16 p0, p1, p2, p3, r;

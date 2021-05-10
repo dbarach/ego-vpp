@@ -1,334 +1,234 @@
-/*
- * Copyright (c) 2015 Cisco and/or its affiliates.
- * Licensed under the Apache License, Version 2.0 (the "License");
- * you may not use this file except in compliance with the License.
- * You may obtain a copy of the License at:
- *
- *     http://www.apache.org/licenses/LICENSE-2.0
- *
- * Unless required by applicable law or agreed to in writing, software
- * distributed under the License is distributed on an "AS IS" BASIS,
- * WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
- * See the License for the specific language governing permissions and
- * limitations under the License.
+/* SPDX-License-Identifier: Apache-2.0
+ * Copyright(c) 2021 Cisco Systems, Inc.
  */
-/*
-  Copyright (c) 2008 Eliot Dresselhaus
-
-  Permission is hereby granted, free of charge, to any person obtaining
-  a copy of this software and associated documentation files (the
-  "Software"), to deal in the Software without restriction, including
-  without limitation the rights to use, copy, modify, merge, publish,
-  distribute, sublicense, and/or sell copies of the Software, and to
-  permit persons to whom the Software is furnished to do so, subject to
-  the following conditions:
-
-  The above copyright notice and this permission notice shall be
-  included in all copies or substantial portions of the Software.
-
-  THE SOFTWARE IS PROVIDED "AS IS", WITHOUT WARRANTY OF ANY KIND,
-  EXPRESS OR IMPLIED, INCLUDING BUT NOT LIMITED TO THE WARRANTIES OF
-  MERCHANTABILITY, FITNESS FOR A PARTICULAR PURPOSE AND
-  NONINFRINGEMENT. IN NO EVENT SHALL THE AUTHORS OR COPYRIGHT HOLDERS BE
-  LIABLE FOR ANY CLAIM, DAMAGES OR OTHER LIABILITY, WHETHER IN AN ACTION
-  OF CONTRACT, TORT OR OTHERWISE, ARISING FROM, OUT OF OR IN CONNECTION
-  WITH THE SOFTWARE OR THE USE OR OTHER DEALINGS IN THE SOFTWARE.
-*/
 
 #ifndef included_vector_funcs_h
 #define included_vector_funcs_h
+#include <vppinfra/clib.h>
+#include <vppinfra/memcpy.h>
 
-#include <vppinfra/byte_order.h>
+static_always_inline u64
+clib_mask_compare_u16_x64 (u16 v, u16 *a, u32 n_elts)
+{
+  u64 mask = 0;
+#if defined(CLIB_HAVE_VEC512)
+  u16x32 v32 = u16x32_splat (v);
+  u16x32u *av = (u16x32u *) a;
+  mask = ((u64) u16x32_is_equal_mask (av[0], v32) |
+	  (u64) u16x32_is_equal_mask (av[1], v32) << 32);
+#elif defined(CLIB_HAVE_VEC256)
+  u16x16 v16 = u16x16_splat (v);
+  u16x16u *av = (u16x16u *) a;
+  i8x32 x;
 
-/* Addition/subtraction. */
-#if CLIB_VECTOR_WORD_BITS == 128
-#define u8x_add u8x16_add
-#define u16x_add u16x8_add
-#define u32x_add u32x4_add
-#define u64x_add u64x2_add
-#define i8x_add i8x16_add
-#define i16x_add i16x8_add
-#define i32x_add i32x4_add
-#define i64x_add i64x2_add
-#define u8x_sub u8x16_sub
-#define u16x_sub u16x8_sub
-#define u32x_sub u32x4_sub
-#define u64x_sub u64x2_sub
-#define i8x_sub i8x16_sub
-#define i16x_sub i16x8_sub
-#define i32x_sub i32x4_sub
-#define i64x_sub i64x2_sub
+  x = i8x32_pack (v16 == av[0], v16 == av[1]);
+  mask = i8x32_msb_mask ((i8x32) u64x4_permute (x, 0, 2, 1, 3));
+  x = i8x32_pack (v16 == av[2], v16 == av[3]);
+  mask |= (u64) i8x32_msb_mask ((i8x32) u64x4_permute (x, 0, 2, 1, 3)) << 32;
+#elif defined(CLIB_HAVE_VEC128) && defined(__ARM_NEON)
+  u16x8 v8 = u16x8_splat (v);
+  u16x8 m = { 1, 2, 4, 8, 16, 32, 64, 128 };
+  u16x8u *av = (u16x8u *) a;
+
+  /* compare each u16 elemment with v8, result gives 0xffff in each element
+     of the resulting vector if comparison result is true.
+     Bitwise AND with m will give us one bit set for true result and offset
+     of that bit represend element index. Finally vaddvq_u16() gives us sum
+     of all elements of the vector which will give us u8 bitmap. */
+
+  for (int i = 0; i < 8; i++)
+    mask |= (u64) vaddvq_u16 ((av[i] == v8) & m) << (i * 8);
+
+#elif defined(CLIB_HAVE_VEC128) && defined(CLIB_HAVE_VEC128_MSB_MASK)
+  u16x8 v8 = u16x8_splat (v);
+  u16x8u *av = (u16x8u *) a;
+  mask = ((u64) i8x16_msb_mask (i8x16_pack (v8 == av[0], v8 == av[1])) |
+	  (u64) i8x16_msb_mask (i8x16_pack (v8 == av[2], v8 == av[3])) << 16 |
+	  (u64) i8x16_msb_mask (i8x16_pack (v8 == av[4], v8 == av[5])) << 32 |
+	  (u64) i8x16_msb_mask (i8x16_pack (v8 == av[6], v8 == av[7])) << 48);
+#else
+  for (int i = 0; i < n_elts; i++)
+    if (a[i] == v)
+      mask |= 1ULL << i;
 #endif
+  return mask;
+}
 
-#if CLIB_VECTOR_WORD_BITS == 64
-#define u8x_add u8x8_add
-#define u16x_add u16x4_add
-#define u32x_add u32x2_add
-#define i8x_add i8x8_add
-#define i16x_add i16x4_add
-#define i32x_add i32x2_add
-#define u8x_sub u8x8_sub
-#define u16x_sub u16x4_sub
-#define u32x_sub u32x2_sub
-#define i8x_sub i8x8_sub
-#define i16x_sub i16x4_sub
-#define i32x_sub i32x2_sub
+/** \brief Compare 16-bit elemments with provied value and return bitmap
+
+    @param v value to compare elements with
+    @param a array of u16 elements
+    @param mask array of u64 where reuslting mask will be stored
+    @param n_elts number of elements in the array
+    @return none
+*/
+
+static_always_inline void
+clib_mask_compare_u16 (u16 v, u16 *a, u64 *mask, u32 n_elts)
+{
+  while (n_elts >= 64)
+    {
+      mask++[0] = clib_mask_compare_u16_x64 (v, a, 64);
+      n_elts -= 64;
+      a += 64;
+    }
+
+  if (PREDICT_TRUE (n_elts == 0))
+    return;
+
+  mask[0] = clib_mask_compare_u16_x64 (v, a, n_elts) & pow2_mask (n_elts);
+}
+
+static_always_inline u64
+clib_mask_compare_u32_x64 (u32 v, u32 *a, u32 n_elts)
+{
+  u64 mask = 0;
+#if defined(CLIB_HAVE_VEC512)
+  u32x16 v16 = u32x16_splat (v);
+  u32x16u *av = (u32x16u *) a;
+  mask = ((u64) u32x16_is_equal_mask (av[0], v16) |
+	  (u64) u32x16_is_equal_mask (av[1], v16) << 16 |
+	  (u64) u32x16_is_equal_mask (av[2], v16) << 32 |
+	  (u64) u32x16_is_equal_mask (av[3], v16) << 48);
+#elif defined(CLIB_HAVE_VEC256)
+  u32x8 v8 = u32x8_splat (v);
+  u32x8u *av = (u32x8u *) a;
+  u32x8 m = { 0, 4, 1, 5, 2, 6, 3, 7 };
+  i8x32 c;
+
+  c = i8x32_pack (i16x16_pack ((i32x8) (v8 == av[0]), (i32x8) (v8 == av[1])),
+		  i16x16_pack ((i32x8) (v8 == av[2]), (i32x8) (v8 == av[3])));
+  mask = i8x32_msb_mask ((i8x32) u32x8_permute ((u32x8) c, m));
+
+  c = i8x32_pack (i16x16_pack ((i32x8) (v8 == av[4]), (i32x8) (v8 == av[5])),
+		  i16x16_pack ((i32x8) (v8 == av[6]), (i32x8) (v8 == av[7])));
+  mask |= (u64) i8x32_msb_mask ((i8x32) u32x8_permute ((u32x8) c, m)) << 32;
+
+#elif defined(CLIB_HAVE_VEC128) && defined(__ARM_NEON)
+  u32x4 v4 = u32x4_splat (v);
+  u32x4 m = { 1, 2, 4, 8 };
+  u32x4u *av = (u32x4u *) a;
+
+  /* compare each u32 elemment with v4, result gives -1 in each element
+     of the resulting vector if comparison result is true.
+     Bitwise AND with m will give us one bit set for true result and offset
+     of that bit represend element index. Finally vaddvq_u32() gives us sum
+     of all elements of the vector which will give us u8 bitmap. */
+
+  for (int i = 0; i < 16; i++)
+    mask |= (u64) vaddvq_u32 ((av[i] == v4) & m) << (i * 4);
+
+#elif defined(CLIB_HAVE_VEC128) && defined(CLIB_HAVE_VEC128_MSB_MASK)
+  u32x4 v4 = u32x4_splat (v);
+  u32x4u *av = (u32x4u *) a;
+
+  for (int i = 0; i < 4; i++)
+    {
+      i16x8 p1 = i16x8_pack (v4 == av[0], v4 == av[1]);
+      i16x8 p2 = i16x8_pack (v4 == av[2], v4 == av[3]);
+      mask |= (u64) i8x16_msb_mask (i8x16_pack (p1, p2)) << (i * 16);
+      av += 4;
+    }
+
+#else
+  for (int i = 0; i < n_elts; i++)
+    if (a[i] == v)
+      mask |= 1ULL << i;
 #endif
+  return mask;
+}
 
-/* Saturating addition/subtraction. */
-#if CLIB_VECTOR_WORD_BITS == 128
-#define u8x_add_saturate u8x16_add_saturate
-#define u16x_add_saturate u16x8_add_saturate
-#define i8x_add_saturate i8x16_add_saturate
-#define i16x_add_saturate i16x8_add_saturate
-#define u8x_sub_saturate u8x16_sub_saturate
-#define u16x_sub_saturate u16x8_sub_saturate
-#define i8x_sub_saturate i8x16_sub_saturate
-#define i16x_sub_saturate i16x8_sub_saturate
+/** \brief Compare 32-bit elemments with provied value and return bitmap
+
+    @param v value to compare elements with
+    @param a array of u32 elements
+    @param mask array of u64 where reuslting mask will be stored
+    @param n_elts number of elements in the array
+    @return none
+*/
+
+static_always_inline void
+clib_mask_compare_u32 (u32 v, u32 *a, u64 *bitmap, u32 n_elts)
+{
+  while (n_elts >= 64)
+    {
+      bitmap++[0] = clib_mask_compare_u32_x64 (v, a, 64);
+      n_elts -= 64;
+      a += 64;
+    }
+
+  if (PREDICT_TRUE (n_elts == 0))
+    return;
+
+  bitmap[0] = clib_mask_compare_u32_x64 (v, a, n_elts) & pow2_mask (n_elts);
+}
+
+static_always_inline u32 *
+clib_compress_u32_x64 (u32 *dst, u32 *src, u64 mask)
+{
+#if defined(CLIB_HAVE_VEC512_COMPRESS)
+  u32x16u *sv = (u32x16u *) src;
+  for (int i = 0; i < 4; i++)
+    {
+      int cnt = _popcnt32 ((u16) mask);
+      u32x16_compress_store (sv[i], mask, dst);
+      dst += cnt;
+      mask >>= 16;
+    }
+
+#elif defined(CLIB_HAVE_VEC256_COMPRESS)
+  u32x8u *sv = (u32x8u *) src;
+  for (int i = 0; i < 8; i++)
+    {
+      int cnt = _popcnt32 ((u8) mask);
+      u32x8_compress_store (sv[i], mask, dst);
+      dst += cnt;
+      mask >>= 8;
+    }
+#else
+  while (mask)
+    {
+      u16 bit = count_trailing_zeros (mask);
+      mask = clear_lowest_set_bit (mask);
+      dst++[0] = src[bit];
+    }
 #endif
+  return dst;
+}
 
-#if CLIB_VECTOR_WORD_BITS == 64
-#define u8x_add_saturate u8x8_add_saturate
-#define u16x_add_saturate u16x4_add_saturate
-#define i8x_add_saturate i8x8_add_saturate
-#define i16x_add_saturate i16x4_add_saturate
-#define u8x_sub_saturate u8x8_sub_saturate
-#define u16x_sub_saturate u16x4_sub_saturate
-#define i8x_sub_saturate i8x8_sub_saturate
-#define i16x_sub_saturate i16x4_sub_saturate
+/** \brief Compare array of 32-bit elemments into destination array based on
+ * mask
+
+    @param dst destination array of u32 elements
+    @param src source array of u32 elements
+    @param mask array of u64 values representing compress mask
+    @param n_elts number of elements in the source array
+    @return number of elements stored in destionation array
+*/
+
+static_always_inline u32
+clib_compress_u32 (u32 *dst, u32 *src, u64 *mask, u32 n_elts)
+{
+  u32 *dst0 = dst;
+  while (n_elts >= 64)
+    {
+      if (mask[0] == ~0ULL)
+	{
+	  clib_memcpy_u32 (dst, src, 64);
+	  dst += 64;
+	}
+      else
+	dst = clib_compress_u32_x64 (dst, src, mask[0]);
+
+      mask++;
+      src += 64;
+      n_elts -= 64;
+    }
+
+  if (PREDICT_TRUE (n_elts == 0))
+    return dst - dst0;
+
+  return clib_compress_u32_x64 (dst, src, mask[0] & pow2_mask (n_elts)) - dst0;
+}
+
 #endif
-
-#define _vector_interleave(a,b,t)		\
-do {						\
-  t _tmp_lo = t##_interleave_lo (a, b);		\
-  t _tmp_hi = t##_interleave_hi (a, b);		\
-  if (CLIB_ARCH_IS_LITTLE_ENDIAN)		\
-    (a) = _tmp_lo, (b) = _tmp_hi;		\
-  else						\
-    (a) = _tmp_hi, (b) = _tmp_lo;		\
-} while (0)
-
-/* 128 bit interleaves. */
-#define u8x16_interleave(a,b) _vector_interleave(a,b,u8x16)
-#define i8x16_interleave(a,b) _vector_interleave(a,b,i8x16)
-#define u16x8_interleave(a,b) _vector_interleave(a,b,u16x8)
-#define i16x8_interleave(a,b) _vector_interleave(a,b,i16x8)
-#define u32x4_interleave(a,b) _vector_interleave(a,b,u32x4)
-#define i32x4_interleave(a,b) _vector_interleave(a,b,i32x4)
-#define u64x2_interleave(a,b) _vector_interleave(a,b,u64x2)
-#define i64x2_interleave(a,b) _vector_interleave(a,b,i64x2)
-
-/* 64 bit interleaves. */
-#define u8x8_interleave(a,b) _vector_interleave(a,b,u8x8)
-#define i8x8_interleave(a,b) _vector_interleave(a,b,i8x8)
-#define u16x4_interleave(a,b) _vector_interleave(a,b,u16x4)
-#define i16x4_interleave(a,b) _vector_interleave(a,b,i16x4)
-#define u32x2_interleave(a,b) _vector_interleave(a,b,u32x2)
-#define i32x2_interleave(a,b) _vector_interleave(a,b,i32x2)
-
-/* Word sized interleaves. */
-#if CLIB_VECTOR_WORD_BITS == 128
-#define u8x_interleave u8x16_interleave
-#define u16x_interleave u16x8_interleave
-#define u32x_interleave u32x4_interleave
-#define u64x_interleave u64x2_interleave
-#endif
-
-#if CLIB_VECTOR_WORD_BITS == 64
-#define u8x_interleave u8x8_interleave
-#define u16x_interleave u16x4_interleave
-#define u32x_interleave u32x2_interleave
-#define u64x_interleave(a,b)	/* do nothing */
-#endif
-
-/* Vector word sized shifts. */
-#if CLIB_VECTOR_WORD_BITS == 128
-#define u8x_shift_left u8x16_shift_left
-#define i8x_shift_left i8x16_shift_left
-#define u16x_shift_left u16x8_shift_left
-#define i16x_shift_left i16x8_shift_left
-#define u32x_shift_left u32x4_shift_left
-#define i32x_shift_left i32x4_shift_left
-#define u64x_shift_left u64x2_shift_left
-#define i64x_shift_left i64x2_shift_left
-#define u8x_shift_right u8x16_shift_right
-#define i8x_shift_right i8x16_shift_right
-#define u16x_shift_right u16x8_shift_right
-#define i16x_shift_right i16x8_shift_right
-#define u32x_shift_right u32x4_shift_right
-#define i32x_shift_right i32x4_shift_right
-#define u64x_shift_right u64x2_shift_right
-#define i64x_shift_right i64x2_shift_right
-#define u8x_rotate_left u8x16_rotate_left
-#define i8x_rotate_left i8x16_rotate_left
-#define u16x_rotate_left u16x8_rotate_left
-#define i16x_rotate_left i16x8_rotate_left
-#define u32x_rotate_left u32x4_rotate_left
-#define i32x_rotate_left i32x4_rotate_left
-#define u64x_rotate_left u64x2_rotate_left
-#define i64x_rotate_left i64x2_rotate_left
-#define u8x_rotate_right u8x16_rotate_right
-#define i8x_rotate_right i8x16_rotate_right
-#define u16x_rotate_right u16x8_rotate_right
-#define i16x_rotate_right i16x8_rotate_right
-#define u32x_rotate_right u32x4_rotate_right
-#define i32x_rotate_right i32x4_rotate_right
-#define u64x_rotate_right u64x2_rotate_right
-#define i64x_rotate_right i64x2_rotate_right
-#define u8x_ishift_left u8x16_ishift_left
-#define i8x_ishift_left i8x16_ishift_left
-#define u16x_ishift_left u16x8_ishift_left
-#define i16x_ishift_left i16x8_ishift_left
-#define u32x_ishift_left u32x4_ishift_left
-#define i32x_ishift_left i32x4_ishift_left
-#define u64x_ishift_left u64x2_ishift_left
-#define i64x_ishift_left i64x2_ishift_left
-#define u8x_ishift_right u8x16_ishift_right
-#define i8x_ishift_right i8x16_ishift_right
-#define u16x_ishift_right u16x8_ishift_right
-#define i16x_ishift_right i16x8_ishift_right
-#define u32x_ishift_right u32x4_ishift_right
-#define i32x_ishift_right i32x4_ishift_right
-#define u64x_ishift_right u64x2_ishift_right
-#define i64x_ishift_right i64x2_ishift_right
-#define u8x_irotate_left u8x16_irotate_left
-#define i8x_irotate_left i8x16_irotate_left
-#define u16x_irotate_left u16x8_irotate_left
-#define i16x_irotate_left i16x8_irotate_left
-#define u32x_irotate_left u32x4_irotate_left
-#define i32x_irotate_left i32x4_irotate_left
-#define u64x_irotate_left u64x2_irotate_left
-#define i64x_irotate_left i64x2_irotate_left
-#define u8x_irotate_right u8x16_irotate_right
-#define i8x_irotate_right i8x16_irotate_right
-#define u16x_irotate_right u16x8_irotate_right
-#define i16x_irotate_right i16x8_irotate_right
-#define u32x_irotate_right u32x4_irotate_right
-#define i32x_irotate_right i32x4_irotate_right
-#define u64x_irotate_right u64x2_irotate_right
-#define i64x_irotate_right i64x2_irotate_right
-#endif
-
-#if CLIB_VECTOR_WORD_BITS == 64
-#define u8x_shift_left u8x8_shift_left
-#define i8x_shift_left i8x8_shift_left
-#define u16x_shift_left u16x4_shift_left
-#define i16x_shift_left i16x4_shift_left
-#define u32x_shift_left u32x2_shift_left
-#define i32x_shift_left i32x2_shift_left
-#define u8x_shift_right u8x8_shift_right
-#define i8x_shift_right i8x8_shift_right
-#define u16x_shift_right u16x4_shift_right
-#define i16x_shift_right i16x4_shift_right
-#define u32x_shift_right u32x2_shift_right
-#define i32x_shift_right i32x2_shift_right
-#define u8x_rotate_left u8x8_rotate_left
-#define i8x_rotate_left i8x8_rotate_left
-#define u16x_rotate_left u16x4_rotate_left
-#define i16x_rotate_left i16x4_rotate_left
-#define u32x_rotate_left u32x2_rotate_left
-#define i32x_rotate_left i32x2_rotate_left
-#define u8x_rotate_right u8x8_rotate_right
-#define i8x_rotate_right i8x8_rotate_right
-#define u16x_rotate_right u16x4_rotate_right
-#define i16x_rotate_right i16x4_rotate_right
-#define u32x_rotate_right u32x2_rotate_right
-#define i32x_rotate_right i32x2_rotate_right
-#define u8x_ishift_left u8x8_ishift_left
-#define i8x_ishift_left i8x8_ishift_left
-#define u16x_ishift_left u16x4_ishift_left
-#define i16x_ishift_left i16x4_ishift_left
-#define u32x_ishift_left u32x2_ishift_left
-#define i32x_ishift_left i32x2_ishift_left
-#define u8x_ishift_right u8x8_ishift_right
-#define i8x_ishift_right i8x8_ishift_right
-#define u16x_ishift_right u16x4_ishift_right
-#define i16x_ishift_right i16x4_ishift_right
-#define u32x_ishift_right u32x2_ishift_right
-#define i32x_ishift_right i32x2_ishift_right
-#define u8x_irotate_left u8x8_irotate_left
-#define i8x_irotate_left i8x8_irotate_left
-#define u16x_irotate_left u16x4_irotate_left
-#define i16x_irotate_left i16x4_irotate_left
-#define u32x_irotate_left u32x2_irotate_left
-#define i32x_irotate_left i32x2_irotate_left
-#define u8x_irotate_right u8x8_irotate_right
-#define i8x_irotate_right i8x8_irotate_right
-#define u16x_irotate_right u16x4_irotate_right
-#define i16x_irotate_right i16x4_irotate_right
-#define u32x_irotate_right u32x2_irotate_right
-#define i32x_irotate_right i32x2_irotate_right
-#endif
-
-#if CLIB_VECTOR_WORD_BITS == 128
-#define u8x_splat u8x16_splat
-#define i8x_splat i8x16_splat
-#define u16x_splat u16x8_splat
-#define i16x_splat i16x8_splat
-#define u32x_splat u32x4_splat
-#define i32x_splat i32x4_splat
-#define u64x_splat u64x2_splat
-#define i64x_splat i64x2_splat
-#endif
-
-#if CLIB_VECTOR_WORD_BITS == 64
-#define u8x_splat u8x8_splat
-#define i8x_splat i8x8_splat
-#define u16x_splat u16x4_splat
-#define i16x_splat i16x4_splat
-#define u32x_splat u32x2_splat
-#define i32x_splat i32x2_splat
-#endif
-
-#define u32x4_transpose_step(x,y)		\
-do {						\
-  u32x4 _x = (x);				\
-  u32x4 _y = (y);				\
-  (x) = u32x4_interleave_lo (_x, _y);		\
-  (y) = u32x4_interleave_hi (_x, _y);		\
-} while (0)
-
-/* 4x4 transpose: x_ij -> x_ji */
-#define u32x4_transpose(x0,x1,x2,x3)		\
-do {						\
-  u32x4 _x0 = (u32x4) (x0);			\
-  u32x4 _x1 = (u32x4) (x1);			\
-  u32x4 _x2 = (u32x4) (x2);			\
-  u32x4 _x3 = (u32x4) (x3);			\
-  u32x4_transpose_step (_x0, _x2);		\
-  u32x4_transpose_step (_x1, _x3);		\
-  u32x4_transpose_step (_x0, _x1);		\
-  u32x4_transpose_step (_x2, _x3);		\
-  (x0) = (u32x4) _x0;				\
-  (x1) = (u32x4) _x1;				\
-  (x2) = (u32x4) _x2;				\
-  (x3) = (u32x4) _x3;				\
-} while (0)
-
-#define i32x4_transpose(x0,x1,x2,x3)		\
-do {						\
-  u32x4 _x0 = (u32x4) (x0);			\
-  u32x4 _x1 = (u32x4) (x1);			\
-  u32x4 _x2 = (u32x4) (x2);			\
-  u32x4 _x3 = (u32x4) (x3);			\
-  u32x4_transpose_step (_x0, _x2);		\
-  u32x4_transpose_step (_x1, _x3);		\
-  u32x4_transpose_step (_x0, _x1);		\
-  u32x4_transpose_step (_x2, _x3);		\
-  (x0) = (i32x4) _x0;				\
-  (x1) = (i32x4) _x1;				\
-  (x2) = (i32x4) _x2;				\
-  (x3) = (i32x4) _x3;				\
-} while (0)
-
-#undef _
-
-#endif /* included_vector_funcs_h */
-
-/*
- * fd.io coding-style-patch-verification: ON
- *
- * Local Variables:
- * eval: (c-set-style "gnu")
- * End:
- */

@@ -3434,7 +3434,6 @@ unix_cli_exec (vlib_main_t * vm,
       vec_append (sub_input.buffer, expanded);
       vec_free (expanded);
     }
-
   vlib_cli_input (vm, &sub_input, 0, 0);
   unformat_free (&sub_input);
 

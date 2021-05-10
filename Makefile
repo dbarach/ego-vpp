@@ -216,6 +216,7 @@ help:
 	@echo " featurelist          - dump feature list in markdown"
 	@echo " json-api-files       - (re)-generate json api files"
 	@echo " json-api-files-debug - (re)-generate json api files for debug target"
+	@echo " go-api-files         - (re)-generate golang api files"
 	@echo " docs                 - Build the Sphinx documentation"
 	@echo " docs-venv            - Build the virtual environment for the Sphinx docs"
 	@echo " docs-clean           - Remove the generated files from the Sphinx docs"
@@ -505,6 +506,14 @@ retest-all-debug:
 	$(eval EXTENDED_TESTS=yes)
 	$(call test,vpp,vpp_debug,retest)
 
+.PHONY: test-start-vpp-in-gdb
+test-start-vpp-in-gdb:
+	$(call test,vpp,vpp,start-gdb)
+
+.PHONY: test-start-vpp-debug-in-gdb
+test-start-vpp-debug-in-gdb:
+	$(call test,vpp,vpp_debug,start-gdb)
+
 ifeq ("$(wildcard $(STARTUP_CONF))","")
 define run
 	@echo "WARNING: STARTUP_CONF not defined or file doesn't exist."
@@ -520,9 +529,7 @@ endef
 endif
 
 %.files: .FORCE
-	@find . \( -name '*\.[chyS]' -o -name '*\.java' -o -name '*\.lex' -o -name '*\.py' \) -and \
-		\( -not -path './build-root*' -o -path \
-		'./build-root/build-vpp_debug-native/dpdk*' \) > $@
+	@find src -name '*.[chS]' > $@
 
 .FORCE:
 
@@ -585,11 +592,6 @@ pkg-rpm: dist
 pkg-srpm: dist
 	make -C extras/rpm srpm
 
-.PHONY: dpdk-install-dev
-dpdk-install-dev:
-	$(call banner,"This command is deprecated. Please use 'make install-ext-deps'")
-	make -C build/external install-$(PKG)
-
 .PHONY: install-ext-deps
 install-ext-deps:
 	make -C build/external install-$(PKG)
@@ -604,6 +606,10 @@ json-api-files:
 .PHONY: json-api-files-debug
 json-api-files-debug:
 	$(WS_ROOT)/src/tools/vppapigen/generate_json.py --debug-target
+
+.PHONY: go-api-files
+go-api-files: json-api-files
+	$(WS_ROOT)/src/tools/vppapigen/generate_go.py
 
 .PHONY: ctags
 ctags: ctags.files
@@ -622,7 +628,7 @@ cscope: cscope.files
 compdb:
 	@ninja -C build-root/build-vpp_debug-native/vpp build.ninja
 	@ninja -C build-root/build-vpp_debug-native/vpp -t compdb | \
-	  extras/scripts/compdb_cleanup.py > compile_commands.json
+	  src/scripts/compdb_cleanup.py > compile_commands.json
 
 .PHONY: checkstyle
 checkstyle: checkfeaturelist
@@ -657,11 +663,11 @@ endif
 
 .PHONY: featurelist
 featurelist: centos-pyyaml
-	@build-root/scripts/fts.py --all --markdown
+	@extras/scripts/fts.py --all --markdown
 
 .PHONY: checkfeaturelist
 checkfeaturelist: centos-pyyaml
-	@build-root/scripts/fts.py --validate --all
+	@extras/scripts/fts.py --validate --all
 
 
 # Build vpp_stats_fs

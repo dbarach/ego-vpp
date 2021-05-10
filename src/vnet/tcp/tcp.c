@@ -337,7 +337,7 @@ tcp_program_cleanup (tcp_worker_ctx_t * wrk, tcp_connection_t * tc)
   tcp_cleanup_req_t *req;
   clib_time_type_t now;
 
-  now = transport_time_now (tc->c_thread_index);
+  now = tcp_time_now_us (tc->c_thread_index);
   clib_fifo_add2 (wrk->pending_cleanups, req);
   req->connection_index = tc->c_c_index;
   req->free_time = now + tcp_cfg.cleanup_time;
@@ -675,7 +675,7 @@ tcp_init_snd_vars (tcp_connection_t * tc)
    * handshake may make it look as if time has flown in the opposite
    * direction for us.
    */
-  tcp_set_time_now (tcp_get_worker (vlib_get_thread_index ()));
+  tcp_update_time_now (tcp_get_worker (vlib_get_thread_index ()));
 
   tcp_init_rcv_mss (tc);
   tc->iss = tcp_generate_random_iss (tc);
@@ -871,6 +871,115 @@ tcp_half_open_session_get_transport (u32 conn_index)
 {
   tcp_connection_t *tc = tcp_half_open_connection_get (conn_index);
   return &tc->connection;
+}
+
+static int
+tcp_set_attribute (tcp_connection_t *tc, transport_endpt_attr_t *attr)
+{
+  int rv = 0;
+
+  switch (attr->type)
+    {
+    case TRANSPORT_ENDPT_ATTR_NEXT_OUTPUT_NODE:
+      tc->next_node_index = attr->next_output_node & 0xffffffff;
+      tc->next_node_opaque = attr->next_output_node >> 32;
+      break;
+    case TRANSPORT_ENDPT_ATTR_MSS:
+      tc->mss = attr->mss;
+      tc->snd_mss = clib_min (tc->snd_mss, tc->mss);
+      break;
+    case TRANSPORT_ENDPT_ATTR_FLAGS:
+      if (attr->flags & TRANSPORT_ENDPT_ATTR_F_CSUM_OFFLOAD)
+	tc->cfg_flags |= TCP_CFG_F_NO_CSUM_OFFLOAD;
+      else
+	tc->cfg_flags &= ~TCP_CFG_F_NO_CSUM_OFFLOAD;
+      if (attr->flags & TRANSPORT_ENDPT_ATTR_F_GSO)
+	{
+	  if (!(tc->cfg_flags & TCP_CFG_F_TSO))
+	    tcp_check_gso (tc);
+	  tc->cfg_flags &= ~TCP_CFG_F_NO_TSO;
+	}
+      else
+	{
+	  tc->cfg_flags |= TCP_CFG_F_NO_TSO;
+	  tc->cfg_flags &= ~TCP_CFG_F_TSO;
+	}
+      if (attr->flags & TRANSPORT_ENDPT_ATTR_F_RATE_SAMPLING)
+	{
+	  if (!(tc->cfg_flags & TCP_CFG_F_RATE_SAMPLE))
+	    tcp_bt_init (tc);
+	  tc->cfg_flags |= TCP_CFG_F_RATE_SAMPLE;
+	}
+      else
+	{
+	  if (tc->cfg_flags & TCP_CFG_F_RATE_SAMPLE)
+	    tcp_bt_cleanup (tc);
+	  tc->cfg_flags &= ~TCP_CFG_F_RATE_SAMPLE;
+	}
+      break;
+    case TRANSPORT_ENDPT_ATTR_CC_ALGO:
+      if (tc->cc_algo == tcp_cc_algo_get (attr->cc_algo))
+	break;
+      tcp_cc_cleanup (tc);
+      tc->cc_algo = tcp_cc_algo_get (attr->cc_algo);
+      tcp_cc_init (tc);
+      break;
+    default:
+      rv = -1;
+      break;
+    }
+
+  return rv;
+}
+
+static int
+tcp_get_attribute (tcp_connection_t *tc, transport_endpt_attr_t *attr)
+{
+  int rv = 0;
+  u64 non;
+
+  switch (attr->type)
+    {
+    case TRANSPORT_ENDPT_ATTR_NEXT_OUTPUT_NODE:
+      non = (u64) tc->next_node_opaque << 32 | tc->next_node_index;
+      attr->next_output_node = non;
+      break;
+    case TRANSPORT_ENDPT_ATTR_MSS:
+      attr->mss = tc->snd_mss;
+      break;
+    case TRANSPORT_ENDPT_ATTR_FLAGS:
+      attr->flags = 0;
+      if (!(tc->cfg_flags & TCP_CFG_F_NO_CSUM_OFFLOAD))
+	attr->flags |= TRANSPORT_ENDPT_ATTR_F_CSUM_OFFLOAD;
+      if (tc->cfg_flags & TCP_CFG_F_TSO)
+	attr->flags |= TRANSPORT_ENDPT_ATTR_F_GSO;
+      if (tc->cfg_flags & TCP_CFG_F_RATE_SAMPLE)
+	attr->flags |= TRANSPORT_ENDPT_ATTR_F_RATE_SAMPLING;
+      break;
+    case TRANSPORT_ENDPT_ATTR_CC_ALGO:
+      attr->cc_algo = tc->cc_algo - tcp_main.cc_algos;
+      break;
+    default:
+      rv = -1;
+      break;
+    }
+
+  return rv;
+}
+
+static int
+tcp_session_attribute (u32 conn_index, u32 thread_index, u8 is_get,
+		       transport_endpt_attr_t *attr)
+{
+  tcp_connection_t *tc = tcp_connection_get (conn_index, thread_index);
+
+  if (PREDICT_FALSE (!tc))
+    return -1;
+
+  if (is_get)
+    return tcp_get_attribute (tc, attr);
+  else
+    return tcp_set_attribute (tc, attr);
 }
 
 static u16
@@ -1147,7 +1256,7 @@ tcp_update_time (f64 now, u8 thread_index)
 {
   tcp_worker_ctx_t *wrk = tcp_get_worker (thread_index);
 
-  tcp_set_time_now (wrk);
+  tcp_set_time_now (wrk, now);
   tcp_handle_cleanups (wrk, now);
   tcp_timer_expire_timers (&wrk->timer_wheel, now);
   tcp_dispatch_pending_timers (wrk);
@@ -1163,6 +1272,27 @@ tcp_session_flush_data (transport_connection_t * tconn)
   tc->psh_seq = tc->snd_una + transport_max_tx_dequeue (tconn) - 1;
 }
 
+static int
+tcp_session_app_rx_evt (transport_connection_t *conn)
+{
+  tcp_connection_t *tc = (tcp_connection_t *) conn;
+  u32 min_free, lo = 4 << 10, hi = 128 << 10;
+
+  if (!(tc->flags & TCP_CONN_ZERO_RWND_SENT))
+    return 0;
+
+  min_free = clib_clamp (transport_rx_fifo_size (conn) >> 3, lo, hi);
+  if (transport_max_rx_enqueue (conn) < min_free)
+    {
+      transport_rx_fifo_req_deq_ntf (conn);
+      return 0;
+    }
+
+  tcp_send_ack (tc);
+
+  return 0;
+}
+
 /* *INDENT-OFF* */
 const static transport_proto_vft_t tcp_proto = {
   .enable = vnet_tcp_enable_disable,
@@ -1172,6 +1302,7 @@ const static transport_proto_vft_t tcp_proto = {
   .get_connection = tcp_session_get_transport,
   .get_listener = tcp_session_get_listener,
   .get_half_open = tcp_half_open_session_get_transport,
+  .attribute = tcp_session_attribute,
   .connect = tcp_session_open,
   .close = tcp_session_close,
   .cleanup = tcp_session_cleanup,
@@ -1181,6 +1312,7 @@ const static transport_proto_vft_t tcp_proto = {
   .update_time = tcp_update_time,
   .flush_data = tcp_session_flush_data,
   .custom_tx = tcp_session_custom_tx,
+  .app_rx_evt = tcp_session_app_rx_evt,
   .format_connection = format_tcp_session,
   .format_listener = format_tcp_listener_session,
   .format_half_open = format_tcp_half_open_session,

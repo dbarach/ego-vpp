@@ -221,14 +221,15 @@ dpdk_buffer_tx_offload (dpdk_device_t * xd, vlib_buffer_t * b,
 {
   int is_ip4 = b->flags & VNET_BUFFER_F_IS_IP4;
   u32 tso = b->flags & VNET_BUFFER_F_GSO, max_pkt_len;
-  u32 oflags, ip_cksum, tcp_cksum, udp_cksum;
+  u32 ip_cksum, tcp_cksum, udp_cksum;
   u64 ol_flags;
+  vnet_buffer_oflags_t oflags = 0;
 
   /* Is there any work for us? */
   if (PREDICT_TRUE (((b->flags & VNET_BUFFER_F_OFFLOAD) | tso) == 0))
     return;
 
-  oflags = vnet_buffer2 (b)->oflags;
+  oflags = vnet_buffer (b)->oflags;
   ip_cksum = oflags & VNET_BUFFER_OFFLOAD_F_IP_CKSUM;
   tcp_cksum = oflags & VNET_BUFFER_OFFLOAD_F_TCP_CKSUM;
   udp_cksum = oflags & VNET_BUFFER_OFFLOAD_F_UDP_CKSUM;
@@ -311,11 +312,6 @@ VNET_DEVICE_CLASS_TX_FN (dpdk_device_class) (vlib_main_t * vm,
       or_flags = b[0]->flags | b[1]->flags | b[2]->flags | b[3]->flags;
       all_or_flags |= or_flags;
 
-      VLIB_BUFFER_TRACE_TRAJECTORY_INIT (b[0]);
-      VLIB_BUFFER_TRACE_TRAJECTORY_INIT (b[1]);
-      VLIB_BUFFER_TRACE_TRAJECTORY_INIT (b[2]);
-      VLIB_BUFFER_TRACE_TRAJECTORY_INIT (b[3]);
-
       if (or_flags & VLIB_BUFFER_NEXT_PRESENT)
 	{
 	  dpdk_validate_rte_mbuf (vm, b[0], 1);
@@ -374,9 +370,6 @@ VNET_DEVICE_CLASS_TX_FN (dpdk_device_class) (vlib_main_t * vm,
       or_flags = b[0]->flags | b[1]->flags;
       all_or_flags |= or_flags;
 
-      VLIB_BUFFER_TRACE_TRAJECTORY_INIT (b[0]);
-      VLIB_BUFFER_TRACE_TRAJECTORY_INIT (b[1]);
-
       if (or_flags & VLIB_BUFFER_NEXT_PRESENT)
 	{
 	  dpdk_validate_rte_mbuf (vm, b[0], 1);
@@ -412,7 +405,6 @@ VNET_DEVICE_CLASS_TX_FN (dpdk_device_class) (vlib_main_t * vm,
     {
       b[0] = vlib_buffer_from_rte_mbuf (mb[0]);
       all_or_flags |= b[0]->flags;
-      VLIB_BUFFER_TRACE_TRAJECTORY_INIT (b[0]);
 
       dpdk_validate_rte_mbuf (vm, b[0], 1);
       dpdk_buffer_tx_offload (xd, b[0], mb[0]);

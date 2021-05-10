@@ -31,20 +31,20 @@
 #include <memif/private.h>
 
 #define foreach_memif_input_error                                             \
-  _ (BUFFER_ALLOC_FAIL, "buffer allocation failed")                           \
-  _ (BAD_DESC, "bad descriptor")                                              \
-  _ (NOT_IP, "not ip packet")
+  _ (BUFFER_ALLOC_FAIL, buffer_alloc, ERROR, "buffer allocation failed")      \
+  _ (BAD_DESC, bad_desc, ERROR, "bad descriptor")                             \
+  _ (NOT_IP, not_ip, INFO, "not ip packet")
 
 typedef enum
 {
-#define _(f,s) MEMIF_INPUT_ERROR_##f,
+#define _(f, n, s, d) MEMIF_INPUT_ERROR_##f,
   foreach_memif_input_error
 #undef _
     MEMIF_INPUT_N_ERROR,
 } memif_input_error_t;
 
-static __clib_unused char *memif_input_error_strings[] = {
-#define _(n,s) s,
+static vlib_error_desc_t memif_input_error_counters[] = {
+#define _(f, n, s, d) { #n, d, VL_COUNTER_SEVERITY_##s },
   foreach_memif_input_error
 #undef _
 };
@@ -91,8 +91,6 @@ memif_trace_buffer (vlib_main_t * vm, vlib_node_runtime_t * node,
 		    memif_if_t * mif, vlib_buffer_t * b, u32 next, u16 qid,
 		    uword * n_tracep)
 {
-  VLIB_BUFFER_TRACE_TRAJECTORY_INIT (b);
-
   if (PREDICT_TRUE
       (b != 0 && vlib_trace_buffer (vm, node, next, b, /* follow_chain */ 0)))
     {
@@ -939,7 +937,7 @@ VLIB_REGISTER_NODE (memif_input_node) = {
   .type = VLIB_NODE_TYPE_INPUT,
   .state = VLIB_NODE_STATE_INTERRUPT,
   .n_errors = MEMIF_INPUT_N_ERROR,
-  .error_strings = memif_input_error_strings,
+  .error_counters = memif_input_error_counters,
 };
 
 /* *INDENT-ON* */

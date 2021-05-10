@@ -19,6 +19,7 @@
 #include <vlib/vlib.h>
 
 #define VNET_CRYPTO_FRAME_SIZE 64
+#define VNET_CRYPTO_FRAME_POOL_SIZE 1024
 
 /* CRYPTO_ID, PRETTY_NAME, KEY_LENGTH_IN_BYTES */
 #define foreach_crypto_cipher_alg \
@@ -38,6 +39,13 @@
   _(AES_256_GCM, "aes-256-gcm", 32) \
   _(CHACHA20_POLY1305, "chacha20-poly1305", 32)
 
+#define foreach_crypto_hash_alg                                               \
+  _ (SHA1, "sha-1")                                                           \
+  _ (SHA224, "sha-224")                                                       \
+  _ (SHA256, "sha-256")                                                       \
+  _ (SHA384, "sha-384")                                                       \
+  _ (SHA512, "sha-512")
+
 #define foreach_crypto_hmac_alg \
   _(MD5, "md5") \
   _(SHA1, "sha-1") \
@@ -46,12 +54,13 @@
   _(SHA384, "sha-384")  \
   _(SHA512, "sha-512")
 
-#define foreach_crypto_op_type \
-  _(ENCRYPT, "encrypt") \
-  _(DECRYPT, "decrypt") \
-  _(AEAD_ENCRYPT, "aead-encrypt") \
-  _(AEAD_DECRYPT, "aead-decrypt") \
-  _(HMAC, "hmac")
+#define foreach_crypto_op_type                                                \
+  _ (ENCRYPT, "encrypt")                                                      \
+  _ (DECRYPT, "decrypt")                                                      \
+  _ (AEAD_ENCRYPT, "aead-encrypt")                                            \
+  _ (AEAD_DECRYPT, "aead-decrypt")                                            \
+  _ (HMAC, "hmac")                                                            \
+  _ (HASH, "hash")
 
 typedef enum
 {
@@ -85,18 +94,27 @@ typedef enum
 
 /* CRYPTO_ID, INTEG_ID, PRETTY_NAME, KEY_LENGTH_IN_BYTES, DIGEST_LEN */
 #define foreach_crypto_link_async_alg                                         \
+  _ (3DES_CBC, MD5, "3des-cbc-hmac-md5", 24, 12)                              \
+  _ (AES_128_CBC, MD5, "aes-128-cbc-hmac-md5", 16, 12)                        \
+  _ (AES_192_CBC, MD5, "aes-192-cbc-hmac-md5", 24, 12)                        \
+  _ (AES_256_CBC, MD5, "aes-256-cbc-hmac-md5", 32, 12)                        \
+  _ (3DES_CBC, SHA1, "3des-cbc-hmac-sha-1", 24, 12)                           \
   _ (AES_128_CBC, SHA1, "aes-128-cbc-hmac-sha-1", 16, 12)                     \
   _ (AES_192_CBC, SHA1, "aes-192-cbc-hmac-sha-1", 24, 12)                     \
   _ (AES_256_CBC, SHA1, "aes-256-cbc-hmac-sha-1", 32, 12)                     \
+  _ (3DES_CBC, SHA224, "3des-cbc-hmac-sha-224", 24, 14)                       \
   _ (AES_128_CBC, SHA224, "aes-128-cbc-hmac-sha-224", 16, 14)                 \
   _ (AES_192_CBC, SHA224, "aes-192-cbc-hmac-sha-224", 24, 14)                 \
   _ (AES_256_CBC, SHA224, "aes-256-cbc-hmac-sha-224", 32, 14)                 \
+  _ (3DES_CBC, SHA256, "3des-cbc-hmac-sha-256", 24, 16)                       \
   _ (AES_128_CBC, SHA256, "aes-128-cbc-hmac-sha-256", 16, 16)                 \
   _ (AES_192_CBC, SHA256, "aes-192-cbc-hmac-sha-256", 24, 16)                 \
   _ (AES_256_CBC, SHA256, "aes-256-cbc-hmac-sha-256", 32, 16)                 \
+  _ (3DES_CBC, SHA384, "3des-cbc-hmac-sha-384", 24, 24)                       \
   _ (AES_128_CBC, SHA384, "aes-128-cbc-hmac-sha-384", 16, 24)                 \
   _ (AES_192_CBC, SHA384, "aes-192-cbc-hmac-sha-384", 24, 24)                 \
   _ (AES_256_CBC, SHA384, "aes-256-cbc-hmac-sha-384", 32, 24)                 \
+  _ (3DES_CBC, SHA512, "3des-cbc-hmac-sha-512", 24, 32)                       \
   _ (AES_128_CBC, SHA512, "aes-128-cbc-hmac-sha-512", 16, 32)                 \
   _ (AES_192_CBC, SHA512, "aes-192-cbc-hmac-sha-512", 24, 32)                 \
   _ (AES_256_CBC, SHA512, "aes-256-cbc-hmac-sha-512", 32, 32)                 \
@@ -128,13 +146,15 @@ typedef enum
 {
   VNET_CRYPTO_ALG_NONE = 0,
 #define _(n, s, l) VNET_CRYPTO_ALG_##n,
-  foreach_crypto_cipher_alg
-  foreach_crypto_aead_alg
+  foreach_crypto_cipher_alg foreach_crypto_aead_alg
 #undef _
 #define _(n, s) VNET_CRYPTO_ALG_HMAC_##n,
-  foreach_crypto_hmac_alg
+    foreach_crypto_hmac_alg
 #undef _
-  VNET_CRYPTO_N_ALGS,
+#define _(n, s) VNET_CRYPTO_ALG_HASH_##n,
+      foreach_crypto_hash_alg
+#undef _
+	VNET_CRYPTO_N_ALGS,
 } vnet_crypto_alg_t;
 
 typedef enum
@@ -200,13 +220,15 @@ typedef enum
 {
   VNET_CRYPTO_OP_NONE = 0,
 #define _(n, s, l) VNET_CRYPTO_OP_##n##_ENC, VNET_CRYPTO_OP_##n##_DEC,
-  foreach_crypto_cipher_alg
-  foreach_crypto_aead_alg
+  foreach_crypto_cipher_alg foreach_crypto_aead_alg
 #undef _
 #define _(n, s) VNET_CRYPTO_OP_##n##_HMAC,
- foreach_crypto_hmac_alg
+    foreach_crypto_hmac_alg
 #undef _
-    VNET_CRYPTO_N_OP_IDS,
+#define _(n, s) VNET_CRYPTO_OP_##n##_HASH,
+      foreach_crypto_hash_alg
+#undef _
+	VNET_CRYPTO_N_OP_IDS,
 } vnet_crypto_op_id_t;
 /* *INDENT-ON* */
 

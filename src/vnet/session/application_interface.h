@@ -114,9 +114,6 @@ typedef struct _vnet_bind_args_t
   /*
    * Results
    */
-  char *segment_name;
-  u32 segment_name_length;
-  u64 server_event_queue_address;
   u64 handle;
 } vnet_listen_args_t;
 
@@ -142,8 +139,6 @@ typedef struct _vnet_connect_args
   u32 app_index;
   u32 wrk_map_index;
   u32 api_context;
-
-  session_handle_t session_handle;
 } vnet_connect_args_t;
 
 typedef struct _vnet_disconnect_args_t
@@ -314,9 +309,8 @@ typedef struct session_listen_msg_
   u8 proto;
   u8 is_ip4;
   ip46_address_t ip;
-  u32 ckpair_index;
-  u8 crypto_engine;
   u8 flags;
+  uword ext_config;
 } __clib_packed session_listen_msg_t;
 
 STATIC_ASSERT (sizeof (session_listen_msg_t) <= SESSION_CTRL_MSG_MAX_SIZE,
@@ -394,12 +388,11 @@ typedef struct session_connect_msg_
   u8 is_ip4;
   ip46_address_t ip;
   ip46_address_t lcl_ip;
-  u8 hostname_len;
-  u8 hostname[16];
   u64 parent_handle;
   u32 ckpair_index;
   u8 crypto_engine;
   u8 flags;
+  uword ext_config;
 } __clib_packed session_connect_msg_t;
 
 STATIC_ASSERT (sizeof (session_connect_msg_t) <= SESSION_CTRL_MSG_MAX_SIZE,
@@ -534,6 +527,22 @@ typedef struct session_app_wrk_rpc_msg_
   u32 wrk_index;	/**< dst worker index */
   u8 data[64];		/**< rpc data */
 } __clib_packed session_app_wrk_rpc_msg_t;
+
+typedef struct session_transport_attr_msg_
+{
+  u32 client_index;
+  session_handle_t handle;
+  transport_endpt_attr_t attr;
+  u8 is_get;
+} __clib_packed session_transport_attr_msg_t;
+
+typedef struct session_transport_attr_reply_msg_
+{
+  i32 retval;
+  session_handle_t handle;
+  transport_endpt_attr_t attr;
+  u8 is_get;
+} __clib_packed session_transport_attr_reply_msg_t;
 
 typedef struct app_session_event_
 {
@@ -842,6 +851,20 @@ typedef struct app_sapi_msg_
     app_sapi_worker_add_del_reply_msg_t worker_add_del_reply;
   };
 } __clib_packed app_sapi_msg_t;
+
+static inline void
+session_endpoint_alloc_ext_cfg (session_endpoint_cfg_t *sep_ext,
+				transport_endpt_ext_cfg_type_t type)
+{
+  transport_endpt_ext_cfg_t *cfg;
+  u32 cfg_size;
+
+  cfg_size = sizeof (transport_endpt_ext_cfg_t);
+  cfg = clib_mem_alloc (cfg_size);
+  clib_memset (cfg, 0, cfg_size);
+  cfg->type = type;
+  sep_ext->ext_cfg = cfg;
+}
 
 #endif /* __included_uri_h__ */
 

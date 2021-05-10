@@ -22,6 +22,7 @@ from inspect import getdoc, isclass
 from traceback import format_exception
 from logging import FileHandler, DEBUG, Formatter
 from enum import Enum
+from abc import ABC, abstractmethod
 
 import scapy.compat
 from scapy.packet import Raw
@@ -42,6 +43,8 @@ from scapy.layers.inet import IPerror, TCPerror, UDPerror, ICMPerror
 from scapy.layers.inet6 import ICMPv6DestUnreach, ICMPv6EchoRequest
 from scapy.layers.inet6 import ICMPv6EchoReply
 
+from cpu_config import available_cpus, num_cpus, max_vpp_cpus
+
 logger = logging.getLogger(__name__)
 
 # Set up an empty logger for the testcase that can be overridden as necessary
@@ -53,6 +56,7 @@ FAIL = 1
 ERROR = 2
 SKIP = 3
 TEST_RUN = 4
+SKIP_CPU_SHORTAGE = 5
 
 
 class BoolEnvironmentVariable(object):
@@ -223,6 +227,21 @@ def _running_gcov_tests():
 running_gcov_tests = _running_gcov_tests()
 
 
+def get_environ_vpp_worker_count():
+    worker_config = os.getenv("VPP_WORKER_CONFIG", None)
+    if worker_config:
+        elems = worker_config.split(" ")
+        if elems[0] != "workers" or len(elems) != 2:
+            raise ValueError("Wrong VPP_WORKER_CONFIG == '%s' value." %
+                             worker_config)
+        return int(elems[1])
+    else:
+        return 0
+
+
+environ_vpp_worker_count = get_environ_vpp_worker_count()
+
+
 class KeepAliveReporter(object):
     """
     Singleton object which reports test start to parent process
@@ -281,11 +300,37 @@ tag_run_solo = create_tag_decorator(TestCaseTag.RUN_SOLO)
 tag_fixme_vpp_workers = create_tag_decorator(TestCaseTag.FIXME_VPP_WORKERS)
 
 
-class VppTestCase(unittest.TestCase):
+class DummyVpp:
+    returncode = None
+    pid = 0xcafebafe
+
+    def poll(self):
+        pass
+
+    def terminate(self):
+        pass
+
+
+class CPUInterface(ABC):
+    cpus = []
+    skipped_due_to_cpu_lack = False
+
+    @classmethod
+    @abstractmethod
+    def get_cpus_required(cls):
+        pass
+
+    @classmethod
+    def assign_cpus(cls, cpus):
+        cls.cpus = cpus
+
+
+class VppTestCase(CPUInterface, unittest.TestCase):
     """This subclass is a base class for VPP test cases that are implemented as
     classes. It provides methods to create and run test case.
     """
 
+    extra_vpp_statseg_config = ""
     extra_vpp_punt_config = []
     extra_vpp_plugin_config = []
     logger = null_logger
@@ -330,6 +375,7 @@ class VppTestCase(unittest.TestCase):
         cls.debug_gdb = False
         cls.debug_gdbserver = False
         cls.debug_all = False
+        cls.debug_attach = False
         if d is None:
             return
         dl = d.lower()
@@ -339,49 +385,33 @@ class VppTestCase(unittest.TestCase):
             cls.debug_gdb = True
         elif dl == "gdbserver" or dl == "gdbserver-all":
             cls.debug_gdbserver = True
+        elif dl == "attach":
+            cls.debug_attach = True
         else:
             raise Exception("Unrecognized DEBUG option: '%s'" % d)
         if dl == "gdb-all" or dl == "gdbserver-all":
             cls.debug_all = True
 
-    @staticmethod
-    def get_least_used_cpu():
-        cpu_usage_list = [set(range(psutil.cpu_count()))]
-        vpp_processes = [p for p in psutil.process_iter(attrs=['pid', 'name'])
-                         if 'vpp_main' == p.info['name']]
-        for vpp_process in vpp_processes:
-            for cpu_usage_set in cpu_usage_list:
-                try:
-                    cpu_num = vpp_process.cpu_num()
-                    if cpu_num in cpu_usage_set:
-                        cpu_usage_set_index = cpu_usage_list.index(
-                            cpu_usage_set)
-                        if cpu_usage_set_index == len(cpu_usage_list) - 1:
-                            cpu_usage_list.append({cpu_num})
-                        else:
-                            cpu_usage_list[cpu_usage_set_index + 1].add(
-                                cpu_num)
-                        cpu_usage_set.remove(cpu_num)
-                        break
-                except psutil.NoSuchProcess:
-                    pass
+    @classmethod
+    def get_vpp_worker_count(cls):
+        if not hasattr(cls, "vpp_worker_count"):
+            if cls.has_tag(TestCaseTag.FIXME_VPP_WORKERS):
+                cls.vpp_worker_count = 0
+            else:
+                cls.vpp_worker_count = environ_vpp_worker_count
+        return cls.vpp_worker_count
 
-        for cpu_usage_set in cpu_usage_list:
-            if len(cpu_usage_set) > 0:
-                min_usage_set = cpu_usage_set
-                break
-
-        return random.choice(tuple(min_usage_set))
+    @classmethod
+    def get_cpus_required(cls):
+        return 1 + cls.get_vpp_worker_count()
 
     @classmethod
     def setUpConstants(cls):
         """ Set-up the test case class based on environment variables """
         cls.step = BoolEnvironmentVariable('STEP')
-        d = os.getenv("DEBUG", None)
         # inverted case to handle '' == True
         c = os.getenv("CACHE_OUTPUT", "1")
         cls.cache_vpp_output = False if c.lower() in ("n", "no", "0") else True
-        cls.set_debug_flags(d)
         cls.vpp_bin = os.getenv('VPP_BIN', "vpp")
         cls.plugin_path = os.getenv('VPP_PLUGIN_PATH')
         cls.test_plugin_path = os.getenv('VPP_TEST_PLUGIN_PATH')
@@ -405,20 +435,6 @@ class VppTestCase(unittest.TestCase):
         if coredump_size is None:
             coredump_size = "coredump-size unlimited"
 
-        cpu_core_number = cls.get_least_used_cpu()
-        if not hasattr(cls, "vpp_worker_count"):
-            cls.vpp_worker_count = 0
-            worker_config = os.getenv("VPP_WORKER_CONFIG", "")
-            if worker_config:
-                elems = worker_config.split(" ")
-                if elems[0] != "workers" or len(elems) != 2:
-                    raise ValueError("Wrong VPP_WORKER_CONFIG == '%s' value." %
-                                     worker_config)
-                cls.vpp_worker_count = int(elems[1])
-                if cls.vpp_worker_count > 0 and\
-                        cls.has_tag(TestCaseTag.FIXME_VPP_WORKERS):
-                    cls.vpp_worker_count = 0
-
         default_variant = os.getenv("VARIANT")
         if default_variant is not None:
             default_variant = "defaults { %s 100 }" % default_variant
@@ -434,15 +450,17 @@ class VppTestCase(unittest.TestCase):
             "unix", "{", "nodaemon", debug_cli, "full-coredump",
             coredump_size, "runtime-dir", cls.tempdir, "}",
             "api-trace", "{", "on", "}",
-            "api-segment", "{", "prefix", cls.shm_prefix, "}",
-            "cpu", "{", "main-core", str(cpu_core_number), ]
-        if cls.vpp_worker_count:
-            cls.vpp_cmdline.extend(["workers", str(cls.vpp_worker_count)])
+            "api-segment", "{", "prefix", cls.get_api_segment_prefix(), "}",
+            "cpu", "{", "main-core", str(cls.cpus[0]), ]
+        if cls.get_vpp_worker_count():
+            cls.vpp_cmdline.extend([
+                "corelist-workers", ",".join([str(x) for x in cls.cpus[1:]])])
         cls.vpp_cmdline.extend([
             "}",
             "physmem", "{", "max-size", "32m", "}",
-            "statseg", "{", "socket-name", cls.stats_sock, "}",
-            "socksvr", "{", "socket-name", cls.api_sock, "}",
+            "statseg", "{", "socket-name", cls.get_stats_sock_path(),
+            cls.extra_vpp_statseg_config, "}",
+            "socksvr", "{", "socket-name", cls.get_api_sock_path(), "}",
             "node { ", default_variant, "}",
             "api-fuzz {", api_fuzzing, "}",
             "plugins", "{", "plugin", "dpdk_plugin.so", "{", "disable", "}",
@@ -458,8 +476,9 @@ class VppTestCase(unittest.TestCase):
         if cls.test_plugin_path is not None:
             cls.vpp_cmdline.extend(["test_plugin_path", cls.test_plugin_path])
 
-        cls.logger.info("vpp_cmdline args: %s" % cls.vpp_cmdline)
-        cls.logger.info("vpp_cmdline: %s" % " ".join(cls.vpp_cmdline))
+        if not cls.debug_attach:
+            cls.logger.info("vpp_cmdline args: %s" % cls.vpp_cmdline)
+            cls.logger.info("vpp_cmdline: %s" % " ".join(cls.vpp_cmdline))
 
     @classmethod
     def wait_for_enter(cls):
@@ -491,12 +510,17 @@ class VppTestCase(unittest.TestCase):
         input("Press ENTER to continue running the testcase...")
 
     @classmethod
+    def attach_vpp(cls):
+        cls.vpp = DummyVpp()
+
+    @classmethod
     def run_vpp(cls):
+        cls.logger.debug(f"Assigned cpus: {cls.cpus}")
         cmdline = cls.vpp_cmdline
 
         if cls.debug_gdbserver:
             gdbserver = '/usr/bin/gdbserver'
-            if not os.path.isfile(gdbserver) or \
+            if not os.path.isfile(gdbserver) or\
                     not os.access(gdbserver, os.X_OK):
                 raise Exception("gdbserver binary '%s' does not exist or is "
                                 "not executable" % gdbserver)
@@ -547,40 +571,56 @@ class VppTestCase(unittest.TestCase):
                                  corefile, curr_size)
 
     @classmethod
+    def get_stats_sock_path(cls):
+        return "%s/stats.sock" % cls.tempdir
+
+    @classmethod
+    def get_api_sock_path(cls):
+        return "%s/api.sock" % cls.tempdir
+
+    @classmethod
+    def get_api_segment_prefix(cls):
+        return os.path.basename(cls.tempdir)  # Only used for VAPI
+
+    @classmethod
+    def get_tempdir(cls):
+        if cls.debug_attach:
+            return os.getenv("VPP_IN_GDB_TMP_DIR",
+                             "/tmp/unittest-attach-gdb")
+        else:
+            return tempfile.mkdtemp(prefix='vpp-unittest-%s-' % cls.__name__)
+
+    @classmethod
     def setUpClass(cls):
         """
         Perform class setup before running the testcase
         Remove shared memory files, start vpp and connect the vpp-api
         """
         super(VppTestCase, cls).setUpClass()
-        gc.collect()  # run garbage collection first
         cls.logger = get_logger(cls.__name__)
         seed = os.environ["RND_SEED"]
         random.seed(seed)
         if hasattr(cls, 'parallel_handler'):
             cls.logger.addHandler(cls.parallel_handler)
             cls.logger.propagate = False
-
-        cls.tempdir = tempfile.mkdtemp(
-            prefix='vpp-unittest-%s-' % cls.__name__)
-        cls.stats_sock = "%s/stats.sock" % cls.tempdir
-        cls.api_sock = "%s/api.sock" % cls.tempdir
+        d = os.getenv("DEBUG", None)
+        cls.set_debug_flags(d)
+        cls.tempdir = cls.get_tempdir()
         cls.file_handler = FileHandler("%s/log.txt" % cls.tempdir)
         cls.file_handler.setFormatter(
             Formatter(fmt='%(asctime)s,%(msecs)03d %(message)s',
                       datefmt="%H:%M:%S"))
         cls.file_handler.setLevel(DEBUG)
         cls.logger.addHandler(cls.file_handler)
-        cls.logger.debug("--- setUpClass() for %s called ---" %
-                         cls.__name__)
-        cls.shm_prefix = os.path.basename(cls.tempdir)  # Only used for VAPI
+        cls.logger.debug("--- setUpClass() for %s called ---" % cls.__name__)
         os.chdir(cls.tempdir)
         cls.logger.info("Temporary dir is %s, api socket is %s",
-                        cls.tempdir, cls.api_sock)
-        cls.logger.debug("Random seed is %s" % seed)
+                        cls.tempdir, cls.get_api_sock_path())
+        cls.logger.debug("Random seed is %s", seed)
         cls.setUpConstants()
         cls.reset_packet_infos()
-        cls._captures = []
+        cls._pcaps = []
+        cls._old_pcaps = []
         cls.verbose = 0
         cls.vpp_dead = False
         cls.registry = VppObjectRegistry()
@@ -589,18 +629,22 @@ class VppTestCase(unittest.TestCase):
         # need to catch exceptions here because if we raise, then the cleanup
         # doesn't get called and we might end with a zombie vpp
         try:
-            cls.run_vpp()
+            if cls.debug_attach:
+                cls.attach_vpp()
+            else:
+                cls.run_vpp()
             cls.reporter.send_keep_alive(cls, 'setUpClass')
             VppTestResult.current_test_case_info = TestCaseInfo(
                 cls.logger, cls.tempdir, cls.vpp.pid, cls.vpp_bin)
             cls.vpp_stdout_deque = deque()
             cls.vpp_stderr_deque = deque()
-            cls.pump_thread_stop_flag = Event()
-            cls.pump_thread_wakeup_pipe = os.pipe()
-            cls.pump_thread = Thread(target=pump_output, args=(cls,))
-            cls.pump_thread.daemon = True
-            cls.pump_thread.start()
-            if cls.debug_gdb or cls.debug_gdbserver:
+            if not cls.debug_attach:
+                cls.pump_thread_stop_flag = Event()
+                cls.pump_thread_wakeup_pipe = os.pipe()
+                cls.pump_thread = Thread(target=pump_output, args=(cls,))
+                cls.pump_thread.daemon = True
+                cls.pump_thread.start()
+            if cls.debug_gdb or cls.debug_gdbserver or cls.debug_attach:
                 cls.vapi_response_timeout = 0
             cls.vapi = VppPapiProvider(cls.__name__, cls,
                                        cls.vapi_response_timeout)
@@ -609,7 +653,7 @@ class VppTestCase(unittest.TestCase):
             else:
                 hook = hookmodule.PollHook(cls)
             cls.vapi.register_hook(hook)
-            cls.statistics = VPPStats(socketname=cls.stats_sock)
+            cls.statistics = VPPStats(socketname=cls.get_stats_sock_path())
             try:
                 hook.poll_vpp()
             except VppDiedError:
@@ -629,6 +673,10 @@ class VppTestCase(unittest.TestCase):
                                    "VPP-API connection failed, did you forget "
                                    "to 'continue' VPP from within gdb?", RED))
                 raise e
+            if cls.debug_attach:
+                last_line = cls.vapi.cli("show thread").split("\n")[-2]
+                cls.vpp_worker_count = int(last_line.split(" ")[0])
+                print("Detected VPP with %s workers." % cls.vpp_worker_count)
         except vpp_papi.VPPRuntimeError as e:
             cls.logger.debug("%s" % e)
             cls.quit()
@@ -683,7 +731,7 @@ class VppTestCase(unittest.TestCase):
                                  cls.__name__)
                 del cls.vapi
             cls.vpp.poll()
-            if cls.vpp.returncode is None:
+            if not cls.debug_attach and cls.vpp.returncode is None:
                 cls.wait_for_coredump()
                 cls.logger.debug("Sending TERM to vpp")
                 cls.vpp.terminate()
@@ -695,8 +743,9 @@ class VppTestCase(unittest.TestCase):
                     outs, errs = cls.vpp.communicate()
             cls.logger.debug("Deleting class vpp attribute on %s",
                              cls.__name__)
-            cls.vpp.stdout.close()
-            cls.vpp.stderr.close()
+            if not cls.debug_attach:
+                cls.vpp.stdout.close()
+                cls.vpp.stderr.close()
             del cls.vpp
 
         if cls.vpp_startup_failed:
@@ -814,10 +863,10 @@ class VppTestCase(unittest.TestCase):
             i.enable_capture()
 
     @classmethod
-    def register_capture(cls, cap_name):
-        """ Register a capture in the testclass """
+    def register_pcap(cls, intf, worker):
+        """ Register a pcap in the testclass """
         # add to the list of captures with current timestamp
-        cls._captures.append((time.time(), cap_name))
+        cls._pcaps.append((intf, worker))
 
     @classmethod
     def get_vpp_time(cls):
@@ -841,6 +890,10 @@ class VppTestCase(unittest.TestCase):
     @classmethod
     def pg_start(cls, trace=True):
         """ Enable the PG, wait till it is done, then clean up """
+        for (intf, worker) in cls._old_pcaps:
+            intf.rename_old_pcap_file(intf.get_in_path(worker),
+                                      intf.in_history_counter)
+        cls._old_pcaps = []
         if trace:
             cls.vapi.cli("clear trace")
             cls.vapi.cli("trace add pg-input 1000")
@@ -855,9 +908,11 @@ class VppTestCase(unittest.TestCase):
             if time.time() > deadline:
                 cls.logger.error("Timeout waiting for pg to stop")
                 break
-        for stamp, cap_name in cls._captures:
-            cls.vapi.cli('packet-generator delete %s' % cap_name)
-        cls._captures = []
+        for intf, worker in cls._pcaps:
+            cls.vapi.cli('packet-generator delete %s' %
+                         intf.get_cap_name(worker))
+        cls._old_pcaps = cls._pcaps
+        cls._pcaps = []
 
     @classmethod
     def create_pg_interfaces(cls, interfaces, gso=0, gso_size=0):
@@ -1301,6 +1356,7 @@ class VppTestResult(unittest.TestResult):
         self.verbosity = verbosity
         self.result_string = None
         self.runner = runner
+        self.printed = []
 
     def addSuccess(self, test):
         """
@@ -1335,7 +1391,10 @@ class VppTestResult(unittest.TestResult):
         unittest.TestResult.addSkip(self, test, reason)
         self.result_string = colorize("SKIP", YELLOW)
 
-        self.send_result_through_pipe(test, SKIP)
+        if reason == "not enough cpus":
+            self.send_result_through_pipe(test, SKIP_CPU_SHORTAGE)
+        else:
+            self.send_result_through_pipe(test, SKIP)
 
     def symlink_failed(self):
         if self.current_test_case_info:
@@ -1453,28 +1512,42 @@ class VppTestResult(unittest.TestResult):
         """
 
         def print_header(test):
+            if test.__class__ in self.printed:
+                return
+
             test_doc = getdoc(test)
             if not test_doc:
                 raise Exception("No doc string for test '%s'" % test.id())
-            test_title = test_doc.splitlines()[0]
-            test_title_colored = colorize(test_title, GREEN)
+
+            test_title = test_doc.splitlines()[0].rstrip()
+            test_title = colorize(test_title, GREEN)
             if test.is_tagged_run_solo():
-                # long live PEP-8 and 80 char width limitation...
-                c = YELLOW
-                test_title_colored = colorize("SOLO RUN: " + test_title, c)
+                test_title = colorize(f"SOLO RUN: {test_title}", YELLOW)
 
             # This block may overwrite the colorized title above,
             # but we want this to stand out and be fixed
             if test.has_tag(TestCaseTag.FIXME_VPP_WORKERS):
-                c = RED
-                w = "FIXME with VPP workers: "
-                test_title_colored = colorize(w + test_title, c)
+                test_title = colorize(
+                    f"FIXME with VPP workers: {test_title}", RED)
 
-            if not hasattr(test.__class__, '_header_printed'):
-                print(double_line_delim)
-                print(test_title_colored)
-                print(double_line_delim)
-            test.__class__._header_printed = True
+            if hasattr(test, 'vpp_worker_count'):
+                if test.vpp_worker_count == 0:
+                    test_title += " [main thread only]"
+                elif test.vpp_worker_count == 1:
+                    test_title += " [1 worker thread]"
+                else:
+                    test_title += f" [{test.vpp_worker_count} worker threads]"
+
+            if test.__class__.skipped_due_to_cpu_lack:
+                test_title = colorize(
+                    f"{test_title} [skipped - not enough cpus, "
+                    f"required={test.__class__.get_cpus_required()}, "
+                    f"available={max_vpp_cpus}]", YELLOW)
+
+            print(double_line_delim)
+            print(test_title)
+            print(double_line_delim)
+            self.printed.append(test.__class__)
 
         print_header(test)
         self.start_test = time.time()

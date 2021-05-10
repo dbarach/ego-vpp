@@ -160,12 +160,12 @@ typedef struct vcl_session_
   vppcom_epoll_t vep;
   u32 attributes;		/**< see @ref vppcom_session_attr_t */
   int libc_epfd;
-  u32 ckpair_index;
   u32 vrf;
 
   u32 sndbuf_size;		// VPP-TBD: Hack until support setsockopt(SO_SNDBUF)
   u32 rcvbuf_size;		// VPP-TBD: Hack until support setsockopt(SO_RCVBUF)
-  u32 user_mss;			// VPP-TBD: Hack until support setsockopt(TCP_MAXSEG)
+
+  transport_endpt_ext_cfg_t *ext_config;
 
 #if VCL_ELOG
   elog_track_t elog_track;
@@ -286,10 +286,15 @@ typedef struct vcl_worker_
   clib_socket_t app_api_sock;
   socket_client_main_t bapi_sock_ctx;
   api_main_t bapi_api_ctx;
+  memory_client_main_t bapi_mem_ctx;
 
   /* State of the connection, shared between msg RX thread and main thread */
   volatile vcl_bapi_app_state_t bapi_app_state;
   volatile uword bapi_return;
+
+  u8 session_attr_op;
+  int session_attr_op_rv;
+  transport_endpt_attr_t session_attr_rv;
 
   /** vcl needs next epoll_create to go to libc_epoll */
   u8 vcl_needs_real_epoll;
@@ -383,6 +388,8 @@ vcl_session_free (vcl_worker_t * wrk, vcl_session_t * s)
   /* Debug level set to 1 to avoid debug messages while ldp is cleaning up */
   VDBG (1, "session %u [0x%llx] removed", s->session_index, s->vpp_handle);
   vcl_session_detach_fifos (s);
+  if (s->ext_config)
+    clib_mem_free (s->ext_config);
   pool_put (wrk->sessions, s);
 }
 
@@ -657,6 +664,8 @@ void vcl_segment_table_del (u64 segment_handle);
 
 int vcl_session_read_ready (vcl_session_t * session);
 int vcl_session_write_ready (vcl_session_t * session);
+int vcl_session_alloc_ext_cfg (vcl_session_t *s,
+			       transport_endpt_ext_cfg_type_t type, u32 len);
 
 static inline vcl_worker_t *
 vcl_worker_get (u32 wrk_index)
@@ -705,6 +714,9 @@ int vcl_segment_attach_session (uword segment_handle, uword rxf_offset,
 int vcl_segment_attach_mq (uword segment_handle, uword mq_offset, u32 mq_index,
 			   svm_msg_q_t **mq);
 int vcl_segment_discover_mqs (uword segment_handle, int *fds, u32 n_fds);
+svm_fifo_chunk_t *vcl_segment_alloc_chunk (uword segment_handle,
+					   u32 slice_index, u32 size,
+					   uword *offset);
 
 /*
  * VCL Binary API

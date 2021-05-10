@@ -176,7 +176,7 @@ tcp_make_syn_options (tcp_connection_t * tc, tcp_options_t * opts)
   len += TCP_OPTION_LEN_WINDOW_SCALE;
 
   opts->flags |= TCP_OPTS_FLAG_TSTAMP;
-  opts->tsval = tcp_time_now ();
+  opts->tsval = tcp_time_tstamp (tc->c_thread_index);
   opts->tsecr = 0;
   len += TCP_OPTION_LEN_TIMESTAMP;
 
@@ -210,7 +210,7 @@ tcp_make_synack_options (tcp_connection_t * tc, tcp_options_t * opts)
   if (tcp_opts_tstamp (&tc->rcv_opts))
     {
       opts->flags |= TCP_OPTS_FLAG_TSTAMP;
-      opts->tsval = tcp_time_now ();
+      opts->tsval = tcp_time_tstamp (tc->c_thread_index);
       opts->tsecr = tc->tsval_recent;
       len += TCP_OPTION_LEN_TIMESTAMP;
     }
@@ -345,7 +345,7 @@ tcp_reuse_buffer (vlib_main_t * vm, vlib_buffer_t * b)
   b->current_length = 0;
   b->total_length_not_including_first_buffer = 0;
   vnet_buffer (b)->tcp.flags = 0;
-
+  VLIB_BUFFER_TRACE_TRAJECTORY_INIT (b);
   /* Leave enough space for headers */
   return vlib_buffer_make_headroom (b, TRANSPORT_MAX_HDRS_LEN);
 }
@@ -359,7 +359,6 @@ tcp_init_buffer (vlib_main_t * vm, vlib_buffer_t * b)
   b->total_length_not_including_first_buffer = 0;
   b->current_data = 0;
   vnet_buffer (b)->tcp.flags = 0;
-  VLIB_BUFFER_TRACE_TRAJECTORY_INIT (b);
   /* Leave enough space for headers */
   return vlib_buffer_make_headroom (b, TRANSPORT_MAX_HDRS_LEN);
 }
@@ -463,7 +462,10 @@ tcp_make_ack_i (tcp_connection_t * tc, vlib_buffer_t * b, tcp_state_t state,
   vnet_buffer (b)->tcp.connection_index = tc->c_c_index;
 
   if (wnd == 0)
-    tcp_zero_rwnd_sent_on (tc);
+    {
+      transport_rx_fifo_req_deq_ntf (&tc->connection);
+      tcp_zero_rwnd_sent_on (tc);
+    }
   else
     tcp_zero_rwnd_sent_off (tc);
 }
@@ -552,8 +554,6 @@ tcp_enqueue_to_ip_lookup (tcp_worker_ctx_t * wrk, vlib_buffer_t * b, u32 bi,
   vnet_buffer (b)->sw_if_index[VLIB_TX] = fib_index;
   vnet_buffer (b)->sw_if_index[VLIB_RX] = 0;
 
-  tcp_trajectory_add_start (b, 1);
-
   session_add_pending_tx_buffer (vm->thread_index, bi,
 				 tm->ipl_next_node[!is_ip4]);
 
@@ -630,7 +630,6 @@ tcp_make_reset_in_place (vlib_main_t * vm, vlib_buffer_t * b, u8 is_ip4)
     }
 
   tcp_reuse_buffer (vm, b);
-  tcp_trajectory_add_start (b, 4);
   th = vlib_buffer_push_tcp_net_order (b, dst_port, src_port, seq, ack,
 				       sizeof (tcp_header_t), flags, 0);
 
@@ -1015,7 +1014,6 @@ tcp_session_push_header (transport_connection_t * tconn, vlib_buffer_t * b)
       tcp_retransmit_timer_set (&wrk->timer_wheel, tc);
       tc->rto_boff = 0;
     }
-  tcp_trajectory_add_start (b, 3);
   return 0;
 }
 
@@ -2188,7 +2186,7 @@ tcp46_output_inline (vlib_main_t * vm, vlib_node_runtime_t * node,
 
   from = vlib_frame_vector_args (frame);
   n_left_from = frame->n_vectors;
-  tcp_set_time_now (tcp_get_worker (thread_index));
+  tcp_update_time_now (tcp_get_worker (thread_index));
 
   if (PREDICT_FALSE (node->flags & VLIB_NODE_FLAG_TRACE))
     tcp46_output_trace_frame (vm, node, from, n_left_from);

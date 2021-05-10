@@ -138,8 +138,14 @@ vcl_worker_cleanup (vcl_worker_t * wrk, u8 notify_vpp)
 static void
 vcl_worker_cleanup_cb (void *arg)
 {
-  vcl_worker_t *wrk = vcl_worker_get_current ();
-  u32 wrk_index = wrk->wrk_index;
+  vcl_worker_t *wrk;
+  u32 wrk_index;
+
+  wrk_index = vcl_get_worker_index ();
+  wrk = vcl_worker_get_if_valid (wrk_index);
+  if (!wrk)
+    return;
+
   vcl_worker_cleanup (wrk, 1 /* notify vpp */ );
   vcl_set_worker_index (~0);
   VDBG (0, "cleaned up worker %u", wrk_index);
@@ -310,6 +316,21 @@ vcl_session_write_ready (vcl_session_t * s)
 }
 
 int
+vcl_session_alloc_ext_cfg (vcl_session_t *s,
+			   transport_endpt_ext_cfg_type_t type, u32 len)
+{
+  if (s->ext_config)
+    return -1;
+
+  s->ext_config = clib_mem_alloc (len);
+  clib_memset (s->ext_config, 0, len);
+  s->ext_config->len = len;
+  s->ext_config->type = type;
+
+  return 0;
+}
+
+int
 vcl_segment_attach (u64 segment_handle, char *name, ssvm_segment_type_t type,
 		    int fd)
 {
@@ -453,8 +474,11 @@ vcl_session_detach_fifos (vcl_session_t *s)
   fifo_segment_free_client_fifo (fs, s->tx_fifo);
   if (s->ct_rx_fifo)
     {
-      fs = fifo_segment_get_segment (&vcm->segment_main,
-				     s->ct_rx_fifo->segment_index);
+      fs = fifo_segment_get_segment_if_valid (&vcm->segment_main,
+					      s->ct_rx_fifo->segment_index);
+      if (!fs)
+	goto done;
+
       fifo_segment_free_client_fifo (fs, s->ct_rx_fifo);
       fifo_segment_free_client_fifo (fs, s->ct_tx_fifo);
     }
@@ -508,6 +532,32 @@ vcl_segment_discover_mqs (uword segment_handle, int *fds, u32 n_fds)
   clib_rwlock_reader_unlock (&vcm->segment_table_lock);
 
   return 0;
+}
+
+svm_fifo_chunk_t *
+vcl_segment_alloc_chunk (uword segment_handle, u32 slice_index, u32 size,
+			 uword *offset)
+{
+  svm_fifo_chunk_t *c;
+  fifo_segment_t *fs;
+  u32 fs_index;
+
+  fs_index = vcl_segment_table_lookup (segment_handle);
+  if (fs_index == VCL_INVALID_SEGMENT_INDEX)
+    {
+      VDBG (0, "ERROR: mq segment %lx for is not attached!", segment_handle);
+      return 0;
+    }
+
+  clib_rwlock_reader_lock (&vcm->segment_table_lock);
+
+  fs = fifo_segment_get_segment (&vcm->segment_main, fs_index);
+  c = fifo_segment_alloc_chunk_w_slice (fs, slice_index, size);
+  *offset = fifo_segment_chunk_offset (fs, c);
+
+  clib_rwlock_reader_unlock (&vcm->segment_table_lock);
+
+  return c;
 }
 
 /*

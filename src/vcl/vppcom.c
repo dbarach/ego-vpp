@@ -164,6 +164,18 @@ format_ip46_address (u8 * s, va_list * args)
  */
 
 static void
+vcl_msg_add_ext_config (vcl_session_t *s, uword *offset)
+{
+  svm_fifo_chunk_t *c;
+
+  c = vcl_segment_alloc_chunk (vcl_vpp_worker_segment_handle (0),
+			       0 /* one slice only */, s->ext_config->len,
+			       offset);
+  if (c)
+    clib_memcpy_fast (c->data, s->ext_config, s->ext_config->len);
+}
+
+static void
 vcl_send_session_listen (vcl_worker_t * wrk, vcl_session_t * s)
 {
   app_session_evt_t _app_evt, *app_evt = &_app_evt;
@@ -181,11 +193,17 @@ vcl_send_session_listen (vcl_worker_t * wrk, vcl_session_t * s)
   clib_memcpy_fast (&mp->ip, &s->transport.lcl_ip, sizeof (mp->ip));
   mp->port = s->transport.lcl_port;
   mp->proto = s->session_type;
-  mp->ckpair_index = s->ckpair_index;
   mp->vrf = s->vrf;
   if (s->flags & VCL_SESSION_F_CONNECTED)
     mp->flags = TRANSPORT_CFG_F_CONNECTED;
+  if (s->ext_config)
+    vcl_msg_add_ext_config (s, &mp->ext_config);
   app_send_ctrl_evt_to_vpp (mq, app_evt);
+  if (s->ext_config)
+    {
+      clib_mem_free (s->ext_config);
+      s->ext_config = 0;
+    }
 }
 
 static void
@@ -209,11 +227,18 @@ vcl_send_session_connect (vcl_worker_t * wrk, vcl_session_t * s)
   mp->port = s->transport.rmt_port;
   mp->lcl_port = s->transport.lcl_port;
   mp->proto = s->session_type;
-  mp->ckpair_index = s->ckpair_index;
   mp->vrf = s->vrf;
   if (s->flags & VCL_SESSION_F_CONNECTED)
     mp->flags |= TRANSPORT_CFG_F_CONNECTED;
+  if (s->ext_config)
+    vcl_msg_add_ext_config (s, &mp->ext_config);
   app_send_ctrl_evt_to_vpp (mq, app_evt);
+
+  if (s->ext_config)
+    {
+      clib_mem_free (s->ext_config);
+      s->ext_config = 0;
+    }
 }
 
 void
@@ -358,6 +383,42 @@ vcl_send_worker_rpc (u32 dst_wrk_index, void *data, u32 data_len)
 done:
   clib_spinlock_unlock (&vcm->workers_lock);
   return ret;
+}
+
+int
+vcl_session_transport_attr (vcl_worker_t *wrk, vcl_session_t *s, u8 is_get,
+			    transport_endpt_attr_t *attr)
+{
+  app_session_evt_t _app_evt, *app_evt = &_app_evt;
+  session_transport_attr_msg_t *mp;
+  svm_msg_q_t *mq;
+  f64 timeout;
+
+  ASSERT (!wrk->session_attr_op);
+  wrk->session_attr_op = 1;
+  wrk->session_attr_op_rv = -1;
+
+  mq = s->vpp_evt_q;
+  app_alloc_ctrl_evt_to_vpp (mq, app_evt, SESSION_CTRL_EVT_TRANSPORT_ATTR);
+  mp = (session_transport_attr_msg_t *) app_evt->evt->data;
+  memset (mp, 0, sizeof (*mp));
+  mp->client_index = wrk->api_client_handle;
+  mp->handle = s->vpp_handle;
+  mp->is_get = is_get;
+  mp->attr = *attr;
+  app_send_ctrl_evt_to_vpp (mq, app_evt);
+
+  timeout = clib_time_now (&wrk->clib_time) + 1;
+
+  while (wrk->session_attr_op && clib_time_now (&wrk->clib_time) < timeout)
+    vcl_flush_mq_events ();
+
+  if (!wrk->session_attr_op_rv && is_get)
+    *attr = wrk->session_attr_rv;
+
+  wrk->session_attr_op = 0;
+
+  return wrk->session_attr_op_rv;
 }
 
 static u32
@@ -936,6 +997,21 @@ vcl_worker_rpc_handler (vcl_worker_t * wrk, void *data)
   (vcm->wrk_rpc_fn) (((session_app_wrk_rpc_msg_t *) data)->data);
 }
 
+static void
+vcl_session_transport_attr_reply_handler (vcl_worker_t *wrk, void *data)
+{
+  session_transport_attr_reply_msg_t *mp;
+
+  if (!wrk->session_attr_op)
+    return;
+
+  mp = (session_transport_attr_reply_msg_t *) data;
+
+  wrk->session_attr_op_rv = mp->retval;
+  wrk->session_attr_op = 0;
+  wrk->session_attr_rv = mp->attr;
+}
+
 static int
 vcl_handle_mq_event (vcl_worker_t * wrk, session_event_t * e)
 {
@@ -1030,6 +1106,9 @@ vcl_handle_mq_event (vcl_worker_t * wrk, session_event_t * e)
       break;
     case SESSION_CTRL_EVT_APP_WRK_RPC:
       vcl_worker_rpc_handler (wrk, e->data);
+      break;
+    case SESSION_CTRL_EVT_TRANSPORT_ATTR_REPLY:
+      vcl_session_transport_attr_reply_handler (wrk, e->data);
       break;
     default:
       clib_warning ("unhandled %u", e->event_type);
@@ -1293,7 +1372,6 @@ vppcom_session_create (u8 proto, u8 is_nonblocking)
   session->session_type = proto;
   session->session_state = VCL_STATE_CLOSED;
   session->vpp_handle = ~0;
-  session->ckpair_index = ~0;
   session->is_dgram = vcl_proto_is_dgram (proto);
 
   if (is_nonblocking)
@@ -2923,56 +3001,50 @@ handle_dequeued:
 }
 
 static int
-vppcom_epoll_wait_condvar (vcl_worker_t * wrk, struct epoll_event *events,
-			   int maxevents, u32 n_evts, double wait_for_time)
+vppcom_epoll_wait_condvar (vcl_worker_t *wrk, struct epoll_event *events,
+			   int maxevents, u32 n_evts, double timeout_ms)
 {
-  double wait = 0, start = 0, now;
+  double end = -1;
 
   if (!n_evts)
     {
-      wait = wait_for_time;
-      start = clib_time_now (&wrk->clib_time);
+      if (timeout_ms > 0)
+	end = clib_time_now (&wrk->clib_time) + (timeout_ms / 1e3);
     }
 
   do
     {
       vcl_epoll_wait_handle_mq (wrk, wrk->app_event_queue, events, maxevents,
-				wait, &n_evts);
-      if (n_evts)
+				timeout_ms, &n_evts);
+      if (n_evts || !timeout_ms)
 	return n_evts;
-      if (wait == -1)
-	continue;
-
-      now = clib_time_now (&wrk->clib_time);
-      wait -= (now - start) * 1e3;
-      start = now;
     }
-  while (wait > 0);
+  while (end == -1 || clib_time_now (&wrk->clib_time) < end);
 
   return 0;
 }
 
 static int
-vppcom_epoll_wait_eventfd (vcl_worker_t * wrk, struct epoll_event *events,
-			   int maxevents, u32 n_evts, double wait_for_time)
+vppcom_epoll_wait_eventfd (vcl_worker_t *wrk, struct epoll_event *events,
+			   int maxevents, u32 n_evts, double timeout_ms)
 {
-  double wait = 0, start = 0, now;
   int __clib_unused n_read;
   vcl_mq_evt_conn_t *mqc;
   int n_mq_evts, i;
+  double end = -1;
   u64 buf;
 
   vec_validate (wrk->mq_events, pool_elts (wrk->mq_evt_conns));
   if (!n_evts)
     {
-      wait = wait_for_time;
-      start = clib_time_now (&wrk->clib_time);
+      if (timeout_ms > 0)
+	end = clib_time_now (&wrk->clib_time) + (timeout_ms / 1e3);
     }
 
   do
     {
       n_mq_evts = epoll_wait (wrk->mqs_epfd, wrk->mq_events,
-			      vec_len (wrk->mq_events), wait);
+			      vec_len (wrk->mq_events), timeout_ms);
       if (n_mq_evts < 0)
 	{
 	  VDBG (0, "epoll_wait error %u", errno);
@@ -2987,16 +3059,10 @@ vppcom_epoll_wait_eventfd (vcl_worker_t * wrk, struct epoll_event *events,
 				    &n_evts);
 	}
 
-      if (n_evts)
+      if (n_evts || !timeout_ms)
 	return n_evts;
-      if (wait == -1)
-	continue;
-
-      now = clib_time_now (&wrk->clib_time);
-      wait -= (now - start) * 1e3;
-      start = now;
     }
-  while (wait > 0);
+  while (end == -1 || clib_time_now (&wrk->clib_time) < end);
 
   return 0;
 }
@@ -3061,6 +3127,7 @@ vppcom_session_attr (uint32_t session_handle, uint32_t op,
   vcl_worker_t *wrk = vcl_worker_get_current ();
   u32 *flags = buffer, tmp_flags = 0;
   vppcom_endpt_t *ep = buffer;
+  transport_endpt_attr_t tea;
   vcl_session_t *session;
   int rv = VPPCOM_OK;
 
@@ -3559,30 +3626,41 @@ vppcom_session_attr (uint32_t session_handle, uint32_t op,
       break;
 
     case VPPCOM_ATTR_GET_TCP_USER_MSS:
-      if (buffer && buflen && (*buflen >= sizeof (u32)))
+      if (!(buffer && buflen && (*buflen >= sizeof (u32))))
 	{
-	  /* VPP-TBD */
-	  *(u32 *) buffer = session->user_mss;
-	  *buflen = sizeof (int);
-
-	  VDBG (2, "VPPCOM_ATTR_GET_TCP_USER_MSS: %d, buflen %d, #VPP-TBD#",
-		*(int *) buffer, *buflen);
+	  rv = VPPCOM_EINVAL;
+	  break;
 	}
-      else
-	rv = VPPCOM_EINVAL;
+
+      tea.type = TRANSPORT_ENDPT_ATTR_MSS;
+      tea.mss = *(u32 *) buffer;
+      if (vcl_session_transport_attr (wrk, session, 1 /* is_get */, &tea))
+	rv = VPPCOM_ENOPROTOOPT;
+
+      if (!rv)
+	{
+	  *(u32 *) buffer = tea.mss;
+	  *buflen = sizeof (int);
+	}
+
+      VDBG (2, "VPPCOM_ATTR_GET_TCP_USER_MSS: %d, buflen %d", *(int *) buffer,
+	    *buflen);
       break;
 
     case VPPCOM_ATTR_SET_TCP_USER_MSS:
-      if (buffer && buflen && (*buflen == sizeof (u32)))
+      if (!(buffer && buflen && (*buflen == sizeof (u32))))
 	{
-	  /* VPP-TBD */
-	  session->user_mss = *(u32 *) buffer;
-
-	  VDBG (2, "VPPCOM_ATTR_SET_TCP_USER_MSS: %u, buflen %d, #VPP-TBD#",
-		session->user_mss, *buflen);
+	  rv = VPPCOM_EINVAL;
+	  break;
 	}
-      else
-	rv = VPPCOM_EINVAL;
+
+      tea.type = TRANSPORT_ENDPT_ATTR_MSS;
+      tea.mss = *(u32 *) buffer;
+      if (vcl_session_transport_attr (wrk, session, 0 /* is_get */, &tea))
+	rv = VPPCOM_ENOPROTOOPT;
+
+      VDBG (2, "VPPCOM_ATTR_SET_TCP_USER_MSS: %u, buflen %d", tea.mss,
+	    *buflen);
       break;
 
     case VPPCOM_ATTR_SET_SHUT:
@@ -3617,7 +3695,18 @@ vppcom_session_attr (uint32_t session_handle, uint32_t op,
 	  rv = VPPCOM_EINVAL;
 	  break;
 	}
-      session->ckpair_index = *(uint32_t *) buffer;
+      if (!session->ext_config)
+	{
+	  vcl_session_alloc_ext_cfg (session, TRANSPORT_ENDPT_EXT_CFG_CRYPTO,
+				     sizeof (transport_endpt_ext_cfg_t));
+	}
+      else if (session->ext_config->type != TRANSPORT_ENDPT_EXT_CFG_CRYPTO)
+	{
+	  rv = VPPCOM_EINVAL;
+	  break;
+	}
+
+      session->ext_config->crypto.ckpair_index = *(uint32_t *) buffer;
       break;
 
     case VPPCOM_ATTR_SET_VRF:
@@ -3654,6 +3743,23 @@ vppcom_session_attr (uint32_t session_handle, uint32_t op,
 
       VDBG (2, "VPPCOM_ATTR_GET_DOMAIN: %d, buflen %u", *(int *) buffer,
 	    *buflen);
+      break;
+
+    case VPPCOM_ATTR_SET_ENDPT_EXT_CFG:
+      if (!(buffer && buflen && (*buflen > 0)))
+	{
+	  rv = VPPCOM_EINVAL;
+	  break;
+	}
+      if (session->ext_config)
+	{
+	  rv = VPPCOM_EINVAL;
+	  break;
+	}
+      vcl_session_alloc_ext_cfg (session, TRANSPORT_ENDPT_EXT_CFG_NONE,
+				 *buflen + sizeof (u32));
+      clib_memcpy (session->ext_config->data, buffer, *buflen);
+      session->ext_config->len = *buflen;
       break;
 
     default:

@@ -215,6 +215,74 @@ typedef struct transport_endpoint_pair_
 #undef _
 } transport_endpoint_cfg_t;
 
+#define foreach_transport_endpt_cfg_flags                                     \
+  _ (CSUM_OFFLOAD)                                                            \
+  _ (GSO)                                                                     \
+  _ (RATE_SAMPLING)
+
+typedef enum transport_endpt_attr_flag_bit_
+{
+#define _(name) TRANSPORT_ENDPT_ATTR_F_BIT_##name,
+  foreach_transport_endpt_cfg_flags
+#undef _
+} __clib_packed transport_endpt_attr_flag_bit_t;
+
+typedef enum transport_endpt_attr_flag_
+{
+#define _(name)                                                               \
+  TRANSPORT_ENDPT_ATTR_F_##name = 1 << TRANSPORT_ENDPT_ATTR_F_BIT_##name,
+  foreach_transport_endpt_cfg_flags
+#undef _
+} __clib_packed transport_endpt_attr_flag_t;
+
+#define foreach_transport_attr_fields                                         \
+  _ (u64, next_output_node, NEXT_OUTPUT_NODE)                                 \
+  _ (u16, mss, MSS)                                                           \
+  _ (u8, flags, FLAGS)                                                        \
+  _ (u8, cc_algo, CC_ALGO)
+
+typedef enum transport_endpt_attr_type_
+{
+#define _(type, name, str) TRANSPORT_ENDPT_ATTR_##str,
+  foreach_transport_attr_fields
+#undef _
+} __clib_packed transport_endpt_attr_type_t;
+
+typedef struct transport_endpt_attr_
+{
+  transport_endpt_attr_type_t type;
+  union
+  {
+#define _(type, name, str) type name;
+    foreach_transport_attr_fields
+#undef _
+  };
+} transport_endpt_attr_t;
+
+typedef enum transport_endpt_ext_cfg_type_
+{
+  TRANSPORT_ENDPT_EXT_CFG_NONE,
+  TRANSPORT_ENDPT_EXT_CFG_CRYPTO,
+} transport_endpt_ext_cfg_type_t;
+
+typedef struct transport_endpt_crypto_cfg_
+{
+  u32 ckpair_index;
+  u8 crypto_engine;
+  u8 hostname[256]; /**< full domain len is 255 as per rfc 3986 */
+} transport_endpt_crypto_cfg_t;
+
+typedef struct transport_endpt_ext_cfg_
+{
+  u16 type;
+  u16 len;
+  union
+  {
+    transport_endpt_crypto_cfg_t crypto;
+    u8 data[0];
+  };
+} transport_endpt_ext_cfg_t;
+
 typedef clib_bihash_24_8_t transport_endpoint_table_t;
 
 #define ENDPOINT_INVALID_INDEX ((u32)~0)

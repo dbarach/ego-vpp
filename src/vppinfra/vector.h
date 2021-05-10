@@ -177,10 +177,7 @@ foreach_vec
 #include <vppinfra/vector_avx2.h>
 #endif
 
-#if defined (__AVX512BITALG__)
-/* Due to power level transition issues, we don't preffer AVX-512 on
-   Skylake X and CascadeLake CPUs, AVX512BITALG is introduced on
-   icelake CPUs  */
+#if defined(__AVX512F__)
 #include <vppinfra/vector_avx512.h>
 #endif
 
@@ -190,10 +187,6 @@ foreach_vec
 
 #if defined (__aarch64__)
 #include <vppinfra/vector_neon.h>
-#endif
-
-#if (defined(CLIB_HAVE_VEC128) || defined(CLIB_HAVE_VEC64))
-#include <vppinfra/vector_funcs.h>
 #endif
 
 /* this macro generate _splat inline functions for each scalar vector type */

@@ -13,9 +13,19 @@
 
 cmake_minimum_required(VERSION 3.10)
 
-set(CMAKE_C_COMPILER_NAMES clang-11 clang-10 clang-9 gcc-10 gcc-9 cc)
+set(CMAKE_C_COMPILER_NAMES
+  clang-12
+  clang-11
+  clang-10
+  clang-9
+  gcc-10
+  gcc-9
+  cc
+)
 
 project(vpp C)
+
+set(CMAKE_EXPORT_COMPILE_COMMANDS on)
 
 include(CheckCCompilerFlag)
 include(CheckIPOSupported)
@@ -56,6 +66,7 @@ set(VPP_LIBRARY_DIR "lib" CACHE STRING "Relative library directory path")
 
 set(CMAKE_RUNTIME_OUTPUT_DIRECTORY ${CMAKE_BINARY_DIR}/${VPP_RUNTIME_DIR})
 set(CMAKE_LIBRARY_OUTPUT_DIRECTORY ${CMAKE_BINARY_DIR}/${VPP_LIBRARY_DIR})
+set(VPP_BINARY_DIR ${CMAKE_BINARY_DIR}/CMakeFiles)
 
 if (CMAKE_BUILD_TYPE)
   set(CMAKE_C_FLAGS "-g -fPIC -Werror -Wall ${CMAKE_C_FLAGS}")
@@ -68,7 +79,7 @@ endif()
 # release
 list(APPEND BUILD_TYPES "release")
 string(CONCAT CMAKE_C_FLAGS_RELEASE
-  "-O2 "
+  "-O3 "
   "-fstack-protector "
   "-D_FORTIFY_SOURCE=2 "
   "-fno-common "
@@ -101,9 +112,9 @@ string(CONCAT CMAKE_C_FLAGS_GCOV
 string(TOUPPER "${CMAKE_BUILD_TYPE}" CMAKE_BUILD_TYPE_UC)
 
 
-string(REPLACE ";" " " BUILD_TYPES "${BUILD_TYPES}")
+string(REPLACE ";" " " BUILD_TYPES_STR "${BUILD_TYPES}")
 set_property(CACHE CMAKE_BUILD_TYPE PROPERTY
-	     HELPSTRING "Build type - valid options are: ${BUILD_TYPES}")
+	     HELPSTRING "Build type - valid options are: ${BUILD_TYPES_STR}")
 
 ##############################################################################
 # link time optimizations
@@ -133,6 +144,15 @@ if (VPP_ENABLE_SANITIZE_ADDR)
 endif (VPP_ENABLE_SANITIZE_ADDR)
 
 ##############################################################################
+# trajectory trace
+##############################################################################
+
+option(VPP_ENABLE_TRAJECTORY_TRACE "Build vpp with trajectory tracing enabled" OFF)
+if(VPP_ENABLE_TRAJECTORY_TRACE)
+  set(CMAKE_C_FLAGS "-DVLIB_BUFFER_TRACE_TRAJECTORY=1 ${CMAKE_C_FLAGS}")
+endif()
+
+##############################################################################
 # install config
 ##############################################################################
 option(VPP_SET_RPATH "Set rpath for resulting binaries and libraries." ON)
@@ -143,8 +163,7 @@ set(CMAKE_INSTALL_MESSAGE NEVER)
 
 include_directories (
 	${CMAKE_SOURCE_DIR}
-	${CMAKE_BINARY_DIR}
-	${CMAKE_BINARY_DIR}/include
+	${VPP_BINARY_DIR}
 )
 set(CMAKE_INSTALL_DEFAULT_COMPONENT_NAME "vpp")
 
@@ -177,7 +196,7 @@ else()
 endif()
 
 foreach(DIR ${SUBDIRS})
-  add_subdirectory(${DIR})
+  add_subdirectory(${DIR} ${VPP_BINARY_DIR}/${DIR})
 endforeach()
 
 ##############################################################################
@@ -197,6 +216,44 @@ if (VPP_GIT_TOPLEVEL_DIR)
     CMAKE_CONFIGURE_DEPENDS ${VPP_GIT_TOPLEVEL_DIR}/.git/index
   )
 endif()
+
+##############################################################################
+# custom targets
+##############################################################################
+
+add_custom_target(run
+  COMMAND ./${VPP_RUNTIME_DIR}/vpp -c startup.conf
+  COMMENT "Starting VPP..."
+  USES_TERMINAL
+)
+
+add_custom_target(debug
+  COMMAND gdb --args ./${VPP_RUNTIME_DIR}/vpp -c startup.conf
+  COMMENT "Starting VPP in the debugger..."
+  USES_TERMINAL
+)
+
+add_custom_target(config
+  COMMAND ccmake ${CMAKE_BINARY_DIR}
+  COMMENT "Starting Configuration TUI..."
+  USES_TERMINAL
+)
+
+add_custom_target(compdb
+  COMMAND ninja -C ${CMAKE_BINARY_DIR} -t compdb |
+          ${CMAKE_SOURCE_DIR}/scripts/compdb_cleanup.py >
+	  ${CMAKE_BINARY_DIR}/compile_commands.json
+  COMMENT "Generating compile_commands.json"
+  USES_TERMINAL
+)
+
+foreach(bt ${BUILD_TYPES})
+  add_custom_target(set-build-type-${bt}
+    COMMAND cmake -DCMAKE_BUILD_TYPE:STRING=${bt} .
+    COMMENT "Changing build type to ${bt}"
+    USES_TERMINAL
+  )
+endforeach()
 
 ##############################################################################
 # print configuration

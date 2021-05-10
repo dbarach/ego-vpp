@@ -253,7 +253,7 @@ vhost_user_handle_rx_offload (vlib_buffer_t * b0, u8 * b0_data,
   ethernet_header_t *eh = (ethernet_header_t *) b0_data;
   u16 ethertype = clib_net_to_host_u16 (eh->type);
   u16 l2hdr_sz = sizeof (ethernet_header_t);
-  u32 oflags = 0;
+  vnet_buffer_oflags_t oflags = 0;
 
   if (ethernet_frame_is_tagged (ethertype))
     {
@@ -685,8 +685,6 @@ vhost_user_if_input (vlib_main_t *vm, vhost_user_main_t *vum,
       /* consume the descriptor and return it as used */
       last_avail_idx++;
       last_used_idx++;
-
-      VLIB_BUFFER_TRACE_TRAJECTORY_INIT (b_head);
 
       vnet_buffer (b_head)->sw_if_index[VLIB_RX] = vui->sw_if_index;
       vnet_buffer (b_head)->sw_if_index[VLIB_TX] = (u32) ~ 0;
@@ -1317,8 +1315,6 @@ vhost_user_if_input_packed (vlib_main_t *vm, vhost_user_main_t *vum,
 
       b_head->total_length_not_including_first_buffer -=
 	b_head->current_length;
-
-      VLIB_BUFFER_TRACE_TRAJECTORY_INIT (b_head);
 
       vnet_buffer (b_head)->sw_if_index[VLIB_RX] = vui->sw_if_index;
       vnet_buffer (b_head)->sw_if_index[VLIB_TX] = ~0;
