@@ -1331,6 +1331,8 @@ vnet_connect (vnet_connect_args_t * a)
   session_endpoint_update_for_app (&a->sep_ext, client, 1 /* is_connect */ );
   client_wrk = application_get_worker (client, a->wrk_map_index);
 
+  a->sep_ext.opaque = a->api_context;
+
   /*
    * First check the local scope for locally attached destinations.
    * If we have local scope, we pass *all* connects through it since we may
@@ -1342,7 +1344,7 @@ vnet_connect (vnet_connect_args_t * a)
 
       a->sep_ext.original_tp = a->sep_ext.transport_proto;
       a->sep_ext.transport_proto = TRANSPORT_PROTO_NONE;
-      rv = app_worker_connect_session (client_wrk, &a->sep, a->api_context);
+      rv = app_worker_connect_session (client_wrk, &a->sep_ext, &a->sh);
       if (rv <= 0)
 	return rv;
       a->sep_ext.transport_proto = a->sep_ext.original_tp;
@@ -1350,7 +1352,7 @@ vnet_connect (vnet_connect_args_t * a)
   /*
    * Not connecting to a local server, propagate to transport
    */
-  return app_worker_connect_session (client_wrk, &a->sep, a->api_context);
+  return app_worker_connect_session (client_wrk, &a->sep_ext, &a->sh);
 }
 
 int
@@ -1382,6 +1384,27 @@ vnet_unlisten (vnet_unlisten_args_t * a)
     }
 
   return app_worker_stop_listen (app_wrk, al);
+}
+
+int
+vnet_shutdown_session (vnet_shutdown_args_t *a)
+{
+  app_worker_t *app_wrk;
+  session_t *s;
+
+  s = session_get_from_handle_if_valid (a->handle);
+  if (!s)
+    return SESSION_E_NOSESSION;
+
+  app_wrk = app_worker_get (s->app_wrk_index);
+  if (app_wrk->app_index != a->app_index)
+    return SESSION_E_OWNER;
+
+  /* We're peeking into another's thread pool. Make sure */
+  ASSERT (s->session_index == session_index_from_handle (a->handle));
+
+  session_half_close (s);
+  return 0;
 }
 
 int

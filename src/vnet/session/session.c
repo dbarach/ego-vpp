@@ -97,9 +97,10 @@ session_send_io_evt_to_thread_custom (void *data, u32 thread_index,
 int
 session_send_ctrl_evt_to_thread (session_t * s, session_evt_type_t evt_type)
 {
-  /* only events supported are disconnect and reset */
-  ASSERT (evt_type == SESSION_CTRL_EVT_CLOSE
-	  || evt_type == SESSION_CTRL_EVT_RESET);
+  /* only events supported are disconnect, shutdown and reset */
+  ASSERT (evt_type == SESSION_CTRL_EVT_CLOSE ||
+	  evt_type == SESSION_CTRL_EVT_HALF_CLOSE ||
+	  evt_type == SESSION_CTRL_EVT_RESET);
   return session_send_evt_to_thread (s, 0, s->thread_index, evt_type);
 }
 
@@ -251,6 +252,10 @@ session_is_valid (u32 si, u8 thread_index)
       || s->session_state <= SESSION_STATE_LISTENING)
     return 1;
 
+  if (s->session_state == SESSION_STATE_CONNECTING &&
+      (s->flags & SESSION_F_HALF_OPEN))
+    return 1;
+
   tc = session_get_transport (s);
   if (s->connection_index != tc->c_index
       || s->thread_index != tc->thread_index || tc->s_index != si)
@@ -296,17 +301,23 @@ session_delete (session_t * s)
 }
 
 void
-session_cleanup_half_open (transport_proto_t tp, session_handle_t ho_handle)
+session_cleanup_half_open (session_handle_t ho_handle)
 {
-  transport_cleanup_half_open (tp, session_handle_index (ho_handle));
+  session_t *s = session_get_from_handle (ho_handle);
+  transport_cleanup_half_open (session_get_transport_proto (s),
+			       s->connection_index);
 }
 
 void
-session_half_open_delete_notify (transport_proto_t tp,
-				 session_handle_t ho_handle)
+session_half_open_delete_notify (transport_connection_t *tc)
 {
-  app_worker_t *app_wrk = app_worker_get (session_handle_data (ho_handle));
-  app_worker_del_half_open (app_wrk, tp, ho_handle);
+  app_worker_t *app_wrk;
+  session_t *s;
+
+  s = ho_session_get (tc->s_index);
+  app_wrk = app_worker_get (s->app_wrk_index);
+  app_worker_del_half_open (app_wrk, s);
+  session_free (s);
 }
 
 session_t *
@@ -323,6 +334,18 @@ session_alloc_for_connection (transport_connection_t * tc)
   s->session_state = SESSION_STATE_CLOSED;
 
   /* Attach transport to session and vice versa */
+  s->connection_index = tc->c_index;
+  tc->s_index = s->session_index;
+  return s;
+}
+
+session_t *
+session_alloc_for_half_open (transport_connection_t *tc)
+{
+  session_t *s;
+
+  s = ho_session_alloc ();
+  s->session_type = session_type_from_proto_and_ip (tc->proto, tc->is_ip4);
   s->connection_index = tc->c_index;
   tc->s_index = s->session_index;
   return s;
@@ -797,38 +820,20 @@ int
 session_stream_connect_notify (transport_connection_t * tc,
 			       session_error_t err)
 {
-  session_handle_t ho_handle, wrk_handle;
   u32 opaque = 0, new_ti, new_si;
   app_worker_t *app_wrk;
-  session_t *s = 0;
+  session_t *s = 0, *ho;
 
   /*
-   * Find connection handle and cleanup half-open table
+   * Cleanup half-open table
    */
-  ho_handle = session_lookup_half_open_handle (tc);
-  if (ho_handle == HALF_OPEN_LOOKUP_INVALID_VALUE)
-    {
-      SESSION_DBG ("half-open was removed!");
-      return -1;
-    }
   session_lookup_del_half_open (tc);
 
-  /* Get the app's index from the handle we stored when opening connection
-   * and the opaque (api_context for external apps) from transport session
-   * index */
-  app_wrk = app_worker_get_if_valid (session_handle_data (ho_handle));
+  ho = ho_session_get (tc->s_index);
+  opaque = ho->opaque;
+  app_wrk = app_worker_get_if_valid (ho->app_wrk_index);
   if (!app_wrk)
     return -1;
-
-  wrk_handle = app_worker_lookup_half_open (app_wrk, tc->proto, ho_handle);
-  if (wrk_handle == SESSION_INVALID_HANDLE)
-    return -1;
-
-  /* Make sure this is the same half-open index */
-  if (session_handle_index (wrk_handle) != session_handle_index (ho_handle))
-    return -1;
-
-  opaque = session_handle_data (wrk_handle);
 
   if (err)
     return app_worker_connect_notify (app_wrk, s, err, opaque);
@@ -1083,7 +1088,9 @@ session_transport_closed_notify (transport_connection_t * tc)
     return;
 
   /* Transport thinks that app requested close but it actually didn't.
-   * Can happen for tcp if fin and rst are received in close succession. */
+   * Can happen for tcp:
+   * 1)if fin and rst are received in close succession.
+   * 2)if app shutdown the connection.  */
   if (s->session_state == SESSION_STATE_READY)
     {
       session_transport_closing_notify (tc);
@@ -1218,7 +1225,7 @@ session_dgram_accept (transport_connection_t * tc, u32 listener_index,
 }
 
 int
-session_open_cl (u32 app_wrk_index, session_endpoint_t * rmt, u32 opaque)
+session_open_cl (session_endpoint_cfg_t *rmt, session_handle_t *rsh)
 {
   transport_connection_t *tc;
   transport_endpoint_cfg_t *tep;
@@ -1238,7 +1245,7 @@ session_open_cl (u32 app_wrk_index, session_endpoint_t * rmt, u32 opaque)
   tc = transport_get_half_open (rmt->transport_proto, (u32) rv);
 
   /* For dgram type of service, allocate session and fifos now */
-  app_wrk = app_worker_get (app_wrk_index);
+  app_wrk = app_worker_get (rmt->app_wrk_index);
   s = session_alloc_for_connection (tc);
   s->app_wrk_index = app_wrk->wrk_index;
   s->session_state = SESSION_STATE_OPENED;
@@ -1249,16 +1256,19 @@ session_open_cl (u32 app_wrk_index, session_endpoint_t * rmt, u32 opaque)
     }
 
   sh = session_handle (s);
+  *rsh = sh;
+
   session_lookup_add_connection (tc, sh);
-  return app_worker_connect_notify (app_wrk, s, SESSION_E_NONE, opaque);
+  return app_worker_connect_notify (app_wrk, s, SESSION_E_NONE, rmt->opaque);
 }
 
 int
-session_open_vc (u32 app_wrk_index, session_endpoint_t * rmt, u32 opaque)
+session_open_vc (session_endpoint_cfg_t *rmt, session_handle_t *rsh)
 {
   transport_connection_t *tc;
   transport_endpoint_cfg_t *tep;
-  u64 handle, wrk_handle;
+  app_worker_t *app_wrk;
+  session_t *ho;
   int rv;
 
   tep = session_endpoint_to_transport_cfg (rmt);
@@ -1271,44 +1281,40 @@ session_open_vc (u32 app_wrk_index, session_endpoint_t * rmt, u32 opaque)
 
   tc = transport_get_half_open (rmt->transport_proto, (u32) rv);
 
-  /* If transport offers a stream service, only allocate session once the
-   * connection has been established.
-   * Add connection to half-open table and save app and tc index. The
-   * latter is needed to help establish the connection while the former
-   * is needed when the connect notify comes and we have to notify the
-   * external app
-   */
-  handle = session_make_handle (tc->c_index, app_wrk_index);
-  session_lookup_add_half_open (tc, handle);
+  app_wrk = app_worker_get (rmt->app_wrk_index);
 
-  /* Store the half-open handle in the connection. Transport will use it
-   * when cleaning up @ref session_half_open_delete_notify
+  /* If transport offers a vc service, only allocate established
+   * session once the connection has been established.
+   * In the meantime allocate half-open session for tracking purposes
+   * associate half-open connection to it and add session to app-worker
+   * half-open table. These are needed to allocate the established
+   * session on transport notification, and to cleanup the half-open
+   * session if the app detaches before connection establishment.
    */
-  tc->s_ho_handle = handle;
+  ho = session_alloc_for_half_open (tc);
+  ho->app_wrk_index = app_wrk->wrk_index;
+  ho->ho_index = app_worker_add_half_open (app_wrk, session_handle (ho));
+  ho->opaque = rmt->opaque;
+  *rsh = session_handle (ho);
 
-  /* Track the half-open connections in case we want to forcefully
-   * clean them up @ref session_cleanup_half_open
-   */
-  wrk_handle = session_make_handle (tc->c_index, opaque);
-  app_worker_add_half_open (app_worker_get (app_wrk_index),
-			    rmt->transport_proto, handle, wrk_handle);
+  if (!(tc->flags & TRANSPORT_CONNECTION_F_NO_LOOKUP))
+    session_lookup_add_half_open (tc, tc->c_index);
 
   return 0;
 }
 
 int
-session_open_app (u32 app_wrk_index, session_endpoint_t * rmt, u32 opaque)
+session_open_app (session_endpoint_cfg_t *rmt, session_handle_t *rsh)
 {
-  session_endpoint_cfg_t *sep = (session_endpoint_cfg_t *) rmt;
-  transport_endpoint_cfg_t *tep_cfg = session_endpoint_to_transport_cfg (sep);
+  transport_endpoint_cfg_t *tep_cfg = session_endpoint_to_transport_cfg (rmt);
 
-  sep->app_wrk_index = app_wrk_index;
-  sep->opaque = opaque;
-
+  /* Not supported for now */
+  *rsh = SESSION_INVALID_HANDLE;
   return transport_connect (rmt->transport_proto, tep_cfg);
 }
 
-typedef int (*session_open_service_fn) (u32, session_endpoint_t *, u32);
+typedef int (*session_open_service_fn) (session_endpoint_cfg_t *,
+					session_handle_t *);
 
 /* *INDENT-OFF* */
 static session_open_service_fn session_open_srv_fns[TRANSPORT_N_SERVICES] = {
@@ -1332,11 +1338,11 @@ static session_open_service_fn session_open_srv_fns[TRANSPORT_N_SERVICES] = {
  * 		 on open completion.
  */
 int
-session_open (u32 app_wrk_index, session_endpoint_t * rmt, u32 opaque)
+session_open (session_endpoint_cfg_t *rmt, session_handle_t *rsh)
 {
   transport_service_type_t tst;
   tst = transport_protocol_service_type (rmt->transport_proto);
-  return session_open_srv_fns[tst] (app_wrk_index, rmt, opaque);
+  return session_open_srv_fns[tst](rmt, rsh);
 }
 
 /**
@@ -1399,6 +1405,20 @@ session_stop_listen (session_t * s)
 }
 
 /**
+ * Initialize session half-closing procedure.
+ *
+ * Note that half-closing will not change the state of the session.
+ */
+void
+session_half_close (session_t *s)
+{
+  if (!s)
+    return;
+
+  session_program_transport_ctrl_evt (s, SESSION_CTRL_EVT_HALF_CLOSE);
+}
+
+/**
  * Initialize session closing procedure.
  *
  * Request is always sent to session node to ensure that all outstanding
@@ -1436,6 +1456,24 @@ session_reset (session_t * s)
   svm_fifo_dequeue_drop_all (s->tx_fifo);
   s->session_state = SESSION_STATE_CLOSING;
   session_program_transport_ctrl_evt (s, SESSION_CTRL_EVT_RESET);
+}
+
+/**
+ * Notify transport the session can be half-disconnected.
+ *
+ * Must be called from the session's thread.
+ */
+void
+session_transport_half_close (session_t *s)
+{
+  /* Only READY session can be half-closed */
+  if (s->session_state != SESSION_STATE_READY)
+    {
+      return;
+    }
+
+  transport_half_close (session_get_transport_proto (s), s->connection_index,
+			s->thread_index);
 }
 
 /**

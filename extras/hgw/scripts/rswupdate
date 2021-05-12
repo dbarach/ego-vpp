@@ -3,11 +3,15 @@
 buildroot=/scratch/vpp-gate/build-root
 if [ $1x = "testx" ] ; then
     subdir="test"
-    ipaddr="192.168.2.48"
+    ipaddr="192.168.1.28"  # swannanoa
     port=22432
 elif [ $1x = "swanx" ] ; then
     subdir="swan"
     ipaddr="swan.barachs.net"
+    port=22432
+elif [ $1x = "swanlocalx" ] ; then
+    subdir="swan"
+    ipaddr="192.168.1.2"
     port=22432
 elif [ $1x = "dorax" ] ; then
     subdir="dora"

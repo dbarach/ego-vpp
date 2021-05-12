@@ -214,7 +214,7 @@ tcp_half_open_connection_cleanup (tcp_connection_t * tc)
   if (tc->c_thread_index != vlib_get_thread_index ())
     return 1;
 
-  session_half_open_delete_notify (TRANSPORT_PROTO_TCP, tc->c_s_ho_handle);
+  session_half_open_delete_notify (&tc->connection);
   wrk = tcp_get_worker (tc->c_thread_index);
   tcp_timer_reset (&wrk->timer_wheel, tc, TCP_TIMER_RETRANSMIT_SYN);
   tcp_half_open_connection_free (tc);
@@ -354,7 +354,6 @@ tcp_program_cleanup (tcp_worker_ctx_t * wrk, tcp_connection_t * tc)
  * 2) TIME_WAIT (active close) whereby after 2MSL the 2MSL timer triggers
  * and cleanup is called.
  *
- * N.B. Half-close connections are not supported
  */
 void
 tcp_connection_close (tcp_connection_t * tc)
@@ -423,6 +422,30 @@ tcp_connection_close (tcp_connection_t * tc)
     default:
       TCP_DBG ("state: %u", tc->state);
     }
+}
+
+static void
+tcp_session_half_close (u32 conn_index, u32 thread_index)
+{
+  tcp_worker_ctx_t *wrk;
+  tcp_connection_t *tc;
+
+  tc = tcp_connection_get (conn_index, thread_index);
+  wrk = tcp_get_worker (tc->c_thread_index);
+
+  /* If the connection is not in ESTABLISHED state, ignore it */
+  if (tc->state != TCP_STATE_ESTABLISHED)
+    return;
+  if (!transport_max_tx_dequeue (&tc->connection))
+    tcp_send_fin (tc);
+  else
+    tc->flags |= TCP_CONN_FINPNDG;
+  tcp_connection_set_state (tc, TCP_STATE_FIN_WAIT_1);
+  /* Set a timer in case the peer stops responding. Otherwise the
+   * connection will be stuck here forever. */
+  ASSERT (tc->timers[TCP_TIMER_WAITCLOSE] == TCP_TIMER_HANDLE_INVALID);
+  tcp_timer_set (&wrk->timer_wheel, tc, TCP_TIMER_WAITCLOSE,
+		 tcp_cfg.finwait1_time);
 }
 
 static void
@@ -853,8 +876,20 @@ format_tcp_half_open_session (u8 * s, va_list * args)
 {
   u32 tci = va_arg (*args, u32);
   u32 __clib_unused thread_index = va_arg (*args, u32);
-  tcp_connection_t *tc = tcp_half_open_connection_get (tci);
-  return format (s, "%U", format_tcp_connection_id, tc);
+  u32 verbose = va_arg (*args, u32);
+  tcp_connection_t *tc;
+  u8 *state = 0;
+
+  tc = tcp_half_open_connection_get (tci);
+  if (tc->flags & TCP_CONN_HALF_OPEN_DONE)
+    state = format (state, "%s", "CLOSED");
+  else
+    state = format (state, "%U", format_tcp_state, tc->state);
+  s = format (s, "%-" SESSION_CLI_ID_LEN "U", format_tcp_connection_id, tc);
+  if (verbose)
+    s = format (s, "%-" SESSION_CLI_STATE_LEN "v", state);
+  vec_free (state);
+  return s;
 }
 
 static transport_connection_t *
@@ -1304,6 +1339,7 @@ const static transport_proto_vft_t tcp_proto = {
   .get_half_open = tcp_half_open_session_get_transport,
   .attribute = tcp_session_attribute,
   .connect = tcp_session_open,
+  .half_close = tcp_session_half_close,
   .close = tcp_session_close,
   .cleanup = tcp_session_cleanup,
   .cleanup_ho = tcp_session_cleanup_ho,

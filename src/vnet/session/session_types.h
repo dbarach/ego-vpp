@@ -148,13 +148,14 @@ typedef enum
     SESSION_N_STATES,
 } session_state_t;
 
-#define foreach_session_flag				\
-  _(RX_EVT, "rx-event")					\
-  _(PROXY, "proxy")					\
-  _(CUSTOM_TX, "custom-tx")				\
-  _(IS_MIGRATING, "migrating")				\
-  _(UNIDIRECTIONAL, "unidirectional")			\
-  _(CUSTOM_FIFO_TUNING, "custom-fifo-tuning")		\
+#define foreach_session_flag                                                  \
+  _ (RX_EVT, "rx-event")                                                      \
+  _ (PROXY, "proxy")                                                          \
+  _ (CUSTOM_TX, "custom-tx")                                                  \
+  _ (IS_MIGRATING, "migrating")                                               \
+  _ (UNIDIRECTIONAL, "unidirectional")                                        \
+  _ (CUSTOM_FIFO_TUNING, "custom-fifo-tuning")                                \
+  _ (HALF_OPEN, "half-open")
 
 typedef enum session_flags_bits_
 {
@@ -208,6 +209,9 @@ typedef struct session_
 
     /** App listener index in app's listener pool if a listener */
     u32 al_index;
+
+    /** Index in app worker's half-open table if a half-open */
+    u32 ho_index;
   };
 
   /** Opaque, for general use */
@@ -327,6 +331,7 @@ typedef enum
   SESSION_IO_EVT_BUILTIN_RX,
   SESSION_IO_EVT_BUILTIN_TX,
   SESSION_CTRL_EVT_RPC,
+  SESSION_CTRL_EVT_HALF_CLOSE,
   SESSION_CTRL_EVT_CLOSE,
   SESSION_CTRL_EVT_RESET,
   SESSION_CTRL_EVT_BOUND,
@@ -340,6 +345,7 @@ typedef enum
   SESSION_CTRL_EVT_REQ_WORKER_UPDATE,
   SESSION_CTRL_EVT_WORKER_UPDATE,
   SESSION_CTRL_EVT_WORKER_UPDATE_REPLY,
+  SESSION_CTRL_EVT_SHUTDOWN,
   SESSION_CTRL_EVT_DISCONNECT,
   SESSION_CTRL_EVT_CONNECT,
   SESSION_CTRL_EVT_CONNECT_URI,
@@ -367,6 +373,7 @@ typedef enum
   _ (CONNECT, connect)                                                        \
   _ (CONNECT_URI, connect_uri)                                                \
   _ (CONNECTED, connected)                                                    \
+  _ (SHUTDOWN, shutdown)                                                      \
   _ (DISCONNECT, disconnect)                                                  \
   _ (DISCONNECTED, disconnected)                                              \
   _ (DISCONNECTED_REPLY, disconnected_reply)                                  \
