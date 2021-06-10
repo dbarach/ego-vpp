@@ -527,6 +527,12 @@ vcl_session_table_lookup_listener (vcl_worker_t * wrk, u64 handle)
       return 0;
     }
 
+  if (s->session_state == VCL_STATE_DISCONNECT)
+    {
+      VDBG (0, "listen session [0x%llx] is closing", s->vpp_handle);
+      return 0;
+    }
+
   ASSERT (s->session_state == VCL_STATE_LISTEN
 	  || s->session_state == VCL_STATE_LISTEN_NO_MQ
 	  || vcl_session_is_connectable_listener (wrk, s));
@@ -620,7 +626,8 @@ vcl_ip_copy_to_ep (ip46_address_t * ip, vppcom_endpt_t * ep, u8 is_ip4)
 static inline int
 vcl_proto_is_dgram (uint8_t proto)
 {
-  return proto == VPPCOM_PROTO_UDP || proto == VPPCOM_PROTO_DTLS;
+  return proto == VPPCOM_PROTO_UDP || proto == VPPCOM_PROTO_DTLS ||
+	 proto == VPPCOM_PROTO_SRTP;
 }
 
 static inline u8

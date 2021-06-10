@@ -33,6 +33,43 @@
       return;								\
    }
 
+static void
+session_wrk_timerfd_update (session_worker_t *wrk, u64 time_ns)
+{
+  struct itimerspec its;
+
+  its.it_value.tv_sec = 0;
+  its.it_value.tv_nsec = time_ns;
+  its.it_interval.tv_sec = 0;
+  its.it_interval.tv_nsec = its.it_value.tv_nsec;
+
+  if (timerfd_settime (wrk->timerfd, 0, &its, NULL) == -1)
+    clib_warning ("timerfd_settime");
+}
+
+always_inline u64
+session_wrk_tfd_timeout (session_wrk_state_t state, u32 thread_index)
+{
+  if (state == SESSION_WRK_INTERRUPT)
+    return thread_index ? 1e6 : vlib_num_workers () ? 5e8 : 1e6;
+  else if (state == SESSION_WRK_IDLE)
+    return thread_index ? 1e8 : vlib_num_workers () ? 5e8 : 1e8;
+  else
+    return 0;
+}
+
+static inline void
+session_wrk_set_state (session_worker_t *wrk, session_wrk_state_t state)
+{
+  u64 time_ns;
+
+  wrk->state = state;
+  if (wrk->timerfd == -1)
+    return;
+  time_ns = session_wrk_tfd_timeout (state, wrk->vm->thread_index);
+  session_wrk_timerfd_update (wrk, time_ns);
+}
+
 static transport_endpt_ext_cfg_t *
 session_mq_get_ext_config (application_t *app, uword offset)
 {
@@ -119,15 +156,12 @@ session_mq_listen_uri_handler (void *data)
 }
 
 static void
-session_mq_connect_handler (void *data)
+session_mq_connect_one (session_connect_msg_t *mp)
 {
-  session_connect_msg_t *mp = (session_connect_msg_t *) data;
   vnet_connect_args_t _a, *a = &_a;
   app_worker_t *app_wrk;
   application_t *app;
   int rv;
-
-  app_check_thread_and_barrier (session_mq_connect_handler, mp);
 
   app = application_lookup (mp->client_index);
   if (!app)
@@ -165,6 +199,114 @@ session_mq_connect_handler (void *data)
 
   if (mp->ext_config)
     session_mq_free_ext_config (app, mp->ext_config);
+}
+
+static void
+session_mq_handle_connects_rpc (void *arg)
+{
+  u32 max_connects = 32, n_connects = 0;
+  vlib_main_t *vm = vlib_get_main ();
+  session_evt_elt_t *he, *elt, *next;
+  session_worker_t *fwrk, *wrk;
+
+  ASSERT (vlib_get_thread_index () == 0);
+
+  /* Pending connects on linked list pertaining to first worker */
+  fwrk = session_main_get_worker (1);
+  if (!fwrk->n_pending_connects)
+    goto update_state;
+
+  vlib_worker_thread_barrier_sync (vm);
+
+  he = clib_llist_elt (fwrk->event_elts, fwrk->pending_connects);
+  elt = clib_llist_next (fwrk->event_elts, evt_list, he);
+
+  /* Avoid holding the barrier for too long */
+  while (n_connects < max_connects && elt != he)
+    {
+      next = clib_llist_next (fwrk->event_elts, evt_list, elt);
+      clib_llist_remove (fwrk->event_elts, evt_list, elt);
+      session_mq_connect_one (session_evt_ctrl_data (fwrk, elt));
+      clib_llist_put (fwrk->event_elts, elt);
+      elt = next;
+      n_connects += 1;
+    }
+
+  /* Decrement with worker barrier */
+  fwrk->n_pending_connects -= n_connects;
+
+  vlib_worker_thread_barrier_release (vm);
+
+update_state:
+
+  /* Switch worker to poll mode if it was in interrupt mode and had work or
+   * back to interrupt if threshold of loops without a connect is passed.
+   * While in poll mode, reprogram connects rpc */
+  wrk = session_main_get_worker (0);
+  if (wrk->state != SESSION_WRK_POLLING)
+    {
+      if (n_connects)
+	{
+	  session_wrk_set_state (wrk, SESSION_WRK_POLLING);
+	  vlib_node_set_state (vm, session_queue_node.index,
+			       VLIB_NODE_STATE_POLLING);
+	  wrk->no_connect_loops = 0;
+	}
+    }
+  else
+    {
+      if (!n_connects)
+	{
+	  if (++wrk->no_connect_loops > 1e5)
+	    {
+	      session_wrk_set_state (wrk, SESSION_WRK_INTERRUPT);
+	      vlib_node_set_state (vm, session_queue_node.index,
+				   VLIB_NODE_STATE_INTERRUPT);
+	    }
+	}
+      else
+	wrk->no_connect_loops = 0;
+    }
+
+  if (wrk->state == SESSION_WRK_POLLING)
+    {
+      elt = session_evt_alloc_ctrl (wrk);
+      elt->evt.event_type = SESSION_CTRL_EVT_RPC;
+      elt->evt.rpc_args.fp = session_mq_handle_connects_rpc;
+    }
+}
+
+static void
+session_mq_connect_handler (session_worker_t *wrk, session_evt_elt_t *elt)
+{
+  u32 thread_index = wrk - session_main.wrk;
+  session_evt_elt_t *he;
+
+  /* No workers, so just deal with the connect now */
+  if (PREDICT_FALSE (!thread_index))
+    {
+      session_mq_connect_one (session_evt_ctrl_data (wrk, elt));
+      return;
+    }
+
+  if (PREDICT_FALSE (thread_index != 1))
+    {
+      clib_warning ("Connect on wrong thread. Dropping");
+      return;
+    }
+
+  /* Add to pending list to be handled by main thread */
+  he = clib_llist_elt (wrk->event_elts, wrk->pending_connects);
+  clib_llist_add_tail (wrk->event_elts, evt_list, elt, he);
+
+  /* Decremented with worker barrier */
+  wrk->n_pending_connects += 1;
+  if (wrk->n_pending_connects == 1)
+    {
+      vlib_node_set_interrupt_pending (vlib_get_main_by_index (0),
+				       session_queue_node.index);
+      session_send_rpc_evt_to_thread (0, session_mq_handle_connects_rpc, 0);
+    }
 }
 
 static void
@@ -680,11 +822,9 @@ session_tx_fifo_chain_tail (vlib_main_t * vm, session_tx_context_t * ctx,
 {
   vlib_buffer_t *chain_b, *prev_b;
   u32 chain_bi0, to_deq, left_from_seg;
-  session_worker_t *wrk;
   u16 len_to_deq, n_bytes_read;
   u8 *data, j;
 
-  wrk = session_main_get_worker (ctx->s->thread_index);
   b->flags |= VLIB_BUFFER_TOTAL_LENGTH_VALID;
   b->total_length_not_including_first_buffer = 0;
 
@@ -698,7 +838,7 @@ session_tx_fifo_chain_tail (vlib_main_t * vm, session_tx_context_t * ctx,
       len_to_deq = clib_min (to_deq, ctx->deq_per_buf);
 
       *n_bufs -= 1;
-      chain_bi0 = wrk->tx_buffers[*n_bufs];
+      chain_bi0 = ctx->tx_buffers[*n_bufs];
       chain_b = vlib_get_buffer (vm, chain_bi0);
       chain_b->current_data = 0;
       data = vlib_buffer_get_current (chain_b);
@@ -1112,13 +1252,13 @@ session_tx_fifo_read_and_snd_i (session_worker_t * wrk,
       return SESSION_TX_NO_DATA;
     }
 
-  vec_validate_aligned (wrk->tx_buffers, ctx->n_bufs_needed - 1,
+  vec_validate_aligned (ctx->tx_buffers, ctx->n_bufs_needed - 1,
 			CLIB_CACHE_LINE_BYTES);
-  n_bufs = vlib_buffer_alloc (vm, wrk->tx_buffers, ctx->n_bufs_needed);
+  n_bufs = vlib_buffer_alloc (vm, ctx->tx_buffers, ctx->n_bufs_needed);
   if (PREDICT_FALSE (n_bufs < ctx->n_bufs_needed))
     {
       if (n_bufs)
-	vlib_buffer_free (vm, wrk->tx_buffers, n_bufs);
+	vlib_buffer_free (vm, ctx->tx_buffers, n_bufs);
       session_evt_add_head_old (wrk, elt);
       vlib_node_increment_counter (wrk->vm, node->node_index,
 				   SESSION_QUEUE_ERROR_NO_BUFFER, 1);
@@ -1136,15 +1276,15 @@ session_tx_fifo_read_and_snd_i (session_worker_t * wrk,
       vlib_buffer_t *b0, *b1;
       u32 bi0, bi1;
 
-      pbi = wrk->tx_buffers[n_bufs - 3];
+      pbi = ctx->tx_buffers[n_bufs - 3];
       pb = vlib_get_buffer (vm, pbi);
       vlib_prefetch_buffer_header (pb, STORE);
-      pbi = wrk->tx_buffers[n_bufs - 4];
+      pbi = ctx->tx_buffers[n_bufs - 4];
       pb = vlib_get_buffer (vm, pbi);
       vlib_prefetch_buffer_header (pb, STORE);
 
-      bi0 = wrk->tx_buffers[--n_bufs];
-      bi1 = wrk->tx_buffers[--n_bufs];
+      bi0 = ctx->tx_buffers[--n_bufs];
+      bi1 = ctx->tx_buffers[--n_bufs];
 
       b0 = vlib_get_buffer (vm, bi0);
       b1 = vlib_get_buffer (vm, bi1);
@@ -1169,12 +1309,12 @@ session_tx_fifo_read_and_snd_i (session_worker_t * wrk,
 
       if (n_left > 1)
 	{
-	  pbi = wrk->tx_buffers[n_bufs - 2];
+	  pbi = ctx->tx_buffers[n_bufs - 2];
 	  pb = vlib_get_buffer (vm, pbi);
 	  vlib_prefetch_buffer_header (pb, STORE);
 	}
 
-      bi0 = wrk->tx_buffers[--n_bufs];
+      bi0 = ctx->tx_buffers[--n_bufs];
       b0 = vlib_get_buffer (vm, bi0);
       session_tx_fill_buffer (vm, ctx, b0, &n_bufs, peek_data);
 
@@ -1193,7 +1333,7 @@ session_tx_fifo_read_and_snd_i (session_worker_t * wrk,
 			    ctx->n_segs_per_evt, ctx->s, n_trace);
 
   if (PREDICT_FALSE (n_bufs))
-    vlib_buffer_free (vm, wrk->tx_buffers, n_bufs);
+    vlib_buffer_free (vm, ctx->tx_buffers, n_bufs);
 
   *n_tx_packets += ctx->n_segs_per_evt;
 
@@ -1331,7 +1471,7 @@ session_event_dispatch_ctrl (session_worker_t * wrk, session_evt_elt_t * elt)
       session_mq_unlisten_handler (session_evt_ctrl_data (wrk, elt));
       break;
     case SESSION_CTRL_EVT_CONNECT:
-      session_mq_connect_handler (session_evt_ctrl_data (wrk, elt));
+      session_mq_connect_handler (wrk, elt);
       break;
     case SESSION_CTRL_EVT_CONNECT_URI:
       session_mq_connect_uri_handler (session_evt_ctrl_data (wrk, elt));
@@ -1372,13 +1512,13 @@ session_event_dispatch_ctrl (session_worker_t * wrk, session_evt_elt_t * elt)
     }
 
   /* Regrab elements in case pool moved */
-  elt = pool_elt_at_index (wrk->event_elts, ei);
+  elt = clib_llist_elt (wrk->event_elts, ei);
   if (!clib_llist_elt_is_linked (elt, evt_list))
     {
       e = &elt->evt;
       if (e->event_type >= SESSION_CTRL_EVT_BOUND)
 	session_evt_ctrl_data_free (wrk, elt);
-      session_evt_elt_free (wrk, elt);
+      clib_llist_put (wrk->event_elts, elt);
     }
   SESSION_EVT (SESSION_EVT_COUNTS, CNT_CTRL_EVTS, 1, wrk);
 }
@@ -1437,9 +1577,9 @@ session_event_dispatch_io (session_worker_t * wrk, vlib_node_runtime_t * node,
   SESSION_EVT (SESSION_IO_EVT_COUNTS, e->event_type, 1, wrk);
 
   /* Regrab elements in case pool moved */
-  elt = pool_elt_at_index (wrk->event_elts, ei);
+  elt = clib_llist_elt (wrk->event_elts, ei);
   if (!clib_llist_elt_is_linked (elt, evt_list))
-    session_evt_elt_free (wrk, elt);
+    clib_llist_put (wrk->event_elts, elt);
 }
 
 /* *INDENT-OFF* */
@@ -1510,48 +1650,13 @@ session_wrk_handle_mq (session_worker_t *wrk, svm_msg_q_t *mq)
 }
 
 static void
-session_wrk_timerfd_update (session_worker_t *wrk, u64 time_ns)
-{
-  struct itimerspec its;
-
-  its.it_value.tv_sec = 0;
-  its.it_value.tv_nsec = time_ns;
-  its.it_interval.tv_sec = 0;
-  its.it_interval.tv_nsec = its.it_value.tv_nsec;
-
-  if (timerfd_settime (wrk->timerfd, 0, &its, NULL) == -1)
-    clib_warning ("timerfd_settime");
-}
-
-always_inline u64
-session_wrk_tfd_timeout (session_wrk_state_t state, u32 thread_index)
-{
-  if (state == SESSION_WRK_INTERRUPT)
-    return thread_index ? 1e6 : vlib_num_workers () ? 5e8 : 1e6;
-  else if (state == SESSION_WRK_IDLE)
-    return thread_index ? 1e8 : vlib_num_workers () ? 5e8 : 1e8;
-  else
-    return 0;
-}
-
-static inline void
-session_wrk_set_state (session_worker_t *wrk, session_wrk_state_t state)
-{
-  u64 time_ns;
-
-  wrk->state = state;
-  time_ns = session_wrk_tfd_timeout (state, wrk->vm->thread_index);
-  session_wrk_timerfd_update (wrk, time_ns);
-}
-
-static void
 session_wrk_update_state (session_worker_t *wrk)
 {
   vlib_main_t *vm = wrk->vm;
 
   if (wrk->state == SESSION_WRK_POLLING)
     {
-      if (pool_elts (wrk->event_elts) == 3 &&
+      if (clib_llist_elts (wrk->event_elts) == 4 &&
 	  vlib_last_vectors_per_main_loop (vm) < 1)
 	{
 	  session_wrk_set_state (wrk, SESSION_WRK_INTERRUPT);
@@ -1561,7 +1666,7 @@ session_wrk_update_state (session_worker_t *wrk)
     }
   else if (wrk->state == SESSION_WRK_INTERRUPT)
     {
-      if (pool_elts (wrk->event_elts) > 3 ||
+      if (clib_llist_elts (wrk->event_elts) > 4 ||
 	  vlib_last_vectors_per_main_loop (vm) > 1)
 	{
 	  session_wrk_set_state (wrk, SESSION_WRK_POLLING);
@@ -1575,7 +1680,7 @@ session_wrk_update_state (session_worker_t *wrk)
     }
   else
     {
-      if (pool_elts (wrk->event_elts))
+      if (clib_llist_elts (wrk->event_elts))
 	{
 	  session_wrk_set_state (wrk, SESSION_WRK_INTERRUPT);
 	}
@@ -1615,12 +1720,18 @@ session_queue_node_fn (vlib_main_t * vm, vlib_node_runtime_t * node,
    * Handle control events
    */
 
-  ctrl_he = pool_elt_at_index (wrk->event_elts, wrk->ctrl_head);
-
-  clib_llist_foreach_safe (wrk->event_elts, evt_list, ctrl_he, elt, ({
-    clib_llist_remove (wrk->event_elts, evt_list, elt);
-    session_event_dispatch_ctrl (wrk, elt);
-  }));
+  ei = wrk->ctrl_head;
+  ctrl_he = clib_llist_elt (wrk->event_elts, ei);
+  next_ei = clib_llist_next_index (ctrl_he, evt_list);
+  old_ti = clib_llist_prev_index (ctrl_he, evt_list);
+  while (ei != old_ti)
+    {
+      ei = next_ei;
+      elt = clib_llist_elt (wrk->event_elts, next_ei);
+      next_ei = clib_llist_next_index (elt, evt_list);
+      clib_llist_remove (wrk->event_elts, evt_list, elt);
+      session_event_dispatch_ctrl (wrk, elt);
+    }
 
   SESSION_EVT (SESSION_EVT_DSP_CNTRS, CTRL_EVTS, wrk);
 
@@ -1628,14 +1739,14 @@ session_queue_node_fn (vlib_main_t * vm, vlib_node_runtime_t * node,
    * Handle the new io events.
    */
 
-  new_he = pool_elt_at_index (wrk->event_elts, wrk->new_head);
-  old_he = pool_elt_at_index (wrk->event_elts, wrk->old_head);
+  new_he = clib_llist_elt (wrk->event_elts, wrk->new_head);
+  old_he = clib_llist_elt (wrk->event_elts, wrk->old_head);
   old_ti = clib_llist_prev_index (old_he, evt_list);
 
   ei = clib_llist_next_index (new_he, evt_list);
   while (ei != wrk->new_head && n_tx_packets < SESSION_NODE_FRAME_SIZE)
     {
-      elt = pool_elt_at_index (wrk->event_elts, ei);
+      elt = clib_llist_elt (wrk->event_elts, ei);
       ei = clib_llist_next_index (elt, evt_list);
       clib_llist_remove (wrk->event_elts, evt_list, elt);
       session_event_dispatch_io (wrk, node, elt, &n_tx_packets);
@@ -1649,12 +1760,12 @@ session_queue_node_fn (vlib_main_t * vm, vlib_node_runtime_t * node,
 
   if (old_ti != wrk->old_head)
     {
-      old_he = pool_elt_at_index (wrk->event_elts, wrk->old_head);
+      old_he = clib_llist_elt (wrk->event_elts, wrk->old_head);
       ei = clib_llist_next_index (old_he, evt_list);
 
       while (n_tx_packets < SESSION_NODE_FRAME_SIZE)
 	{
-	  elt = pool_elt_at_index (wrk->event_elts, ei);
+	  elt = clib_llist_elt (wrk->event_elts, ei);
 	  next_ei = clib_llist_next_index (elt, evt_list);
 	  clib_llist_remove (wrk->event_elts, evt_list, elt);
 

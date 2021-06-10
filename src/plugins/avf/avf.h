@@ -85,6 +85,7 @@
 
 
 extern vlib_log_class_registration_t avf_log;
+extern vlib_log_class_registration_t avf_stats_log;
 
 #define avf_log_err(dev, f, ...)                        \
   vlib_log (VLIB_LOG_LEVEL_ERR, avf_log.class, "%U: " f, \
@@ -101,13 +102,16 @@ extern vlib_log_class_registration_t avf_log;
             format_vlib_pci_addr, &dev->pci_addr, \
             ## __VA_ARGS__)
 
+#define avf_stats_log_debug(dev, f, ...)                                      \
+  vlib_log (VLIB_LOG_LEVEL_DEBUG, avf_stats_log.class, "%U: " f,              \
+	    format_vlib_pci_addr, &dev->pci_addr, ##__VA_ARGS__)
+
 #define foreach_avf_device_flags                                              \
   _ (0, INITIALIZED, "initialized")                                           \
   _ (1, ERROR, "error")                                                       \
   _ (2, ADMIN_UP, "admin-up")                                                 \
   _ (3, VA_DMA, "vaddr-dma")                                                  \
   _ (4, LINK_UP, "link-up")                                                   \
-  _ (5, SHARED_TXQ_LOCK, "shared-txq-lock")                                   \
   _ (6, ELOG, "elog")                                                         \
   _ (7, PROMISC, "promisc")                                                   \
   _ (8, RX_INT, "rx-interrupts")                                              \
@@ -330,6 +334,7 @@ typedef struct
   u8 *name;
   int enable_elog;
   u16 rxq_num;
+  u16 txq_num;
   u16 rxq_size;
   u16 txq_size;
   /* return */
@@ -356,6 +361,7 @@ format_function_t format_avf_vf_cap_flags;
 format_function_t format_avf_vlan_supported_caps;
 format_function_t format_avf_vlan_caps;
 format_function_t format_avf_vlan_support;
+format_function_t format_avf_eth_stats;
 vnet_flow_dev_ops_function_t avf_flow_ops_fn;
 
 static_always_inline avf_device_t *
@@ -363,6 +369,13 @@ avf_get_device (u32 dev_instance)
 {
   return pool_elt_at_index (avf_main.devices, dev_instance)[0];
 }
+
+/* elog.c */
+void avf_elog_init ();
+void avf_elog_reg (avf_device_t *ad, u32 addr, u32 val, int is_read);
+void avf_elog_aq_enq_req (avf_device_t *ad, avf_aq_desc_t *d);
+void avf_elog_aq_enq_resp (avf_device_t *ad, avf_aq_desc_t *d);
+void avf_elog_arq_desc (avf_device_t *ad, avf_aq_desc_t *d);
 
 static inline u32
 avf_get_u32 (void *start, int offset)
@@ -407,13 +420,20 @@ avf_set_u32 (void *start, int offset, u32 value)
 static inline void
 avf_reg_write (avf_device_t * ad, u32 addr, u32 val)
 {
+  if (ad->flags & AVF_DEVICE_F_ELOG)
+    avf_elog_reg (ad, addr, val, 0);
   *(volatile u32 *) ((u8 *) ad->bar0 + addr) = val;
 }
 
 static inline u32
 avf_reg_read (avf_device_t * ad, u32 addr)
 {
-  return *(volatile u32 *) (ad->bar0 + addr);
+  u32 val = *(volatile u32 *) (ad->bar0 + addr);
+
+  if (ad->flags & AVF_DEVICE_F_ELOG)
+    avf_elog_reg (ad, addr, val, 1);
+
+  return val;
 }
 
 static inline void

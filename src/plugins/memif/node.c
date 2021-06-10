@@ -140,39 +140,9 @@ memif_add_to_chain (vlib_main_t * vm, vlib_buffer_t * b, u32 * buffers,
     }
 }
 
-static_always_inline u32
-sat_sub (u32 x, u32 y)
-{
-  u32 res = x - y;
-  res &= -(res <= x);
-  return res;
-}
-
-/* branchless validation of the descriptor - uses saturated subtraction */
-static_always_inline u32
-memif_desc_is_invalid (memif_if_t * mif, memif_desc_t * d, u32 buffer_length)
-{
-  u32 rv;
-  u16 valid_flags = MEMIF_DESC_FLAG_NEXT;
-
-  rv = d->flags & (~valid_flags);
-  rv |= sat_sub (d->region + 1, vec_len (mif->regions));
-  rv |= sat_sub (d->length, buffer_length);
-  rv |= sat_sub (d->offset + d->length, mif->regions[d->region].region_size);
-
-  if (PREDICT_FALSE (rv))
-    {
-      mif->flags |= MEMIF_IF_FLAG_ERROR;
-      return 1;
-    }
-
-  return 0;
-}
-
 static_always_inline uword
-memif_device_input_inline (vlib_main_t * vm, vlib_node_runtime_t * node,
-			   vlib_frame_t * frame, memif_if_t * mif,
-			   memif_ring_type_t type, u16 qid,
+memif_device_input_inline (vlib_main_t *vm, vlib_node_runtime_t *node,
+			   memif_if_t *mif, memif_ring_type_t type, u16 qid,
 			   memif_interface_mode_t mode)
 {
   vnet_main_t *vnm = vnet_get_main ();
@@ -180,7 +150,7 @@ memif_device_input_inline (vlib_main_t * vm, vlib_node_runtime_t * node,
   memif_ring_t *ring;
   memif_queue_t *mq;
   u16 buffer_size = vlib_buffer_get_default_data_size (vm);
-  uword n_trace = vlib_get_trace_count (vm, node);
+  uword n_trace;
   u16 nexts[MEMIF_RX_VECTOR_SZ], *next = nexts;
   u32 _to_next_bufs[MEMIF_RX_VECTOR_SZ], *to_next_bufs = _to_next_bufs, *bi;
   u32 n_rx_packets = 0, n_rx_bytes = 0;
@@ -212,7 +182,12 @@ memif_device_input_inline (vlib_main_t * vm, vlib_node_runtime_t * node,
   /* for S2M rings, we are consumers of packet buffers, and for M2S rings we
      are producers of empty buffers */
   cur_slot = (type == MEMIF_RING_S2M) ? mq->last_head : mq->last_tail;
-  last_slot = (type == MEMIF_RING_S2M) ? ring->head : ring->tail;
+
+  if (type == MEMIF_RING_S2M)
+    last_slot = __atomic_load_n (&ring->head, __ATOMIC_ACQUIRE);
+  else
+    last_slot = __atomic_load_n (&ring->tail, __ATOMIC_ACQUIRE);
+
   if (cur_slot == last_slot)
     goto refill;
   n_slots = last_slot - cur_slot;
@@ -336,8 +311,8 @@ memif_device_input_inline (vlib_main_t * vm, vlib_node_runtime_t * node,
   /* release slots from the ring */
   if (type == MEMIF_RING_S2M)
     {
-      CLIB_MEMORY_STORE_BARRIER ();
-      ring->tail = mq->last_head = cur_slot;
+      __atomic_store_n (&ring->tail, cur_slot, __ATOMIC_RELEASE);
+      mq->last_head = cur_slot;
     }
   else
     {
@@ -390,10 +365,10 @@ memif_device_input_inline (vlib_main_t * vm, vlib_node_runtime_t * node,
 
   while (n_from >= 8)
     {
-      b0 = vlib_get_buffer (vm, ptd->buffers[po[0].first_buffer_vec_index]);
-      b1 = vlib_get_buffer (vm, ptd->buffers[po[1].first_buffer_vec_index]);
-      b2 = vlib_get_buffer (vm, ptd->buffers[po[2].first_buffer_vec_index]);
-      b3 = vlib_get_buffer (vm, ptd->buffers[po[3].first_buffer_vec_index]);
+      b0 = vlib_get_buffer (vm, ptd->buffers[po[4].first_buffer_vec_index]);
+      b1 = vlib_get_buffer (vm, ptd->buffers[po[5].first_buffer_vec_index]);
+      b2 = vlib_get_buffer (vm, ptd->buffers[po[6].first_buffer_vec_index]);
+      b3 = vlib_get_buffer (vm, ptd->buffers[po[7].first_buffer_vec_index]);
 
       vlib_prefetch_buffer_header (b0, STORE);
       vlib_prefetch_buffer_header (b1, STORE);
@@ -537,17 +512,16 @@ refill:
 	  d->length = mif->run.buffer_size;
 	}
 
-      CLIB_MEMORY_STORE_BARRIER ();
-      ring->head = head;
+      __atomic_store_n (&ring->head, head, __ATOMIC_RELEASE);
     }
 
   return n_rx_packets;
 }
 
 static_always_inline uword
-memif_device_input_zc_inline (vlib_main_t * vm, vlib_node_runtime_t * node,
-			      vlib_frame_t * frame, memif_if_t * mif,
-			      u16 qid, memif_interface_mode_t mode)
+memif_device_input_zc_inline (vlib_main_t *vm, vlib_node_runtime_t *node,
+			      memif_if_t *mif, u16 qid,
+			      memif_interface_mode_t mode)
 {
   vnet_main_t *vnm = vnet_get_main ();
   memif_main_t *mm = &memif_main;
@@ -558,14 +532,15 @@ memif_device_input_zc_inline (vlib_main_t * vm, vlib_node_runtime_t * node,
   u32 n_rx_packets = 0, n_rx_bytes = 0;
   u32 *to_next = 0, *buffers;
   u32 bi0, bi1, bi2, bi3;
-  u16 s0, s1, s2, s3;
-  memif_desc_t *d0, *d1, *d2, *d3;
+  u16 slot, s0;
+  memif_desc_t *d0;
   vlib_buffer_t *b0, *b1, *b2, *b3;
   u32 thread_index = vm->thread_index;
   memif_per_thread_data_t *ptd = vec_elt_at_index (mm->per_thread_data,
 						   thread_index);
   u16 cur_slot, last_slot, ring_size, n_slots, mask, head;
   i16 start_offset;
+  u64 offset;
   u32 buffer_length;
   u16 n_alloc, n_from;
 
@@ -583,7 +558,7 @@ memif_device_input_zc_inline (vlib_main_t * vm, vlib_node_runtime_t * node,
   buffer_length = vlib_buffer_get_default_data_size (vm) - start_offset;
 
   cur_slot = mq->last_tail;
-  last_slot = ring->tail;
+  last_slot = __atomic_load_n (&ring->tail, __ATOMIC_ACQUIRE);
   if (cur_slot == last_slot)
     goto refill;
   n_slots = last_slot - cur_slot;
@@ -606,9 +581,6 @@ memif_device_input_zc_inline (vlib_main_t * vm, vlib_node_runtime_t * node,
       b0->current_data = start_offset;
       b0->current_length = d0->length;
       n_rx_bytes += d0->length;
-
-      if (0 && memif_desc_is_invalid (mif, d0, buffer_length))
-	return 0;
 
       cur_slot++;
       n_slots--;
@@ -789,86 +761,67 @@ refill:
 
   head = ring->head;
   n_slots = ring_size - head + mq->last_tail;
+  slot = head & mask;
+
+  n_slots &= ~7;
 
   if (n_slots < 32)
     goto done;
 
-  memif_desc_t *dt = &ptd->desc_template;
+  memif_desc_t desc_template, *dt = &desc_template;
   clib_memset (dt, 0, sizeof (memif_desc_t));
   dt->length = buffer_length;
 
-  n_alloc = vlib_buffer_alloc_to_ring_from_pool (vm, mq->buffers, head & mask,
-						 ring_size, n_slots,
-						 mq->buffer_pool_index);
+  n_alloc = vlib_buffer_alloc_to_ring_from_pool (
+    vm, mq->buffers, slot, ring_size, n_slots, mq->buffer_pool_index);
+  dt->region = mq->buffer_pool_index + 1;
+  offset = (u64) mif->regions[dt->region].shm + start_offset;
 
   if (PREDICT_FALSE (n_alloc != n_slots))
-    {
-      vlib_error_count (vm, node->node_index,
-			MEMIF_INPUT_ERROR_BUFFER_ALLOC_FAIL, 1);
-    }
+    vlib_error_count (vm, node->node_index,
+		      MEMIF_INPUT_ERROR_BUFFER_ALLOC_FAIL, 1);
 
-  while (n_alloc >= 32)
-    {
-      bi0 = mq->buffers[(head + 4) & mask];
-      vlib_prefetch_buffer_with_index (vm, bi0, LOAD);
-      bi1 = mq->buffers[(head + 5) & mask];
-      vlib_prefetch_buffer_with_index (vm, bi1, LOAD);
-      bi2 = mq->buffers[(head + 6) & mask];
-      vlib_prefetch_buffer_with_index (vm, bi2, LOAD);
-      bi3 = mq->buffers[(head + 7) & mask];
-      vlib_prefetch_buffer_with_index (vm, bi3, LOAD);
+  head += n_alloc;
 
-      s0 = head++ & mask;
-      s1 = head++ & mask;
-      s2 = head++ & mask;
-      s3 = head++ & mask;
-
-      d0 = &ring->desc[s0];
-      d1 = &ring->desc[s1];
-      d2 = &ring->desc[s2];
-      d3 = &ring->desc[s3];
-
-      clib_memcpy_fast (d0, dt, sizeof (memif_desc_t));
-      clib_memcpy_fast (d1, dt, sizeof (memif_desc_t));
-      clib_memcpy_fast (d2, dt, sizeof (memif_desc_t));
-      clib_memcpy_fast (d3, dt, sizeof (memif_desc_t));
-
-      b0 = vlib_get_buffer (vm, mq->buffers[s0]);
-      b1 = vlib_get_buffer (vm, mq->buffers[s1]);
-      b2 = vlib_get_buffer (vm, mq->buffers[s2]);
-      b3 = vlib_get_buffer (vm, mq->buffers[s3]);
-
-      d0->region = b0->buffer_pool_index + 1;
-      d1->region = b1->buffer_pool_index + 1;
-      d2->region = b2->buffer_pool_index + 1;
-      d3->region = b3->buffer_pool_index + 1;
-
-      d0->offset =
-	(void *) b0->data - mif->regions[d0->region].shm + start_offset;
-      d1->offset =
-	(void *) b1->data - mif->regions[d1->region].shm + start_offset;
-      d2->offset =
-	(void *) b2->data - mif->regions[d2->region].shm + start_offset;
-      d3->offset =
-	(void *) b3->data - mif->regions[d3->region].shm + start_offset;
-
-      n_alloc -= 4;
-    }
   while (n_alloc)
     {
-      s0 = head++ & mask;
-      d0 = &ring->desc[s0];
-      clib_memcpy_fast (d0, dt, sizeof (memif_desc_t));
-      b0 = vlib_get_buffer (vm, mq->buffers[s0]);
-      d0->region = b0->buffer_pool_index + 1;
-      d0->offset =
-	(void *) b0->data - mif->regions[d0->region].shm + start_offset;
+      memif_desc_t *d = ring->desc + slot;
+      u32 *bi = mq->buffers + slot;
 
+      if (PREDICT_FALSE (((slot + 7 > mask) || (n_alloc < 8))))
+	goto one_by_one;
+
+      clib_memcpy_fast (d + 0, dt, sizeof (memif_desc_t));
+      clib_memcpy_fast (d + 1, dt, sizeof (memif_desc_t));
+      clib_memcpy_fast (d + 2, dt, sizeof (memif_desc_t));
+      clib_memcpy_fast (d + 3, dt, sizeof (memif_desc_t));
+      clib_memcpy_fast (d + 4, dt, sizeof (memif_desc_t));
+      clib_memcpy_fast (d + 5, dt, sizeof (memif_desc_t));
+      clib_memcpy_fast (d + 6, dt, sizeof (memif_desc_t));
+      clib_memcpy_fast (d + 7, dt, sizeof (memif_desc_t));
+
+      d[0].offset = (u64) vlib_get_buffer (vm, bi[0])->data - offset;
+      d[1].offset = (u64) vlib_get_buffer (vm, bi[1])->data - offset;
+      d[2].offset = (u64) vlib_get_buffer (vm, bi[2])->data - offset;
+      d[3].offset = (u64) vlib_get_buffer (vm, bi[3])->data - offset;
+      d[4].offset = (u64) vlib_get_buffer (vm, bi[4])->data - offset;
+      d[5].offset = (u64) vlib_get_buffer (vm, bi[5])->data - offset;
+      d[6].offset = (u64) vlib_get_buffer (vm, bi[6])->data - offset;
+      d[7].offset = (u64) vlib_get_buffer (vm, bi[7])->data - offset;
+
+      slot += 8;
+      n_alloc -= 8;
+      continue;
+
+    one_by_one:
+      clib_memcpy_fast (d, dt, sizeof (memif_desc_t));
+      d[0].offset = (u64) vlib_get_buffer (vm, bi[0])->data - offset;
+
+      slot = (slot + 1) & mask;
       n_alloc -= 1;
     }
 
-  CLIB_MEMORY_STORE_BARRIER ();
-  ring->head = head;
+  __atomic_store_n (&ring->head, head, __ATOMIC_RELEASE);
 
 done:
   return n_rx_packets;
@@ -898,29 +851,29 @@ VLIB_NODE_FN (memif_input_node) (vlib_main_t * vm,
 	  if (mif->flags & MEMIF_IF_FLAG_ZERO_COPY)
 	    {
 	      if (mif->mode == MEMIF_INTERFACE_MODE_IP)
-		n_rx += memif_device_input_zc_inline (vm, node, frame, mif,
-						      qid, mode_ip);
+		n_rx +=
+		  memif_device_input_zc_inline (vm, node, mif, qid, mode_ip);
 	      else
-		n_rx += memif_device_input_zc_inline (vm, node, frame, mif,
-						      qid, mode_eth);
+		n_rx +=
+		  memif_device_input_zc_inline (vm, node, mif, qid, mode_eth);
 	    }
 	  else if (mif->flags & MEMIF_IF_FLAG_IS_SLAVE)
 	    {
 	      if (mif->mode == MEMIF_INTERFACE_MODE_IP)
 		n_rx += memif_device_input_inline (
-		  vm, node, frame, mif, MEMIF_RING_M2S, qid, mode_ip);
+		  vm, node, mif, MEMIF_RING_M2S, qid, mode_ip);
 	      else
 		n_rx += memif_device_input_inline (
-		  vm, node, frame, mif, MEMIF_RING_M2S, qid, mode_eth);
+		  vm, node, mif, MEMIF_RING_M2S, qid, mode_eth);
 	    }
 	  else
 	    {
 	      if (mif->mode == MEMIF_INTERFACE_MODE_IP)
 		n_rx += memif_device_input_inline (
-		  vm, node, frame, mif, MEMIF_RING_S2M, qid, mode_ip);
+		  vm, node, mif, MEMIF_RING_S2M, qid, mode_ip);
 	      else
 		n_rx += memif_device_input_inline (
-		  vm, node, frame, mif, MEMIF_RING_S2M, qid, mode_eth);
+		  vm, node, mif, MEMIF_RING_S2M, qid, mode_eth);
 	    }
 	}
     }

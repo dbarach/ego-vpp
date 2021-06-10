@@ -495,7 +495,7 @@ dpdk_lib_init (dpdk_main_t * dm)
 		    DPDK_DEVICE_FLAG_TX_OFFLOAD |
 		    DPDK_DEVICE_FLAG_INTEL_PHDR_CKSUM;
 		}
-	      /* sDPDK bug in multiqueue... */
+	      /* DPDK bug in multiqueue... */
 	      /* xd->port_conf.intr_conf.rxq = 1; */
 	      break;
 
@@ -517,7 +517,8 @@ dpdk_lib_init (dpdk_main_t * dm)
 		    DPDK_DEVICE_FLAG_TX_OFFLOAD |
 		    DPDK_DEVICE_FLAG_INTEL_PHDR_CKSUM;
 		}
-	      xd->port_conf.intr_conf.rxq = 1;
+	      /* DPDK bug in multiqueue... */
+	      /* xd->port_conf.intr_conf.rxq = 1; */
 	      break;
 
 	    case VNET_DPDK_PMD_THUNDERX:
@@ -1841,11 +1842,15 @@ dpdk_process (vlib_main_t * vm, vlib_node_runtime_t * rt, vlib_frame_t * f)
   if (error)
     clib_error_report (error);
 
-  error = dpdk_cryptodev_init (vm);
-  if (error)
+  if (dpdk_cryptodev_init)
     {
-      vlib_log_warn (dpdk_main.log_cryptodev, "%U", format_clib_error, error);
-      clib_error_free (error);
+      error = dpdk_cryptodev_init (vm);
+      if (error)
+	{
+	  vlib_log_warn (dpdk_main.log_cryptodev, "%U", format_clib_error,
+			 error);
+	  clib_error_free (error);
+	}
     }
 
   tm->worker_thread_release = 1;

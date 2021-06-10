@@ -73,6 +73,7 @@ set(VPP_LIBRARY_DIR "lib" CACHE STRING "Relative library directory path")
 set(CMAKE_RUNTIME_OUTPUT_DIRECTORY ${CMAKE_BINARY_DIR}/${VPP_RUNTIME_DIR})
 set(CMAKE_LIBRARY_OUTPUT_DIRECTORY ${CMAKE_BINARY_DIR}/${VPP_LIBRARY_DIR})
 set(VPP_BINARY_DIR ${CMAKE_BINARY_DIR}/CMakeFiles)
+set(PYENV PYTHONPYCACHEPREFIX=${CMAKE_BINARY_DIR}/CMakeFile/__pycache__)
 
 if (CMAKE_BUILD_TYPE)
   add_compile_options(-g -fPIC -Werror -Wall)
@@ -176,7 +177,7 @@ option(VPP_HOST_TOOLS_ONLY "Build only host tools" OFF)
 if(VPP_HOST_TOOLS_ONLY)
   set(SUBDIRS tools/vppapigen cmake)
 elseif("${CMAKE_SYSTEM_NAME}" STREQUAL "Linux")
-  find_package(OpenSSL REQUIRED)
+  find_package(OpenSSL)
   set(SUBDIRS
     vppinfra svm vlib vlibmemory vlibapi vnet vpp vat vat2 vcl plugins
     vpp-api tools/vppapigen tools/g2 tools/perftool cmake pkg

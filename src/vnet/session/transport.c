@@ -307,7 +307,7 @@ transport_cleanup (transport_proto_t tp, u32 conn_index, u8 thread_index)
 void
 transport_cleanup_half_open (transport_proto_t tp, u32 conn_index)
 {
-  if (tp_vfts[tp].cleanup)
+  if (tp_vfts[tp].cleanup_ho)
     tp_vfts[tp].cleanup_ho (conn_index);
 }
 
@@ -853,7 +853,11 @@ transport_init (void)
 			 smm->local_endpoints_table_memory);
   num_threads = 1 /* main thread */  + vtm->n_threads;
   if (num_threads > 1)
-    clib_spinlock_init (&local_endpoints_lock);
+    {
+      clib_spinlock_init (&local_endpoints_lock);
+      /* Main not polled if there are workers */
+      smm->transport_cl_thread = 1;
+    }
 }
 
 /*

@@ -572,6 +572,12 @@ quic_connection_delete (quic_ctx_t * ctx)
   clib_bihash_kv_16_8_t kv;
   quicly_conn_t *conn;
 
+  if (ctx->conn == NULL)
+    {
+      QUIC_DBG (2, "Skipping redundant delete of connection %u",
+		ctx->c_c_index);
+      return;
+    }
   QUIC_DBG (2, "Deleting connection %u", ctx->c_c_index);
 
   QUIC_ASSERT (!quic_ctx_is_stream (ctx));
@@ -587,8 +593,8 @@ quic_connection_delete (quic_ctx_t * ctx)
 
   quic_disconnect_transport (ctx);
 
-  if (ctx->conn)
-    quicly_free (ctx->conn);
+  if (conn)
+    quicly_free (conn);
   session_transport_delete_notify (&ctx->connection);
 }
 
@@ -1008,6 +1014,7 @@ quic_on_stream_open (quicly_stream_open_t * self, quicly_stream_t * stream)
   sctx->stream = stream;
   sctx->c_flags |= TRANSPORT_CONNECTION_F_NO_LOOKUP;
   sctx->flags |= QUIC_F_IS_STREAM;
+  sctx->crypto_context_index = qctx->crypto_context_index;
   if (quicly_stream_is_unidirectional (stream->stream_id))
     stream_session->flags |= SESSION_F_UNIDIRECTIONAL;
 
@@ -1142,7 +1149,9 @@ quic_update_timer (quic_ctx_t * ctx)
 	}
     }
 
-  tw = &quic_main.wrk_ctx[vlib_get_thread_index ()].timer_wheel;
+  ASSERT (vlib_get_thread_index () == ctx->c_thread_index ||
+	  vlib_get_thread_index () == 0);
+  tw = &quic_main.wrk_ctx[ctx->c_thread_index].timer_wheel;
 
   QUIC_DBG (4, "Timer set to %ld (int %ld) for ctx %u", next_timeout,
 	    next_interval, ctx->c_c_index);
@@ -1246,6 +1255,7 @@ quic_connect_stream (session_t * quic_session, session_endpoint_cfg_t * sep)
   quic_increment_counter (QUIC_ERROR_OPENED_STREAM, 1);
 
   sctx->stream = stream;
+  sctx->crypto_context_index = qctx->crypto_context_index;
 
   QUIC_DBG (2, "Opened stream %d, creating session", stream->stream_id);
 
@@ -1308,7 +1318,7 @@ quic_connect_connection (session_endpoint_cfg_t * sep)
     return SESSION_E_NOEXTCFG;
 
   /* Use pool on thread 1 if we have workers because of UDP */
-  thread_index = vlib_num_workers () ? 1 : 0;
+  thread_index = transport_cl_thread ();
   ccfg = &sep->ext_cfg->crypto;
 
   clib_memset (cargs, 0, sizeof (*cargs));
@@ -1807,9 +1817,6 @@ quic_udp_session_connected_callback (u32 quic_app_index, u32 ctx_index,
 	}
       return 0;
     }
-
-  ctx->c_thread_index = thread_index;
-  ctx->c_c_index = ctx_index;
 
   QUIC_DBG (2, "New ctx [%u]%x", thread_index, (ctx) ? ctx_index : ~0);
 

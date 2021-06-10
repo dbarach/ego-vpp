@@ -344,6 +344,7 @@ typedef CLIB_PACKED(struct
   /* per vrf sessions index */
   u32 per_vrf_sessions_index;
 
+  u32 thread_index;
 }) snat_session_t;
 
 typedef struct
@@ -608,6 +609,8 @@ typedef struct snat_main_s
 
   /* counters */
   vlib_simple_counter_main_t total_sessions;
+  u32 max_cfg_sessions_gauge; /* Index of max configured sessions gauge in
+				 stats */
 
 #define _(x) vlib_simple_counter_main_t x;
   struct
@@ -949,15 +952,6 @@ clib_error_t *nat44_api_hookup (vlib_main_t * vm);
  * @return 0 on success, non-zero value otherwise
  */
 int snat_set_workers (uword * bitmap);
-
-/**
- * @brief Set NAT plugin number of frame queue elements
- *
- * @param frame_queue_nelts number of worker handoff frame queue elements
- *
- * @return 0 on success, non-zero value otherwise
- */
-int snat_set_frame_queue_nelts (u32 frame_queue_nelts);
 
 /**
  * @brief Enable/disable NAT44 feature on the interface

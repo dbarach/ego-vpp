@@ -303,21 +303,90 @@ session_delete (session_t * s)
 void
 session_cleanup_half_open (session_handle_t ho_handle)
 {
-  session_t *s = session_get_from_handle (ho_handle);
-  transport_cleanup_half_open (session_get_transport_proto (s),
-			       s->connection_index);
+  session_t *ho = session_get_from_handle (ho_handle);
+
+  /* App transports can migrate their half-opens */
+  if (ho->flags & SESSION_F_IS_MIGRATING)
+    {
+      /* Session still migrating, move to closed state to signal that the
+       * session should be removed. */
+      if (ho->connection_index == ~0)
+	{
+	  ho->session_state = SESSION_STATE_CLOSED;
+	  return;
+	}
+      /* Migrated transports are no longer half-opens */
+      transport_cleanup (session_get_transport_proto (ho),
+			 ho->connection_index, ho->app_index /* overloaded */);
+    }
+  else
+    transport_cleanup_half_open (session_get_transport_proto (ho),
+				 ho->connection_index);
+  session_free (ho);
+}
+
+static void
+session_half_open_free (session_t *ho)
+{
+  app_worker_t *app_wrk;
+
+  ASSERT (vlib_get_thread_index () <= 1);
+  app_wrk = app_worker_get (ho->app_wrk_index);
+  app_worker_del_half_open (app_wrk, ho);
+  session_free (ho);
+}
+
+static void
+session_half_open_free_rpc (void *args)
+{
+  session_t *ho = ho_session_get (pointer_to_uword (args));
+  session_half_open_free (ho);
 }
 
 void
 session_half_open_delete_notify (transport_connection_t *tc)
 {
-  app_worker_t *app_wrk;
-  session_t *s;
+  /* Notification from ctrl thread accepted without rpc */
+  if (tc->thread_index <= 1)
+    {
+      session_half_open_free (ho_session_get (tc->s_index));
+    }
+  else
+    {
+      void *args = uword_to_pointer ((uword) tc->s_index, void *);
+      u32 ctrl_thread = vlib_num_workers () ? 1 : 0;
+      session_send_rpc_evt_to_thread (ctrl_thread, session_half_open_free_rpc,
+				      args);
+    }
+}
 
-  s = ho_session_get (tc->s_index);
-  app_wrk = app_worker_get (s->app_wrk_index);
-  app_worker_del_half_open (app_wrk, s);
-  session_free (s);
+void
+session_half_open_migrate_notify (transport_connection_t *tc)
+{
+  session_t *ho;
+
+  ho = ho_session_get (tc->s_index);
+  ho->flags |= SESSION_F_IS_MIGRATING;
+  ho->connection_index = ~0;
+}
+
+int
+session_half_open_migrated_notify (transport_connection_t *tc)
+{
+  session_t *ho;
+
+  ho = ho_session_get (tc->s_index);
+
+  /* App probably detached so the half-open must be cleaned up */
+  if (ho->session_state == SESSION_STATE_CLOSED)
+    {
+      session_half_open_delete_notify (tc);
+      return -1;
+    }
+  ho->connection_index = tc->c_index;
+  /* Overload app index for half-open with new thread */
+  ho->app_index = tc->thread_index;
+  return 0;
 }
 
 session_t *
@@ -1749,9 +1818,11 @@ session_manager_main_enable (vlib_main_t * vm)
       wrk->ctrl_head = clib_llist_make_head (wrk->event_elts, evt_list);
       wrk->new_head = clib_llist_make_head (wrk->event_elts, evt_list);
       wrk->old_head = clib_llist_make_head (wrk->event_elts, evt_list);
+      wrk->pending_connects = clib_llist_make_head (wrk->event_elts, evt_list);
       wrk->vm = vlib_get_main_by_index (i);
       wrk->last_vlib_time = vlib_time_now (vm);
       wrk->last_vlib_us_time = wrk->last_vlib_time * CLIB_US_TIME_FREQ;
+      wrk->timerfd = -1;
       vec_validate (wrk->session_to_enqueue, smm->last_transport_proto_type);
 
       if (num_threads > 1)
@@ -1831,6 +1902,7 @@ session_node_enable_disable (u8 is_en)
 	  vlib_node_set_state (vm, session_queue_node.index, mstate);
 	  if (is_en)
 	    {
+	      session_main_get_worker (0)->state = SESSION_WRK_INTERRUPT;
 	      vlib_node_set_state (vm, session_queue_process_node.index,
 				   state);
 	      n = vlib_get_node (vm, session_queue_process_node.index);
@@ -1894,7 +1966,7 @@ session_main_init (vlib_main_t * vm)
   smm->evt_qs_segment_size = 1 << 20;
 #endif
 
-  smm->last_transport_proto_type = TRANSPORT_PROTO_DTLS;
+  smm->last_transport_proto_type = TRANSPORT_PROTO_SRTP;
 
   return 0;
 }

@@ -154,15 +154,16 @@ fss_chunk_free_list_push (fifo_segment_header_t *fsh,
 
   csp = fs_chunk_sptr (fsh, c);
   ASSERT (csp <= FS_CL_HEAD_MASK);
-  old_head = clib_atomic_load_relax_n (&fss->free_chunks[fl_index]);
+  old_head = clib_atomic_load_acq_n (&fss->free_chunks[fl_index]);
 
   do
     {
       c->next = old_head & FS_CL_HEAD_MASK;
       new_head = csp + ((old_head + FS_CL_HEAD_TINC) & FS_CL_HEAD_TMASK);
     }
-  while (!clib_atomic_cmp_and_swap_acq_relax (
-    &fss->free_chunks[fl_index], &old_head, &new_head, 1 /* weak */));
+  while (!__atomic_compare_exchange (&fss->free_chunks[fl_index], &old_head,
+				     &new_head, 0 /* weak */, __ATOMIC_RELEASE,
+				     __ATOMIC_ACQUIRE));
 }
 
 static void
@@ -174,15 +175,16 @@ fss_chunk_free_list_push_list (fifo_segment_header_t *fsh,
 
   headsp = fs_chunk_sptr (fsh, head);
   ASSERT (headsp <= FS_CL_HEAD_MASK);
-  old_head = clib_atomic_load_relax_n (&fss->free_chunks[fl_index]);
+  old_head = clib_atomic_load_acq_n (&fss->free_chunks[fl_index]);
 
   do
     {
       tail->next = old_head & FS_CL_HEAD_MASK;
       new_head = headsp + ((old_head + FS_CL_HEAD_TINC) & FS_CL_HEAD_TMASK);
     }
-  while (!clib_atomic_cmp_and_swap_acq_relax (
-    &fss->free_chunks[fl_index], &old_head, &new_head, 1 /* weak */));
+  while (!__atomic_compare_exchange (&fss->free_chunks[fl_index], &old_head,
+				     &new_head, 0 /* weak */, __ATOMIC_RELEASE,
+				     __ATOMIC_ACQUIRE));
 }
 
 static svm_fifo_chunk_t *
@@ -194,7 +196,7 @@ fss_chunk_free_list_pop (fifo_segment_header_t *fsh, fifo_segment_slice_t *fss,
 
   ASSERT (fss_chunk_fl_index_is_valid (fss, fl_index));
 
-  old_head = clib_atomic_load_relax_n (&fss->free_chunks[fl_index]);
+  old_head = clib_atomic_load_acq_n (&fss->free_chunks[fl_index]);
 
   /* Lock-free stacks are affected by ABA if a side allocates a chunk and
    * shortly thereafter frees it. To circumvent that, reuse the upper bits
@@ -210,8 +212,9 @@ fss_chunk_free_list_pop (fifo_segment_header_t *fsh, fifo_segment_slice_t *fss,
       c = fs_chunk_ptr (fsh, old_head & FS_CL_HEAD_MASK);
       new_head = c->next + ((old_head + FS_CL_HEAD_TINC) & FS_CL_HEAD_TMASK);
     }
-  while (!clib_atomic_cmp_and_swap_acq_relax (
-    &fss->free_chunks[fl_index], &old_head, &new_head, 1 /* weak */));
+  while (!__atomic_compare_exchange (&fss->free_chunks[fl_index], &old_head,
+				     &new_head, 0 /* weak */, __ATOMIC_RELEASE,
+				     __ATOMIC_ACQUIRE));
 
   return c;
 }

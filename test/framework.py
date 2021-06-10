@@ -1721,14 +1721,16 @@ class Worker(Thread):
             self.result = os.EX_OSFILE
             raise EnvironmentError(
                 "executable '%s' is not found or executable." % executable)
-        self.logger.debug("Running executable: '{app}'"
-                          .format(app=' '.join(self.args)))
+        self.logger.debug("Running executable '{app}': '{cmd}'"
+                          .format(app=self.app_name,
+                                  cmd=' '.join(self.args)))
         env = os.environ.copy()
         env.update(self.env)
         env["CK_LOG_FILE_NAME"] = "-"
         self.process = subprocess.Popen(
-            self.args, shell=False, env=env, preexec_fn=os.setpgrp,
-            stdout=subprocess.PIPE, stderr=subprocess.PIPE)
+            ['stdbuf', '-o0', '-e0'] + self.args, shell=False, env=env,
+            preexec_fn=os.setpgrp, stdout=subprocess.PIPE,
+            stderr=subprocess.PIPE)
         self.wait_for_enter()
         out, err = self.process.communicate()
         self.logger.debug("Finished running `{app}'".format(app=self.app_name))

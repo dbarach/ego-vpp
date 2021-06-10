@@ -471,8 +471,8 @@ vcl_session_accepted_handler (vcl_worker_t * wrk, session_accepted_msg_t * mp,
 		    sizeof (ip46_address_t));
 
   vcl_session_table_add_vpp_handle (wrk, mp->handle, session->session_index);
-  session->transport.lcl_port = listen_session->transport.lcl_port;
-  session->transport.lcl_ip = listen_session->transport.lcl_ip;
+  session->transport.lcl_port = mp->lcl.port;
+  session->transport.lcl_ip = mp->lcl.ip;
   session->session_type = listen_session->session_type;
   session->is_dgram = vcl_proto_is_dgram (session->session_type);
   session->listener_index = listen_session->session_index;
@@ -1666,6 +1666,10 @@ vppcom_unformat_proto (uint8_t * proto, char *proto_str)
     *proto = VPPCOM_PROTO_DTLS;
   else if (!strcmp (proto_str, "dtls"))
     *proto = VPPCOM_PROTO_DTLS;
+  else if (!strcmp (proto_str, "SRTP"))
+    *proto = VPPCOM_PROTO_SRTP;
+  else if (!strcmp (proto_str, "srtp"))
+    *proto = VPPCOM_PROTO_SRTP;
   else
     return 1;
   return 0;
@@ -1983,6 +1987,10 @@ read_again:
     rv = app_recv_stream_raw (rx_fifo, buf, n, 0, peek);
 
   ASSERT (rv >= 0);
+
+  if (peek)
+    return rv;
+
   n_read += rv;
 
   if (svm_fifo_is_empty_cons (rx_fifo))
@@ -2144,8 +2152,12 @@ vppcom_session_write_inline (vcl_worker_t * wrk, vcl_session_t * s, void *buf,
   svm_msg_q_t *mq;
   u8 is_ct;
 
-  if (PREDICT_FALSE (!buf || n == 0))
-    return VPPCOM_EINVAL;
+  /* Accept zero length writes but just return */
+  if (PREDICT_FALSE (!n))
+    return VPPCOM_OK;
+
+  if (PREDICT_FALSE (!buf))
+    return VPPCOM_EFAULT;
 
   if (PREDICT_FALSE (s->flags & VCL_SESSION_F_IS_VEP))
     {
@@ -2155,7 +2167,7 @@ vppcom_session_write_inline (vcl_worker_t * wrk, vcl_session_t * s, void *buf,
     }
 
   if (PREDICT_FALSE (!vcl_session_is_open (s) ||
-		     s->flags & VCL_SESSION_F_SHUTDOWN))
+		     (s->flags & VCL_SESSION_F_SHUTDOWN)))
     {
       VDBG (1, "session %u [0x%llx]: is not open! state 0x%x (%s)",
 	    s->session_index, s->vpp_handle, s->session_state,
@@ -2709,6 +2721,12 @@ vppcom_epoll_ctl (uint32_t vep_handle, int op, uint32_t session_handle,
 	  VDBG (0, "EPOLL_CTL_ADD: NULL pointer to epoll_event structure!");
 	  return VPPCOM_EINVAL;
 	}
+      if (s->flags & VCL_SESSION_F_IS_VEP_SESSION)
+	{
+	  VDBG (0, "EPOLL_CTL_ADD: %u already epolled!", s->session_index);
+	  rv = VPPCOM_EEXIST;
+	  goto done;
+	}
       if (vep_session->vep.next_sh != ~0)
 	{
 	  vcl_session_t *next_session;
@@ -2767,7 +2785,7 @@ vppcom_epoll_ctl (uint32_t vep_handle, int op, uint32_t session_handle,
       else if (PREDICT_FALSE (!(s->flags & VCL_SESSION_F_IS_VEP_SESSION)))
 	{
 	  VDBG (0, "sh %u EPOLL_CTL_MOD: not a vep session!", session_handle);
-	  rv = VPPCOM_EINVAL;
+	  rv = VPPCOM_ENOENT;
 	  goto done;
 	}
       else if (PREDICT_FALSE (s->vep.vep_sh != vep_handle))
@@ -2778,12 +2796,21 @@ vppcom_epoll_ctl (uint32_t vep_handle, int op, uint32_t session_handle,
 	  goto done;
 	}
 
-      /* Generate EPOLLOUT when tx_fifo/ct_tx_fifo not full */
-      if ((event->events & EPOLLOUT) &&
-	  !(s->vep.ev.events & EPOLLOUT) && (vcl_session_write_ready (s) > 0))
+      /* Generate EPOLLOUT if session write ready nd event was not on */
+      if ((event->events & EPOLLOUT) && !(s->vep.ev.events & EPOLLOUT) &&
+	  (vcl_session_write_ready (s) > 0))
 	{
 	  session_event_t e = { 0 };
 	  e.event_type = SESSION_IO_EVT_TX;
+	  e.session_index = s->session_index;
+	  vec_add1 (wrk->unhandled_evts_vector, e);
+	}
+      /* Generate EPOLLIN if session read ready and event was not on */
+      if ((event->events & EPOLLIN) && !(s->vep.ev.events & EPOLLIN) &&
+	  (vcl_session_read_ready (s) > 0))
+	{
+	  session_event_t e = { 0 };
+	  e.event_type = SESSION_IO_EVT_RX;
 	  e.session_index = s->session_index;
 	  vec_add1 (wrk->unhandled_evts_vector, e);
 	}
@@ -2805,7 +2832,7 @@ vppcom_epoll_ctl (uint32_t vep_handle, int op, uint32_t session_handle,
       if (PREDICT_FALSE (!(s->flags & VCL_SESSION_F_IS_VEP_SESSION)))
 	{
 	  VDBG (0, "EPOLL_CTL_DEL: %u not a vep session!", session_handle);
-	  rv = VPPCOM_EINVAL;
+	  rv = VPPCOM_ENOENT;
 	  goto done;
 	}
       else if (PREDICT_FALSE (s->vep.vep_sh != vep_handle))
@@ -3866,11 +3893,8 @@ vppcom_session_sendto (uint32_t session_handle, void *buffer,
   vcl_session_t *s;
 
   s = vcl_session_get_w_handle (wrk, session_handle);
-  if (!s)
+  if (PREDICT_FALSE (!s))
     return VPPCOM_EBADFD;
-
-  if (!buffer)
-    return VPPCOM_EINVAL;
 
   if (ep)
     {
@@ -4127,6 +4151,9 @@ vppcom_proto_str (vppcom_proto_t proto)
       break;
     case VPPCOM_PROTO_DTLS:
       proto_str = "DTLS";
+      break;
+    case VPPCOM_PROTO_SRTP:
+      proto_str = "SRTP";
       break;
     default:
       proto_str = "UNKNOWN";

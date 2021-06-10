@@ -56,6 +56,9 @@ typedef struct session_tx_context_
   u8 n_bufs_per_seg;
     CLIB_CACHE_LINE_ALIGN_MARK (cacheline1);
   session_dgram_hdr_t hdr;
+
+  /** Vector of tx buffer free lists */
+  u32 *tx_buffers;
 } session_tx_context_t;
 
 typedef struct session_evt_elt
@@ -115,9 +118,6 @@ typedef struct session_worker_
   /** Context for session tx */
   session_tx_context_t ctx;
 
-  /** Vector of tx buffer free lists */
-  u32 *tx_buffers;
-
   /** Pool of session event list elements */
   session_evt_elt_t *event_elts;
 
@@ -144,6 +144,15 @@ typedef struct session_worker_
 
   /** Clib file for timerfd. Used only if adaptive mode is on */
   uword timerfd_file;
+
+  /** List of pending connects for first worker */
+  clib_llist_index_t pending_connects;
+
+  /** Flag that is set if main thread signaled to handle connects */
+  u32 n_pending_connects;
+
+  /** Main thread loops in poll mode without a connect */
+  u32 no_connect_loops;
 
 #if SESSION_DEBUG
   /** last event poll time by thread */
@@ -179,6 +188,9 @@ typedef struct session_main_
    * fib but lookup would then require session type parsing in session node.
    * Trade memory for speed, for now */
   u32 *session_type_to_next;
+
+  /** Thread for cl and ho that rely on cl allocs */
+  u32 transport_cl_thread;
 
   transport_proto_t last_transport_proto_type;
 
@@ -245,32 +257,18 @@ typedef enum session_q_process_evt_
 #define TRANSPORT_PROTO_INVALID (session_main.last_transport_proto_type + 1)
 #define TRANSPORT_N_PROTOS (session_main.last_transport_proto_type + 1)
 
-static inline session_evt_elt_t *
-session_evt_elt_alloc (session_worker_t * wrk)
-{
-  session_evt_elt_t *elt;
-  pool_get (wrk->event_elts, elt);
-  return elt;
-}
-
-static inline void
-session_evt_elt_free (session_worker_t * wrk, session_evt_elt_t * elt)
-{
-  pool_put (wrk->event_elts, elt);
-}
-
 static inline void
 session_evt_add_old (session_worker_t * wrk, session_evt_elt_t * elt)
 {
   clib_llist_add_tail (wrk->event_elts, evt_list, elt,
-		       pool_elt_at_index (wrk->event_elts, wrk->old_head));
+		       clib_llist_elt (wrk->event_elts, wrk->old_head));
 }
 
 static inline void
 session_evt_add_head_old (session_worker_t * wrk, session_evt_elt_t * elt)
 {
   clib_llist_add (wrk->event_elts, evt_list, elt,
-		  pool_elt_at_index (wrk->event_elts, wrk->old_head));
+		  clib_llist_elt (wrk->event_elts, wrk->old_head));
 }
 
 
@@ -286,9 +284,9 @@ static inline session_evt_elt_t *
 session_evt_alloc_ctrl (session_worker_t * wrk)
 {
   session_evt_elt_t *elt;
-  elt = session_evt_elt_alloc (wrk);
+  clib_llist_get (wrk->event_elts, elt);
   clib_llist_add_tail (wrk->event_elts, evt_list, elt,
-		       pool_elt_at_index (wrk->event_elts, wrk->ctrl_head));
+		       clib_llist_elt (wrk->event_elts, wrk->ctrl_head));
   return elt;
 }
 
@@ -310,9 +308,9 @@ static inline session_evt_elt_t *
 session_evt_alloc_new (session_worker_t * wrk)
 {
   session_evt_elt_t *elt;
-  elt = session_evt_elt_alloc (wrk);
+  clib_llist_get (wrk->event_elts, elt);
   clib_llist_add_tail (wrk->event_elts, evt_list, elt,
-		       pool_elt_at_index (wrk->event_elts, wrk->new_head));
+		       clib_llist_elt (wrk->event_elts, wrk->new_head));
   return elt;
 }
 
@@ -320,9 +318,9 @@ static inline session_evt_elt_t *
 session_evt_alloc_old (session_worker_t * wrk)
 {
   session_evt_elt_t *elt;
-  elt = session_evt_elt_alloc (wrk);
+  clib_llist_get (wrk->event_elts, elt);
   clib_llist_add_tail (wrk->event_elts, evt_list, elt,
-		       pool_elt_at_index (wrk->event_elts, wrk->old_head));
+		       clib_llist_elt (wrk->event_elts, wrk->old_head));
   return elt;
 }
 
@@ -506,6 +504,8 @@ int session_stream_accept_notify (transport_connection_t * tc);
 void session_transport_closing_notify (transport_connection_t * tc);
 void session_transport_delete_notify (transport_connection_t * tc);
 void session_half_open_delete_notify (transport_connection_t *tc);
+void session_half_open_migrate_notify (transport_connection_t *tc);
+int session_half_open_migrated_notify (transport_connection_t *tc);
 void session_transport_closed_notify (transport_connection_t * tc);
 void session_transport_reset_notify (transport_connection_t * tc);
 int session_stream_accept (transport_connection_t * tc, u32 listener_index,
@@ -606,6 +606,12 @@ transport_add_tx_event (transport_connection_t * tc)
   if (svm_fifo_has_event (s->tx_fifo))
     return;
   session_send_io_evt_to_thread (s->tx_fifo, SESSION_IO_EVT_TX);
+}
+
+always_inline u32
+transport_cl_thread (void)
+{
+  return session_main.transport_cl_thread;
 }
 
 /*

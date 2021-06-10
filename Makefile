@@ -131,7 +131,7 @@ else ifeq ($(OS_ID)-$(OS_VERSION_ID),centos-8)
 	RPM_DEPENDS += compat-openssl10 openssl-devel
 	RPM_DEPENDS += python2-devel python36-devel python3-ply
 	RPM_DEPENDS += python3-virtualenv python3-jsonschema
-	RPM_DEPENDS += cmake
+	RPM_DEPENDS += libarchive cmake
 	RPM_DEPENDS_GROUPS = 'Development Tools'
 else
 	RPM_DEPENDS += yum-utils
@@ -220,7 +220,6 @@ help:
 	@echo " docs                 - Build the Sphinx documentation"
 	@echo " docs-venv            - Build the virtual environment for the Sphinx docs"
 	@echo " docs-clean           - Remove the generated files from the Sphinx docs"
-	@echo " stats-fs-help        - Help to build the stats segment file system"
 	@echo ""
 	@echo "Make Arguments:"
 	@echo " V=[0|1]                  - set build verbosity level"
@@ -296,7 +295,7 @@ else ifeq ($(OS_ID)-$(OS_VERSION_ID),centos-8)
 	@sudo -E dnf config-manager --set-enabled \
           $(shell dnf repolist all 2>/dev/null|grep -i powertools|cut -d' ' -f1)
 	@sudo -E dnf groupinstall $(CONFIRM) $(RPM_DEPENDS_GROUPS)
-	@sudo -E dnf install $(CONFIRM) $(RPM_DEPENDS)
+	@sudo -E dnf install --skip-broken $(CONFIRM) $(RPM_DEPENDS)
 else ifeq ($(OS_ID),centos)
 	@sudo -E yum install $(CONFIRM) centos-release-scl-rh epel-release
 	@sudo -E yum groupinstall $(CONFIRM) $(RPM_DEPENDS_GROUPS)
@@ -337,7 +336,7 @@ dist:
 	      --format=tar \
 	      -o $(DIST_FILE) \
 	    HEAD ; \
-	    git describe > $(BR)/.version ; \
+	    git describe --long > $(BR)/.version ; \
 	else \
 	    (cd .. ; tar -cf $(DIST_FILE) $(DIST_SUBDIR) --exclude=*.tar) ; \
 	    src/scripts/version > $(BR)/.version ; \
@@ -362,7 +361,7 @@ wipedist:
 .PHONY: wipe
 wipe: wipedist test-wipe $(BR)/.deps.ok
 	$(call make,$(PLATFORM)_debug,$(addsuffix -wipe,$(TARGETS)))
-	@find . -type f -name "*.api.json" ! -path "./test/*" -exec rm {} \;
+	@find . -type f -name "*.api.json" ! -path "./src/*" -exec rm {} \;
 
 .PHONY: rebuild
 rebuild: wipe build
@@ -668,33 +667,6 @@ featurelist: centos-pyyaml
 .PHONY: checkfeaturelist
 checkfeaturelist: centos-pyyaml
 	@extras/scripts/fts.py --validate --all
-
-
-# Build vpp_stats_fs
-
-.PHONY: stats-fs-install
-stats-fs-install:
-	@extras/vpp_stats_fs/install.sh install
-
-.PHONY: stats-fs-start
-stats-fs-start:
-	@extras/vpp_stats_fs/install.sh start
-
-.PHONY: stats-fs-cleanup
-stats-fs-cleanup:
-	@extras/vpp_stats_fs/install.sh cleanup
-
-.PHONY: stats-fs-help
-stats-fs-help:
-	@extras/vpp_stats_fs/install.sh help
-
-.PHONY: stats-fs-force-unmount
-stats-fs-force-unmount:
-	@extras/vpp_stats_fs/install.sh unmount
-
-.PHONY: stats-fs-stop
-stats-fs-stop:
-	@extras/vpp_stats_fs/install.sh stop
 
 #
 # Build the documentation
