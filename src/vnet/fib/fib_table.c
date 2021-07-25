@@ -531,6 +531,11 @@ fib_table_route_path_fixup (const fib_prefix_t *prefix,
             fib_prefix_normalize(prefix, &path->frp_connected);
         }
     }
+    else if (fib_route_path_is_attached(path))
+    {
+        path->frp_flags |= FIB_ROUTE_PATH_GLEAN;
+        fib_prefix_normalize(prefix, &path->frp_connected);
+    }
     if (*eflags & FIB_ENTRY_FLAG_DROP)
     {
 	path->frp_flags |= FIB_ROUTE_PATH_DROP;
@@ -1253,6 +1258,42 @@ fib_table_walk (u32 fib_index,
 	mpls_fib_table_walk(mpls_fib_get(fib_index), fn, ctx);
 	break;
     }
+}
+
+typedef struct fib_table_walk_w_src_ctx_t_
+{
+    fib_table_walk_fn_t fn;
+    void *data;
+    fib_source_t src;
+} fib_table_walk_w_src_cxt_t;
+
+static fib_table_walk_rc_t
+fib_table_walk_w_src_cb (fib_node_index_t fei,
+                         void *arg)
+{
+    fib_table_walk_w_src_cxt_t *ctx = arg;
+
+    if (ctx->src == fib_entry_get_best_source(fei))
+    {
+        return (ctx->fn(fei, ctx->data));
+    }
+    return (FIB_TABLE_WALK_CONTINUE);
+}
+
+void
+fib_table_walk_w_src (u32 fib_index,
+                      fib_protocol_t proto,
+                      fib_source_t src,
+                      fib_table_walk_fn_t fn,
+                      void *data)
+{
+    fib_table_walk_w_src_cxt_t ctx = {
+        .fn = fn,
+        .src = src,
+        .data = data,
+    };
+
+    fib_table_walk(fib_index, proto, fib_table_walk_w_src_cb, &ctx);
 }
 
 void

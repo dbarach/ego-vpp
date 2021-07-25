@@ -66,6 +66,10 @@ VNET_HW_INTERFACE_CLASS (tun_device_hw_interface_class, static) =
 };
   /* *INDENT-ON* */
 
+#define TUN_MAX_PACKET_BYTES	 65355
+#define TUN_MIN_PACKET_BYTES	 64
+#define TUN_DEFAULT_PACKET_BYTES 1500
+
 static u32
 virtio_eth_flag_change (vnet_main_t * vnm, vnet_hw_interface_t * hi,
 			u32 flags)
@@ -724,20 +728,31 @@ tap_create_if (vlib_main_t * vm, tap_create_if_args_t * args)
   args->sw_if_index = vif->sw_if_index;
   args->rv = 0;
   hw = vnet_get_hw_interface (vnm, vif->hw_if_index);
-  hw->flags |= VNET_HW_INTERFACE_FLAG_SUPPORTS_INT_MODE;
+  hw->caps |= VNET_HW_INTERFACE_CAP_SUPPORTS_INT_MODE;
   if (args->tap_flags & TAP_FLAG_GSO)
     {
-      hw->flags |= VNET_HW_INTERFACE_FLAG_SUPPORTS_GSO |
-	VNET_HW_INTERFACE_FLAG_SUPPORTS_TX_L4_CKSUM_OFFLOAD;
+      hw->caps |= VNET_HW_INTERFACE_CAP_SUPPORTS_TCP_GSO |
+		  VNET_HW_INTERFACE_CAP_SUPPORTS_TX_TCP_CKSUM |
+		  VNET_HW_INTERFACE_CAP_SUPPORTS_TX_UDP_CKSUM;
     }
   else if (args->tap_flags & TAP_FLAG_CSUM_OFFLOAD)
     {
-      hw->flags |= VNET_HW_INTERFACE_FLAG_SUPPORTS_TX_L4_CKSUM_OFFLOAD;
+      hw->caps |= VNET_HW_INTERFACE_CAP_SUPPORTS_TX_TCP_CKSUM |
+		  VNET_HW_INTERFACE_CAP_SUPPORTS_TX_UDP_CKSUM;
     }
   if ((args->tap_flags & TAP_FLAG_GSO)
       && (args->tap_flags & TAP_FLAG_GRO_COALESCE))
     {
       virtio_set_packet_coalesce (vif);
+    }
+  if (vif->type == VIRTIO_IF_TYPE_TUN)
+    {
+      hw->max_supported_packet_bytes = TUN_MAX_PACKET_BYTES;
+      hw->min_packet_bytes = hw->min_supported_packet_bytes =
+	TUN_MIN_PACKET_BYTES;
+      hw->max_packet_bytes =
+	args->host_mtu_size ? args->host_mtu_size : TUN_DEFAULT_PACKET_BYTES;
+      vnet_sw_interface_set_mtu (vnm, hw->sw_if_index, hw->max_packet_bytes);
     }
 
   virtio_vring_set_rx_queues (vm, vif);
@@ -834,26 +849,18 @@ tap_csum_offload_enable_disable (vlib_main_t * vm, u32 sw_if_index,
   vif->packet_coalesce = 0;
   vif->csum_offload_enabled = enable_disable ? 1 : 0;
 
-  if ((hw->flags & VNET_HW_INTERFACE_FLAG_SUPPORTS_GSO) != 0)
+  if ((hw->caps & VNET_HW_INTERFACE_CAP_SUPPORTS_TCP_GSO) != 0)
     {
-      hw->flags &= ~VNET_HW_INTERFACE_FLAG_SUPPORTS_GSO;
+      hw->caps &= ~VNET_HW_INTERFACE_CAP_SUPPORTS_TCP_GSO;
     }
 
   if (enable_disable)
     {
-      if ((hw->flags & VNET_HW_INTERFACE_FLAG_SUPPORTS_TX_L4_CKSUM_OFFLOAD) ==
-	  0)
-	{
-	  hw->flags |= VNET_HW_INTERFACE_FLAG_SUPPORTS_TX_L4_CKSUM_OFFLOAD;
-	}
+      hw->caps |= VNET_HW_INTERFACE_CAP_SUPPORTS_L4_TX_CKSUM;
     }
   else
     {
-      if ((hw->flags & VNET_HW_INTERFACE_FLAG_SUPPORTS_TX_L4_CKSUM_OFFLOAD) !=
-	  0)
-	{
-	  hw->flags &= ~VNET_HW_INTERFACE_FLAG_SUPPORTS_TX_L4_CKSUM_OFFLOAD;
-	}
+      hw->caps &= ~VNET_HW_INTERFACE_CAP_SUPPORTS_L4_TX_CKSUM;
     }
 
 error:
@@ -893,10 +900,10 @@ tap_gso_enable_disable (vlib_main_t * vm, u32 sw_if_index, int enable_disable,
   vif->csum_offload_enabled = 0;
   if (enable_disable)
     {
-      if ((hw->flags & VNET_HW_INTERFACE_FLAG_SUPPORTS_GSO) == 0)
+      if ((hw->caps & VNET_HW_INTERFACE_CAP_SUPPORTS_TCP_GSO) == 0)
 	{
-	  hw->flags |= VNET_HW_INTERFACE_FLAG_SUPPORTS_GSO |
-	    VNET_HW_INTERFACE_FLAG_SUPPORTS_TX_L4_CKSUM_OFFLOAD;
+	  hw->caps |= VNET_HW_INTERFACE_CAP_SUPPORTS_TCP_GSO |
+		      VNET_HW_INTERFACE_CAP_SUPPORTS_L4_TX_CKSUM;
 	}
       if (is_packet_coalesce)
 	{
@@ -905,10 +912,10 @@ tap_gso_enable_disable (vlib_main_t * vm, u32 sw_if_index, int enable_disable,
     }
   else
     {
-      if ((hw->flags & VNET_HW_INTERFACE_FLAG_SUPPORTS_GSO) != 0)
+      if ((hw->caps & VNET_HW_INTERFACE_CAP_SUPPORTS_TCP_GSO) != 0)
 	{
-	  hw->flags &= ~(VNET_HW_INTERFACE_FLAG_SUPPORTS_GSO |
-			 VNET_HW_INTERFACE_FLAG_SUPPORTS_TX_L4_CKSUM_OFFLOAD);
+	  hw->caps &= ~(VNET_HW_INTERFACE_CAP_SUPPORTS_TCP_GSO |
+			VNET_HW_INTERFACE_CAP_SUPPORTS_L4_TX_CKSUM);
 	}
       vif->packet_coalesce = 0;
     }

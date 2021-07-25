@@ -33,7 +33,6 @@
 
 #include <vlib/vlib.h>
 #include <vlib/unix/unix.h>
-#include <vppinfra/linux/syscall.h>
 #include <vnet/plugin/plugin.h>
 #include <vnet/ethernet/ethernet.h>
 #include <vnet/interface/rx_queue_funcs.h>
@@ -306,8 +305,8 @@ memif_connect (memif_if_t * mif)
 					      mq->int_clib_file_index);
 	}
       ti = vnet_hw_if_get_rx_queue_thread_index (vnm, qi);
-      mq->buffer_pool_index =
-	vlib_buffer_pool_get_default_for_numa (vm, vlib_mains[ti]->numa_node);
+      mq->buffer_pool_index = vlib_buffer_pool_get_default_for_numa (
+	vm, vlib_get_main_by_index (ti)->numa_node);
       rv = vnet_hw_if_set_rx_queue_mode (vnm, qi, VNET_HW_IF_RX_MODE_DEFAULT);
       vnet_hw_if_update_runtime_data (vnm, mif->hw_if_index);
 
@@ -584,9 +583,10 @@ memif_process (vlib_main_t * vm, vlib_node_runtime_t * rt, vlib_frame_t * f)
 	    {
               clib_memset (sock, 0, sizeof(clib_socket_t));
 	      sock->config = (char *) msf->filename;
-              sock->flags = CLIB_SOCKET_F_IS_CLIENT| CLIB_SOCKET_F_SEQPACKET;
+	      sock->flags = CLIB_SOCKET_F_IS_CLIENT | CLIB_SOCKET_F_SEQPACKET |
+			    CLIB_SOCKET_F_BLOCKING;
 
-              if ((err = clib_socket_init (sock)))
+	      if ((err = clib_socket_init (sock)))
 		{
 	          clib_error_free (err);
 		}
@@ -1048,7 +1048,7 @@ memif_create_if (vlib_main_t * vm, memif_create_if_args_t * args)
     }
 
   hw = vnet_get_hw_interface (vnm, mif->hw_if_index);
-  hw->flags |= VNET_HW_INTERFACE_FLAG_SUPPORTS_INT_MODE;
+  hw->caps |= VNET_HW_INTERFACE_CAP_SUPPORTS_INT_MODE;
   vnet_hw_if_set_input_node (vnm, mif->hw_if_index, memif_input_node.index);
   mhash_set (&msf->dev_instance_by_id, &mif->id, mif->dev_instance, 0);
 
@@ -1060,14 +1060,6 @@ memif_create_if (vlib_main_t * vm, memif_create_if_args_t * args)
   goto done;
 
 error:
-  if (mif->hw_if_index != ~0)
-    {
-      if (mif->mode == MEMIF_INTERFACE_MODE_IP)
-	vnet_delete_hw_interface (vnm, mif->hw_if_index);
-      else
-	ethernet_delete_interface (vnm, mif->hw_if_index);
-      mif->hw_if_index = ~0;
-    }
   memif_delete_if (vm, mif);
   if (error)
     {

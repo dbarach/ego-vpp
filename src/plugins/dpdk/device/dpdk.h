@@ -66,33 +66,34 @@ extern vlib_node_registration_t admin_up_down_process_node;
 #define DPDK_MLX5_PMD_NAME "mlx5_pci"
 #endif
 
-#define foreach_dpdk_pmd          \
-  _ ("net_thunderx", THUNDERX)    \
-  _ ("net_e1000_em", E1000EM)     \
-  _ ("net_e1000_igb", IGB)        \
-  _ ("net_e1000_igb_vf", IGBVF)   \
-  _ ("net_ixgbe", IXGBE)          \
-  _ ("net_ixgbe_vf", IXGBEVF)     \
-  _ ("net_i40e", I40E)            \
-  _ ("net_i40e_vf", I40EVF)       \
-  _ ("net_ice", ICE)              \
-  _ ("net_iavf", IAVF)            \
-  _ ("net_virtio", VIRTIO)        \
-  _ ("net_enic", ENIC)            \
-  _ ("net_vmxnet3", VMXNET3)      \
-  _ ("AF_PACKET PMD", AF_PACKET)  \
-  _ ("net_fm10k", FM10K)          \
-  _ ("net_cxgbe", CXGBE)          \
-  _ ("net_mlx4", MLX4)            \
-  _ (DPDK_MLX5_PMD_NAME, MLX5)    \
-  _ ("net_dpaa2", DPAA2)          \
-  _ ("net_virtio_user", VIRTIO_USER) \
-  _ ("net_vhost", VHOST_ETHER)    \
-  _ ("net_ena", ENA)              \
-  _ ("net_failsafe", FAILSAFE)    \
-  _ ("net_liovf", LIOVF_ETHER)    \
-  _ ("net_qede", QEDE)		  \
-  _ ("net_netvsc", NETVSC)        \
+#define foreach_dpdk_pmd                                                      \
+  _ ("net_thunderx", THUNDERX)                                                \
+  _ ("net_e1000_em", E1000EM)                                                 \
+  _ ("net_e1000_igb", IGB)                                                    \
+  _ ("net_e1000_igb_vf", IGBVF)                                               \
+  _ ("net_ixgbe", IXGBE)                                                      \
+  _ ("net_ixgbe_vf", IXGBEVF)                                                 \
+  _ ("net_i40e", I40E)                                                        \
+  _ ("net_i40e_vf", I40EVF)                                                   \
+  _ ("net_ice", ICE)                                                          \
+  _ ("net_iavf", IAVF)                                                        \
+  _ ("net_igc", IGC)                                                          \
+  _ ("net_virtio", VIRTIO)                                                    \
+  _ ("net_enic", ENIC)                                                        \
+  _ ("net_vmxnet3", VMXNET3)                                                  \
+  _ ("AF_PACKET PMD", AF_PACKET)                                              \
+  _ ("net_fm10k", FM10K)                                                      \
+  _ ("net_cxgbe", CXGBE)                                                      \
+  _ ("net_mlx4", MLX4)                                                        \
+  _ (DPDK_MLX5_PMD_NAME, MLX5)                                                \
+  _ ("net_dpaa2", DPAA2)                                                      \
+  _ ("net_virtio_user", VIRTIO_USER)                                          \
+  _ ("net_vhost", VHOST_ETHER)                                                \
+  _ ("net_ena", ENA)                                                          \
+  _ ("net_failsafe", FAILSAFE)                                                \
+  _ ("net_liovf", LIOVF_ETHER)                                                \
+  _ ("net_qede", QEDE)                                                        \
+  _ ("net_netvsc", NETVSC)                                                    \
   _ ("net_bnxt", BNXT)
 
 typedef enum
@@ -128,17 +129,19 @@ typedef enum
 
 typedef uint16_t dpdk_portid_t;
 
-#define foreach_dpdk_device_flags \
-  _( 0, ADMIN_UP, "admin-up") \
-  _( 1, PROMISC, "promisc") \
-  _( 2, PMD, "pmd") \
-  _( 3, PMD_INIT_FAIL, "pmd-init-fail") \
-  _( 4, MAYBE_MULTISEG, "maybe-multiseg") \
-  _( 5, HAVE_SUBIF, "subif") \
-  _( 9, TX_OFFLOAD, "tx-offload") \
-  _(10, INTEL_PHDR_CKSUM, "intel-phdr-cksum") \
-  _(11, RX_FLOW_OFFLOAD, "rx-flow-offload") \
-  _(12, RX_IP4_CKSUM, "rx-ip4-cksum")
+#define foreach_dpdk_device_flags                                             \
+  _ (0, ADMIN_UP, "admin-up")                                                 \
+  _ (1, PROMISC, "promisc")                                                   \
+  _ (2, PMD, "pmd")                                                           \
+  _ (3, PMD_INIT_FAIL, "pmd-init-fail")                                       \
+  _ (4, MAYBE_MULTISEG, "maybe-multiseg")                                     \
+  _ (5, HAVE_SUBIF, "subif")                                                  \
+  _ (9, TX_OFFLOAD, "tx-offload")                                             \
+  _ (10, INTEL_PHDR_CKSUM, "intel-phdr-cksum")                                \
+  _ (11, RX_FLOW_OFFLOAD, "rx-flow-offload")                                  \
+  _ (12, RX_IP4_CKSUM, "rx-ip4-cksum")                                        \
+  _ (13, INT_SUPPORTED, "int-supported")                                      \
+  _ (14, INT_UNMASKABLE, "int-unmaskable")
 
 enum
 {
@@ -166,6 +169,8 @@ typedef struct
   CLIB_CACHE_LINE_ALIGN_MARK (cacheline0);
   u8 buffer_pool_index;
   u32 queue_index;
+  int efd;
+  uword clib_file_index;
 } dpdk_rx_queue_t;
 
 typedef struct
@@ -299,6 +304,11 @@ typedef struct
   u8 enable_tcp_udp_checksum;
   u8 no_tx_checksum_offload;
   u8 enable_telemetry;
+  u16 max_simd_bitwidth;
+
+#define DPDK_MAX_SIMD_BITWIDTH_DEFAULT 0
+#define DPDK_MAX_SIMD_BITWIDTH_256     256
+#define DPDK_MAX_SIMD_BITWIDTH_512     512
 
   /* Required config parameters */
   u8 coremask_set_manually;

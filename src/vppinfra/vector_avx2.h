@@ -75,6 +75,10 @@ u32x8_permute (u32x8 v, u32x8 idx)
   return (u32x8) _mm256_permutevar8x32_epi32 ((__m256i) v, (__m256i) idx);
 }
 
+#define u64x4_permute(v, m0, m1, m2, m3)                                      \
+  (u64x4) _mm256_permute4x64_epi64 (                                          \
+    (__m256i) v, ((m0) | (m1) << 2 | (m2) << 4 | (m3) << 6))
+
 /* _extract_lo, _extract_hi */
 /* *INDENT-OFF* */
 #define _(t1,t2) \
@@ -101,11 +105,28 @@ _(u64x2, u64x4)
 #undef _
 /* *INDENT-ON* */
 
+/* 256 bit packs. */
+#define _(f, t, fn)                                                           \
+  always_inline t t##_pack (f lo, f hi)                                       \
+  {                                                                           \
+    return (t) fn ((__m256i) lo, (__m256i) hi);                               \
+  }
 
+_ (i16x16, i8x32, _mm256_packs_epi16)
+_ (i16x16, u8x32, _mm256_packus_epi16)
+_ (i32x8, i16x16, _mm256_packs_epi32)
+_ (i32x8, u16x16, _mm256_packus_epi32)
 
+#undef _
 
 static_always_inline u32
 u8x32_msb_mask (u8x32 v)
+{
+  return _mm256_movemask_epi8 ((__m256i) v);
+}
+
+static_always_inline u32
+i8x32_msb_mask (i8x32 v)
 {
   return _mm256_movemask_epi8 ((__m256i) v);
 }
@@ -120,13 +141,13 @@ t##_from_##f (f x)							\
 _(u16x8, u32x8, epu16_epi32)
 _(u16x8, u64x4, epu16_epi64)
 _(u32x4, u64x4, epu32_epi64)
-_(u8x16, u16x16, epu8_epi64)
+_ (u8x16, u16x16, epu8_epi16)
 _(u8x16, u32x8, epu8_epi32)
 _(u8x16, u64x4, epu8_epi64)
 _(i16x8, i32x8, epi16_epi32)
 _(i16x8, i64x4, epi16_epi64)
 _(i32x4, i64x4, epi32_epi64)
-_(i8x16, i16x16, epi8_epi64)
+_ (i8x16, i16x16, epi8_epi16)
 _(i8x16, i32x8, epi8_epi32)
 _(i8x16, i64x4, epi8_epi64)
 #undef _
@@ -212,14 +233,6 @@ u16x16_mask_last (u16x16 v, u8 n_last)
 
   return v & masks[16 - n_last];
 }
-
-#ifdef __AVX512F__
-static_always_inline u8x32
-u8x32_mask_load (u8x32 a, void *p, u32 mask)
-{
-  return (u8x32) _mm256_mask_loadu_epi8 ((__m256i) a, mask, p);
-}
-#endif
 
 static_always_inline f32x8
 f32x8_from_u32x8 (u32x8 v)

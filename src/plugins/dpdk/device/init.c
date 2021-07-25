@@ -30,6 +30,7 @@
 #include <vlib/vmbus/vmbus.h>
 
 #include <rte_ring.h>
+#include <rte_vect.h>
 
 #include <stdio.h>
 #include <stdlib.h>
@@ -447,10 +448,12 @@ dpdk_lib_init (dpdk_main_t * dm)
 	  switch (xd->pmd)
 	    {
 	      /* Drivers with valid speed_capa set */
+	    case VNET_DPDK_PMD_I40E:
+	      xd->flags |= DPDK_DEVICE_FLAG_INT_UNMASKABLE;
 	    case VNET_DPDK_PMD_E1000EM:
 	    case VNET_DPDK_PMD_IGB:
+	    case VNET_DPDK_PMD_IGC:
 	    case VNET_DPDK_PMD_IXGBE:
-	    case VNET_DPDK_PMD_I40E:
 	    case VNET_DPDK_PMD_ICE:
 	      xd->port_type = port_type_from_speed_capa (&dev_info);
 	      xd->supported_flow_actions = VNET_FLOW_ACTION_MARK |
@@ -469,7 +472,7 @@ dpdk_lib_init (dpdk_main_t * dm)
 		    DPDK_DEVICE_FLAG_INTEL_PHDR_CKSUM;
 		}
 
-
+	      xd->port_conf.intr_conf.rxq = 1;
 	      break;
 	    case VNET_DPDK_PMD_CXGBE:
 	    case VNET_DPDK_PMD_MLX4:
@@ -480,9 +483,10 @@ dpdk_lib_init (dpdk_main_t * dm)
 	      break;
 
 	      /* SR-IOV VFs */
+	    case VNET_DPDK_PMD_I40EVF:
+	      xd->flags |= DPDK_DEVICE_FLAG_INT_UNMASKABLE;
 	    case VNET_DPDK_PMD_IGBVF:
 	    case VNET_DPDK_PMD_IXGBEVF:
-	    case VNET_DPDK_PMD_I40EVF:
 	      xd->port_type = VNET_DPDK_PORT_TYPE_ETH_VF;
 	      if (dm->conf->no_tx_checksum_offload == 0)
 		{
@@ -492,16 +496,19 @@ dpdk_lib_init (dpdk_main_t * dm)
 		    DPDK_DEVICE_FLAG_TX_OFFLOAD |
 		    DPDK_DEVICE_FLAG_INTEL_PHDR_CKSUM;
 		}
+	      /* DPDK bug in multiqueue... */
+	      /* xd->port_conf.intr_conf.rxq = 1; */
 	      break;
 
 	      /* iAVF */
 	    case VNET_DPDK_PMD_IAVF:
-        xd->port_type = VNET_DPDK_PORT_TYPE_ETH_VF;
-	      xd->supported_flow_actions = VNET_FLOW_ACTION_MARK |
-		VNET_FLOW_ACTION_REDIRECT_TO_NODE |
+	      xd->flags |= DPDK_DEVICE_FLAG_INT_UNMASKABLE;
+	      xd->port_type = VNET_DPDK_PORT_TYPE_ETH_VF;
+	      xd->supported_flow_actions =
+		VNET_FLOW_ACTION_MARK | VNET_FLOW_ACTION_REDIRECT_TO_NODE |
 		VNET_FLOW_ACTION_REDIRECT_TO_QUEUE |
-		VNET_FLOW_ACTION_BUFFER_ADVANCE |
-		VNET_FLOW_ACTION_COUNT | VNET_FLOW_ACTION_DROP;
+		VNET_FLOW_ACTION_BUFFER_ADVANCE | VNET_FLOW_ACTION_COUNT |
+		VNET_FLOW_ACTION_DROP | VNET_FLOW_ACTION_RSS;
 
 	      if (dm->conf->no_tx_checksum_offload == 0)
 		{
@@ -511,7 +518,9 @@ dpdk_lib_init (dpdk_main_t * dm)
 		    DPDK_DEVICE_FLAG_TX_OFFLOAD |
 		    DPDK_DEVICE_FLAG_INTEL_PHDR_CKSUM;
 		}
-              break;
+	      /* DPDK bug in multiqueue... */
+	      /* xd->port_conf.intr_conf.rxq = 1; */
+	      break;
 
 	    case VNET_DPDK_PMD_THUNDERX:
 	      xd->port_type = VNET_DPDK_PORT_TYPE_ETH_VF;
@@ -527,6 +536,7 @@ dpdk_lib_init (dpdk_main_t * dm)
 	    case VNET_DPDK_PMD_ENA:
 	      xd->port_type = VNET_DPDK_PORT_TYPE_ETH_VF;
 	      xd->port_conf.rxmode.offloads &= ~DEV_RX_OFFLOAD_SCATTER;
+	      xd->port_conf.intr_conf.rxq = 1;
 	      break;
 
 	    case VNET_DPDK_PMD_DPAA2:
@@ -555,6 +565,14 @@ dpdk_lib_init (dpdk_main_t * dm)
 	      xd->port_type = VNET_DPDK_PORT_TYPE_ETH_1G;
 	      xd->nb_rx_desc = DPDK_NB_RX_DESC_VIRTIO;
 	      xd->nb_tx_desc = DPDK_NB_TX_DESC_VIRTIO;
+	      /*
+	       * Enable use of RX interrupts if supported.
+	       *
+	       * There is no device flag or capability for this, so
+	       * use the same check that the virtio driver does.
+	       */
+	      if (pci_dev && rte_intr_cap_multiple (&pci_dev->intr_handle))
+		xd->port_conf.intr_conf.rxq = 1;
 	      break;
 
 	      /* vmxnet3 */
@@ -765,24 +783,28 @@ dpdk_lib_init (dpdk_main_t * dm)
 
 	  /* Indicate ability to support L3 DMAC filtering and
 	   * initialize interface to L3 non-promisc mode */
-	  hi->flags |= VNET_HW_INTERFACE_FLAG_SUPPORTS_MAC_FILTER;
+	  hi->caps |= VNET_HW_INTERFACE_CAP_SUPPORTS_MAC_FILTER;
 	  ethernet_set_flags (dm->vnet_main, xd->hw_if_index,
 			     ETHERNET_INTERFACE_FLAG_DEFAULT_L3);
 	}
 
       if (dm->conf->no_tx_checksum_offload == 0)
 	if (xd->flags & DPDK_DEVICE_FLAG_TX_OFFLOAD && hi != NULL)
-	  hi->flags |= VNET_HW_INTERFACE_FLAG_SUPPORTS_TX_L4_CKSUM_OFFLOAD;
-
+	  {
+	    hi->caps |= VNET_HW_INTERFACE_CAP_SUPPORTS_TX_IP4_CKSUM |
+			VNET_HW_INTERFACE_CAP_SUPPORTS_TX_TCP_CKSUM |
+			VNET_HW_INTERFACE_CAP_SUPPORTS_TX_UDP_CKSUM;
+	  }
       if (devconf->tso == DPDK_DEVICE_TSO_ON && hi != NULL)
 	{
 	  /*tcp_udp checksum must be enabled*/
 	  if ((dm->conf->enable_tcp_udp_checksum) &&
-	      (hi->flags & VNET_HW_INTERFACE_FLAG_SUPPORTS_TX_L4_CKSUM_OFFLOAD))
+	      (hi->caps & VNET_HW_INTERFACE_CAP_SUPPORTS_TX_CKSUM))
 	    {
-		hi->flags |= VNET_HW_INTERFACE_FLAG_SUPPORTS_GSO;
-		xd->port_conf.txmode.offloads |= DEV_TX_OFFLOAD_TCP_TSO |
-		  DEV_TX_OFFLOAD_UDP_TSO;
+	      hi->caps |= VNET_HW_INTERFACE_CAP_SUPPORTS_TCP_GSO |
+			  VNET_HW_INTERFACE_CAP_SUPPORTS_UDP_GSO;
+	      xd->port_conf.txmode.offloads |=
+		DEV_TX_OFFLOAD_TCP_TSO | DEV_TX_OFFLOAD_UDP_TSO;
 	    }
 	  else
 	    clib_warning ("%s: TCP/UDP checksum offload must be enabled",
@@ -1124,6 +1146,25 @@ dpdk_bind_vmbus_devices_to_uio (dpdk_config_main_t * conf)
   /* *INDENT-ON* */
 }
 
+uword
+unformat_max_simd_bitwidth (unformat_input_t *input, va_list *va)
+{
+  uword *max_simd_bitwidth = va_arg (*va, uword *);
+
+  while (unformat_check_input (input) != UNFORMAT_END_OF_INPUT)
+    {
+      if (!unformat (input, "%u", max_simd_bitwidth))
+	goto error;
+
+      if (*max_simd_bitwidth != DPDK_MAX_SIMD_BITWIDTH_256 &&
+	  *max_simd_bitwidth != DPDK_MAX_SIMD_BITWIDTH_512)
+	goto error;
+    }
+  return 1;
+error:
+  return 0;
+}
+
 static clib_error_t *
 dpdk_device_config (dpdk_config_main_t *conf, void *addr,
 		    dpdk_device_addr_type_t addr_type, unformat_input_t *input,
@@ -1335,7 +1376,9 @@ dpdk_config (vlib_main_t * vm, unformat_input_t * input)
 
       else if (unformat (input, "no-multi-seg"))
 	conf->no_multi_seg = 1;
-
+      else if (unformat (input, "max-simd-bitwidth %U",
+			 unformat_max_simd_bitwidth, &conf->max_simd_bitwidth))
+	;
       else if (unformat (input, "dev default %U", unformat_vlib_cli_sub_input,
 			 &sub_input))
 	{
@@ -1678,6 +1721,16 @@ dpdk_config (vlib_main_t * vm, unformat_input_t * input)
   ret = rte_eal_init (vec_len (conf->eal_init_args),
 		      (char **) conf->eal_init_args);
 
+  /* enable the AVX-512 vPMDs in DPDK */
+  if (clib_cpu_supports_avx512_bitalg () &&
+      conf->max_simd_bitwidth == DPDK_MAX_SIMD_BITWIDTH_DEFAULT)
+    rte_vect_set_max_simd_bitwidth (RTE_VECT_SIMD_512);
+  else if (conf->max_simd_bitwidth != DPDK_MAX_SIMD_BITWIDTH_DEFAULT)
+    rte_vect_set_max_simd_bitwidth (conf->max_simd_bitwidth ==
+					DPDK_MAX_SIMD_BITWIDTH_256 ?
+				      RTE_VECT_SIMD_256 :
+				      RTE_VECT_SIMD_512);
+
   /* lazy umount hugepages */
   umount2 ((char *) huge_dir_path, MNT_DETACH);
   rmdir ((char *) huge_dir_path);
@@ -1714,7 +1767,6 @@ dpdk_update_link_state (dpdk_device_t * xd, f64 now)
 
   if (LINK_STATE_ELOGS)
     {
-      vlib_main_t *vm = vlib_get_main ();
       ELOG_TYPE_DECLARE (e) =
       {
       .format =
@@ -1728,7 +1780,7 @@ dpdk_update_link_state (dpdk_device_t * xd, f64 now)
 	u8 old_link_state;
 	u8 new_link_state;
       } *ed;
-      ed = ELOG_DATA (&vm->elog_main, e);
+      ed = ELOG_DATA (&vlib_global_main.elog_main, e);
       ed->sw_if_index = xd->sw_if_index;
       ed->admin_up = (xd->flags & DPDK_DEVICE_FLAG_ADMIN_UP) != 0;
       ed->old_link_state = (u8)
@@ -1767,8 +1819,6 @@ dpdk_update_link_state (dpdk_device_t * xd, f64 now)
     {
       if (LINK_STATE_ELOGS)
 	{
-	  vlib_main_t *vm = vlib_get_main ();
-
 	  ELOG_TYPE_DECLARE (e) =
 	  {
 	  .format =
@@ -1780,7 +1830,7 @@ dpdk_update_link_state (dpdk_device_t * xd, f64 now)
 	    u32 sw_if_index;
 	    u32 flags;
 	  } *ed;
-	  ed = ELOG_DATA (&vm->elog_main, e);
+	  ed = ELOG_DATA (&vlib_global_main.elog_main, e);
 	  ed->sw_if_index = xd->sw_if_index;
 	  ed->flags = hw_flags;
 	}
@@ -1801,11 +1851,15 @@ dpdk_process (vlib_main_t * vm, vlib_node_runtime_t * rt, vlib_frame_t * f)
   if (error)
     clib_error_report (error);
 
-  error = dpdk_cryptodev_init (vm);
-  if (error)
+  if (dpdk_cryptodev_init)
     {
-      vlib_log_warn (dpdk_main.log_cryptodev, "%U", format_clib_error, error);
-      clib_error_free (error);
+      error = dpdk_cryptodev_init (vm);
+      if (error)
+	{
+	  vlib_log_warn (dpdk_main.log_cryptodev, "%U", format_clib_error,
+			 error);
+	  clib_error_free (error);
+	}
     }
 
   tm->worker_thread_release = 1;

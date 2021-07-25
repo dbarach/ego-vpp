@@ -55,6 +55,7 @@
 #include <vnet/dpo/classify_dpo.h>
 #include <vnet/mfib/mfib_table.h>	/* for mFIB table and entry creation */
 #include <vnet/adj/adj_dp.h>
+#include <vnet/pg/pg.h>
 
 #include <vnet/ip/ip4_forward.h>
 #include <vnet/interface_output.h>
@@ -1419,7 +1420,7 @@ ip4_local_l4_csum_validate (vlib_main_t * vm, vlib_buffer_t * p,
 
 #define ip4_local_csum_is_offloaded(_b)                                       \
   ((_b->flags & VNET_BUFFER_F_OFFLOAD) &&                                     \
-   (vnet_buffer2 (_b)->oflags &                                               \
+   (vnet_buffer (_b)->oflags &                                                \
     (VNET_BUFFER_OFFLOAD_F_TCP_CKSUM | VNET_BUFFER_OFFLOAD_F_UDP_CKSUM)))
 
 #define ip4_local_need_csum_check(is_tcp_udp, _b) 			\
@@ -1761,8 +1762,8 @@ ip4_local_inline (vlib_main_t * vm,
 	vlib_prefetch_buffer_header (b[4], LOAD);
 	vlib_prefetch_buffer_header (b[5], LOAD);
 
-	CLIB_PREFETCH (b[4]->data, CLIB_CACHE_LINE_BYTES, LOAD);
-	CLIB_PREFETCH (b[5]->data, CLIB_CACHE_LINE_BYTES, LOAD);
+	clib_prefetch_load (b[4]->data);
+	clib_prefetch_load (b[5]->data);
       }
 
       error[0] = error[1] = IP4_ERROR_UNKNOWN_PROTOCOL;
@@ -2067,15 +2068,13 @@ ip4_ttl_and_checksum_check (vlib_buffer_t * b, ip4_header_t * ip, u16 * next,
 
   /* Verify checksum. */
   ASSERT (ip4_header_checksum_is_valid (ip) ||
-	  (vnet_buffer2 (b)->oflags & VNET_BUFFER_OFFLOAD_F_IP_CKSUM));
+	  (vnet_buffer (b)->oflags & VNET_BUFFER_OFFLOAD_F_IP_CKSUM));
 }
 
-
 always_inline uword
-ip4_rewrite_inline_with_gso (vlib_main_t * vm,
-			     vlib_node_runtime_t * node,
-			     vlib_frame_t * frame,
-			     int do_counters, int is_midchain, int is_mcast)
+ip4_rewrite_inline (vlib_main_t *vm, vlib_node_runtime_t *node,
+		    vlib_frame_t *frame, int do_counters, int is_midchain,
+		    int is_mcast)
 {
   ip_lookup_main_t *lm = &ip4_main.lookup_main;
   u32 *from = vlib_frame_vector_args (frame);
@@ -2149,12 +2148,12 @@ ip4_rewrite_inline_with_gso (vlib_main_t * vm,
       vnet_buffer (b[1])->ip.save_rewrite_length = rw_len1;
 
       p = vlib_buffer_get_current (b[2]);
-      CLIB_PREFETCH (p - CLIB_CACHE_LINE_BYTES, CLIB_CACHE_LINE_BYTES, STORE);
-      CLIB_PREFETCH (p, CLIB_CACHE_LINE_BYTES, LOAD);
+      clib_prefetch_store (p - CLIB_CACHE_LINE_BYTES);
+      clib_prefetch_load (p);
 
       p = vlib_buffer_get_current (b[3]);
-      CLIB_PREFETCH (p - CLIB_CACHE_LINE_BYTES, CLIB_CACHE_LINE_BYTES, STORE);
-      CLIB_PREFETCH (p, CLIB_CACHE_LINE_BYTES, LOAD);
+      clib_prefetch_store (p - CLIB_CACHE_LINE_BYTES);
+      clib_prefetch_load (p);
 
       /* Check MTU of outgoing interface. */
       u16 ip0_len = clib_net_to_host_u16 (ip0->length);
@@ -2535,17 +2534,6 @@ ip4_rewrite_inline_with_gso (vlib_main_t * vm,
   vlib_buffer_enqueue_to_next (vm, node, from, nexts, frame->n_vectors);
   return frame->n_vectors;
 }
-
-always_inline uword
-ip4_rewrite_inline (vlib_main_t * vm,
-		    vlib_node_runtime_t * node,
-		    vlib_frame_t * frame,
-		    int do_counters, int is_midchain, int is_mcast)
-{
-  return ip4_rewrite_inline_with_gso (vm, node, frame, do_counters,
-				      is_midchain, is_mcast);
-}
-
 
 /** @brief IPv4 rewrite node.
     @node ip4-rewrite

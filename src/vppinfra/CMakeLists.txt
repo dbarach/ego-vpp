@@ -27,11 +27,11 @@ endif(VPP_VECTOR_GROW_BY_ONE)
 
 configure_file(
   ${CMAKE_SOURCE_DIR}/vppinfra/config.h.in
-  ${CMAKE_BINARY_DIR}/vppinfra/config.h
+  ${CMAKE_CURRENT_BINARY_DIR}/config.h
 )
 
 install(
-  FILES ${CMAKE_BINARY_DIR}/vppinfra/config.h
+  FILES ${CMAKE_CURRENT_BINARY_DIR}/config.h
   DESTINATION include/vppinfra
   COMPONENT vpp-dev
 )
@@ -48,6 +48,7 @@ set_source_files_properties( cJSON.c PROPERTIES
 ##############################################################################
 set(VPPINFRA_SRCS
   backtrace.c
+  bitmap.c
   bihash_all_vector.c
   cpu.c
   dlmalloc.c
@@ -76,6 +77,7 @@ set(VPPINFRA_SRCS
   random.c
   random_isaac.c
   rbtree.c
+  sanitizer.c
   serialize.c
   socket.c
   std-formats.c
@@ -143,6 +145,7 @@ set(VPPINFRA_HEADERS
   macros.h
   maplog.h
   math.h
+  memcpy.h
   memcpy_avx2.h
   memcpy_avx512.h
   memcpy_sse3.h
@@ -185,13 +188,14 @@ set(VPPINFRA_HEADERS
   vector_altivec.h
   vector_avx2.h
   vector_avx512.h
-  vector_funcs.h
+  vector/mask_compare.h
+  vector/compress.h
+  vector/array_mask.h
   vector.h
   vector_neon.h
   vector_sse42.h
   warnings.h
   xxhash.h
-  linux/syscall.h
   linux/sysfs.h
 )
 
@@ -260,4 +264,23 @@ if(VPP_BUILD_VPPINFRA_TESTS)
       LINK_LIBRARIES vppinfra Threads::Threads
       )
   endforeach()
+
+set(test_files
+  vector/test/compress.c
+  vector/test/mask_compare.c
+  vector/test/array_mask.c
+)
+
+add_vpp_executable(test_vector_funcs
+  SOURCES
+  vector/test/test.c
+  ${test_files}
+  LINK_LIBRARIES vppinfra
+)
+
+vpp_library_set_multiarch_sources(test_vector_funcs
+  SOURCES
+  ${test_files}
+)
+
 endif(VPP_BUILD_VPPINFRA_TESTS)

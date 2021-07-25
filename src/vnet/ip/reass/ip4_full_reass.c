@@ -1718,6 +1718,10 @@ show_ip4_reass (vlib_main_t * vm,
 		   "Maximum configured concurrent full IP4 reassemblies per worker-thread: %lu\n",
 		   (long unsigned) rm->max_reass_n);
   vlib_cli_output (vm,
+		   "Maximum configured amount of fragments "
+		   "per full IP4 reassembly: %lu\n",
+		   (long unsigned) rm->max_reass_len);
+  vlib_cli_output (vm,
 		   "Maximum configured full IP4 reassembly timeout: %lums\n",
 		   (long unsigned) rm->timeout_ms);
   vlib_cli_output (vm,
@@ -1836,9 +1840,8 @@ ip4_full_reass_handoff_node_inline (vlib_main_t * vm,
       ti += 1;
       b += 1;
     }
-  n_enq =
-    vlib_buffer_enqueue_to_thread (vm, fq_index, from, thread_indices,
-				   frame->n_vectors, 1);
+  n_enq = vlib_buffer_enqueue_to_thread (vm, node, fq_index, from,
+					 thread_indices, frame->n_vectors, 1);
 
   if (n_enq < frame->n_vectors)
     vlib_node_increment_counter (vm, node->node_index,

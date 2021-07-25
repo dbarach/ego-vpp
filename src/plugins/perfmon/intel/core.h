@@ -27,6 +27,10 @@
      "Core cycles when the thread is not in halt state")                      \
   _ (0x00, 0x03, 0, 0, 0, 0x00, CPU_CLK_UNHALTED, REF_TSC,                    \
      "Reference cycles when the core is not in halt state.")                  \
+  _ (0x00, 0x04, 0, 0, 0, 0x00, TOPDOWN, SLOTS,                               \
+     "TMA slots available for an unhalted logical processor.")                \
+  _ (0x00, 0x80, 0, 0, 0, 0x00, TOPDOWN, L1_METRICS,                          \
+     "TMA slots metrics for an unhalted logical processor.")                  \
   _ (0x03, 0x02, 0, 0, 0, 0x00, LD_BLOCKS, STORE_FORWARD,                     \
      "Loads blocked due to overlapping with a preceding store that cannot be" \
      " forwarded.")                                                           \
@@ -99,6 +103,12 @@
      "Number of instructions retired. General Counter - architectural event") \
   _ (0xC2, 0x02, 0, 0, 0, 0x00, UOPS_RETIRED, RETIRE_SLOTS,                   \
      "Retirement slots used.")                                                \
+  _ (0xC4, 0x00, 0, 0, 0, 0x00, BR_INST_RETIRED, ALL_BRANCHES,                \
+     "Counts all (macro) branch instructions retired.")                       \
+  _ (0xC5, 0x00, 0, 0, 0, 0x00, BR_MISP_RETIRED, ALL_BRANCHES,                \
+     "All mispredicted macro branch instructions retired.")                   \
+  _ (0xC4, 0x20, 0, 0, 0, 0x00, BR_INST_RETIRED, NEAR_TAKEN,                  \
+     "Taken branch instructions retired.")                                    \
   _ (0xD0, 0x81, 0, 0, 0, 0x00, MEM_INST_RETIRED, ALL_LOADS,                  \
      "All retired load instructions.")                                        \
   _ (0xD0, 0x82, 0, 0, 0, 0x00, MEM_INST_RETIRED, ALL_STORES,                 \

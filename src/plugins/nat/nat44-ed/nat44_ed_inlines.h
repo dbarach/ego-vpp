@@ -329,6 +329,8 @@ nat_ed_ses_i2o_flow_hash_add_del (snat_main_t *sm, u32 thread_idx,
       nat_6t_flow_to_ed_kv (&kv, &s->i2o, thread_idx, s - tsm->sessions);
       nat_6t_l3_l4_csum_calc (&s->i2o);
     }
+
+  ASSERT (thread_idx == s->thread_index);
   return clib_bihash_add_del_16_8 (&sm->flow_hash, &kv, is_add);
 }
 
@@ -348,6 +350,7 @@ nat_ed_ses_o2i_flow_hash_add_del (snat_main_t *sm, u32 thread_idx,
       nat_6t_flow_to_ed_kv (&kv, &s->o2i, thread_idx, s - tsm->sessions);
       nat_6t_l3_l4_csum_calc (&s->o2i);
     }
+  ASSERT (thread_idx == s->thread_index);
   return clib_bihash_add_del_16_8 (&sm->flow_hash, &kv, is_add);
 }
 
@@ -441,6 +444,9 @@ nat_ed_session_alloc (snat_main_t *sm, u32 thread_index, f64 now, u8 proto)
   s->ha_last_refreshed = now;
   vlib_set_simple_counter (&sm->total_sessions, thread_index, 0,
 			   pool_elts (tsm->sessions));
+#if CLIB_ASSERT_ENABLE
+  s->thread_index = thread_index;
+#endif
   return s;
 }
 
@@ -592,15 +598,9 @@ nat_6t_o2i_flow_init (snat_main_t *sm, u32 thread_idx, snat_session_t *s,
 }
 
 static_always_inline int
-nat_6t_flow_match (nat_6t_flow_t *f, vlib_buffer_t *b, ip4_address_t saddr,
-		   u16 sport, ip4_address_t daddr, u16 dport, u8 protocol,
-		   u32 fib_index)
+nat_6t_t_eq (nat_6t_t *t1, nat_6t_t *t2)
 {
-  return f->match.daddr.as_u32 == daddr.as_u32 &&
-	 f->match.dport == vnet_buffer (b)->ip.reass.l4_dst_port &&
-	 f->match.proto == protocol && f->match.fib_index == fib_index &&
-	 f->match.saddr.as_u32 == saddr.as_u32 &&
-	 f->match.sport == vnet_buffer (b)->ip.reass.l4_src_port;
+  return t1->as_u64[0] == t2->as_u64[0] && t1->as_u64[1] == t2->as_u64[1];
 }
 
 static inline uword
@@ -638,8 +638,8 @@ nat_pre_node_fn_inline (vlib_main_t *vm, vlib_node_runtime_t *node,
 	  vlib_prefetch_buffer_header (p2, LOAD);
 	  vlib_prefetch_buffer_header (p3, LOAD);
 
-	  CLIB_PREFETCH (p2->data, CLIB_CACHE_LINE_BYTES, LOAD);
-	  CLIB_PREFETCH (p3->data, CLIB_CACHE_LINE_BYTES, LOAD);
+	  clib_prefetch_load (p2->data);
+	  clib_prefetch_load (p3->data);
 	}
 
       next0 = def_next;
@@ -724,20 +724,30 @@ is_interface_addr (snat_main_t *sm, vlib_node_runtime_t *node,
 		   u32 sw_if_index0, u32 ip4_addr)
 {
   snat_runtime_t *rt = (snat_runtime_t *) node->runtime_data;
-  ip4_address_t *first_int_addr;
+  u8 ip4_addr_exists;
 
   if (PREDICT_FALSE (rt->cached_sw_if_index != sw_if_index0))
     {
-      first_int_addr = ip4_interface_first_address (
-	sm->ip4_main, sw_if_index0, 0 /* just want the address */);
-      rt->cached_sw_if_index = sw_if_index0;
-      if (first_int_addr)
-	rt->cached_ip4_address = first_int_addr->as_u32;
-      else
-	rt->cached_ip4_address = 0;
+      ip_lookup_main_t *lm = &sm->ip4_main->lookup_main;
+      ip_interface_address_t *ia;
+      ip4_address_t *a;
+
+      rt->cached_sw_if_index = ~0;
+      hash_free (rt->cached_presence_by_ip4_address);
+
+      foreach_ip_interface_address (
+	lm, ia, sw_if_index0, 1 /* honor unnumbered */, ({
+	  a = ip_interface_address_get_address (lm, ia);
+	  hash_set (rt->cached_presence_by_ip4_address, a->as_u32, 1);
+	  rt->cached_sw_if_index = sw_if_index0;
+	}));
+
+      if (rt->cached_sw_if_index == ~0)
+	return 0;
     }
 
-  if (PREDICT_FALSE (ip4_addr == rt->cached_ip4_address))
+  ip4_addr_exists = !!hash_get (rt->cached_presence_by_ip4_address, ip4_addr);
+  if (PREDICT_FALSE (ip4_addr_exists))
     return 1;
   else
     return 0;

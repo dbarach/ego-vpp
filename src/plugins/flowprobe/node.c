@@ -650,7 +650,6 @@ flowprobe_get_buffer (vlib_main_t * vm, flowprobe_variant_t which)
       /* Initialize the buffer */
       b0 = fm->context[which].buffers_per_worker[my_cpu_number] =
 	vlib_get_buffer (vm, bi0);
-      VLIB_BUFFER_TRACE_TRAJECTORY_INIT (b0);
 
       b0->current_data = 0;
       b0->current_length = flowprobe_get_headersize ();
@@ -756,8 +755,8 @@ flowprobe_node_fn (vlib_main_t * vm,
 	    vlib_prefetch_buffer_header (p2, LOAD);
 	    vlib_prefetch_buffer_header (p3, LOAD);
 
-	    CLIB_PREFETCH (p2->data, CLIB_CACHE_LINE_BYTES, STORE);
-	    CLIB_PREFETCH (p3->data, CLIB_CACHE_LINE_BYTES, STORE);
+	    clib_prefetch_store (p2->data);
+	    clib_prefetch_store (p3->data);
 	  }
 
 	  /* speculatively enqueue b0 and b1 to the current next frame */

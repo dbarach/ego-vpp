@@ -305,6 +305,7 @@ ipsec_itf_create (u32 user_instance, tunnel_mode_t mode, u32 * sw_if_indexp)
 					 t_idx);
 
   hi = vnet_get_hw_interface (vnm, hw_if_index);
+  vnet_sw_interface_set_mtu (vnm, hi->sw_if_index, 9000);
 
   vec_validate_init_empty (ipsec_itf_index_by_sw_if_index, hi->sw_if_index,
 			   INDEX_INVALID);
@@ -339,6 +340,18 @@ ipsec_itf_delete (u32 sw_if_index)
   pool_put (ipsec_itf_pool, ipsec_itf);
 
   return 0;
+}
+
+void
+ipsec_itf_walk (ipsec_itf_walk_cb_t cb, void *ctx)
+{
+  ipsec_itf_t *itf;
+
+  pool_foreach (itf, ipsec_itf_pool)
+    {
+      if (WALK_CONTINUE != cb (itf, ctx))
+	break;
+    }
 }
 
 static clib_error_t *

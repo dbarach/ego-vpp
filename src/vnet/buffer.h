@@ -107,6 +107,25 @@ enum
 STATIC_ASSERT (((VNET_BUFFER_FLAGS_ALL_AVAIL & VLIB_BUFFER_FLAGS_ALL) == 0),
 	       "VLIB / VNET buffer flags overlap");
 
+#define foreach_vnet_buffer_offload_flag                                      \
+  _ (0, IP_CKSUM, "offload-ip-cksum", 1)                                      \
+  _ (1, TCP_CKSUM, "offload-tcp-cksum", 1)                                    \
+  _ (2, UDP_CKSUM, "offload-udp-cksum", 1)                                    \
+  _ (3, OUTER_IP_CKSUM, "offload-outer-ip-cksum", 1)                          \
+  _ (4, OUTER_UDP_CKSUM, "offload-outer-udp-cksum", 1)                        \
+  _ (5, TNL_VXLAN, "offload-vxlan-tunnel", 1)                                 \
+  _ (6, TNL_IPIP, "offload-ipip-tunnel", 1)
+
+typedef enum
+{
+#define _(bit, name, s, v) VNET_BUFFER_OFFLOAD_F_##name = (1 << bit),
+  foreach_vnet_buffer_offload_flag
+#undef _
+} vnet_buffer_oflags_t;
+
+#define VNET_BUFFER_OFFLOAD_F_TNL_MASK                                        \
+  (VNET_BUFFER_OFFLOAD_F_TNL_VXLAN | VNET_BUFFER_OFFLOAD_F_TNL_IPIP)
+
 #define foreach_buffer_opaque_union_subtype     \
 _(ip)                                           \
 _(l2)                                           \
@@ -138,7 +157,8 @@ typedef struct
   i16 l3_hdr_offset;
   i16 l4_hdr_offset;
   u8 feature_arc_index;
-  u8 dont_waste_me;
+  /* offload flags */
+  vnet_buffer_oflags_t oflags : 8;
 
   union
   {
@@ -420,21 +440,6 @@ STATIC_ASSERT (sizeof (vnet_buffer_opaque_t) <=
 
 #define vnet_buffer(b) ((vnet_buffer_opaque_t *) (b)->opaque)
 
-#define foreach_vnet_buffer_offload_flag                                      \
-  _ (0, IP_CKSUM, "offload-ip-cksum", 1)                                      \
-  _ (1, TCP_CKSUM, "offload-tcp-cksum", 1)                                    \
-  _ (2, UDP_CKSUM, "offload-udp-cksum", 1)                                    \
-  _ (3, OUTER_IP_CKSUM, "offload-outer-ip-cksum", 1)                          \
-  _ (4, OUTER_TCP_CKSUM, "offload-outer-tcp-cksum", 1)                        \
-  _ (5, OUTER_UDP_CKSUM, "offload-outer-udp-cksum", 1)
-
-enum
-{
-#define _(bit, name, s, v) VNET_BUFFER_OFFLOAD_F_##name = (1 << bit),
-  foreach_vnet_buffer_offload_flag
-#undef _
-};
-
 /* Full cache line (64 bytes) of additional space */
 typedef struct
 {
@@ -472,27 +477,22 @@ typedef struct
     u16 gso_size;
     /* size of L4 prototol header */
     u16 gso_l4_hdr_sz;
-
-    /* offload flags */
-    u32 oflags;
+    i16 outer_l3_hdr_offset;
+    i16 outer_l4_hdr_offset;
   };
 
   struct
   {
     u32 arc_next;
-    /* cached session index from previous node */
-    u32 cached_session_index;
+    union
+    {
+      u32 cached_session_index;
+      u32 cached_dst_nat_session_index;
+    };
   } nat;
 
   union
   {
-    struct
-    {
-#if VLIB_BUFFER_TRACE_TRAJECTORY > 0
-      /* buffer trajectory tracing */
-      u16 *trajectory_trace;
-#endif
-    };
     struct
     {
       u64 pad[1];
@@ -520,28 +520,31 @@ STATIC_ASSERT (sizeof (vnet_buffer_opaque2_t) <=
 
 format_function_t format_vnet_buffer;
 format_function_t format_vnet_buffer_offload;
+format_function_t format_vnet_buffer_flags;
+format_function_t format_vnet_buffer_opaque;
+format_function_t format_vnet_buffer_opaque2;
 
 static_always_inline void
-vnet_buffer_offload_flags_set (vlib_buffer_t *b, u32 oflags)
+vnet_buffer_offload_flags_set (vlib_buffer_t *b, vnet_buffer_oflags_t oflags)
 {
   if (b->flags & VNET_BUFFER_F_OFFLOAD)
     {
       /* add a flag to existing offload */
-      vnet_buffer2 (b)->oflags |= oflags;
+      vnet_buffer (b)->oflags |= oflags;
     }
   else
     {
       /* no offload yet: reset offload flags to new value */
-      vnet_buffer2 (b)->oflags = oflags;
+      vnet_buffer (b)->oflags = oflags;
       b->flags |= VNET_BUFFER_F_OFFLOAD;
     }
 }
 
 static_always_inline void
-vnet_buffer_offload_flags_clear (vlib_buffer_t *b, u32 oflags)
+vnet_buffer_offload_flags_clear (vlib_buffer_t *b, vnet_buffer_oflags_t oflags)
 {
-  vnet_buffer2 (b)->oflags &= ~oflags;
-  if (0 == vnet_buffer2 (b)->oflags)
+  vnet_buffer (b)->oflags &= ~oflags;
+  if (0 == vnet_buffer (b)->oflags)
     b->flags &= ~VNET_BUFFER_F_OFFLOAD;
 }
 

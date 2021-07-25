@@ -313,7 +313,6 @@ vrrp_adv_send (vrrp_vr_t * vr, int shutdown)
       bi0 = vec_elt (bi, i);
       b = vlib_get_buffer (vm, bi0);
 
-      VLIB_BUFFER_TRACE_TRAJECTORY_INIT (b);
       b->flags |= VNET_BUFFER_F_LOCALLY_ORIGINATED;
       vnet_buffer (b)->sw_if_index[VLIB_RX] = 0;
       vnet_buffer (b)->sw_if_index[VLIB_TX] = vr->config.sw_if_index;
@@ -500,7 +499,6 @@ vrrp_garp_or_na_send (vrrp_vr_t * vr)
       addr = vec_elt_at_index (vr->config.vr_addrs, i);
       b = vlib_get_buffer (vm, bi[i]);
 
-      VLIB_BUFFER_TRACE_TRAJECTORY_INIT (b);
       b->flags |= VNET_BUFFER_F_LOCALLY_ORIGINATED;
       vnet_buffer (b)->sw_if_index[VLIB_RX] = 0;
       vnet_buffer (b)->sw_if_index[VLIB_TX] = vr->config.sw_if_index;
@@ -693,6 +691,11 @@ vrrp_vr_multicast_group_join (vrrp_vr_t * vr)
   if (!vnet_sw_interface_is_up (vnm, vr->config.sw_if_index))
     return 0;
 
+  is_ipv6 = vrrp_vr_is_ipv6 (vr);
+
+  if (is_ipv6 && ip6_link_is_enabled (vr->config.sw_if_index) == 0)
+    return 0;
+
   if (vlib_buffer_alloc (vm, &bi, n_buffers) != n_buffers)
     {
       clib_warning ("Buffer allocation failed for %U", format_vrrp_vr_key,
@@ -700,11 +703,8 @@ vrrp_vr_multicast_group_join (vrrp_vr_t * vr)
       return -1;
     }
 
-  is_ipv6 = vrrp_vr_is_ipv6 (vr);
-
   b = vlib_get_buffer (vm, bi);
 
-  VLIB_BUFFER_TRACE_TRAJECTORY_INIT (b);
   b->flags |= VNET_BUFFER_F_LOCALLY_ORIGINATED;
 
   vnet_buffer (b)->sw_if_index[VLIB_RX] = 0;

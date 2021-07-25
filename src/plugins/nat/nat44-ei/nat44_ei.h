@@ -32,6 +32,7 @@
 #include <vppinfra/dlist.h>
 #include <vppinfra/error.h>
 #include <vppinfra/bihash_8_8.h>
+#include <vppinfra/hash.h>
 
 #include <nat/lib/lib.h>
 #include <nat/lib/inlines.h>
@@ -71,7 +72,7 @@ typedef struct
 #define _(N, i, n, s)                                                         \
   u32 busy_##n##_ports;                                                       \
   u32 *busy_##n##_ports_per_thread;                                           \
-  u32 busy_##n##_port_refcounts[65535];
+  u32 busy_##n##_port_refcounts[0xffff + 1];
   foreach_nat_protocol
 #undef _
 } nat44_ei_address_t;
@@ -81,8 +82,8 @@ clib_error_t *nat44_ei_api_hookup (vlib_main_t *vm);
 /* NAT address and port allocation function */
 typedef int (nat44_ei_alloc_out_addr_and_port_function_t) (
   nat44_ei_address_t *addresses, u32 fib_index, u32 thread_index,
-  nat_protocol_t proto, ip4_address_t *addr, u16 *port, u16 port_per_thread,
-  u32 snat_thread_index);
+  nat_protocol_t proto, ip4_address_t s_addr, ip4_address_t *addr, u16 *port,
+  u16 port_per_thread, u32 snat_thread_index);
 
 typedef struct
 {
@@ -301,20 +302,10 @@ typedef struct
 
 } nat44_ei_main_per_thread_data_t;
 
-/* Return worker thread index for given packet */
-typedef u32 (nat44_ei_get_worker_in2out_function_t) (ip4_header_t *ip,
-						     u32 rx_fib_index,
-						     u8 is_output);
-
-typedef u32 (nat44_ei_get_worker_out2in_function_t) (vlib_buffer_t *b,
-						     ip4_header_t *ip,
-						     u32 rx_fib_index,
-						     u8 is_output);
-
 typedef struct
 {
   u32 cached_sw_if_index;
-  u32 cached_ip4_address;
+  uword *cached_presence_by_ip4_address;
 } nat44_ei_runtime_t;
 
 typedef struct
@@ -366,8 +357,6 @@ typedef struct nat44_ei_main_s
   u32 num_workers;
   u32 first_worker_index;
   u32 *workers;
-  nat44_ei_get_worker_in2out_function_t *worker_in2out_cb;
-  nat44_ei_get_worker_out2in_function_t *worker_out2in_cb;
   u16 port_per_thread;
 
   /* Main lookup tables */

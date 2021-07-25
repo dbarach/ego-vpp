@@ -28,10 +28,11 @@
 #include <vnet/ip-neighbor/ip4_neighbor.h>
 #include <vnet/ip-neighbor/ip6_neighbor.h>
 
-#define foreach_bond_tx_error     \
-  _(NONE, "no error")             \
-  _(IF_DOWN, "interface down")    \
-  _(NO_MEMBER, "no member")
+#define foreach_bond_tx_error                                                 \
+  _ (NONE, "no error")                                                        \
+  _ (IF_DOWN, "interface down")                                               \
+  _ (BAD_LB_MODE, "bad load balance mode")                                    \
+  _ (NO_MEMBER, "no member")
 
 typedef enum
 {
@@ -415,16 +416,11 @@ bond_tx_inline (vlib_main_t * vm, bond_if_t * bif, vlib_buffer_t ** b,
 	  vlib_prefetch_buffer_header (pb[2], LOAD);
 	  vlib_prefetch_buffer_header (pb[3], LOAD);
 
-	  CLIB_PREFETCH (pb[0]->data, CLIB_CACHE_LINE_BYTES, LOAD);
-	  CLIB_PREFETCH (pb[1]->data, CLIB_CACHE_LINE_BYTES, LOAD);
-	  CLIB_PREFETCH (pb[2]->data, CLIB_CACHE_LINE_BYTES, LOAD);
-	  CLIB_PREFETCH (pb[3]->data, CLIB_CACHE_LINE_BYTES, LOAD);
+	  clib_prefetch_load (pb[0]->data);
+	  clib_prefetch_load (pb[1]->data);
+	  clib_prefetch_load (pb[2]->data);
+	  clib_prefetch_load (pb[3]->data);
 	}
-
-      VLIB_BUFFER_TRACE_TRAJECTORY_INIT (b[0]);
-      VLIB_BUFFER_TRACE_TRAJECTORY_INIT (b[1]);
-      VLIB_BUFFER_TRACE_TRAJECTORY_INIT (b[2]);
-      VLIB_BUFFER_TRACE_TRAJECTORY_INIT (b[3]);
 
       if (lb_alg == BOND_LB_L2)
 	{
@@ -473,8 +469,6 @@ bond_tx_inline (vlib_main_t * vm, bond_if_t * bif, vlib_buffer_t ** b,
 
   while (n_left > 0)
     {
-      VLIB_BUFFER_TRACE_TRAJECTORY_INIT (b[0]);
-
       if (bif->lb == BOND_LB_L2)
 	h[0] = bond_lb_l2 (b[0]);
       else if (bif->lb == BOND_LB_L34)
@@ -762,7 +756,15 @@ VNET_DEVICE_CLASS_TX_FN (bond_dev_class) (vlib_main_t * vm,
   else if (bif->lb == BOND_LB_RR)
     bond_tx_inline (vm, bif, bufs, hashes, n_left, n_members, BOND_LB_RR);
   else
-    ASSERT (0);
+    {
+      vlib_buffer_free (vm, vlib_frame_vector_args (frame), frame->n_vectors);
+      vlib_increment_simple_counter (
+	vnet_main.interface_main.sw_if_counters + VNET_INTERFACE_COUNTER_DROP,
+	thread_index, bif->sw_if_index, frame->n_vectors);
+      vlib_error_count (vm, node->node_index, BOND_TX_ERROR_BAD_LB_MODE,
+			frame->n_vectors);
+      return frame->n_vectors;
+    }
 
   /* calculate port out of hash */
   h = hashes;

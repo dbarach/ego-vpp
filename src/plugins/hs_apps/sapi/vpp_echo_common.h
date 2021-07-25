@@ -17,23 +17,9 @@
 #define __included_vpp_echo_common_h__
 
 #include <vnet/session/application_interface.h>
-#include <vpp/api/vpe_msg_enum.h>
-
-#define vl_typedefs		/* define message structures */
-#include <vpp/api/vpe_all_api_h.h>
-#undef vl_typedefs
-
-/* declare message handlers for each api */
-
-#define vl_endianfun		/* define message structures */
-#include <vpp/api/vpe_all_api_h.h>
-#undef vl_endianfun
-
-/* instantiate all the print functions we know about */
-#define vl_print(handle, ...)
-#define vl_printfun
-#include <vpp/api/vpe_all_api_h.h>
-#undef vl_printfun
+#include <vnet/format_fns.h>
+#include <vnet/session/session.api_enum.h>
+#include <vnet/session/session.api_types.h>
 
 #define TIMEOUT 10.0
 #define LOGGING_BATCH (100)
@@ -448,6 +434,9 @@ int echo_attach_session (uword segment_handle, uword rxf_offset,
 			 uword mq_offset, uword txf_offset, echo_session_t *s);
 int echo_segment_attach_mq (uword segment_handle, uword mq_offset,
 			    u32 mq_index, svm_msg_q_t **mq);
+svm_fifo_chunk_t *echo_segment_alloc_chunk (uword segment_handle,
+					    u32 slice_index, u32 size,
+					    uword *offset);
 
 /* Binary API */
 

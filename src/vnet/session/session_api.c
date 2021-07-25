@@ -21,37 +21,14 @@
 #include <vnet/session/session_rules_table.h>
 #include <vnet/session/session_table.h>
 #include <vnet/session/session.h>
-
 #include <vnet/ip/ip_types_api.h>
 
-#include <vnet/vnet_msg_enum.h>
+#include <vnet/format_fns.h>
+#include <vnet/session/session.api_enum.h>
+#include <vnet/session/session.api_types.h>
 
-#define vl_typedefs		/* define message structures */
-#include <vnet/vnet_all_api_h.h>
-#undef vl_typedefs
-
-#define vl_endianfun		/* define message structures */
-#include <vnet/vnet_all_api_h.h>
-#undef vl_endianfun
-
-/* instantiate all the print functions we know about */
-#define vl_print(handle, ...) vlib_cli_output (handle, __VA_ARGS__)
-#define vl_printfun
-#include <vnet/vnet_all_api_h.h>
-#undef vl_printfun
-
+#define REPLY_MSG_ID_BASE session_main.msg_id_base
 #include <vlibapi/api_helper_macros.h>
-
-#define foreach_session_api_msg                                         \
-_(APP_ATTACH, app_attach)						\
-_(APPLICATION_DETACH, application_detach)				\
-_(SESSION_ENABLE_DISABLE, session_enable_disable)                   	\
-_(APP_NAMESPACE_ADD_DEL, app_namespace_add_del)				\
-_(SESSION_RULE_ADD_DEL, session_rule_add_del)				\
-_(SESSION_RULES_DUMP, session_rules_dump)				\
-_(APP_ADD_CERT_KEY_PAIR, app_add_cert_key_pair)				\
-_(APP_DEL_CERT_KEY_PAIR, app_del_cert_key_pair)				\
-_(APP_WORKER_ADD_DEL, app_worker_add_del)				\
 
 static transport_proto_t
 api_session_transport_proto_decode (const vl_api_transport_proto_t * api_tp)
@@ -143,7 +120,7 @@ mq_send_session_accepted_cb (session_t * s)
   m.segment_handle = session_segment_handle (s);
   m.flags = s->flags;
 
-  eq_seg = session_main_get_evt_q_segment ();
+  eq_seg = application_get_rx_mqs_segment (app);
 
   if (session_has_transport (s))
     {
@@ -163,6 +140,7 @@ mq_send_session_accepted_cb (session_t * s)
       m.handle = session_handle (s);
 
       session_get_endpoint (s, &m.rmt, 0 /* is_lcl */);
+      session_get_endpoint (s, &m.lcl, 1 /* is_lcl */);
     }
   else
     {
@@ -173,6 +151,7 @@ mq_send_session_accepted_cb (session_t * s)
       m.listener_handle = app_listen_session_handle (listener);
       m.rmt.is_ip4 = session_type_is_ip4 (listener->session_type);
       m.rmt.port = ct->c_rmt_port;
+      m.lcl.port = ct->c_lcl_port;
       m.handle = session_handle (s);
       m.vpp_event_queue_address =
 	fifo_segment_msg_q_offset (eq_seg, s->thread_index);
@@ -271,6 +250,9 @@ mq_send_session_connected_cb (u32 app_wrk_index, u32 api_context,
   fifo_segment_t *eq_seg;
   app_worker_t *app_wrk;
   session_event_t *evt;
+  application_t *app;
+
+  app_wrk = app_worker_get (app_wrk_index);
 
   m.context = api_context;
   m.retval = err;
@@ -278,7 +260,8 @@ mq_send_session_connected_cb (u32 app_wrk_index, u32 api_context,
   if (err)
     goto snd_msg;
 
-  eq_seg = session_main_get_evt_q_segment ();
+  app = application_get (app_wrk->app_index);
+  eq_seg = application_get_rx_mqs_segment (app);
 
   if (session_has_transport (s))
     {
@@ -320,9 +303,13 @@ mq_send_session_connected_cb (u32 app_wrk_index, u32 api_context,
       m.ct_segment_handle = session_segment_handle (ss);
     }
 
+  /* Setup client session index in advance, in case data arrives
+   * before the app processes message and updates it */
+  s->rx_fifo->shr->client_session_index = api_context;
+  s->tx_fifo->shr->client_session_index = api_context;
+
 snd_msg:
 
-  app_wrk = app_worker_get (app_wrk_index);
   app_mq = app_wrk->event_queue;
 
   if (mq_try_lock_and_alloc_msg (app_mq, msg))
@@ -348,8 +335,11 @@ mq_send_session_bound_cb (u32 app_wrk_index, u32 api_context,
   fifo_segment_t *eq_seg;
   app_worker_t *app_wrk;
   session_event_t *evt;
+  application_t *app;
   app_listener_t *al;
   session_t *ls = 0;
+
+  app_wrk = app_worker_get (app_wrk_index);
 
   m.context = api_context;
   m.retval = rv;
@@ -368,11 +358,12 @@ mq_send_session_bound_cb (u32 app_wrk_index, u32 api_context,
   m.lcl_port = tep.port;
   m.lcl_is_ip4 = tep.is_ip4;
   clib_memcpy_fast (m.lcl_ip, &tep.ip, sizeof (tep.ip));
-
-  eq_seg = session_main_get_evt_q_segment ();
+  app = application_get (app_wrk->app_index);
+  eq_seg = application_get_rx_mqs_segment (app);
   m.vpp_evt_q = fifo_segment_msg_q_offset (eq_seg, ls->thread_index);
 
-  if (session_transport_service_type (ls) == TRANSPORT_SERVICE_CL)
+  if (session_transport_service_type (ls) == TRANSPORT_SERVICE_CL &&
+      ls->rx_fifo)
     {
       m.rx_fifo = fifo_segment_fifo_offset (ls->rx_fifo);
       m.tx_fifo = fifo_segment_fifo_offset (ls->tx_fifo);
@@ -381,7 +372,6 @@ mq_send_session_bound_cb (u32 app_wrk_index, u32 api_context,
 
 snd_msg:
 
-  app_wrk = app_worker_get (app_wrk_index);
   app_mq = app_wrk->event_queue;
 
   if (mq_try_lock_and_alloc_msg (app_mq, msg))
@@ -428,10 +418,14 @@ mq_send_session_migrate_cb (session_t * s, session_handle_t new_sh)
   app_worker_t *app_wrk;
   session_event_t *evt;
   svm_msg_q_t *app_mq;
+  application_t *app;
   u32 thread_index;
 
   thread_index = session_thread_from_handle (new_sh);
-  eq_seg = session_main_get_evt_q_segment ();
+  app_wrk = app_worker_get (s->app_wrk_index);
+  app_mq = app_wrk->event_queue;
+  app = application_get (app_wrk->app_index);
+  eq_seg = application_get_rx_mqs_segment (app);
 
   m.handle = session_handle (s);
   m.new_handle = new_sh;
@@ -439,8 +433,6 @@ mq_send_session_migrate_cb (session_t * s, session_handle_t new_sh)
   m.vpp_evt_q = fifo_segment_msg_q_offset (eq_seg, thread_index);
   m.segment_handle = SESSION_INVALID_HANDLE;
 
-  app_wrk = app_worker_get (s->app_wrk_index);
-  app_mq = app_wrk->event_queue;
   if (mq_try_lock_and_alloc_msg (app_mq, msg))
     return;
 
@@ -603,17 +595,20 @@ vl_api_session_enable_disable_t_handler (vl_api_session_enable_disable_t * mp)
 static void
 vl_api_app_attach_t_handler (vl_api_app_attach_t * mp)
 {
-  int rv = 0, fds[SESSION_N_FD_TYPE], n_fds = 0;
-  vl_api_app_attach_reply_t *rmp;
-  fifo_segment_t *segp, *evt_q_segment = 0;
+  int rv = 0, *fds = 0, n_fds = 0, n_workers, i;
+  fifo_segment_t *segp, *rx_mqs_seg = 0;
   vnet_app_attach_args_t _a, *a = &_a;
+  vl_api_app_attach_reply_t *rmp;
   u8 fd_flags = 0, ctrl_thread;
   vl_api_registration_t *reg;
+  svm_msg_q_t *rx_mq;
+  application_t *app;
 
   reg = vl_api_client_index_to_registration (mp->client_index);
   if (!reg)
     return;
 
+  n_workers = vlib_num_workers ();
   if (!session_main_is_enabled () || appns_sapi_enabled ())
     {
       rv = VNET_API_ERROR_FEATURE_DISABLED;
@@ -644,13 +639,16 @@ vl_api_app_attach_t_handler (vl_api_app_attach_t * mp)
     }
   vec_free (a->namespace_id);
 
-  /* Send event queues segment */
-  if ((evt_q_segment = session_main_get_evt_q_segment ()))
-    {
-      fd_flags |= SESSION_FD_F_VPP_MQ_SEGMENT;
-      fds[n_fds] = evt_q_segment->ssvm.fd;
-      n_fds += 1;
-    }
+  vec_validate (fds, 3 /* segs + tx evtfd */ + n_workers);
+
+  /* Send rx mqs segment */
+  app = application_get (a->app_index);
+  rx_mqs_seg = application_get_rx_mqs_segment (app);
+
+  fd_flags |= SESSION_FD_F_VPP_MQ_SEGMENT;
+  fds[n_fds] = rx_mqs_seg->ssvm.fd;
+  n_fds += 1;
+
   /* Send fifo segment fd if needed */
   if (ssvm_type (a->segment) == SSVM_SEGMENT_MEMFD)
     {
@@ -665,17 +663,27 @@ vl_api_app_attach_t_handler (vl_api_app_attach_t * mp)
       n_fds += 1;
     }
 
+  if (application_use_private_rx_mqs ())
+    {
+      fd_flags |= SESSION_FD_F_VPP_MQ_EVENTFD;
+      for (i = 0; i < n_workers + 1; i++)
+	{
+	  rx_mq = application_rx_mq_get (app, i);
+	  fds[n_fds] = svm_msg_q_get_eventfd (rx_mq);
+	  n_fds += 1;
+	}
+    }
+
 done:
   /* *INDENT-OFF* */
   REPLY_MACRO2 (VL_API_APP_ATTACH_REPLY, ({
     if (!rv)
       {
-	ctrl_thread = vlib_num_workers () ? 1 : 0;
+	ctrl_thread = n_workers ? 1 : 0;
 	segp = (fifo_segment_t *) a->segment;
 	rmp->app_index = clib_host_to_net_u32 (a->app_index);
 	rmp->app_mq = fifo_segment_msg_q_offset (segp, 0);
-	rmp->vpp_ctrl_mq =
-	  fifo_segment_msg_q_offset (evt_q_segment, ctrl_thread);
+	rmp->vpp_ctrl_mq = fifo_segment_msg_q_offset (rx_mqs_seg, ctrl_thread);
 	rmp->vpp_ctrl_mq_thread = ctrl_thread;
 	rmp->n_fds = n_fds;
 	rmp->fd_flags = fd_flags;
@@ -691,6 +699,7 @@ done:
 
   if (n_fds)
     session_send_fds (reg, fds, n_fds);
+  vec_free (fds);
 }
 
 static void
@@ -889,7 +898,7 @@ send_session_rule_details4 (mma_rule_16_t * rule, u8 is_local,
 
   rmp = vl_msg_api_alloc (sizeof (*rmp));
   clib_memset (rmp, 0, sizeof (*rmp));
-  rmp->_vl_msg_id = ntohs (VL_API_SESSION_RULES_DETAILS);
+  rmp->_vl_msg_id = ntohs (REPLY_MSG_ID_BASE + VL_API_SESSION_RULES_DETAILS);
   rmp->context = context;
 
   clib_memset (&lcl, 0, sizeof (lcl));
@@ -931,7 +940,7 @@ send_session_rule_details6 (mma_rule_40_t * rule, u8 is_local,
 
   rmp = vl_msg_api_alloc (sizeof (*rmp));
   clib_memset (rmp, 0, sizeof (*rmp));
-  rmp->_vl_msg_id = ntohs (VL_API_SESSION_RULES_DETAILS);
+  rmp->_vl_msg_id = ntohs (REPLY_MSG_ID_BASE + VL_API_SESSION_RULES_DETAILS);
   rmp->context = context;
 
   clib_memset (&lcl, 0, sizeof (lcl));
@@ -1106,50 +1115,6 @@ application_reaper_cb (u32 client_index)
 
 VL_MSG_API_REAPER_FUNCTION (application_reaper_cb);
 
-#define vl_msg_name_crc_list
-#include <vnet/vnet_all_api_h.h>
-#undef vl_msg_name_crc_list
-
-static void
-setup_message_id_table (api_main_t * am)
-{
-#define _(id,n,crc) vl_msg_api_add_msg_name_crc (am, #n "_" #crc, id);
-  foreach_vl_msg_name_crc_session;
-#undef _
-}
-
-/*
- * session_api_hookup
- * Add uri's API message handlers to the table.
- * vlib has already mapped shared memory and
- * added the client registration handlers.
- * See .../open-repo/vlib/memclnt_vlib.c:memclnt_process()
- */
-static clib_error_t *
-session_api_hookup (vlib_main_t * vm)
-{
-  api_main_t *am = vlibapi_get_main ();
-
-#define _(N,n)                                                  \
-    vl_msg_api_set_handlers(VL_API_##N, #n,                     \
-                           vl_api_##n##_t_handler,              \
-                           vl_noop_handler,                     \
-                           vl_api_##n##_t_endian,               \
-                           vl_api_##n##_t_print,                \
-                           sizeof(vl_api_##n##_t), 1);
-  foreach_session_api_msg;
-#undef _
-
-  /*
-   * Set up the (msg_name, crc, message-id) table
-   */
-  setup_message_id_table (am);
-
-  return 0;
-}
-
-VLIB_API_INIT_FUNCTION (session_api_hookup);
-
 /*
  * Socket api functions
  */
@@ -1267,15 +1232,16 @@ static void
 session_api_attach_handler (app_namespace_t * app_ns, clib_socket_t * cs,
 			    app_sapi_attach_msg_t * mp)
 {
-  int rv = 0, fds[SESSION_N_FD_TYPE], n_fds = 0;
+  int rv = 0, *fds = 0, n_fds = 0, i, n_workers;
   vnet_app_attach_args_t _a, *a = &_a;
   app_sapi_attach_reply_msg_t *rmp;
-  fifo_segment_t *evt_q_segment;
   u8 fd_flags = 0, ctrl_thread;
   app_ns_api_handle_t *handle;
+  fifo_segment_t *rx_mqs_seg;
   app_sapi_msg_t msg = { 0 };
   app_worker_t *app_wrk;
   application_t *app;
+  svm_msg_q_t *rx_mq;
 
   /* Make sure name is null terminated */
   mp->name[63] = 0;
@@ -1294,13 +1260,17 @@ session_api_attach_handler (app_namespace_t * app_ns, clib_socket_t * cs,
       goto done;
     }
 
+  n_workers = vlib_num_workers ();
+  vec_validate (fds, 3 /* segs + tx evtfd */ + n_workers);
+
   /* Send event queues segment */
-  if ((evt_q_segment = session_main_get_evt_q_segment ()))
-    {
-      fd_flags |= SESSION_FD_F_VPP_MQ_SEGMENT;
-      fds[n_fds] = evt_q_segment->ssvm.fd;
-      n_fds += 1;
-    }
+  app = application_get (a->app_index);
+  rx_mqs_seg = application_get_rx_mqs_segment (app);
+
+  fd_flags |= SESSION_FD_F_VPP_MQ_SEGMENT;
+  fds[n_fds] = rx_mqs_seg->ssvm.fd;
+  n_fds += 1;
+
   /* Send fifo segment fd if needed */
   if (ssvm_type (a->segment) == SSVM_SEGMENT_MEMFD)
     {
@@ -1315,6 +1285,17 @@ session_api_attach_handler (app_namespace_t * app_ns, clib_socket_t * cs,
       n_fds += 1;
     }
 
+  if (application_use_private_rx_mqs ())
+    {
+      fd_flags |= SESSION_FD_F_VPP_MQ_EVENTFD;
+      for (i = 0; i < n_workers + 1; i++)
+	{
+	  rx_mq = application_rx_mq_get (app, i);
+	  fds[n_fds] = svm_msg_q_get_eventfd (rx_mq);
+	  n_fds += 1;
+	}
+    }
+
 done:
 
   msg.type = APP_SAPI_MSG_TYPE_ATTACH_REPLY;
@@ -1322,12 +1303,11 @@ done:
   rmp->retval = rv;
   if (!rv)
     {
-      ctrl_thread = vlib_num_workers ()? 1 : 0;
+      ctrl_thread = n_workers ? 1 : 0;
       rmp->app_index = a->app_index;
       rmp->app_mq =
 	fifo_segment_msg_q_offset ((fifo_segment_t *) a->segment, 0);
-      rmp->vpp_ctrl_mq =
-	fifo_segment_msg_q_offset (evt_q_segment, ctrl_thread);
+      rmp->vpp_ctrl_mq = fifo_segment_msg_q_offset (rx_mqs_seg, ctrl_thread);
       rmp->vpp_ctrl_mq_thread = ctrl_thread;
       rmp->n_fds = n_fds;
       rmp->fd_flags = fd_flags;
@@ -1338,13 +1318,13 @@ done:
 
       /* Update app index for socket */
       handle = (app_ns_api_handle_t *) & cs->private_data;
-      app = application_get (a->app_index);
       app_wrk = application_get_worker (app, 0);
       handle->aah_app_wrk_index = app_wrk->wrk_index;
     }
 
   clib_socket_sendmsg (cs, &msg, sizeof (msg), fds, n_fds);
   vec_free (a->name);
+  vec_free (fds);
 }
 
 static void
@@ -1665,6 +1645,33 @@ error:
   vec_free (dir);
   return rv;
 }
+
+static void
+vl_api_application_tls_cert_add_t_handler (
+  vl_api_application_tls_cert_add_t *mp)
+{
+  /* deprecated */
+}
+
+static void
+vl_api_application_tls_key_add_t_handler (vl_api_application_tls_key_add_t *mp)
+{
+  /* deprecated */
+}
+
+#include <vnet/session/session.api.c>
+static clib_error_t *
+session_api_hookup (vlib_main_t *vm)
+{
+  /*
+   * Set up the (msg_name, crc, message-id) table
+   */
+  REPLY_MSG_ID_BASE = setup_message_id_table ();
+
+  return 0;
+}
+
+VLIB_API_INIT_FUNCTION (session_api_hookup);
 
 /*
  * fd.io coding-style-patch-verification: ON

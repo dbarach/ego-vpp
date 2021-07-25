@@ -138,42 +138,53 @@ crypto_sw_scheduler_get_completed_frame (crypto_sw_scheduler_queue_t * q)
 }
 
 static_always_inline void
-cryptodev_sw_scheduler_sgl (vlib_main_t * vm,
-			    crypto_sw_scheduler_per_thread_data_t * ptd,
-			    vlib_buffer_t * b, vnet_crypto_op_t * op,
-			    i32 offset, i32 len)
+cryptodev_sw_scheduler_sgl (vlib_main_t *vm,
+			    crypto_sw_scheduler_per_thread_data_t *ptd,
+			    vlib_buffer_t *b, vnet_crypto_op_t *op, i16 offset,
+			    u32 len)
 {
   vnet_crypto_op_chunk_t *ch;
-  vlib_buffer_t *nb = b;
-  u32 n_chunks = 0;
-  u32 chunk_index = vec_len (ptd->chunks);
+  u32 n_chunks;
 
-  op->flags |= VNET_CRYPTO_OP_FLAG_CHAINED_BUFFERS;
+  /*
+   * offset is relative to b->data (can be negative if we stay in pre_data
+   * area). Make sure it does not go beyond the 1st buffer.
+   */
+  ASSERT (b->current_data + b->current_length > offset);
+  offset = clib_min (b->current_data + b->current_length, offset);
 
-  while (len)
+  op->chunk_index = vec_len (ptd->chunks);
+
+  vec_add2 (ptd->chunks, ch, 1);
+  ch->src = ch->dst = b->data + offset;
+  ch->len = clib_min (b->current_data + b->current_length - offset, len);
+  len -= ch->len;
+  n_chunks = 1;
+
+  while (len && b->flags & VLIB_BUFFER_NEXT_PRESENT)
     {
-      if (nb->current_data + nb->current_length > offset)
-	{
-	  vec_add2 (ptd->chunks, ch, 1);
-	  ch->src = ch->dst = nb->data + offset;
-	  ch->len
-	    = clib_min (nb->current_data + nb->current_length - offset, len);
-	  len -= ch->len;
-	  offset = 0;
-	  n_chunks++;
-	  if (!len)
-	    break;
-	}
-      if (offset)
-	offset -= nb->current_data + nb->current_length;
-      if (nb->flags & VLIB_BUFFER_NEXT_PRESENT)
-	nb = vlib_get_buffer (vm, nb->next_buffer);
-      else
-	break;
+      b = vlib_get_buffer (vm, b->next_buffer);
+      vec_add2 (ptd->chunks, ch, 1);
+      ch->src = ch->dst = vlib_buffer_get_current (b);
+      ch->len = clib_min (b->current_length, len);
+      len -= ch->len;
+      n_chunks++;
     }
 
-  ASSERT (offset == 0 && len == 0);
-  op->chunk_index = chunk_index;
+  if (len)
+    {
+      /* Some async crypto users can use buffers in creative ways, let's allow
+       * some flexibility here...
+       * Current example is ESP decrypt with ESN in async mode: it will stash
+       * ESN at the end of the last buffer (if it can) because it must be part
+       * of the integrity check but it will not update the buffer length.
+       * Fixup the last operation chunk length if we have room.
+       */
+      ASSERT (vlib_buffer_space_left_at_end (vm, b) >= len);
+      if (vlib_buffer_space_left_at_end (vm, b) >= len)
+	ch->len += len;
+    }
+
   op->n_chunks = n_chunks;
 }
 
@@ -251,15 +262,12 @@ crypto_sw_scheduler_convert_link_crypto (vlib_main_t * vm,
   crypto_op->iv = fe->iv;
   crypto_op->key_index = key->index_crypto;
   crypto_op->user_data = 0;
+  crypto_op->flags = fe->flags & ~VNET_CRYPTO_OP_FLAG_HMAC_CHECK;
   integ_op->op = integ_op_id;
   integ_op->digest = fe->digest;
   integ_op->digest_len = digest_len;
   integ_op->key_index = key->index_integ;
-  crypto_op->flags = integ_op->flags = 0;
-  if (is_enc)
-    crypto_op->flags |= VNET_CRYPTO_OP_FLAG_INIT_IV;
-  else
-    integ_op->flags |= VNET_CRYPTO_OP_FLAG_HMAC_CHECK;
+  integ_op->flags = fe->flags & ~VNET_CRYPTO_OP_FLAG_INIT_IV;
   crypto_op->user_data = integ_op->user_data = index;
 }
 
@@ -362,7 +370,7 @@ crypto_sw_scheduler_dequeue_aead (vlib_main_t * vm,
       while (n_elts--)
 	{
 	  if (n_elts > 1)
-	    CLIB_PREFETCH (fe + 1, CLIB_CACHE_LINE_BYTES, LOAD);
+	    clib_prefetch_load (fe + 1);
 
 	  crypto_sw_scheduler_convert_aead (vm, ptd, fe, fe - f->elts, bi[0],
 					    sync_op_id, aad_len, tag_len);
@@ -430,7 +438,7 @@ crypto_sw_scheduler_dequeue_link (vlib_main_t * vm,
       while (n_elts--)
 	{
 	  if (n_elts > 1)
-	    CLIB_PREFETCH (fe + 1, CLIB_CACHE_LINE_BYTES, LOAD);
+	    clib_prefetch_load (fe + 1);
 
 	  crypto_sw_scheduler_convert_link_crypto (vm, ptd,
 						   cm->keys + fe->key_index,

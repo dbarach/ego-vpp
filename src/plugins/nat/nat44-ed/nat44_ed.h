@@ -28,6 +28,7 @@
 #include <vppinfra/elog.h>
 #include <vppinfra/bihash_8_8.h>
 #include <vppinfra/bihash_16_8.h>
+#include <vppinfra/hash.h>
 #include <vppinfra/dlist.h>
 #include <vppinfra/error.h>
 #include <vlibapi/api.h>
@@ -124,13 +125,14 @@ typedef enum
 #undef _
 } snat_session_state_t;
 
-#define foreach_nat_in2out_ed_error                     \
-_(UNSUPPORTED_PROTOCOL, "unsupported protocol")         \
-_(OUT_OF_PORTS, "out of ports")                         \
-_(BAD_ICMP_TYPE, "unsupported ICMP type")               \
-_(MAX_SESSIONS_EXCEEDED, "maximum sessions exceeded")   \
-_(NON_SYN, "non-SYN packet try to create session")      \
-_(TCP_CLOSED, "drops due to TCP in transitory timeout")
+#define foreach_nat_in2out_ed_error                                           \
+  _ (UNSUPPORTED_PROTOCOL, "unsupported protocol")                            \
+  _ (OUT_OF_PORTS, "out of ports")                                            \
+  _ (BAD_ICMP_TYPE, "unsupported ICMP type")                                  \
+  _ (MAX_SESSIONS_EXCEEDED, "maximum sessions exceeded")                      \
+  _ (NON_SYN, "non-SYN packet try to create session")                         \
+  _ (TCP_CLOSED, "drops due to TCP in transitory timeout")                    \
+  _ (TRNSL_FAILED, "couldn't translate packet")
 
 typedef enum
 {
@@ -148,7 +150,8 @@ typedef enum
   _ (MAX_SESSIONS_EXCEEDED, "maximum sessions exceeded")                      \
   _ (NON_SYN, "non-SYN packet try to create session")                         \
   _ (TCP_CLOSED, "drops due to TCP in transitory timeout")                    \
-  _ (HASH_ADD_FAILED, "hash table add failed")
+  _ (HASH_ADD_FAILED, "hash table add failed")                                \
+  _ (TRNSL_FAILED, "couldn't translate packet")
 
 typedef enum
 {
@@ -190,7 +193,6 @@ typedef enum
 #define NAT_STATIC_MAPPING_FLAG_LB             8
 #define NAT_STATIC_MAPPING_FLAG_EXACT_ADDRESS  16
 
-/* *INDENT-OFF* */
 typedef CLIB_PACKED(struct
 {
   // number of sessions in this vrf
@@ -202,16 +204,22 @@ typedef CLIB_PACKED(struct
   // is this vrf expired
   u8 expired;
 }) per_vrf_sessions_t;
-/* *INDENT-ON* */
 
-typedef struct
+typedef union
 {
-  ip4_address_t saddr, daddr;
-  u32 fib_index;
-  u16 sport, dport;
-  u16 icmp_id;
-  u8 proto;
+  struct
+  {
+    ip4_address_t saddr, daddr;
+    u16 sport; // ICMP id for ICMP case
+    u16 dport;
+    u32 fib_index : 24;
+    u8 proto;
+  };
+  u64 as_u64[2];
+  u64x2u as_u128;
 } nat_6t_t;
+
+STATIC_ASSERT_SIZEOF (nat_6t_t, 2 * sizeof (u64));
 
 typedef struct
 {
@@ -223,7 +231,15 @@ typedef struct
 #define NAT_FLOW_OP_TXFIB_REWRITE   (1 << 6)
   int ops;
   nat_6t_t match;
-  nat_6t_t rewrite;
+  struct
+  {
+    ip4_address_t saddr, daddr;
+    u16 sport;
+    u16 dport;
+    u32 fib_index;
+    u8 proto;
+    u16 icmp_id;
+  } rewrite;
   uword l3_csum_delta;
   uword l4_csum_delta;
 } nat_6t_flow_t;
@@ -272,7 +288,6 @@ nat_6t_flow_icmp_id_rewrite_set (nat_6t_flow_t *f, u16 id)
   f->rewrite.icmp_id = id;
 }
 
-/* *INDENT-OFF* */
 typedef CLIB_PACKED(struct
 {
   /* Outside network tuple */
@@ -332,21 +347,19 @@ typedef CLIB_PACKED(struct
   /* per vrf sessions index */
   u32 per_vrf_sessions_index;
 
+  u32 thread_index;
 }) snat_session_t;
-/* *INDENT-ON* */
 
 typedef struct
 {
   ip4_address_t addr;
   u32 fib_index;
-/* *INDENT-OFF* */
 #define _(N, i, n, s) \
   u32 busy_##n##_ports; \
   u32 * busy_##n##_ports_per_thread; \
   u32 busy_##n##_port_refcounts[65535];
   foreach_nat_protocol
 #undef _
-/* *INDENT-ON* */
 } snat_address_t;
 
 typedef struct
@@ -480,16 +493,12 @@ typedef struct
 
 struct snat_main_s;
 
+u32 nat44_ed_get_in2out_worker_index (vlib_buffer_t *b, ip4_header_t *ip,
+				      u32 rx_fib_index, u8 is_output);
+u32 nat44_ed_get_out2in_worker_index (vlib_buffer_t *b, ip4_header_t *ip,
+				      u32 rx_fib_index, u8 is_output);
+
 /* Return worker thread index for given packet */
-typedef u32 (snat_get_worker_in2out_function_t) (ip4_header_t * ip,
-						 u32 rx_fib_index,
-						 u8 is_output);
-
-typedef u32 (snat_get_worker_out2in_function_t) (vlib_buffer_t * b,
-						 ip4_header_t * ip,
-						 u32 rx_fib_index,
-						 u8 is_output);
-
 /* NAT address and port allocation function */
 typedef int (nat_alloc_out_addr_and_port_function_t) (snat_address_t *
 						      addresses,
@@ -507,8 +516,6 @@ typedef struct snat_main_s
   u32 num_workers;
   u32 first_worker_index;
   u32 *workers;
-  snat_get_worker_in2out_function_t *worker_in2out_cb;
-  snat_get_worker_out2in_function_t *worker_out2in_cb;
   u16 port_per_thread;
 
   /* Per thread data */
@@ -605,6 +612,8 @@ typedef struct snat_main_s
 
   /* counters */
   vlib_simple_counter_main_t total_sessions;
+  u32 max_cfg_sessions_gauge; /* Index of max configured sessions gauge in
+				 stats */
 
 #define _(x) vlib_simple_counter_main_t x;
   struct
@@ -677,7 +686,7 @@ typedef struct
 typedef struct
 {
   u32 cached_sw_if_index;
-  u32 cached_ip4_address;
+  uword *cached_presence_by_ip4_address;
 } snat_runtime_t;
 
 extern snat_main_t snat_main;
@@ -947,37 +956,10 @@ clib_error_t *nat44_api_hookup (vlib_main_t * vm);
  */
 int snat_set_workers (uword * bitmap);
 
-/**
- * @brief Set NAT plugin number of frame queue elements
- *
- * @param frame_queue_nelts number of worker handoff frame queue elements
- *
- * @return 0 on success, non-zero value otherwise
- */
-int snat_set_frame_queue_nelts (u32 frame_queue_nelts);
-
-/**
- * @brief Enable/disable NAT44 feature on the interface
- *
- * @param sw_if_index software index of the interface
- * @param is_inside   1 = inside, 0 = outside
- * @param is_del      1 = delete, 0 = add
- *
- * @return 0 on success, non-zero value otherwise
- */
-int snat_interface_add_del (u32 sw_if_index, u8 is_inside, int is_del);
-
-/**
- * @brief Enable/disable NAT44 output feature on the interface (postrouting NAT)
- *
- * @param sw_if_index software index of the interface
- * @param is_inside   1 = inside, 0 = outside
- * @param is_del      1 = delete, 0 = add
- *
- * @return 0 on success, non-zero value otherwise
- */
-int snat_interface_add_del_output_feature (u32 sw_if_index, u8 is_inside,
-					   int is_del);
+int nat44_ed_add_interface (u32 sw_if_index, u8 is_inside);
+int nat44_ed_del_interface (u32 sw_if_index, u8 is_inside);
+int nat44_ed_add_output_interface (u32 sw_if_index);
+int nat44_ed_del_output_interface (u32 sw_if_index);
 
 /**
  * @brief Add/delete NAT44 pool address from specific interface
@@ -1069,21 +1051,13 @@ void expire_per_vrf_sessions (u32 fib_index);
  *
  * @returns 0 if match found otherwise 1.
  */
-int snat_static_mapping_match (snat_main_t * sm,
-			       ip4_address_t match_addr,
-			       u16 match_port,
-			       u32 match_fib_index,
-			       nat_protocol_t match_protocol,
-			       ip4_address_t * mapping_addr,
-			       u16 * mapping_port,
-			       u32 * mapping_fib_index,
-			       u8 by_external,
-			       u8 * is_addr_only,
-			       twice_nat_type_t * twice_nat,
-			       lb_nat_type_t * lb,
-			       ip4_address_t * ext_host_addr,
-			       u8 * is_identity_nat,
-			       snat_static_mapping_t ** out);
+int snat_static_mapping_match (
+  vlib_main_t *vm, snat_main_t *sm, ip4_address_t match_addr, u16 match_port,
+  u32 match_fib_index, nat_protocol_t match_protocol,
+  ip4_address_t *mapping_addr, u16 *mapping_port, u32 *mapping_fib_index,
+  u8 by_external, u8 *is_addr_only, twice_nat_type_t *twice_nat,
+  lb_nat_type_t *lb, ip4_address_t *ext_host_addr, u8 *is_identity_nat,
+  snat_static_mapping_t **out);
 
 /**
  * @brief Add/del NAT address to FIB.
@@ -1160,12 +1134,18 @@ typedef enum
   NAT_ED_TRNSL_ERR_SUCCESS = 0,
   NAT_ED_TRNSL_ERR_TRANSLATION_FAILED = 1,
   NAT_ED_TRNSL_ERR_FLOW_MISMATCH = 2,
+  NAT_ED_TRNSL_ERR_PACKET_TRUNCATED = 3,
+  NAT_ED_TRNSL_ERR_INNER_IP_CORRUPT = 4,
+  NAT_ED_TRNSL_ERR_INVALID_CSUM = 5,
 } nat_translation_error_e;
 
-nat_translation_error_e
-nat_6t_flow_buf_translate (snat_main_t *sm, vlib_buffer_t *b, ip4_header_t *ip,
-			   nat_6t_flow_t *f, nat_protocol_t proto,
-			   int is_output_feature);
+nat_translation_error_e nat_6t_flow_buf_translate_i2o (
+  vlib_main_t *vm, snat_main_t *sm, vlib_buffer_t *b, ip4_header_t *ip,
+  nat_6t_flow_t *f, nat_protocol_t proto, int is_output_feature);
+
+nat_translation_error_e nat_6t_flow_buf_translate_o2i (
+  vlib_main_t *vm, snat_main_t *sm, vlib_buffer_t *b, ip4_header_t *ip,
+  nat_6t_flow_t *f, nat_protocol_t proto, int is_output_feature);
 
 void nat_6t_l3_l4_csum_calc (nat_6t_flow_t *f);
 

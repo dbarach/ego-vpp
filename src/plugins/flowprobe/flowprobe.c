@@ -60,11 +60,10 @@ VNET_FEATURE_INIT (flow_perpacket_ip6, static) =
   .runs_before = VNET_FEATURES ("interface-output"),
 };
 
-VNET_FEATURE_INIT (flow_perpacket_l2, static) =
-{
+VNET_FEATURE_INIT (flow_perpacket_l2, static) = {
   .arc_name = "interface-output",
   .node_name = "flowprobe-l2",
-  .runs_before = VNET_FEATURES ("interface-tx"),
+  .runs_before = VNET_FEATURES ("interface-output-arc-end"),
 };
 /* *INDENT-ON* */
 
@@ -1041,13 +1040,13 @@ timer_process (vlib_main_t * vm, vlib_node_runtime_t * rt, vlib_frame_t * f)
   vec_reset_length (event_data);
 
   int i;
-  if (vec_len (vlib_mains) == 0)
+  if (vlib_get_n_threads () == 0)
     vec_add1 (worker_vms, vm);
   else
     {
-      for (i = 0; i < vec_len (vlib_mains); i++)
+      for (i = 0; i < vlib_get_n_threads (); i++)
 	{
-	  worker_vm = vlib_mains[i];
+	  worker_vm = vlib_get_main_by_index (i);
 	  if (worker_vm)
 	    vec_add1 (worker_vms, worker_vm);
 	}

@@ -229,6 +229,7 @@ typedef struct _vnet_device_class
 
   /* Error strings indexed by error code for this node. */
   char **tx_function_error_strings;
+  vlib_error_desc_t *tx_function_error_counters;
 
   /* Number of error codes used by this node. */
   u32 tx_function_n_errors;
@@ -313,23 +314,24 @@ __VA_ARGS__ vnet_device_class_t x
 static __clib_unused vnet_device_class_t __clib_unused_##x
 #endif
 
-#define VNET_DEVICE_CLASS_TX_FN(devclass)				\
-uword CLIB_MARCH_SFX (devclass##_tx_fn)();				\
-static vlib_node_fn_registration_t					\
-  CLIB_MARCH_SFX(devclass##_tx_fn_registration) =			\
-  { .function = &CLIB_MARCH_SFX (devclass##_tx_fn), };			\
-									\
-static void __clib_constructor						\
-CLIB_MARCH_SFX (devclass##_tx_fn_multiarch_register) (void)		\
-{									\
-  extern vnet_device_class_t devclass;					\
-  vlib_node_fn_registration_t *r;					\
-  r = &CLIB_MARCH_SFX (devclass##_tx_fn_registration);			\
-  r->priority = CLIB_MARCH_FN_PRIORITY();				\
-  r->next_registration = devclass.tx_fn_registrations;			\
-  devclass.tx_fn_registrations = r;					\
-}									\
-uword CLIB_CPU_OPTIMIZED CLIB_MARCH_SFX (devclass##_tx_fn)
+#define VNET_DEVICE_CLASS_TX_FN(devclass)                                     \
+  uword CLIB_MARCH_SFX (devclass##_tx_fn) ();                                 \
+  static vlib_node_fn_registration_t CLIB_MARCH_SFX (                         \
+    devclass##_tx_fn_registration) = {                                        \
+    .function = &CLIB_MARCH_SFX (devclass##_tx_fn),                           \
+  };                                                                          \
+                                                                              \
+  static void __clib_constructor CLIB_MARCH_SFX (                             \
+    devclass##_tx_fn_multiarch_register) (void)                               \
+  {                                                                           \
+    extern vnet_device_class_t devclass;                                      \
+    vlib_node_fn_registration_t *r;                                           \
+    r = &CLIB_MARCH_SFX (devclass##_tx_fn_registration);                      \
+    r->march_variant = CLIB_MARCH_SFX (CLIB_MARCH_VARIANT_TYPE);              \
+    r->next_registration = devclass.tx_fn_registrations;                      \
+    devclass.tx_fn_registrations = r;                                         \
+  }                                                                           \
+  uword CLIB_MARCH_SFX (devclass##_tx_fn)
 
 /**
  * Link Type: A description of the protocol of packets on the link.
@@ -509,21 +511,64 @@ typedef enum vnet_hw_interface_flags_t_
   VNET_HW_INTERFACE_FLAG_HALF_DUPLEX = (1 << 1),
   VNET_HW_INTERFACE_FLAG_FULL_DUPLEX = (1 << 2),
 
-  /* rx mode flags */
-  VNET_HW_INTERFACE_FLAG_SUPPORTS_INT_MODE = (1 << 16),
-
-  /* tx checksum offload */
-  VNET_HW_INTERFACE_FLAG_SUPPORTS_TX_L4_CKSUM_OFFLOAD = (1 << 17),
-
-  /* gso */
-  VNET_HW_INTERFACE_FLAG_SUPPORTS_GSO = (1 << 18),
-
   /* non-broadcast multiple access */
   VNET_HW_INTERFACE_FLAG_NBMA = (1 << 19),
-
-  /* hw/driver can switch between l2-promisc and l3-dmac-filter modes */
-  VNET_HW_INTERFACE_FLAG_SUPPORTS_MAC_FILTER = (1 << 20),
 } vnet_hw_interface_flags_t;
+
+typedef enum vnet_hw_interface_capabilities_t_
+{
+  VNET_HW_INTERFACE_CAP_NONE,
+
+  /* tx checksum offload */
+  VNET_HW_INTERFACE_CAP_SUPPORTS_TX_IP4_CKSUM = (1 << 0),
+  VNET_HW_INTERFACE_CAP_SUPPORTS_TX_TCP_CKSUM = (1 << 1),
+  VNET_HW_INTERFACE_CAP_SUPPORTS_TX_UDP_CKSUM = (1 << 2),
+  VNET_HW_INTERFACE_CAP_SUPPORTS_TX_IP4_OUTER_CKSUM = (1 << 3),
+  VNET_HW_INTERFACE_CAP_SUPPORTS_TX_UDP_OUTER_CKSUM = (1 << 4),
+
+  /* rx checksum offload */
+  VNET_HW_INTERFACE_CAP_SUPPORTS_RX_IP4_CKSUM = (1 << 5),
+  VNET_HW_INTERFACE_CAP_SUPPORTS_RX_UDP_CKSUM = (1 << 6),
+  VNET_HW_INTERFACE_CAP_SUPPORTS_RX_TCP_CKSUM = (1 << 7),
+  VNET_HW_INTERFACE_CAP_SUPPORTS_RX_IP4_OUTER_CKSUM = (1 << 8),
+  VNET_HW_INTERFACE_CAP_SUPPORTS_RX_UDP_OUTER_CKSUM = (1 << 9),
+
+  /* gso */
+  VNET_HW_INTERFACE_CAP_SUPPORTS_TCP_GSO = (1 << 10),
+  VNET_HW_INTERFACE_CAP_SUPPORTS_UDP_GSO = (1 << 11),
+  VNET_HW_INTERFACE_CAP_SUPPORTS_VXLAN_TNL_GSO = (1 << 12),
+  VNET_HW_INTERFACE_CAP_SUPPORTS_IPIP_TNL_GSO = (1 << 13),
+  VNET_HW_INTERFACE_CAP_SUPPORTS_GENEVE_TNL_GSO = (1 << 14),
+  VNET_HW_INTERFACE_CAP_SUPPORTS_GRE_TNL_GSO = (1 << 15),
+  VNET_HW_INTERFACE_CAP_SUPPORTS_UDP_TNL_GSO = (1 << 16),
+  VNET_HW_INTERFACE_CAP_SUPPORTS_IP_TNL_GSO = (1 << 17),
+
+  /* lro */
+  VNET_HW_INTERFACE_CAP_SUPPORTS_TCP_LRO = (1 << 18),
+
+  /* rx mode */
+  VNET_HW_INTERFACE_CAP_SUPPORTS_INT_MODE = (1 << 30),
+  /* hw/driver can switch between l2-promisc and l3-dmac-filter modes */
+  VNET_HW_INTERFACE_CAP_SUPPORTS_MAC_FILTER = (1 << 31),
+} vnet_hw_interface_capabilities_t;
+
+#define VNET_HW_INTERFACE_CAP_SUPPORTS_L4_TX_CKSUM                            \
+  (VNET_HW_INTERFACE_CAP_SUPPORTS_TX_TCP_CKSUM |                              \
+   VNET_HW_INTERFACE_CAP_SUPPORTS_TX_UDP_CKSUM)
+
+#define VNET_HW_INTERFACE_CAP_SUPPORTS_TX_CKSUM                               \
+  (VNET_HW_INTERFACE_CAP_SUPPORTS_TX_IP4_CKSUM |                              \
+   VNET_HW_INTERFACE_CAP_SUPPORTS_TX_TCP_CKSUM |                              \
+   VNET_HW_INTERFACE_CAP_SUPPORTS_TX_UDP_CKSUM)
+
+#define VNET_HW_INTERFACE_CAP_SUPPORTS_L4_RX_CKSUM                            \
+  (VNET_HW_INTERFACE_CAP_SUPPORTS_RX_TCP_CKSUM |                              \
+   VNET_HW_INTERFACE_CAP_SUPPORTS_RX_UDP_CKSUM)
+
+#define VNET_HW_INTERFACE_CAP_SUPPORTS_RX_CKSUM                               \
+  (VNET_HW_INTERFACE_CAP_SUPPORTS_RX_IP4_CKSUM |                              \
+   VNET_HW_INTERFACE_CAP_SUPPORTS_RX_TCP_CKSUM |                              \
+   VNET_HW_INTERFACE_CAP_SUPPORTS_RX_UDP_CKSUM)
 
 #define VNET_HW_INTERFACE_FLAG_DUPLEX_SHIFT 1
 #define VNET_HW_INTERFACE_FLAG_SPEED_SHIFT  3
@@ -554,20 +599,50 @@ typedef struct
 #define VNET_HW_IF_RXQ_NO_RX_INTERRUPT ~0
 } vnet_hw_if_rx_queue_t;
 
+typedef struct
+{
+  u8 shared_queue : 1;
+  /* hw interface index */
+  u32 hw_if_index;
+
+  /* hardware queue identifier */
+  u32 queue_id;
+
+  /* bitmap of threads which use this queue */
+  clib_bitmap_t *threads;
+} vnet_hw_if_tx_queue_t;
+
+typedef enum
+{
+  VNET_HW_IF_TX_FRAME_HINT_NOT_CHAINED = (1 << 0),
+  VNET_HW_IF_TX_FRAME_HINT_NO_GSO = (1 << 1),
+  VNET_HW_IF_TX_FRAME_HINT_NO_CKSUM_OFFLOAD = (1 << 2),
+} vnet_hw_if_tx_frame_hint_t;
+
+typedef struct
+{
+  u8 shared_queue : 1;
+  vnet_hw_if_tx_frame_hint_t hints : 16;
+  u32 queue_id;
+} vnet_hw_if_tx_frame_t;
+
+typedef struct
+{
+  CLIB_CACHE_LINE_ALIGN_MARK (cacheline0);
+  vnet_hw_if_tx_frame_t frame;
+  u32 n_threads;
+} vnet_hw_if_output_node_runtime_t;
+
 /* Hardware-interface.  This corresponds to a physical wire
    that packets flow over. */
 typedef struct vnet_hw_interface_t
 {
   CLIB_CACHE_LINE_ALIGN_MARK (cacheline0);
-  /* Interface name. */
-  u8 *name;
-
   /* flags */
   vnet_hw_interface_flags_t flags;
 
-
-  /* link speed in kbps */
-  u32 link_speed;
+  /* capabilities flags */
+  vnet_hw_interface_capabilities_t caps;
 
   /* Hardware address as vector.  Zero (e.g. zero-length vector) if no
      address for this class (e.g. PPP). */
@@ -576,6 +651,9 @@ typedef struct vnet_hw_interface_t
   /* Interface is up as far as software is concerned. */
   /* NAME.{output,tx} nodes for this interface. */
   u32 output_node_index, tx_node_index;
+
+  /* interface-output-arc-end node next index for tx node */
+  u32 if_out_arc_end_node_next_index;
 
   /* (dev_class, dev_instance) uniquely identifies hw interface. */
   u32 dev_class_index;
@@ -590,6 +668,17 @@ typedef struct vnet_hw_interface_t
 
   /* Software index for this hardware interface. */
   u32 sw_if_index;
+
+  /* per thread output-node runtimes */
+  vnet_hw_if_output_node_runtime_t *output_node_thread_runtimes;
+
+  CLIB_CACHE_LINE_ALIGN_MARK (cacheline1);
+
+  /* Interface name. */
+  u8 *name;
+
+  /* link speed in kbps */
+  u32 link_speed;
 
   /* Next index in interface-output node for this interface
      used by node function vnet_per_buffer_interface_output() */
@@ -636,6 +725,9 @@ typedef struct vnet_hw_interface_t
   /* rx queues */
   u32 *rx_queue_indices;
 
+  /* tx queues */
+  u32 *tx_queue_indices;
+
   /* numa node that hardware device connects to */
   u8 numa_node;
 
@@ -647,6 +739,9 @@ typedef struct vnet_hw_interface_t
 
   u32 trace_classify_table_index;
 } vnet_hw_interface_t;
+
+STATIC_ASSERT_OFFSET_OF (vnet_hw_interface_t, cacheline1,
+			 CLIB_CACHE_LINE_BYTES);
 
 typedef struct
 {
@@ -900,6 +995,10 @@ typedef struct
   vnet_hw_if_rx_queue_t *hw_if_rx_queues;
   uword *rxq_index_by_hw_if_index_and_queue_id;
 
+  /* Hardware interface TX queues */
+  vnet_hw_if_tx_queue_t *hw_if_tx_queues;
+  uword *txq_index_by_hw_if_index_and_queue_id;
+
   /* Hash table mapping HW interface name to index. */
   uword *hw_interface_by_name;
 
@@ -941,6 +1040,10 @@ typedef struct
 
   /* feature_arc_index */
   u8 output_feature_arc_index;
+
+  /* fast lookup tables */
+  u32 *hw_if_index_by_sw_if_index;
+  u16 *if_out_arc_end_next_index_by_sw_if_index;
 } vnet_interface_main_t;
 
 static inline void
@@ -960,8 +1063,6 @@ vnet_interface_counter_unlock (vnet_interface_main_t * im)
 void vnet_pcap_drop_trace_filter_add_del (u32 error_index, int is_add);
 
 int vnet_interface_name_renumber (u32 sw_if_index, u32 new_show_dev_instance);
-
-vlib_node_function_t *vnet_interface_output_node_get (void);
 
 void vnet_register_format_buffer_opaque_helper
   (vnet_buffer_opquae_formatter_t fn);
@@ -983,9 +1084,13 @@ typedef struct
   u8 free_data;
   u32 sw_if_index;
   int filter;
+  vlib_error_t drop_err;
 } vnet_pcap_dispatch_trace_args_t;
 
 int vnet_pcap_dispatch_trace_configure (vnet_pcap_dispatch_trace_args_t *);
+
+extern vlib_node_registration_t vnet_interface_output_node;
+extern vlib_node_registration_t vnet_interface_output_arc_end_node;
 
 #endif /* included_vnet_interface_h */
 

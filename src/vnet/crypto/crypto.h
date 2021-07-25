@@ -19,6 +19,7 @@
 #include <vlib/vlib.h>
 
 #define VNET_CRYPTO_FRAME_SIZE 64
+#define VNET_CRYPTO_FRAME_POOL_SIZE 1024
 
 /* CRYPTO_ID, PRETTY_NAME, KEY_LENGTH_IN_BYTES */
 #define foreach_crypto_cipher_alg \
@@ -38,6 +39,13 @@
   _(AES_256_GCM, "aes-256-gcm", 32) \
   _(CHACHA20_POLY1305, "chacha20-poly1305", 32)
 
+#define foreach_crypto_hash_alg                                               \
+  _ (SHA1, "sha-1")                                                           \
+  _ (SHA224, "sha-224")                                                       \
+  _ (SHA256, "sha-256")                                                       \
+  _ (SHA384, "sha-384")                                                       \
+  _ (SHA512, "sha-512")
+
 #define foreach_crypto_hmac_alg \
   _(MD5, "md5") \
   _(SHA1, "sha-1") \
@@ -46,12 +54,13 @@
   _(SHA384, "sha-384")  \
   _(SHA512, "sha-512")
 
-#define foreach_crypto_op_type \
-  _(ENCRYPT, "encrypt") \
-  _(DECRYPT, "decrypt") \
-  _(AEAD_ENCRYPT, "aead-encrypt") \
-  _(AEAD_DECRYPT, "aead-decrypt") \
-  _(HMAC, "hmac")
+#define foreach_crypto_op_type                                                \
+  _ (ENCRYPT, "encrypt")                                                      \
+  _ (DECRYPT, "decrypt")                                                      \
+  _ (AEAD_ENCRYPT, "aead-encrypt")                                            \
+  _ (AEAD_DECRYPT, "aead-decrypt")                                            \
+  _ (HMAC, "hmac")                                                            \
+  _ (HASH, "hash")
 
 typedef enum
 {
@@ -84,22 +93,34 @@ typedef enum
   _(CHACHA20_POLY1305, "chacha20-poly1305-aad12", 32, 16, 12)
 
 /* CRYPTO_ID, INTEG_ID, PRETTY_NAME, KEY_LENGTH_IN_BYTES, DIGEST_LEN */
-#define foreach_crypto_link_async_alg \
-  _ (AES_128_CBC, SHA1, "aes-128-cbc-hmac-sha-1", 16, 12) \
-  _ (AES_192_CBC, SHA1, "aes-192-cbc-hmac-sha-1", 24, 12) \
-  _ (AES_256_CBC, SHA1, "aes-256-cbc-hmac-sha-1", 32, 12) \
-  _ (AES_128_CBC, SHA224, "aes-128-cbc-hmac-sha-224", 16, 14) \
-  _ (AES_192_CBC, SHA224, "aes-192-cbc-hmac-sha-224", 24, 14) \
-  _ (AES_256_CBC, SHA224, "aes-256-cbc-hmac-sha-224", 32, 14) \
-  _ (AES_128_CBC, SHA256, "aes-128-cbc-hmac-sha-256", 16, 16) \
-  _ (AES_192_CBC, SHA256, "aes-192-cbc-hmac-sha-256", 24, 16) \
-  _ (AES_256_CBC, SHA256, "aes-256-cbc-hmac-sha-256", 32, 16) \
-  _ (AES_128_CBC, SHA384, "aes-128-cbc-hmac-sha-384", 16, 24) \
-  _ (AES_192_CBC, SHA384, "aes-192-cbc-hmac-sha-384", 24, 24) \
-  _ (AES_256_CBC, SHA384, "aes-256-cbc-hmac-sha-384", 32, 24) \
-  _ (AES_128_CBC, SHA512, "aes-128-cbc-hmac-sha-512", 16, 32) \
-  _ (AES_192_CBC, SHA512, "aes-192-cbc-hmac-sha-512", 24, 32) \
-  _ (AES_256_CBC, SHA512, "aes-256-cbc-hmac-sha-512", 32, 32)
+#define foreach_crypto_link_async_alg                                         \
+  _ (3DES_CBC, MD5, "3des-cbc-hmac-md5", 24, 12)                              \
+  _ (AES_128_CBC, MD5, "aes-128-cbc-hmac-md5", 16, 12)                        \
+  _ (AES_192_CBC, MD5, "aes-192-cbc-hmac-md5", 24, 12)                        \
+  _ (AES_256_CBC, MD5, "aes-256-cbc-hmac-md5", 32, 12)                        \
+  _ (3DES_CBC, SHA1, "3des-cbc-hmac-sha-1", 24, 12)                           \
+  _ (AES_128_CBC, SHA1, "aes-128-cbc-hmac-sha-1", 16, 12)                     \
+  _ (AES_192_CBC, SHA1, "aes-192-cbc-hmac-sha-1", 24, 12)                     \
+  _ (AES_256_CBC, SHA1, "aes-256-cbc-hmac-sha-1", 32, 12)                     \
+  _ (3DES_CBC, SHA224, "3des-cbc-hmac-sha-224", 24, 14)                       \
+  _ (AES_128_CBC, SHA224, "aes-128-cbc-hmac-sha-224", 16, 14)                 \
+  _ (AES_192_CBC, SHA224, "aes-192-cbc-hmac-sha-224", 24, 14)                 \
+  _ (AES_256_CBC, SHA224, "aes-256-cbc-hmac-sha-224", 32, 14)                 \
+  _ (3DES_CBC, SHA256, "3des-cbc-hmac-sha-256", 24, 16)                       \
+  _ (AES_128_CBC, SHA256, "aes-128-cbc-hmac-sha-256", 16, 16)                 \
+  _ (AES_192_CBC, SHA256, "aes-192-cbc-hmac-sha-256", 24, 16)                 \
+  _ (AES_256_CBC, SHA256, "aes-256-cbc-hmac-sha-256", 32, 16)                 \
+  _ (3DES_CBC, SHA384, "3des-cbc-hmac-sha-384", 24, 24)                       \
+  _ (AES_128_CBC, SHA384, "aes-128-cbc-hmac-sha-384", 16, 24)                 \
+  _ (AES_192_CBC, SHA384, "aes-192-cbc-hmac-sha-384", 24, 24)                 \
+  _ (AES_256_CBC, SHA384, "aes-256-cbc-hmac-sha-384", 32, 24)                 \
+  _ (3DES_CBC, SHA512, "3des-cbc-hmac-sha-512", 24, 32)                       \
+  _ (AES_128_CBC, SHA512, "aes-128-cbc-hmac-sha-512", 16, 32)                 \
+  _ (AES_192_CBC, SHA512, "aes-192-cbc-hmac-sha-512", 24, 32)                 \
+  _ (AES_256_CBC, SHA512, "aes-256-cbc-hmac-sha-512", 32, 32)                 \
+  _ (AES_128_CTR, SHA1, "aes-128-ctr-hmac-sha-1", 16, 12)                     \
+  _ (AES_192_CTR, SHA1, "aes-192-ctr-hmac-sha-1", 24, 12)                     \
+  _ (AES_256_CTR, SHA1, "aes-256-ctr-hmac-sha-1", 32, 12)
 
 #define foreach_crypto_async_op_type \
   _(ENCRYPT, "async-encrypt") \
@@ -125,13 +146,15 @@ typedef enum
 {
   VNET_CRYPTO_ALG_NONE = 0,
 #define _(n, s, l) VNET_CRYPTO_ALG_##n,
-  foreach_crypto_cipher_alg
-  foreach_crypto_aead_alg
+  foreach_crypto_cipher_alg foreach_crypto_aead_alg
 #undef _
 #define _(n, s) VNET_CRYPTO_ALG_HMAC_##n,
-  foreach_crypto_hmac_alg
+    foreach_crypto_hmac_alg
 #undef _
-  VNET_CRYPTO_N_ALGS,
+#define _(n, s) VNET_CRYPTO_ALG_HASH_##n,
+      foreach_crypto_hash_alg
+#undef _
+	VNET_CRYPTO_N_ALGS,
 } vnet_crypto_alg_t;
 
 typedef enum
@@ -197,13 +220,15 @@ typedef enum
 {
   VNET_CRYPTO_OP_NONE = 0,
 #define _(n, s, l) VNET_CRYPTO_OP_##n##_ENC, VNET_CRYPTO_OP_##n##_DEC,
-  foreach_crypto_cipher_alg
-  foreach_crypto_aead_alg
+  foreach_crypto_cipher_alg foreach_crypto_aead_alg
 #undef _
 #define _(n, s) VNET_CRYPTO_OP_##n##_HMAC,
- foreach_crypto_hmac_alg
+    foreach_crypto_hmac_alg
 #undef _
-    VNET_CRYPTO_N_OP_IDS,
+#define _(n, s) VNET_CRYPTO_OP_##n##_HASH,
+      foreach_crypto_hash_alg
+#undef _
+	VNET_CRYPTO_N_OP_IDS,
 } vnet_crypto_op_id_t;
 /* *INDENT-ON* */
 
@@ -345,7 +370,6 @@ typedef struct
 typedef struct
 {
   CLIB_CACHE_LINE_ALIGN_MARK (cacheline0);
-  vnet_crypto_async_frame_t *frames[VNET_CRYPTO_ASYNC_OP_N_IDS];
   vnet_crypto_async_frame_t *frame_pool;
   u32 *buffer_indices;
   u16 *nexts;
@@ -540,18 +564,15 @@ vnet_crypto_async_get_frame (vlib_main_t * vm, vnet_crypto_async_op_id_t opt)
 {
   vnet_crypto_main_t *cm = &crypto_main;
   vnet_crypto_thread_t *ct = cm->threads + vm->thread_index;
-  vnet_crypto_async_frame_t *f = ct->frames[opt];
+  vnet_crypto_async_frame_t *f = NULL;
 
-  if (!f)
-    {
-      pool_get_aligned (ct->frame_pool, f, CLIB_CACHE_LINE_BYTES);
-      if (CLIB_DEBUG > 0)
-	clib_memset (f, 0xfe, sizeof (*f));
-      f->state = VNET_CRYPTO_FRAME_STATE_NOT_PROCESSED;
-      f->op = opt;
-      f->n_elts = 0;
-      ct->frames[opt] = f;
-    }
+  pool_get_aligned (ct->frame_pool, f, CLIB_CACHE_LINE_BYTES);
+  if (CLIB_DEBUG > 0)
+    clib_memset (f, 0xfe, sizeof (*f));
+  f->state = VNET_CRYPTO_FRAME_STATE_NOT_PROCESSED;
+  f->op = opt;
+  f->n_elts = 0;
+
   return f;
 }
 
@@ -570,7 +591,6 @@ vnet_crypto_async_submit_open_frame (vlib_main_t * vm,
 {
   vnet_crypto_main_t *cm = &crypto_main;
   vlib_thread_main_t *tm = vlib_get_thread_main ();
-  vnet_crypto_thread_t *ct = cm->threads + vm->thread_index;
   vnet_crypto_async_op_id_t opt = frame->op;
   u32 i = vlib_num_workers () > 0;
 
@@ -582,56 +602,33 @@ vnet_crypto_async_submit_open_frame (vlib_main_t * vm,
   clib_bitmap_set_no_check (cm->async_active_ids, opt, 1);
   if (PREDICT_TRUE (ret == 0))
     {
-      vnet_crypto_async_frame_t *nf = 0;
-      pool_get_aligned (ct->frame_pool, nf, CLIB_CACHE_LINE_BYTES);
-      if (CLIB_DEBUG > 0)
-	clib_memset (nf, 0xfe, sizeof (*nf));
-      nf->state = VNET_CRYPTO_FRAME_STATE_NOT_PROCESSED;
-      nf->op = opt;
-      nf->n_elts = 0;
-      ct->frames[opt] = nf;
+      if (cm->dispatch_mode == VNET_CRYPTO_ASYNC_DISPATCH_INTERRUPT)
+	{
+	  for (; i < tm->n_vlib_mains; i++)
+	    vlib_node_set_interrupt_pending (vlib_get_main_by_index (i),
+					     cm->crypto_node_index);
+	}
     }
   else
     {
       frame->state = VNET_CRYPTO_FRAME_STATE_ELT_ERROR;
     }
 
-  if (cm->dispatch_mode == VNET_CRYPTO_ASYNC_DISPATCH_INTERRUPT)
-    {
-      for (; i < tm->n_vlib_mains; i++)
-	{
-	  vlib_node_set_interrupt_pending (vlib_mains[i],
-					   cm->crypto_node_index);
-	}
-    }
   return ret;
 }
 
-static_always_inline int
-vnet_crypto_async_add_to_frame (vlib_main_t * vm,
-				vnet_crypto_async_frame_t ** frame,
-				u32 key_index,
-				u32 crypto_len, i16 integ_len_adj,
-				i16 crypto_start_offset,
-				u16 integ_start_offset,
-				u32 buffer_index,
-				u16 next_node,
-				u8 * iv, u8 * tag, u8 * aad, u8 flags)
+static_always_inline void
+vnet_crypto_async_add_to_frame (vlib_main_t *vm, vnet_crypto_async_frame_t *f,
+				u32 key_index, u32 crypto_len,
+				i16 integ_len_adj, i16 crypto_start_offset,
+				u16 integ_start_offset, u32 buffer_index,
+				u16 next_node, u8 *iv, u8 *tag, u8 *aad,
+				u8 flags)
 {
-  vnet_crypto_async_frame_t *f = *frame;
   vnet_crypto_async_frame_elt_t *fe;
   u16 index;
 
-  if (PREDICT_FALSE (f->n_elts == VNET_CRYPTO_FRAME_SIZE))
-    {
-      vnet_crypto_async_op_id_t opt = f->op;
-      int ret;
-      ret = vnet_crypto_async_submit_open_frame (vm, f);
-      if (PREDICT_FALSE (ret < 0))
-	return -1;
-      f = vnet_crypto_async_get_frame (vm, opt);
-      *frame = f;
-    }
+  ASSERT (f->n_elts < VNET_CRYPTO_FRAME_SIZE);
 
   index = f->n_elts;
   fe = &f->elts[index];
@@ -647,8 +644,6 @@ vnet_crypto_async_add_to_frame (vlib_main_t * vm,
   fe->flags = flags;
   f->buffer_indices[index] = buffer_index;
   f->next_node_index[index] = next_node;
-
-  return 0;
 }
 
 static_always_inline void
@@ -664,6 +659,12 @@ vnet_crypto_async_reset_frame (vnet_crypto_async_frame_t * f)
   f->state = VNET_CRYPTO_FRAME_STATE_NOT_PROCESSED;
   f->op = opt;
   f->n_elts = 0;
+}
+
+static_always_inline u8
+vnet_crypto_async_frame_is_full (const vnet_crypto_async_frame_t *f)
+{
+  return (f->n_elts == VNET_CRYPTO_FRAME_SIZE);
 }
 
 #endif /* included_vnet_crypto_crypto_h */

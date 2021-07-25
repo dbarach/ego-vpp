@@ -24,7 +24,7 @@
 #define MEMIF_DEFAULT_TX_QUEUES 1
 #define MEMIF_DEFAULT_BUFFER_SIZE 2048
 
-#define MEMIF_MAX_M2S_RING		(vec_len (vlib_mains))
+#define MEMIF_MAX_M2S_RING		(vlib_get_n_threads ())
 #define MEMIF_MAX_S2M_RING		256
 #define MEMIF_MAX_REGION		256
 #define MEMIF_MAX_LOG2_RING_SIZE	14
@@ -63,21 +63,30 @@
              ##__VA_ARGS__);                                            \
 } while (0)
 
-#define memif_file_add(a, b) do {					\
-  *a = clib_file_add (&file_main, b);					\
-  memif_log_warn (0, "clib_file_add fd %d private_data %u idx %u",	\
-		(b)->file_descriptor, (b)->private_data, *a);		\
-} while (0)
+#define memif_file_add(a, b)                                                  \
+  do                                                                          \
+    {                                                                         \
+      *a = clib_file_add (&file_main, b);                                     \
+      memif_log_debug (0, "clib_file_add fd %d private_data %u idx %u",       \
+		       (b)->file_descriptor, (b)->private_data, *a);          \
+    }                                                                         \
+  while (0)
 
-#define memif_file_del(a) do {						\
-  memif_log_warn (0, "clib_file_del idx %u", a - file_main.file_pool);	\
-  clib_file_del (&file_main, a);					\
-} while (0)
+#define memif_file_del(a)                                                     \
+  do                                                                          \
+    {                                                                         \
+      memif_log_debug (0, "clib_file_del idx %u", a - file_main.file_pool);   \
+      clib_file_del (&file_main, a);                                          \
+    }                                                                         \
+  while (0)
 
-#define memif_file_del_by_index(a) do {					\
-  memif_log_warn (0, "clib_file_del idx %u", a);			\
-  clib_file_del_by_index (&file_main, a);				\
-} while (0)
+#define memif_file_del_by_index(a)                                            \
+  do                                                                          \
+    {                                                                         \
+      memif_log_debug (0, "clib_file_del idx %u", a);                         \
+      clib_file_del_by_index (&file_main, a);                                 \
+    }                                                                         \
+  while (0)
 
 typedef struct
 {
@@ -226,7 +235,6 @@ typedef struct
   memif_copy_op_t *copy_ops;
   u32 *buffers;
 
-  memif_desc_t desc_template;
   /* buffer template */
   vlib_buffer_t buffer_template;
 } memif_per_thread_data_t;

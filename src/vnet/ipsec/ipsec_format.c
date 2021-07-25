@@ -271,17 +271,16 @@ format_ipsec_sa (u8 * s, va_list * args)
 {
   u32 sai = va_arg (*args, u32);
   ipsec_format_flags_t flags = va_arg (*args, ipsec_format_flags_t);
-  ipsec_main_t *im = &ipsec_main;
   vlib_counter_t counts;
   ipsec_sa_t *sa;
 
-  if (pool_is_free_index (im->sad, sai))
+  if (pool_is_free_index (ipsec_sa_pool, sai))
     {
       s = format (s, "No such SA index: %d", sai);
       goto done;
     }
 
-  sa = pool_elt_at_index (im->sad, sai);
+  sa = ipsec_sa_get (sai);
 
   s = format (s, "[%d] sa %u (0x%x) spi %u (0x%08x) protocol:%s flags:[%U]",
 	      sai, sa->id, sa->id, sa->spi, sa->spi,
@@ -294,9 +293,8 @@ format_ipsec_sa (u8 * s, va_list * args)
   s = format (s, "\n   salt 0x%x", clib_net_to_host_u32 (sa->salt));
   s = format (s, "\n   thread-index:%d", sa->thread_index);
   s = format (s, "\n   seq %u seq-hi %u", sa->seq, sa->seq_hi);
-  s = format (s, "\n   last-seq %u last-seq-hi %u window %U",
-	      sa->last_seq, sa->last_seq_hi,
-	      format_ipsec_replay_window, sa->replay_window);
+  s = format (s, "\n   window %U", format_ipsec_replay_window,
+	      sa->replay_window);
   s = format (s, "\n   crypto alg %U",
 	      format_ipsec_crypto_alg, sa->crypto_alg);
   if (sa->crypto_alg && (flags & IPSEC_FORMAT_INSECURE))

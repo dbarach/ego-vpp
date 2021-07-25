@@ -252,9 +252,10 @@ ip6_neighbor_syslog (vlib_main_t * vm, int priority, char *fmt, ...)
       {
 	u32 s[2];
       } *ed;
-      ed = ELOG_DATA (&vm->elog_main, e);
-      ed->s[0] = elog_string (&vm->elog_main, log_level_strings[priority]);
-      ed->s[1] = elog_string (&vm->elog_main, (char *) what);
+      ed = ELOG_DATA (vlib_get_elog_main (), e);
+      ed->s[0] =
+	elog_string (vlib_get_elog_main (), log_level_strings[priority]);
+      ed->s[1] = elog_string (vlib_get_elog_main (), (char *) what);
     }
   va_end (va);
   return;
@@ -1131,7 +1132,6 @@ create_buffer_for_rs (vlib_main_t * vm, ip6_ra_t * radv_info)
     }
 
   p0 = vlib_get_buffer (vm, bi0);
-  VLIB_BUFFER_TRACE_TRAJECTORY_INIT (p0);
   p0->flags |= VNET_BUFFER_F_LOCALLY_ORIGINATED;
 
   vnet_buffer (p0)->sw_if_index[VLIB_RX] = sw_if_index;

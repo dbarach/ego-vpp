@@ -194,8 +194,8 @@ vhost_user_tx_copy (vhost_user_intf_t * vui, vhost_copy_t * cpy,
 	      (!(dst3 = map_guest_mem (vui, cpy[3].dst, map_hint))))
 	    return 1;
 
-	  CLIB_PREFETCH ((void *) cpy[2].src, 64, LOAD);
-	  CLIB_PREFETCH ((void *) cpy[3].src, 64, LOAD);
+	  clib_prefetch_load ((void *) cpy[2].src);
+	  clib_prefetch_load ((void *) cpy[3].src);
 
 	  clib_memcpy_fast (dst0, (void *) cpy[0].src, cpy[0].len);
 	  clib_memcpy_fast (dst1, (void *) cpy[1].src, cpy[1].len);
@@ -225,7 +225,7 @@ vhost_user_handle_tx_offload (vhost_user_intf_t * vui, vlib_buffer_t * b,
   generic_header_offset_t gho = { 0 };
   int is_ip4 = b->flags & VNET_BUFFER_F_IS_IP4;
   int is_ip6 = b->flags & VNET_BUFFER_F_IS_IP6;
-  u32 oflags = vnet_buffer2 (b)->oflags;
+  vnet_buffer_oflags_t oflags = vnet_buffer (b)->oflags;
 
   ASSERT (!(is_ip4 && is_ip6));
   vnet_generic_header_offset_parser (b, &gho, 1 /* l2 */ , is_ip4, is_ip6);
@@ -601,7 +601,7 @@ retry:
 	  buffer_map_addr += cpy->len;
 	  desc_len += cpy->len;
 
-	  CLIB_PREFETCH (&rxvq->packed_desc, CLIB_CACHE_LINE_BYTES, LOAD);
+	  clib_prefetch_load (&rxvq->packed_desc);
 
 	  /* Check if vlib buffer has more data. If not, get more or break */
 	  if (PREDICT_TRUE (!bytes_left))
@@ -922,7 +922,7 @@ retry:
 	    buffer_map_addr += cpy->len;
 	    desc_len += cpy->len;
 
-	    CLIB_PREFETCH (&rxvq->desc, CLIB_CACHE_LINE_BYTES, LOAD);
+	    clib_prefetch_load (&rxvq->desc);
 	  }
 
 	  // Check if vlib buffer has more data. If not, get more or break.

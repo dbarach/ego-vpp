@@ -1095,8 +1095,7 @@ http_static_server_session_connected_callback (u32 app_index, u32 api_context,
 static int
 http_static_server_add_segment_callback (u32 client_index, u64 segment_handle)
 {
-  clib_warning ("called...");
-  return -1;
+  return 0;
 }
 
 static void
@@ -1157,6 +1156,7 @@ http_static_server_attach ()
   a->session_cb_vft = &http_static_server_session_cb_vft;
   a->options = options;
   a->options[APP_OPTIONS_SEGMENT_SIZE] = segment_size;
+  a->options[APP_OPTIONS_ADD_SEGMENT_SIZE] = segment_size;
   a->options[APP_OPTIONS_RX_FIFO_SIZE] =
     hsm->fifo_size ? hsm->fifo_size : 8 << 10;
   a->options[APP_OPTIONS_TX_FIFO_SIZE] =
@@ -1186,12 +1186,20 @@ http_static_server_attach ()
 }
 
 static int
+http_static_transport_needs_crypto (transport_proto_t proto)
+{
+  return proto == TRANSPORT_PROTO_TLS || proto == TRANSPORT_PROTO_DTLS ||
+	 proto == TRANSPORT_PROTO_QUIC;
+}
+
+static int
 http_static_server_listen ()
 {
   http_static_server_main_t *hsm = &http_static_server_main;
   session_endpoint_cfg_t sep = SESSION_ENDPOINT_CFG_NULL;
   vnet_listen_args_t _a, *a = &_a;
   char *uri = "tcp://0.0.0.0/80";
+  int rv;
 
   clib_memset (a, 0, sizeof (*a));
   a->app_index = hsm->app_index;
@@ -1203,9 +1211,17 @@ http_static_server_listen ()
     return -1;
 
   clib_memcpy (&a->sep_ext, &sep, sizeof (sep));
-  a->sep_ext.ckpair_index = hsm->ckpair_index;
+  if (http_static_transport_needs_crypto (a->sep_ext.transport_proto))
+    {
+      session_endpoint_alloc_ext_cfg (&a->sep_ext,
+				      TRANSPORT_ENDPT_EXT_CFG_CRYPTO);
+      a->sep_ext.ext_cfg->crypto.ckpair_index = hsm->ckpair_index;
+    }
 
-  return vnet_listen (a);
+  rv = vnet_listen (a);
+  if (a->sep_ext.ext_cfg)
+    clib_mem_free (a->sep_ext.ext_cfg);
+  return rv;
 }
 
 static void

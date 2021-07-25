@@ -389,10 +389,10 @@ rdma_device_input_bufs (vlib_main_t * vm, const rdma_device_t * rd,
     {
       if (PREDICT_TRUE (n_left_from >= 8))
 	{
-	  CLIB_PREFETCH (&wc[4 + 0], CLIB_CACHE_LINE_BYTES, LOAD);
-	  CLIB_PREFETCH (&wc[4 + 1], CLIB_CACHE_LINE_BYTES, LOAD);
-	  CLIB_PREFETCH (&wc[4 + 2], CLIB_CACHE_LINE_BYTES, LOAD);
-	  CLIB_PREFETCH (&wc[4 + 3], CLIB_CACHE_LINE_BYTES, LOAD);
+	  clib_prefetch_load (&wc[4 + 0]);
+	  clib_prefetch_load (&wc[4 + 1]);
+	  clib_prefetch_load (&wc[4 + 2]);
+	  clib_prefetch_load (&wc[4 + 3]);
 	  vlib_prefetch_buffer_header (b[4 + 0], STORE);
 	  vlib_prefetch_buffer_header (b[4 + 1], STORE);
 	  vlib_prefetch_buffer_header (b[4 + 2], STORE);
@@ -704,7 +704,7 @@ rdma_device_mlx5dv_l3_validate_and_swap_bc (rdma_per_thread_data_t
     *(u32x4 *) (bc + i) = u32x4_byte_swap (*(u32x4 *) (bc + i));
 #else
   for (int i = 0; i < n_rx_packets; i++)
-    if ((ptd->cqe_flags[i] & mask) == match)
+    if ((ptd->cqe_flags[i] & mask) != match)
       skip_ip4_cksum = 0;
 
   for (int i = 0; i < n_rx_packets; i++)
@@ -973,9 +973,8 @@ rdma_device_input_inline (vlib_main_t * vm, vlib_node_runtime_t * node,
 	  slow_path_needed =
 	    rdma_device_mlx5dv_legacy_rq_slow_path_needed (rxq->buf_sz,
 							   n_rx_packets, bc);
-	  n_rx_bytes =
-	    rdma_device_mlx5dv_fast_input (vm, rxq, bufs, mask, &bt, to_next,
-					   n_rx_packets, bc, ~1);
+	  n_rx_bytes = rdma_device_mlx5dv_fast_input (
+	    vm, rxq, bufs, mask, &bt, to_next, n_rx_packets, bc, ~0);
 
 	  /* If there are chained buffers, some of the head buffers have a current length
 	     higher than buf_sz: it needs to be fixed */

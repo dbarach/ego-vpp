@@ -44,6 +44,8 @@ except ModuleNotFoundError:
 
     VppTransport = V
 
+from . vpp_transport_socket import VppTransport
+
 logger = logging.getLogger('vpp_papi')
 logger.addHandler(logging.NullHandler())
 
@@ -386,9 +388,9 @@ class VPPApiClient:
     VPPIOError = VPPIOError
 
 
-    def __init__(self, apifiles=None, testmode=False, async_thread=True,
+    def __init__(self, *, apifiles=None, testmode=False, async_thread=True,
                  logger=None, loglevel=None,
-                 read_timeout=5, use_socket=False,
+                 read_timeout=5, use_socket=True,
                  server_address='/run/vpp/api.sock'):
         """Create a VPP API object.
 
@@ -422,15 +424,9 @@ class VPPApiClient:
         self.async_thread = async_thread
         self.event_thread = None
         self.testmode = testmode
-        self.use_socket = use_socket
         self.server_address = server_address
         self._apifiles = apifiles
         self.stats = {}
-
-        if use_socket:
-            from . vpp_transport_socket import VppTransport
-        else:
-            from . vpp_transport_shmem import VppTransport
 
         if not apifiles:
             # Pick up API definitions from default directory
@@ -906,24 +902,18 @@ class VPPApiClient:
 
     def __repr__(self):
         return "<VPPApiClient apifiles=%s, testmode=%s, async_thread=%s, " \
-               "logger=%s, read_timeout=%s, use_socket=%s, " \
+               "logger=%s, read_timeout=%s, " \
                "server_address='%s'>" % (
                    self._apifiles, self.testmode, self.async_thread,
-                   self.logger, self.read_timeout, self.use_socket,
-                   self.server_address)
+                   self.logger, self.read_timeout, self.server_address)
 
     def details_iter(self, f, **kwargs):
         cursor = 0
         while True:
             kwargs['cursor'] = cursor
             rv, details = f(**kwargs)
-            #
-            # Convert to yield from details when we only support python 3
-            #
             for d in details:
                 yield d
             if rv.retval == 0 or rv.retval != -165:
                 break
             cursor = rv.cursor
-
-# vim: tabstop=8 expandtab shiftwidth=4 softtabstop=4

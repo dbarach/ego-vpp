@@ -111,7 +111,7 @@ ipsec_input_protect_policy_match (ipsec_spd_t * spd, u32 sa, u32 da, u32 spi)
   vec_foreach (i, spd->policies[IPSEC_SPD_POLICY_IP4_INBOUND_PROTECT])
   {
     p = pool_elt_at_index (im->policies, *i);
-    s = pool_elt_at_index (im->sad, p->sa_index);
+    s = ipsec_sa_get (p->sa_index);
 
     if (spi != s->spi)
       continue;
@@ -167,7 +167,7 @@ ipsec6_input_protect_policy_match (ipsec_spd_t * spd,
   vec_foreach (i, spd->policies[IPSEC_SPD_POLICY_IP6_INBOUND_PROTECT])
   {
     p = pool_elt_at_index (im->policies, *i);
-    s = pool_elt_at_index (im->sad, p->sa_index);
+    s = ipsec_sa_get (p->sa_index);
 
     if (spi != s->spi)
       continue;
@@ -294,7 +294,12 @@ VLIB_NODE_FN (ipsec4_input_node) (vlib_main_t * vm,
 	  if (PREDICT_TRUE ((p0 != NULL)))
 	    {
 	      ipsec_bypassed += 1;
+
 	      pi0 = p0 - im->policies;
+	      vlib_increment_combined_counter (
+		&ipsec_spd_policy_counters, thread_index, pi0, 1,
+		clib_net_to_host_u16 (ip0->length));
+
 	      goto trace0;
 	    }
 	  else
@@ -312,7 +317,12 @@ VLIB_NODE_FN (ipsec4_input_node) (vlib_main_t * vm,
 	  if (PREDICT_TRUE ((p0 != NULL)))
 	    {
 	      ipsec_dropped += 1;
+
 	      pi0 = p0 - im->policies;
+	      vlib_increment_combined_counter (
+		&ipsec_spd_policy_counters, thread_index, pi0, 1,
+		clib_net_to_host_u16 (ip0->length));
+
 	      next[0] = IPSEC_INPUT_NEXT_DROP;
 	      goto trace0;
 	    }
@@ -380,7 +390,12 @@ VLIB_NODE_FN (ipsec4_input_node) (vlib_main_t * vm,
 	  if (PREDICT_TRUE ((p0 != NULL)))
 	    {
 	      ipsec_bypassed += 1;
+
 	      pi0 = p0 - im->policies;
+	      vlib_increment_combined_counter (
+		&ipsec_spd_policy_counters, thread_index, pi0, 1,
+		clib_net_to_host_u16 (ip0->length));
+
 	      goto trace1;
 	    }
 	  else
@@ -398,7 +413,12 @@ VLIB_NODE_FN (ipsec4_input_node) (vlib_main_t * vm,
 	  if (PREDICT_TRUE ((p0 != NULL)))
 	    {
 	      ipsec_dropped += 1;
+
 	      pi0 = p0 - im->policies;
+	      vlib_increment_combined_counter (
+		&ipsec_spd_policy_counters, thread_index, pi0, 1,
+		clib_net_to_host_u16 (ip0->length));
+
 	      next[0] = IPSEC_INPUT_NEXT_DROP;
 	      goto trace1;
 	    }

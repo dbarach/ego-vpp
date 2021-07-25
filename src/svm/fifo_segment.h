@@ -38,6 +38,7 @@ typedef enum fifo_segment_flags_
   FIFO_SEGMENT_F_IS_PREALLOCATED = 1 << 0,
   FIFO_SEGMENT_F_WILL_DELETE = 1 << 1,
   FIFO_SEGMENT_F_MEM_LIMIT = 1 << 2,
+  FIFO_SEGMENT_F_CUSTOM_USE = 1 << 3,
 } fifo_segment_flags_t;
 
 #define foreach_segment_mem_status	\
@@ -132,6 +133,7 @@ svm_fifo_t *fifo_segment_alloc_fifo_w_slice (fifo_segment_t * fs,
 					     fifo_segment_ftype_t ftype);
 svm_fifo_t *fifo_segment_alloc_fifo_w_offset (fifo_segment_t *fs,
 					      uword offset);
+svm_fifo_t *fifo_segment_duplicate_fifo (fifo_segment_t *fs, svm_fifo_t *f);
 
 /**
  * Free fifo allocated in fifo segment
@@ -329,6 +331,14 @@ svm_fifo_t *fifo_segment_get_slice_fifo_list (fifo_segment_t * fs,
 					      u32 slice_index);
 u32 fifo_segment_num_fifos (fifo_segment_t * fs);
 u32 fifo_segment_num_free_fifos (fifo_segment_t * fs);
+
+svm_fifo_chunk_t *fifo_segment_alloc_chunk_w_slice (fifo_segment_t *fs,
+						    u32 slice_index,
+						    u32 chunk_size);
+void fifo_segment_collect_chunk (fifo_segment_t *fs, u32 slice_index,
+				 svm_fifo_chunk_t *c);
+uword fifo_segment_chunk_offset (fifo_segment_t *fs, svm_fifo_chunk_t *c);
+
 /**
  * Find number of free chunks of given size
  *

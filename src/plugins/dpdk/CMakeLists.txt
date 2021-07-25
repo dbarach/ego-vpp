@@ -20,11 +20,12 @@ if(VPP_USE_SYSTEM_DPDK)
     pkg_check_modules(DPDK REQUIRED libdpdk)
     message(WARNING "-- linking dpdk plugin against system libdpdk, version ${DPDK_VERSION}")
     set(DPDK_LINK_FLAGS ${DPDK_LDFLAGS})
+    include_directories (${DPDK_INCLUDE_DIRS})
 else()
     ##############################################################################
     # Find lib and include files
     ##############################################################################
-    find_path(DPDK_INCLUDE_DIR PATH_SUFFIXES dpdk NAMES rte_config.h)
+    vpp_find_path(DPDK_INCLUDE_DIR PATH_SUFFIXES dpdk NAMES rte_config.h)
     vpp_plugin_find_library(dpdk DPDK_LIB "libdpdk.a")
 
     if (NOT DPDK_INCLUDE_DIR)
@@ -95,7 +96,7 @@ else()
     ##############################################################################
     # Mellanox libraries
     ##############################################################################
-    if(DPDK_RTE_LIBRTE_MLX4_PMD OR DPDK_RTE_LIBRTE_MLX5_PMD)
+    if(DPDK_RTE_NET_MLX4 OR DPDK_RTE_NET_MLX5)
       if (DPDK_RTE_IBVERBS_LINK_DLOPEN)
         message(STATUS "DPDK depends on libmnl (Mellanox PMD requirement)")
         vpp_plugin_find_library(dpdk MNL_LIB "mnl")
@@ -116,11 +117,15 @@ endif()
 # DPDK plugin
 ##############################################################################
 
-if (${DPDK_VERSION} VERSION_GREATER_EQUAL "20.8.0")
-  set(DPDK_CRYPTODEV_SOURCE cryptodev_dp_api)
-else ()
-  set(DPDK_CRYPTODEV_SOURCE cryptodev)
-endif ()
+if(OPENSSL_FOUND)
+  include_directories(${OPENSSL_INCLUDE_DIR})
+
+  set(DPDK_CRYPTODEV_OP_SOURCE cryptodev/cryptodev_op_data_path.c)
+  set(DPDK_CRYPTODEV_SOURCE cryptodev/cryptodev.c)
+  if (${DPDK_VERSION} VERSION_GREATER_EQUAL "20.8.0")
+    set(DPDK_CRYPTODEV_RAW_SOURCE cryptodev/cryptodev_raw_data_path.c)
+  endif()
+endif()
 
 add_vpp_plugin(dpdk
   SOURCES
@@ -134,30 +139,26 @@ add_vpp_plugin(dpdk
   device/format.c
   device/init.c
   device/node.c
-  ipsec/cli.c
-  ipsec/crypto_node.c
-  ipsec/esp_decrypt.c
-  ipsec/esp_encrypt.c
-  ipsec/ipsec.c
-  cryptodev/${DPDK_CRYPTODEV_SOURCE}.c
+  ${DPDK_CRYPTODEV_OP_SOURCE}
+  ${DPDK_CRYPTODEV_SOURCE}
+  ${DPDK_CRYPTODEV_RAW_SOURCE}
 
   MULTIARCH_SOURCES
   buffer.c
   device/device.c
   device/node.c
-  ipsec/crypto_node.c
-  ipsec/esp_decrypt.c
-  ipsec/esp_encrypt.c
 
   INSTALL_HEADERS
   device/dpdk.h
-  ipsec/ipsec.h
 
   LINK_FLAGS
   "${DPDK_LINK_FLAGS}"
 
   LINK_LIBRARIES
   ${DPDK_LINK_LIBRARIES}
+
+  LINK_LIBRARIES
+  ${OPENSSL_LIBRARIES}
 
   COMPONENT
   vpp-plugin-dpdk

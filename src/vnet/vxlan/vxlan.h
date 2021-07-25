@@ -189,6 +189,12 @@ typedef struct
   /* Record used instances */
   uword *instance_used;
   u32 flow_id_start;
+
+  /* cache for last 8 vxlan tunnel */
+#ifdef CLIB_HAVE_VEC512
+  vtep4_cache_t vtep4_u512;
+#endif
+
 } vxlan_main_t;
 
 extern vxlan_main_t vxlan_main;
@@ -208,6 +214,7 @@ typedef struct
   /* we normally use is_ip4, but since this adds to the
    * structure, this seems less of a breaking change */
   u8 is_ip6;
+  u8 is_l3;
   u32 instance;
   ip46_address_t src, dst;
   u32 mcast_sw_if_index;

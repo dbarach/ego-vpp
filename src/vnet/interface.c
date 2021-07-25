@@ -43,6 +43,7 @@
 #include <vnet/adj/adj_mcast.h>
 #include <vnet/ip/ip.h>
 #include <vnet/interface/rx_queue_funcs.h>
+#include <vnet/interface/tx_queue_funcs.h>
 
 /* *INDENT-OFF* */
 VLIB_REGISTER_LOG_CLASS (if_default_log, static) = {
@@ -554,6 +555,21 @@ vnet_sw_interface_admin_down (vnet_main_t * vnm, u32 sw_if_index)
     }
 }
 
+static void
+vnet_if_update_lookup_tables (vnet_main_t *vnm, u32 sw_if_index)
+{
+  vnet_interface_main_t *im = &vnm->interface_main;
+  vnet_hw_interface_t *hi = vnet_get_sup_hw_interface (vnm, sw_if_index);
+
+  vec_validate_init_empty (im->hw_if_index_by_sw_if_index, sw_if_index, ~0);
+  vec_validate_init_empty (im->if_out_arc_end_next_index_by_sw_if_index,
+			   sw_if_index, ~0);
+
+  im->hw_if_index_by_sw_if_index[sw_if_index] = hi->hw_if_index;
+  im->if_out_arc_end_next_index_by_sw_if_index[sw_if_index] =
+    hi->if_out_arc_end_node_next_index;
+}
+
 static u32
 vnet_create_sw_interface_no_callbacks (vnet_main_t * vnm,
 				       vnet_sw_interface_t * template)
@@ -595,6 +611,7 @@ vnet_create_sw_interface_no_callbacks (vnet_main_t * vnm,
     vnet_interface_counter_unlock (im);
   }
 
+  vnet_if_update_lookup_tables (vnm, sw_if_index);
   return sw_if_index;
 }
 
@@ -774,13 +791,11 @@ setup_tx_node (vlib_main_t * vm,
 {
   vlib_node_t *n = vlib_get_node (vm, node_index);
 
-  n->function = dev_class->tx_function;
   n->format_trace = dev_class->format_tx_trace;
 
-  /// XXX: Update this to use counter structure
-  vlib_register_errors (vm, node_index,
-			dev_class->tx_function_n_errors,
-			dev_class->tx_function_error_strings, 0);
+  vlib_register_errors (vm, node_index, dev_class->tx_function_n_errors,
+			dev_class->tx_function_error_strings,
+			dev_class->tx_function_error_counters);
 }
 
 static void
@@ -810,7 +825,8 @@ vnet_register_interface (vnet_main_t * vnm,
   vnet_config_main_t *cm;
   u32 hw_index, i;
   char *tx_node_name = NULL, *output_node_name = NULL;
-  vlib_node_function_t *output_node = vnet_interface_output_node_get ();
+  vlib_node_t *if_out_node =
+    vlib_get_node (vm, vnet_interface_output_node.index);
 
   pool_get (im->hw_interfaces, hw);
   clib_memset (hw, 0, sizeof (*hw));
@@ -854,7 +870,7 @@ vnet_register_interface (vnet_main_t * vnm,
   hw->min_packet_bytes = 0;
   vnet_sw_interface_set_mtu (vnm, hw->sw_if_index, 0);
 
-  if (dev_class->tx_function == 0)
+  if (dev_class->tx_function == 0 && dev_class->tx_fn_registrations == 0)
     goto no_output_nodes;	/* No output/tx nodes to create */
 
   tx_node_name = (char *) format (0, "%v-tx", hw->name);
@@ -875,49 +891,57 @@ vnet_register_interface (vnet_main_t * vnm,
       vlib_node_rename (vm, hw->tx_node_index, "%v", tx_node_name);
       vlib_node_rename (vm, hw->output_node_index, "%v", output_node_name);
 
-      /* *INDENT-OFF* */
-      foreach_vlib_main ({
-        vnet_interface_output_runtime_t *rt;
+      foreach_vlib_main ()
+	{
+	  vnet_interface_output_runtime_t *rt;
 
-	rt = vlib_node_get_runtime_data (this_vlib_main, hw->output_node_index);
-	ASSERT (rt->is_deleted == 1);
-	rt->is_deleted = 0;
-	rt->hw_if_index = hw_index;
-	rt->sw_if_index = hw->sw_if_index;
-	rt->dev_instance = hw->dev_instance;
+	  rt =
+	    vlib_node_get_runtime_data (this_vlib_main, hw->output_node_index);
+	  ASSERT (rt->is_deleted == 1);
+	  rt->is_deleted = 0;
+	  rt->hw_if_index = hw_index;
+	  rt->sw_if_index = hw->sw_if_index;
+	  rt->dev_instance = hw->dev_instance;
 
-	rt = vlib_node_get_runtime_data (this_vlib_main, hw->tx_node_index);
-	rt->hw_if_index = hw_index;
-	rt->sw_if_index = hw->sw_if_index;
-	rt->dev_instance = hw->dev_instance;
-      });
-      /* *INDENT-ON* */
+	  rt = vlib_node_get_runtime_data (this_vlib_main, hw->tx_node_index);
+	  rt->hw_if_index = hw_index;
+	  rt->sw_if_index = hw->sw_if_index;
+	  rt->dev_instance = hw->dev_instance;
+	}
 
       /* The new class may differ from the old one.
        * Functions have to be updated. */
       node = vlib_get_node (vm, hw->output_node_index);
-      node->function = output_node;
       node->format_trace = format_vnet_interface_output_trace;
-      /* *INDENT-OFF* */
-      foreach_vlib_main ({
-        nrt = vlib_node_get_runtime (this_vlib_main, hw->output_node_index);
-        nrt->function = node->function;
-	vlib_node_runtime_perf_counter (this_vlib_main, nrt, 0, 0, 0,
-					VLIB_NODE_RUNTIME_PERF_RESET);
-      });
-      /* *INDENT-ON* */
+      node->node_fn_registrations = if_out_node->node_fn_registrations;
+      node->function = if_out_node->function;
+
+      foreach_vlib_main ()
+	{
+	  nrt = vlib_node_get_runtime (this_vlib_main, hw->output_node_index);
+	  nrt->function = node->function;
+	  vlib_node_runtime_perf_counter (this_vlib_main, nrt, 0, 0, 0,
+					  VLIB_NODE_RUNTIME_PERF_RESET);
+	}
 
       node = vlib_get_node (vm, hw->tx_node_index);
-      node->function = dev_class->tx_function;
+      if (dev_class->tx_fn_registrations)
+	{
+	  node->node_fn_registrations = dev_class->tx_fn_registrations;
+	  node->function = vlib_node_get_preferred_node_fn_variant (
+	    vm, dev_class->tx_fn_registrations);
+	}
+      else
+	node->function = dev_class->tx_function;
       node->format_trace = dev_class->format_tx_trace;
-      /* *INDENT-OFF* */
-      foreach_vlib_main ({
-        nrt = vlib_node_get_runtime (this_vlib_main, hw->tx_node_index);
-        nrt->function = node->function;
-	vlib_node_runtime_perf_counter (this_vlib_main, nrt, 0, 0, 0,
-					VLIB_NODE_RUNTIME_PERF_RESET);
-      });
-      /* *INDENT-ON* */
+
+      foreach_vlib_main ()
+	{
+	  nrt = vlib_node_get_runtime (this_vlib_main, hw->tx_node_index);
+	  nrt->function = node->function;
+	  vlib_node_runtime_perf_counter (this_vlib_main, nrt, 0, 0, 0,
+					  VLIB_NODE_RUNTIME_PERF_RESET);
+	}
 
       _vec_len (im->deleted_hw_interface_nodes) -= 1;
     }
@@ -935,12 +959,18 @@ vnet_register_interface (vnet_main_t * vnm,
       r.type = VLIB_NODE_TYPE_INTERNAL;
       r.runtime_data = &rt;
       r.runtime_data_bytes = sizeof (rt);
-      r.scalar_size = 0;
+      r.scalar_size = sizeof (vnet_hw_if_tx_frame_t);
       r.vector_size = sizeof (u32);
 
       r.flags = VLIB_NODE_FLAG_IS_OUTPUT;
       r.name = tx_node_name;
-      r.function = dev_class->tx_function;
+      if (dev_class->tx_fn_registrations)
+	{
+	  r.function = 0;
+	  r.node_fn_registrations = dev_class->tx_fn_registrations;
+	}
+      else
+	r.function = dev_class->tx_function;
 
       hw->tx_node_index = vlib_register_node (vm, &r);
 
@@ -950,14 +980,19 @@ vnet_register_interface (vnet_main_t * vnm,
 
       r.flags = 0;
       r.name = output_node_name;
-      r.function = output_node;
       r.format_trace = format_vnet_interface_output_trace;
+      if (if_out_node->node_fn_registrations)
+	{
+	  r.function = 0;
+	  r.node_fn_registrations = if_out_node->node_fn_registrations;
+	}
+      else
+	r.function = if_out_node->function;
 
       {
 	static char *e[] = {
 	  "interface is down",
 	  "interface is deleted",
-	  "no buffers to segment GSO",
 	};
 
 	r.n_errors = ARRAY_LEN (e);
@@ -971,7 +1006,6 @@ vnet_register_interface (vnet_main_t * vnm,
       vlib_node_add_next_with_slot (vm, hw->output_node_index,
 				    hw->tx_node_index,
 				    VNET_INTERFACE_OUTPUT_NEXT_TX);
-
       /* add interface to the list of "output-interface" feature arc start nodes
          and clone nexts from 1st interface if it exists */
       fcm = vnet_feature_get_config_main (im->output_feature_arc_index);
@@ -995,6 +1029,9 @@ vnet_register_interface (vnet_main_t * vnm,
 	}
     }
 
+  hw->if_out_arc_end_node_next_index = vlib_node_add_next (
+    vm, vnet_interface_output_arc_end_node.index, hw->tx_node_index);
+  vnet_if_update_lookup_tables (vnm, hw->sw_if_index);
   setup_output_node (vm, hw->output_node_index, hw_class);
   setup_tx_node (vm, hw->tx_node_index, dev_class);
 
@@ -1025,8 +1062,9 @@ vnet_delete_hw_interface (vnet_main_t * vnm, u32 hw_if_index)
   /* Call delete callbacks. */
   call_hw_interface_add_del_callbacks (vnm, hw_if_index, /* is_create */ 0);
 
-  /* delete rx queues */
+  /* delete rx & tx queues */
   vnet_hw_if_unregister_all_rx_queues (vnm, hw_if_index);
+  vnet_hw_if_unregister_all_tx_queues (vnm, hw_if_index);
   vnet_hw_if_update_runtime_data (vnm, hw_if_index);
 
   /* Delete any sub-interfaces. */
@@ -1053,17 +1091,15 @@ vnet_delete_hw_interface (vnet_main_t * vnm, u32 hw_if_index)
       /* Put output/tx nodes into recycle pool */
       vnet_hw_interface_nodes_t *dn;
 
-      /* *INDENT-OFF* */
-      foreach_vlib_main
-	({
+      foreach_vlib_main ()
+	{
 	  vnet_interface_output_runtime_t *rt =
 	    vlib_node_get_runtime_data (this_vlib_main, hw->output_node_index);
 
 	  /* Mark node runtime as deleted so output node (if called)
 	   * will drop packets. */
 	  rt->is_deleted = 1;
-	});
-      /* *INDENT-ON* */
+	}
 
       vlib_node_rename (vm, hw->output_node_index,
 			"interface-%d-output-deleted", hw_if_index);
@@ -1354,25 +1390,13 @@ vnet_interface_init (vlib_main_t * vm)
 	c->index = vec_len (im->device_classes);
 	hash_set_mem (im->device_class_by_name, c->name, c->index);
 
+	/* to avoid confusion, please remove ".tx_function" statement
+	  from VNET_DEVICE_CLASS() if using function candidates */
+	ASSERT (c->tx_fn_registrations == 0 || c->tx_function == 0);
+
 	if (c->tx_fn_registrations)
-	  {
-	    vlib_node_fn_registration_t *fnr = c->tx_fn_registrations;
-	    int priority = -1;
-
-	    /* to avoid confusion, please remove ".tx_function" statement
-	       from VNET_DEVICE_CLASS() if using function candidates */
-	    ASSERT (c->tx_function == 0);
-
-	    while (fnr)
-	      {
-		if (fnr->priority > priority)
-		  {
-		    priority = fnr->priority;
-		    c->tx_function = fnr->function;
-		  }
-		fnr = fnr->next_registration;
-	      }
-	  }
+	  c->tx_function = vlib_node_get_preferred_node_fn_variant (
+	    vm, c->tx_fn_registrations);
 
 	vec_add1 (im->device_classes, c[0]);
 	c = c->next_class_registration;
@@ -1383,6 +1407,8 @@ vnet_interface_init (vlib_main_t * vm)
 						       sizeof (uword));
 
   im->rxq_index_by_hw_if_index_and_queue_id =
+    hash_create_mem (0, sizeof (u64), sizeof (u32));
+  im->txq_index_by_hw_if_index_and_queue_id =
     hash_create_mem (0, sizeof (u64), sizeof (u32));
   im->sw_if_index_by_sup_and_sub = hash_create_mem (0, sizeof (u64),
 						    sizeof (uword));
@@ -1414,11 +1440,6 @@ vnet_interface_init (vlib_main_t * vm)
     return error;
 
   vnm->interface_tag_by_sw_if_index = hash_create (0, sizeof (uword));
-
-#if VLIB_BUFFER_TRACE_TRAJECTORY > 0
-  if ((error = vlib_call_init_function (vm, trajectory_trace_init)))
-    return error;
-#endif
 
   return 0;
 }
@@ -1618,13 +1639,20 @@ vnet_sw_interface_update_unnumbered (u32 unnumbered_sw_if_index,
     }
   else
     {
-      si->flags &= ~(VNET_SW_INTERFACE_FLAG_UNNUMBERED);
-      si->unnumbered_sw_if_index = (u32) ~ 0;
+      /*
+       * Unless the interface is actually unnumbered, don't
+       * smash e.g. if_address_pool_index_by_sw_if_index
+       */
+      if (si->flags & VNET_SW_INTERFACE_FLAG_UNNUMBERED)
+	{
+	  si->flags &= ~(VNET_SW_INTERFACE_FLAG_UNNUMBERED);
+	  si->unnumbered_sw_if_index = (u32) ~0;
 
-      ip4_main.lookup_main.if_address_pool_index_by_sw_if_index
-	[unnumbered_sw_if_index] = ~0;
-      ip6_main.lookup_main.if_address_pool_index_by_sw_if_index
-	[unnumbered_sw_if_index] = ~0;
+	  ip4_main.lookup_main
+	    .if_address_pool_index_by_sw_if_index[unnumbered_sw_if_index] = ~0;
+	  ip6_main.lookup_main
+	    .if_address_pool_index_by_sw_if_index[unnumbered_sw_if_index] = ~0;
+	}
     }
 
   if (was_unnum != (si->flags & VNET_SW_INTERFACE_FLAG_UNNUMBERED))

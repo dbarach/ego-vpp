@@ -167,7 +167,7 @@ pipe_tx (vlib_main_t * vm, vlib_node_runtime_t * node, vlib_frame_t * frame)
       vlib_put_next_frame (vm, node, next_index, n_left_to_next);
     }
 
-  return n_left_from;
+  return frame->n_vectors;
 }
 
 static u8 *
@@ -324,8 +324,8 @@ pipe_rx (vlib_main_t * vm,
 	    p3 = vlib_get_buffer (vm, from[3]);
 	    vlib_prefetch_buffer_header (p2, STORE);
 	    vlib_prefetch_buffer_header (p3, STORE);
-	    CLIB_PREFETCH (p2->data, CLIB_CACHE_LINE_BYTES, LOAD);
-	    CLIB_PREFETCH (p3->data, CLIB_CACHE_LINE_BYTES, LOAD);
+	    clib_prefetch_load (p2->data);
+	    clib_prefetch_load (p3->data);
 	  }
 
 	  bi0 = from[0];

@@ -86,10 +86,10 @@ dpdk_process_subseq_segs (vlib_main_t * vm, vlib_buffer_t * b,
 static_always_inline void
 dpdk_prefetch_mbuf_x4 (struct rte_mbuf *mb[])
 {
-  CLIB_PREFETCH (mb[0], CLIB_CACHE_LINE_BYTES, LOAD);
-  CLIB_PREFETCH (mb[1], CLIB_CACHE_LINE_BYTES, LOAD);
-  CLIB_PREFETCH (mb[2], CLIB_CACHE_LINE_BYTES, LOAD);
-  CLIB_PREFETCH (mb[3], CLIB_CACHE_LINE_BYTES, LOAD);
+  clib_prefetch_load (mb[0]);
+  clib_prefetch_load (mb[1]);
+  clib_prefetch_load (mb[2]);
+  clib_prefetch_load (mb[3]);
 }
 
 static_always_inline void
@@ -97,13 +97,13 @@ dpdk_prefetch_buffer_x4 (struct rte_mbuf *mb[])
 {
   vlib_buffer_t *b;
   b = vlib_buffer_from_rte_mbuf (mb[0]);
-  CLIB_PREFETCH (b, CLIB_CACHE_LINE_BYTES, LOAD);
+  clib_prefetch_load (b);
   b = vlib_buffer_from_rte_mbuf (mb[1]);
-  CLIB_PREFETCH (b, CLIB_CACHE_LINE_BYTES, LOAD);
+  clib_prefetch_load (b);
   b = vlib_buffer_from_rte_mbuf (mb[2]);
-  CLIB_PREFETCH (b, CLIB_CACHE_LINE_BYTES, LOAD);
+  clib_prefetch_load (b);
   b = vlib_buffer_from_rte_mbuf (mb[3]);
-  CLIB_PREFETCH (b, CLIB_CACHE_LINE_BYTES, LOAD);
+  clib_prefetch_load (b);
 }
 
 /** \brief Main DPDK input node
@@ -216,11 +216,6 @@ dpdk_process_rx_burst (vlib_main_t * vm, dpdk_per_thread_data_t * ptd,
 	  n_bytes += dpdk_process_subseq_segs (vm, b[3], mb[3], &bt);
 	}
 
-      VLIB_BUFFER_TRACE_TRAJECTORY_INIT (b[0]);
-      VLIB_BUFFER_TRACE_TRAJECTORY_INIT (b[1]);
-      VLIB_BUFFER_TRACE_TRAJECTORY_INIT (b[2]);
-      VLIB_BUFFER_TRACE_TRAJECTORY_INIT (b[3]);
-
       /* next */
       mb += 4;
       n_left -= 4;
@@ -238,7 +233,6 @@ dpdk_process_rx_burst (vlib_main_t * vm, dpdk_per_thread_data_t * ptd,
 
       if (maybe_multiseg)
 	n_bytes += dpdk_process_subseq_segs (vm, b[0], mb[0], &bt);
-      VLIB_BUFFER_TRACE_TRAJECTORY_INIT (b[0]);
 
       /* next */
       mb += 1;

@@ -114,9 +114,8 @@ vlib_error_drop_buffers (vlib_main_t * vm,
 
 /* Reserves given number of error codes for given node. */
 void
-vlib_register_errors (vlib_main_t * vm,
-		      u32 node_index, u32 n_errors, char *error_strings[],
-		      vl_counter_t counters[])
+vlib_register_errors (vlib_main_t *vm, u32 node_index, u32 n_errors,
+		      char *error_strings[], vlib_error_desc_t counters[])
 {
   vlib_error_main_t *em = &vm->error_main;
   vlib_node_main_t *nm = &vm->node_main;
@@ -144,7 +143,7 @@ vlib_register_errors (vlib_main_t * vm,
       int i;
       for (i = 0; i < n_errors; i++)
 	{
-	  counters[i].name = error_strings[i];	// XXX Make name saner
+	  counters[i].name = error_strings[i];
 	  counters[i].desc = error_strings[i];
 	  counters[i].severity = VL_COUNTER_SEVERITY_ERROR;
 	}
@@ -210,6 +209,37 @@ vlib_register_errors (vlib_main_t * vm,
   }
 }
 
+uword
+unformat_vlib_error (unformat_input_t *input, va_list *args)
+{
+  vlib_main_t *vm = va_arg (*args, vlib_main_t *);
+  const vlib_error_main_t *em = &vm->error_main;
+  vlib_error_t *error_index = va_arg (*args, vlib_error_t *);
+  const vlib_node_t *node;
+  char *error_name;
+  u32 node_index;
+  vlib_error_t i;
+
+  if (!unformat (input, "%U.%s", unformat_vlib_node, vm, &node_index,
+		 &error_name))
+    return 0;
+
+  node = vlib_get_node (vm, node_index);
+  for (i = 0; i < node->n_errors; i++)
+    {
+      vlib_error_t ei = node->error_heap_index + i;
+      if (strcmp (em->counters_heap[ei].name, error_name) == 0)
+	{
+	  *error_index = ei;
+	  vec_free (error_name);
+	  return 1;
+	}
+    }
+
+  vec_free (error_name);
+  return 0;
+}
+
 static char *
 sev2str (enum vl_counter_severity_e s)
 {
@@ -252,42 +282,40 @@ show_errors (vlib_main_t * vm,
     vlib_cli_output (vm, "%=10s%=35s%=35s%=10s", "Count", "Node", "Reason",
 		     "Severity");
 
+  foreach_vlib_main ()
+    {
+      em = &this_vlib_main->error_main;
 
-  /* *INDENT-OFF* */
-  foreach_vlib_main(({
-    em = &this_vlib_main->error_main;
+      if (verbose)
+	vlib_cli_output (vm, "Thread %u (%v):", index,
+			 vlib_worker_threads[index].name);
 
-    if (verbose)
-      vlib_cli_output(vm, "Thread %u (%v):", index,
-                      vlib_worker_threads[index].name);
+      for (ni = 0; ni < vec_len (this_vlib_main->node_main.nodes); ni++)
+	{
+	  n = vlib_get_node (this_vlib_main, ni);
+	  for (code = 0; code < n->n_errors; code++)
+	    {
+	      i = n->error_heap_index + code;
+	      c = em->counters[i];
+	      if (i < vec_len (em->counters_last_clear))
+		c -= em->counters_last_clear[i];
+	      sums[i] += c;
 
-    for (ni = 0; ni < vec_len (this_vlib_main->node_main.nodes); ni++)
-      {
-	n = vlib_get_node (this_vlib_main, ni);
-	for (code = 0; code < n->n_errors; code++)
-	  {
-	    i = n->error_heap_index + code;
-	    c = em->counters[i];
-	    if (i < vec_len (em->counters_last_clear))
-	      c -= em->counters_last_clear[i];
-	    sums[i] += c;
+	      if (c == 0 && verbose < 2)
+		continue;
 
-	    if (c == 0 && verbose < 2)
-	      continue;
-
-            if (verbose)
-              vlib_cli_output (vm, "%10lu%=35v%=35s%=10s%=6d", c, n->name,
-                               em->counters_heap[i].name,
-                               sev2str(em->counters_heap[i].severity), i);
-            else
-              vlib_cli_output (vm, "%10lu%=35v%=35s%=10s", c, n->name,
-                               em->counters_heap[i].name,
-                               sev2str(em->counters_heap[i].severity));
-	  }
-      }
-    index++;
-  }));
-  /* *INDENT-ON* */
+	      if (verbose)
+		vlib_cli_output (vm, "%10lu%=35v%=35s%=10s%=6d", c, n->name,
+				 em->counters_heap[i].name,
+				 sev2str (em->counters_heap[i].severity), i);
+	      else
+		vlib_cli_output (vm, "%10lu%=35v%=35s%=10s", c, n->name,
+				 em->counters_heap[i].name,
+				 sev2str (em->counters_heap[i].severity));
+	    }
+	}
+      index++;
+    }
 
   if (verbose)
     vlib_cli_output (vm, "Total:");
@@ -335,14 +363,13 @@ clear_error_counters (vlib_main_t * vm,
   vlib_error_main_t *em;
   u32 i;
 
-  /* *INDENT-OFF* */
-  foreach_vlib_main(({
-    em = &this_vlib_main->error_main;
-    vec_validate (em->counters_last_clear, vec_len (em->counters) - 1);
-    for (i = 0; i < vec_len (em->counters); i++)
-      em->counters_last_clear[i] = em->counters[i];
-  }));
-  /* *INDENT-ON* */
+  foreach_vlib_main ()
+    {
+      em = &this_vlib_main->error_main;
+      vec_validate (em->counters_last_clear, vec_len (em->counters) - 1);
+      for (i = 0; i < vec_len (em->counters); i++)
+	em->counters_last_clear[i] = em->counters[i];
+    }
   return 0;
 }
 

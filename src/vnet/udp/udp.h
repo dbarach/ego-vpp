@@ -121,6 +121,7 @@ typedef struct
   udp_connection_t *listener_pool;
 
   u16 default_mtu;
+  u16 msg_id_base;
 } udp_main_t;
 
 extern udp_main_t udp_main;
@@ -218,6 +219,8 @@ udp_connection_clone_safe (u32 connection_index, u32 thread_index)
   new_c->c_thread_index = current_thread_index;
   new_c->c_c_index = udp_connection_index (new_c);
   new_c->c_fib_index = old_c->c_fib_index;
+  /* Assume cloned sessions don't need lock */
+  new_c->rx_lock = 0;
   return new_c;
 }
 

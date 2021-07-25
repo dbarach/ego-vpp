@@ -11,9 +11,6 @@
 # See the License for the specific language governing permissions and
 # limitations under the License.
 
-add_definitions (-DWITH_LIBSSL=1)
-include_directories(${OPENSSL_INCLUDE_DIR})
-
 unset(VNET_SOURCES)
 unset(VNET_HEADERS)
 unset(VNET_API_FILES)
@@ -37,6 +34,7 @@ list(APPEND VNET_SOURCES
   interface_format.c
   interface_output.c
   interface/rx_queue.c
+  interface/tx_queue.c
   interface/runtime.c
   interface_stats.c
   misc.c
@@ -58,6 +56,7 @@ list(APPEND VNET_HEADERS
   global_funcs.h
   handoff.h
   interface/rx_queue_funcs.h
+  interface/tx_queue_funcs.h
   interface.h
   interface_funcs.h
   interface_output.h
@@ -68,8 +67,6 @@ list(APPEND VNET_HEADERS
   plugin/plugin.h
   pipeline.h
   vnet.h
-  vnet_all_api_h.h
-  vnet_msg_enum.h
   util/radix.h
   util/refcount.h
   format_fns.h
@@ -109,16 +106,6 @@ list(APPEND VNET_API_FILES
   policer/policer.api
   policer/policer_types.api
 )
-
-##############################################################################
-# Binary API compatibility until vpp 20.12, see the ADL plugin...
-##############################################################################
-
-list(APPEND VNET_SOURCES
-  cop/cop_api.c
-)
-
-list(APPEND VNET_API_FILES cop/cop.api)
 
 ##############################################################################
 # Layer 2 protocols go here
@@ -671,6 +658,7 @@ list(APPEND VNET_SOURCES
   udp/udp_pg.c
   udp/udp_encap_node.c
   udp/udp_encap.c
+  udp/udp_decap.c
   udp/udp_api.c
 )
 
@@ -1224,7 +1212,10 @@ list(APPEND VNET_HEADERS
   fib/fib_source.h
 )
 
-list(APPEND VNET_API_FILES fib/fib_types.api)
+list(APPEND VNET_API_FILES
+  fib/fib_types.api
+  fib/fib.api
+)
 
 ##############################################################################
 # ADJ
@@ -1234,6 +1225,7 @@ list(APPEND VNET_SOURCES
   adj/adj_nbr.c
   adj/adj_glean.c
   adj/adj_midchain.c
+  adj/adj_midchain_node.c
   adj/adj_midchain_delegate.c
   adj/adj_mcast.c
   adj/adj_l2.c
@@ -1247,7 +1239,7 @@ list(APPEND VNET_SOURCES
 list(APPEND VNET_MULTIARCH_SOURCES
   adj/adj_nsh.c
   adj/adj_l2.c
-  adj/adj_midchain.c
+  adj/adj_midchain_node.c
 )
 
 list(APPEND VNET_HEADERS
@@ -1346,7 +1338,6 @@ list(APPEND VNET_SOURCES
   util/radix.c
   util/refcount.c
   util/throttle.c
-  util/trajectory.c
 )
 
 list(APPEND VNET_HEADERS
@@ -1494,7 +1485,7 @@ add_vpp_library(vnet
   MULTIARCH_SOURCES ${VNET_MULTIARCH_SOURCES}
   INSTALL_HEADERS ${VNET_HEADERS}
   API_FILES ${VNET_API_FILES}
-  LINK_LIBRARIES vppinfra svm vlib ${OPENSSL_LIBRARIES}
+  LINK_LIBRARIES vppinfra svm vlib
   DEPENDS vpp_version_h api_headers
 )
 

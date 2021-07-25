@@ -42,6 +42,8 @@ typedef struct vls_worker_
   vcl_locked_session_t *vls_pool;
   uword *session_handle_to_vlsh_table;
   u32 wrk_index;
+  /** Vector of child wrk to cleanup */
+  u32 *pending_wrk_cleanup;
 } vls_worker_t;
 
 typedef struct vls_local_
@@ -51,7 +53,6 @@ typedef struct vls_local_
   pthread_mutex_t vls_mt_mq_mlock;
   pthread_mutex_t vls_mt_spool_mlock;
   volatile u8 select_mp_check;
-  volatile u8 epoll_mp_check;
 } vls_process_local_t;
 
 static vls_process_local_t vls_local;
@@ -111,6 +112,9 @@ void vls_send_clone_and_share_rpc (vcl_worker_t *wrk, u32 origin_vls_index,
 				   u32 session_index, u32 vls_wrk_index,
 				   u32 dst_wrk_index, u32 dst_vls_index,
 				   u32 dst_session_index);
+static void vls_cleanup_forked_child (vcl_worker_t *wrk,
+				      vcl_worker_t *child_wrk);
+static void vls_handle_pending_wrk_cleanup (void);
 
 static inline u32
 vls_get_worker_index (void)
@@ -316,6 +320,8 @@ vls_worker_alloc (void)
   if (vls_mt_wrk_supported ())
     clib_rwlock_init (&wrk->sh_to_vlsh_table_lock);
   wrk->wrk_index = vcl_get_worker_index ();
+  vec_validate (wrk->pending_wrk_cleanup, 16);
+  vec_reset_length (wrk->pending_wrk_cleanup);
 }
 
 static void
@@ -704,7 +710,8 @@ vls_unshare_session (vcl_locked_session_t * vls, vcl_worker_t * wrk)
    *  Check if we can change owner or close
    */
   vls_shd->owner_wrk_index = vls_shd->workers_subscribed[0];
-  vcl_send_session_worker_update (wrk, s, vls_shd->owner_wrk_index);
+  if (s->session_state != VCL_STATE_LISTEN_NO_MQ)
+    vcl_send_session_worker_update (wrk, s, vls_shd->owner_wrk_index);
 
   /* XXX is this still needed? */
   if (vec_len (vls_shd->workers_subscribed) > 1)
@@ -767,8 +774,7 @@ vls_share_session (vls_worker_t * vls_wrk, vcl_locked_session_t * vls)
 
   if (s->rx_fifo)
     {
-      svm_fifo_add_subscriber (s->rx_fifo, vcl_wrk->vpp_wrk_index);
-      svm_fifo_add_subscriber (s->tx_fifo, vcl_wrk->vpp_wrk_index);
+      vcl_session_share_fifos (s, s->rx_fifo, s->tx_fifo);
     }
   else if (s->session_state == VCL_STATE_LISTEN)
     {
@@ -793,6 +799,34 @@ vls_share_sessions (vls_worker_t * vls_parent_wrk, vls_worker_t * vls_wrk)
     vls_share_session (vls_wrk, vls);
   }
   /* *INDENT-ON* */
+}
+
+static void
+vls_validate_veps (vcl_worker_t *wrk)
+{
+  vcl_session_t *s;
+  u32 session_index, wrk_index;
+
+  pool_foreach (s, wrk->sessions)
+    {
+      if (s->vep.vep_sh != ~0)
+	{
+	  vcl_session_handle_parse (s->vep.vep_sh, &wrk_index, &session_index);
+	  s->vep.vep_sh = vcl_session_handle_from_index (session_index);
+	}
+      if (s->vep.next_sh != ~0)
+	{
+	  vcl_session_handle_parse (s->vep.next_sh, &wrk_index,
+				    &session_index);
+	  s->vep.next_sh = vcl_session_handle_from_index (session_index);
+	}
+      if (s->vep.prev_sh != ~0)
+	{
+	  vcl_session_handle_parse (s->vep.prev_sh, &wrk_index,
+				    &session_index);
+	  s->vep.prev_sh = vcl_session_handle_from_index (session_index);
+	}
+    }
 }
 
 void
@@ -823,6 +857,9 @@ vls_worker_copy_on_fork (vcl_worker_t * parent_wrk)
     }));
   /* *INDENT-ON* */
   vls_wrk->vls_pool = pool_dup (vls_parent_wrk->vls_pool);
+
+  /* Validate vep's handle */
+  vls_validate_veps (wrk);
 
   vls_share_sessions (vls_parent_wrk, vls_wrk);
 }
@@ -1314,6 +1351,24 @@ vls_close (vls_handle_t vlsh)
   return rv;
 }
 
+int
+vls_shutdown (vls_handle_t vlsh, int how)
+{
+  vcl_locked_session_t *vls;
+  int rv;
+
+  vls_mt_detect ();
+  if (!(vls = vls_get_w_dlock (vlsh)))
+    return VPPCOM_EBADFD;
+
+  vls_mt_guard (vls, VLS_MT_OP_SPOOL);
+  rv = vppcom_session_shutdown (vls_to_sh (vls), how);
+  vls_mt_unguard ();
+  vls_get_and_unlock (vlsh);
+
+  return rv;
+}
+
 vls_handle_t
 vls_epoll_create (void)
 {
@@ -1336,16 +1391,9 @@ vls_epoll_create (void)
 static void
 vls_epoll_ctl_mp_checks (vcl_locked_session_t * vls, int op)
 {
-  if (vcl_n_workers () <= 1)
-    {
-      vlsl->epoll_mp_check = 1;
-      return;
-    }
-
-  if (op == EPOLL_CTL_MOD)
+  if (vcl_n_workers () <= 1 || op == EPOLL_CTL_MOD)
     return;
 
-  vlsl->epoll_mp_check = 1;
   vls_mp_checks (vls, op == EPOLL_CTL_ADD);
 }
 
@@ -1372,11 +1420,8 @@ vls_epoll_ctl (vls_handle_t ep_vlsh, int op, vls_handle_t vlsh,
   vls = vls_get_and_lock (vlsh);
   sh = vls_to_sh (vls);
 
-  if (PREDICT_FALSE (!vlsl->epoll_mp_check))
-    vls_epoll_ctl_mp_checks (vls, op);
-
+  vls_epoll_ctl_mp_checks (vls, op);
   vls_mt_table_runlock ();
-
   rv = vppcom_epoll_ctl (ep_sh, op, sh, event);
 
   vls_mt_table_rlock ();
@@ -1403,6 +1448,7 @@ vls_epoll_wait (vls_handle_t ep_vlsh, struct epoll_event *events,
 			  wait_for_time);
   vls_mt_unguard ();
   vls_get_and_unlock (ep_vlsh);
+  vls_handle_pending_wrk_cleanup ();
   return rv;
 }
 
@@ -1451,6 +1497,7 @@ vls_select (int n_bits, vcl_si_set * read_map, vcl_si_set * write_map,
     vls_select_mp_checks (read_map);
   rv = vppcom_select (n_bits, read_map, write_map, except_map, wait_for_time);
   vls_mt_unguard ();
+  vls_handle_pending_wrk_cleanup ();
   return rv;
 }
 
@@ -1484,7 +1531,11 @@ vls_cleanup_vcl_worker (vcl_worker_t * wrk)
   /* Unshare sessions and also cleanup worker since child may have
    * called _exit () and therefore vcl may not catch the event */
   vls_unshare_vcl_worker_sessions (wrk);
-  vcl_worker_cleanup (wrk, 1 /* notify vpp */ );
+
+  /* Since child may have exited and thereforce fd of vpp_app_socket_api
+   * may have been closed, so DONOT notify VPP.
+   */
+  vcl_worker_cleanup (wrk, vcm->cfg.vpp_app_socket_api ? 0 : 1);
 
   vls_worker_free (vls_wrk);
 }
@@ -1512,12 +1563,34 @@ vls_cleanup_forked_child (vcl_worker_t * wrk, vcl_worker_t * child_wrk)
   wrk->forked_child = ~0;
 }
 
+static void
+vls_handle_pending_wrk_cleanup (void)
+{
+  u32 *wip;
+  vcl_worker_t *child_wrk, *wrk;
+  vls_worker_t *vls_wrk = vls_worker_get_current ();
+
+  if (PREDICT_TRUE (vec_len (vls_wrk->pending_wrk_cleanup) == 0))
+    return;
+
+  wrk = vcl_worker_get_current ();
+  vec_foreach (wip, vls_wrk->pending_wrk_cleanup)
+    {
+      child_wrk = vcl_worker_get_if_valid (*wip);
+      if (!child_wrk)
+	continue;
+      vls_cleanup_forked_child (wrk, child_wrk);
+    }
+  vec_reset_length (vls_wrk->pending_wrk_cleanup);
+}
+
 static struct sigaction old_sa;
 
 static void
 vls_intercept_sigchld_handler (int signum, siginfo_t * si, void *uc)
 {
   vcl_worker_t *wrk, *child_wrk;
+  vls_worker_t *vls_wrk;
 
   if (vcl_get_worker_index () == ~0)
     return;
@@ -1541,7 +1614,14 @@ vls_intercept_sigchld_handler (int signum, siginfo_t * si, void *uc)
       VDBG (0, "unexpected child pid %u", si->si_pid);
       goto done;
     }
-  vls_cleanup_forked_child (wrk, child_wrk);
+
+  /* Parent process may enter sighandler with a lock, such as lock in localtime
+   * or in mspace_free, and child wrk cleanup may try to get such locks and
+   * cause deadlock.
+   * So move child wrk cleanup from sighandler to vls_epoll_wait/vls_select.
+   */
+  vls_wrk = vls_worker_get_current ();
+  vec_add1 (vls_wrk->pending_wrk_cleanup, child_wrk->wrk_index);
 
 done:
   if (old_sa.sa_flags & SA_SIGINFO)
@@ -1619,7 +1699,6 @@ vls_app_fork_child_handler (void)
   vlsl->vls_mt_n_threads = 0;
   vlsl->vls_wrk_index = vcl_get_worker_index ();
   vlsl->select_mp_check = 0;
-  vlsl->epoll_mp_check = 0;
   vls_mt_locks_init ();
 
   VDBG (0, "forked child main worker initialized");
@@ -1638,6 +1717,9 @@ void
 vls_app_exit (void)
 {
   vls_worker_t *wrk = vls_worker_get_current ();
+
+  /* Handle pending wrk cleanup */
+  vls_handle_pending_wrk_cleanup ();
 
   /* Unshare the sessions. VCL will clean up the worker */
   vls_unshare_vcl_worker_sessions (vcl_worker_get_current ());

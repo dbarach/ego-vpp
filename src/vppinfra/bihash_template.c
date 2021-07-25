@@ -23,6 +23,10 @@
 #define BIIHASH_MIN_ALLOC_LOG2_PAGES 10
 #endif
 
+#ifndef BIHASH_USE_HEAP
+#define BIHASH_USE_HEAP 1
+#endif
+
 static inline void *BV (alloc_aligned) (BVT (clib_bihash) * h, uword nbytes)
 {
   uword rv;
@@ -272,7 +276,7 @@ void BV (clib_bihash_initiator_init_svm)
 
   ASSERT (memory_size < (1ULL << 32));
   /* Set up for memfd sharing */
-  if ((fd = memfd_create (name, MFD_ALLOW_SEALING)) == -1)
+  if ((fd = clib_mem_vm_create_fd (CLIB_MEM_PAGE_SZ_DEFAULT, name) == -1)
     {
       clib_unix_warning ("memfd_create");
       return;

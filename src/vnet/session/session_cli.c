@@ -144,8 +144,12 @@ format_session (u8 * s, va_list * args)
     }
   else if (ss->session_state == SESSION_STATE_CONNECTING)
     {
-      s = format (s, "%-40U%v", format_transport_half_open_connection,
-		  tp, ss->connection_index, ss->thread_index, str);
+      if (ss->flags & SESSION_F_HALF_OPEN)
+	s = format (s, "%U%v", format_transport_half_open_connection, tp,
+		    ss->connection_index, ss->thread_index, verbose, str);
+      else
+	s = format (s, "%U", format_transport_connection, tp,
+		    ss->connection_index, ss->thread_index, verbose);
     }
   else
     {
@@ -451,9 +455,9 @@ session_cli_show_events_thread (vlib_main_t * vm, u32 thread_index)
 
   vlib_cli_output (vm, "Thread %d:\n", thread_index);
   vlib_cli_output (vm, " evt elements alloc: %u",
-		   pool_elts (wrk->event_elts));
+		   clib_llist_elts (wrk->event_elts));
   vlib_cli_output (vm, " ctrl evt elt data alloc: %d",
-		   pool_elts (wrk->ctrl_evts_data));
+		   clib_llist_elts (wrk->ctrl_evts_data));
 }
 
 static void
@@ -598,7 +602,7 @@ show_session_command_fn (vlib_main_t * vm, unformat_input_t * input,
       u8 *str = format (0, "%U", format_session, s, 3);
       if (do_elog && s->session_state != SESSION_STATE_LISTENING)
 	{
-	  elog_main_t *em = &vm->elog_main;
+	  elog_main_t *em = &vlib_global_main.elog_main;
 	  transport_connection_t *tc;
 	  f64 dt;
 

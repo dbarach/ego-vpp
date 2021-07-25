@@ -22,6 +22,7 @@
 #include <dpdk/device/dpdk.h>
 #include <dpdk/device/dpdk_priv.h>
 #include <vppinfra/error.h>
+#include <vlib/unix/unix.h>
 
 #define foreach_dpdk_tx_func_error			\
   _(BAD_RETVAL, "DPDK tx function returned an error")	\
@@ -211,7 +212,7 @@ dpdk_prefetch_buffer (vlib_main_t * vm, struct rte_mbuf *mb)
 {
   vlib_buffer_t *b = vlib_buffer_from_rte_mbuf (mb);
   CLIB_PREFETCH (mb, sizeof (struct rte_mbuf), STORE);
-  CLIB_PREFETCH (b, CLIB_CACHE_LINE_BYTES, LOAD);
+  clib_prefetch_load (b);
 }
 
 static_always_inline void
@@ -220,14 +221,15 @@ dpdk_buffer_tx_offload (dpdk_device_t * xd, vlib_buffer_t * b,
 {
   int is_ip4 = b->flags & VNET_BUFFER_F_IS_IP4;
   u32 tso = b->flags & VNET_BUFFER_F_GSO, max_pkt_len;
-  u32 oflags, ip_cksum, tcp_cksum, udp_cksum;
+  u32 ip_cksum, tcp_cksum, udp_cksum;
   u64 ol_flags;
+  vnet_buffer_oflags_t oflags = 0;
 
   /* Is there any work for us? */
   if (PREDICT_TRUE (((b->flags & VNET_BUFFER_F_OFFLOAD) | tso) == 0))
     return;
 
-  oflags = vnet_buffer2 (b)->oflags;
+  oflags = vnet_buffer (b)->oflags;
   ip_cksum = oflags & VNET_BUFFER_OFFLOAD_F_IP_CKSUM;
   tcp_cksum = oflags & VNET_BUFFER_OFFLOAD_F_TCP_CKSUM;
   udp_cksum = oflags & VNET_BUFFER_OFFLOAD_F_UDP_CKSUM;
@@ -310,11 +312,6 @@ VNET_DEVICE_CLASS_TX_FN (dpdk_device_class) (vlib_main_t * vm,
       or_flags = b[0]->flags | b[1]->flags | b[2]->flags | b[3]->flags;
       all_or_flags |= or_flags;
 
-      VLIB_BUFFER_TRACE_TRAJECTORY_INIT (b[0]);
-      VLIB_BUFFER_TRACE_TRAJECTORY_INIT (b[1]);
-      VLIB_BUFFER_TRACE_TRAJECTORY_INIT (b[2]);
-      VLIB_BUFFER_TRACE_TRAJECTORY_INIT (b[3]);
-
       if (or_flags & VLIB_BUFFER_NEXT_PRESENT)
 	{
 	  dpdk_validate_rte_mbuf (vm, b[0], 1);
@@ -360,21 +357,18 @@ VNET_DEVICE_CLASS_TX_FN (dpdk_device_class) (vlib_main_t * vm,
       vlib_buffer_t *b2, *b3;
       u32 or_flags;
 
-      CLIB_PREFETCH (mb[2], CLIB_CACHE_LINE_BYTES, STORE);
-      CLIB_PREFETCH (mb[3], CLIB_CACHE_LINE_BYTES, STORE);
+      clib_prefetch_store (mb[2]);
+      clib_prefetch_store (mb[3]);
       b2 = vlib_buffer_from_rte_mbuf (mb[2]);
-      CLIB_PREFETCH (b2, CLIB_CACHE_LINE_BYTES, LOAD);
+      clib_prefetch_load (b2);
       b3 = vlib_buffer_from_rte_mbuf (mb[3]);
-      CLIB_PREFETCH (b3, CLIB_CACHE_LINE_BYTES, LOAD);
+      clib_prefetch_load (b3);
 
       b[0] = vlib_buffer_from_rte_mbuf (mb[0]);
       b[1] = vlib_buffer_from_rte_mbuf (mb[1]);
 
       or_flags = b[0]->flags | b[1]->flags;
       all_or_flags |= or_flags;
-
-      VLIB_BUFFER_TRACE_TRAJECTORY_INIT (b[0]);
-      VLIB_BUFFER_TRACE_TRAJECTORY_INIT (b[1]);
 
       if (or_flags & VLIB_BUFFER_NEXT_PRESENT)
 	{
@@ -411,7 +405,6 @@ VNET_DEVICE_CLASS_TX_FN (dpdk_device_class) (vlib_main_t * vm,
     {
       b[0] = vlib_buffer_from_rte_mbuf (mb[0]);
       all_or_flags |= b[0]->flags;
-      VLIB_BUFFER_TRACE_TRAJECTORY_INIT (b[0]);
 
       dpdk_validate_rte_mbuf (vm, b[0], 1);
       dpdk_buffer_tx_offload (xd, b[0], mb[0]);
@@ -477,11 +470,15 @@ dpdk_interface_admin_up_down (vnet_main_t * vnm, u32 hw_if_index, u32 flags)
   if (is_up)
     {
       if ((xd->flags & DPDK_DEVICE_FLAG_ADMIN_UP) == 0)
-	dpdk_device_start (xd);
-      xd->flags |= DPDK_DEVICE_FLAG_ADMIN_UP;
-      f64 now = vlib_time_now (dm->vlib_main);
-      dpdk_update_counters (xd, now);
-      dpdk_update_link_state (xd, now);
+	{
+	  dpdk_device_start (xd);
+	  if (vec_len (xd->errors))
+	    return clib_error_create ("Interface start failed");
+	  xd->flags |= DPDK_DEVICE_FLAG_ADMIN_UP;
+	  f64 now = vlib_time_now (dm->vlib_main);
+	  dpdk_update_counters (xd, now);
+	  dpdk_update_link_state (xd, now);
+	}
     }
   else
     {
@@ -694,6 +691,41 @@ done:
   return err;
 }
 
+static clib_error_t *
+dpdk_interface_rx_mode_change (vnet_main_t *vnm, u32 hw_if_index, u32 qid,
+			       vnet_hw_if_rx_mode mode)
+{
+  dpdk_main_t *xm = &dpdk_main;
+  vnet_hw_interface_t *hw = vnet_get_hw_interface (vnm, hw_if_index);
+  dpdk_device_t *xd = vec_elt_at_index (xm->devices, hw->dev_instance);
+  clib_file_main_t *fm = &file_main;
+  dpdk_rx_queue_t *rxq;
+  clib_file_t *f;
+  int rv = 0;
+  if (!(xd->flags & DPDK_DEVICE_FLAG_INT_SUPPORTED))
+    return clib_error_return (0, "unsupported op (is the interface up?)", rv);
+  if (mode == VNET_HW_IF_RX_MODE_POLLING &&
+      !(xd->flags & DPDK_DEVICE_FLAG_INT_UNMASKABLE))
+    rv = rte_eth_dev_rx_intr_disable (xd->port_id, qid);
+  else if (mode == VNET_HW_IF_RX_MODE_POLLING)
+    {
+      rxq = vec_elt_at_index (xd->rx_queues, qid);
+      f = pool_elt_at_index (fm->file_pool, rxq->clib_file_index);
+      fm->file_update (f, UNIX_FILE_UPDATE_DELETE);
+    }
+  else if (!(xd->flags & DPDK_DEVICE_FLAG_INT_UNMASKABLE))
+    rv = rte_eth_dev_rx_intr_enable (xd->port_id, qid);
+  else
+    {
+      rxq = vec_elt_at_index (xd->rx_queues, qid);
+      f = pool_elt_at_index (fm->file_pool, rxq->clib_file_index);
+      fm->file_update (f, UNIX_FILE_UPDATE_ADD);
+    }
+  if (rv)
+    return clib_error_return (0, "dpdk_interface_rx_mode_change err %d", rv);
+  return 0;
+}
+
 /* *INDENT-OFF* */
 VNET_DEVICE_CLASS (dpdk_device_class) = {
   .name = "dpdk",
@@ -711,6 +743,7 @@ VNET_DEVICE_CLASS (dpdk_device_class) = {
   .format_flow = format_dpdk_flow,
   .flow_ops_function = dpdk_flow_ops_fn,
   .set_rss_queues_function = dpdk_interface_set_rss_queues,
+  .rx_mode_change_function = dpdk_interface_rx_mode_change,
 };
 /* *INDENT-ON* */
 

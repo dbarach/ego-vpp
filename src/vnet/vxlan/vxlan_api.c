@@ -25,35 +25,16 @@
 #include <vnet/feature/feature.h>
 #include <vnet/vxlan/vxlan.h>
 #include <vnet/fib/fib_table.h>
-
 #include <vnet/ip/ip_types_api.h>
 #include <vnet/udp/udp_local.h>
+#include <vnet/format_fns.h>
+#include <vxlan/vxlan.api_enum.h>
+#include <vxlan/vxlan.api_types.h>
 
-#include <vnet/vnet_msg_enum.h>
+static u16 msg_id_base;
 
-#define vl_typedefs		/* define message structures */
-#include <vnet/vnet_all_api_h.h>
-#undef vl_typedefs
-
-#define vl_endianfun		/* define message structures */
-#include <vnet/vnet_all_api_h.h>
-#undef vl_endianfun
-
-/* instantiate all the print functions we know about */
-#define vl_print(handle, ...) vlib_cli_output (handle, __VA_ARGS__)
-#define vl_printfun
-#include <vnet/vnet_all_api_h.h>
-#undef vl_printfun
-
+#define REPLY_MSG_ID_BASE msg_id_base
 #include <vlibapi/api_helper_macros.h>
-
-#define foreach_vpe_api_msg                                                   \
-  _ (SW_INTERFACE_SET_VXLAN_BYPASS, sw_interface_set_vxlan_bypass)            \
-  _ (VXLAN_ADD_DEL_TUNNEL, vxlan_add_del_tunnel)                              \
-  _ (VXLAN_TUNNEL_DUMP, vxlan_tunnel_dump)                                    \
-  _ (VXLAN_ADD_DEL_TUNNEL_V2, vxlan_add_del_tunnel_v2)                        \
-  _ (VXLAN_TUNNEL_V2_DUMP, vxlan_tunnel_v2_dump)                              \
-  _ (VXLAN_OFFLOAD_RX, vxlan_offload_rx)
 
 static void
 vl_api_vxlan_offload_rx_t_handler (vl_api_vxlan_offload_rx_t * mp)
@@ -124,62 +105,58 @@ static void
   REPLY_MACRO (VL_API_SW_INTERFACE_SET_VXLAN_BYPASS_REPLY);
 }
 
-static void vl_api_vxlan_add_del_tunnel_t_handler
-  (vl_api_vxlan_add_del_tunnel_t * mp)
+static int
+vxlan_add_del_tunnel_clean_input (vnet_vxlan_add_del_tunnel_args_t *a,
+				  u32 encap_vrf_id)
+{
+  a->is_ip6 = !ip46_address_is_ip4 (&a->src);
+
+  a->encap_fib_index = fib_table_find (fib_ip_proto (a->is_ip6), encap_vrf_id);
+  if (a->encap_fib_index == ~0)
+    {
+      return VNET_API_ERROR_NO_SUCH_FIB;
+    }
+
+  if (ip46_address_is_ip4 (&a->src) != ip46_address_is_ip4 (&a->dst))
+    {
+      return VNET_API_ERROR_INVALID_VALUE;
+    }
+
+  /* Check src & dst are different */
+  if (ip46_address_cmp (&a->dst, &a->src) == 0)
+    {
+      return VNET_API_ERROR_SAME_SRC_DST;
+    }
+  if (ip46_address_is_multicast (&a->dst) &&
+      !vnet_sw_if_index_is_api_valid (a->mcast_sw_if_index))
+    {
+      return VNET_API_ERROR_INVALID_SW_IF_INDEX;
+    }
+  return 0;
+}
+
+static void
+vl_api_vxlan_add_del_tunnel_t_handler (vl_api_vxlan_add_del_tunnel_t *mp)
 {
   vl_api_vxlan_add_del_tunnel_reply_t *rmp;
+  u32 sw_if_index = ~0;
   int rv = 0;
-  bool is_ipv6;
-  u32 fib_index;
-  ip46_address_t src, dst;
-
-  ip_address_decode (&mp->src_address, &src);
-  ip_address_decode (&mp->dst_address, &dst);
-
-  if (ip46_address_is_ip4 (&src) != ip46_address_is_ip4 (&dst))
-    {
-      rv = VNET_API_ERROR_INVALID_VALUE;
-      goto out;
-    }
-
-  is_ipv6 = !ip46_address_is_ip4 (&src);
-
-  fib_index = fib_table_find (fib_ip_proto (is_ipv6),
-			      ntohl (mp->encap_vrf_id));
-  if (fib_index == ~0)
-    {
-      rv = VNET_API_ERROR_NO_SUCH_FIB;
-      goto out;
-    }
 
   vnet_vxlan_add_del_tunnel_args_t a = {
     .is_add = mp->is_add,
-    .is_ip6 = is_ipv6,
     .instance = ntohl (mp->instance),
     .mcast_sw_if_index = ntohl (mp->mcast_sw_if_index),
-    .encap_fib_index = fib_index,
     .decap_next_index = ntohl (mp->decap_next_index),
     .vni = ntohl (mp->vni),
-    .dst = dst,
-    .src = src,
-    .dst_port = is_ipv6 ? UDP_DST_PORT_vxlan6 : UDP_DST_PORT_vxlan,
-    .src_port = is_ipv6 ? UDP_DST_PORT_vxlan6 : UDP_DST_PORT_vxlan,
   };
+  ip_address_decode (&mp->src_address, &a.src);
+  ip_address_decode (&mp->dst_address, &a.dst);
 
-  /* Check src & dst are different */
-  if (ip46_address_cmp (&a.dst, &a.src) == 0)
-    {
-      rv = VNET_API_ERROR_SAME_SRC_DST;
-      goto out;
-    }
-  if (ip46_address_is_multicast (&a.dst) &&
-      !vnet_sw_if_index_is_api_valid (a.mcast_sw_if_index))
-    {
-      rv = VNET_API_ERROR_INVALID_SW_IF_INDEX;
-      goto out;
-    }
-
-  u32 sw_if_index = ~0;
+  rv = vxlan_add_del_tunnel_clean_input (&a, ntohl (mp->encap_vrf_id));
+  if (rv)
+    goto out;
+  a.dst_port = a.is_ip6 ? UDP_DST_PORT_vxlan6 : UDP_DST_PORT_vxlan,
+  a.src_port = a.is_ip6 ? UDP_DST_PORT_vxlan6 : UDP_DST_PORT_vxlan,
   rv = vnet_vxlan_add_del_tunnel (&a, &sw_if_index);
 
 out:
@@ -193,62 +170,58 @@ static void
 vl_api_vxlan_add_del_tunnel_v2_t_handler (vl_api_vxlan_add_del_tunnel_v2_t *mp)
 {
   vl_api_vxlan_add_del_tunnel_v2_reply_t *rmp;
+  u32 sw_if_index = ~0;
   int rv = 0;
-  bool is_ipv6;
-  u32 fib_index;
-  ip46_address_t src, dst;
-
-  ip_address_decode (&mp->src_address, &src);
-  ip_address_decode (&mp->dst_address, &dst);
-
-  if (ip46_address_is_ip4 (&src) != ip46_address_is_ip4 (&dst))
-    {
-      rv = VNET_API_ERROR_INVALID_VALUE;
-      goto out;
-    }
-
-  is_ipv6 = !ip46_address_is_ip4 (&src);
-
-  fib_index =
-    fib_table_find (fib_ip_proto (is_ipv6), ntohl (mp->encap_vrf_id));
-  if (fib_index == ~0)
-    {
-      rv = VNET_API_ERROR_NO_SUCH_FIB;
-      goto out;
-    }
 
   vnet_vxlan_add_del_tunnel_args_t a = {
     .is_add = mp->is_add,
-    .is_ip6 = is_ipv6,
     .instance = ntohl (mp->instance),
     .mcast_sw_if_index = ntohl (mp->mcast_sw_if_index),
-    .encap_fib_index = fib_index,
     .decap_next_index = ntohl (mp->decap_next_index),
     .vni = ntohl (mp->vni),
-    .dst = dst,
-    .src = src,
     .dst_port = ntohs (mp->dst_port),
     .src_port = ntohs (mp->src_port),
   };
 
-  /* Check src & dst are different */
-  if (ip46_address_cmp (&a.dst, &a.src) == 0)
-    {
-      rv = VNET_API_ERROR_SAME_SRC_DST;
-      goto out;
-    }
-  if (ip46_address_is_multicast (&a.dst) &&
-      !vnet_sw_if_index_is_api_valid (a.mcast_sw_if_index))
-    {
-      rv = VNET_API_ERROR_INVALID_SW_IF_INDEX;
-      goto out;
-    }
+  ip_address_decode (&mp->src_address, &a.src);
+  ip_address_decode (&mp->dst_address, &a.dst);
 
-  u32 sw_if_index = ~0;
+  rv = vxlan_add_del_tunnel_clean_input (&a, ntohl (mp->encap_vrf_id));
+  if (rv)
+    goto out;
   rv = vnet_vxlan_add_del_tunnel (&a, &sw_if_index);
-
 out:
   REPLY_MACRO2 (VL_API_VXLAN_ADD_DEL_TUNNEL_V2_REPLY,
+		({ rmp->sw_if_index = ntohl (sw_if_index); }));
+}
+
+static void
+vl_api_vxlan_add_del_tunnel_v3_t_handler (vl_api_vxlan_add_del_tunnel_v3_t *mp)
+{
+  vl_api_vxlan_add_del_tunnel_v3_reply_t *rmp;
+  u32 sw_if_index = ~0;
+  int rv = 0;
+
+  vnet_vxlan_add_del_tunnel_args_t a = {
+    .is_add = mp->is_add,
+    .instance = ntohl (mp->instance),
+    .mcast_sw_if_index = ntohl (mp->mcast_sw_if_index),
+    .decap_next_index = ntohl (mp->decap_next_index),
+    .vni = ntohl (mp->vni),
+    .dst_port = ntohs (mp->dst_port),
+    .src_port = ntohs (mp->src_port),
+    .is_l3 = mp->is_l3,
+  };
+
+  ip_address_decode (&mp->src_address, &a.src);
+  ip_address_decode (&mp->dst_address, &a.dst);
+
+  rv = vxlan_add_del_tunnel_clean_input (&a, ntohl (mp->encap_vrf_id));
+  if (rv)
+    goto out;
+  rv = vnet_vxlan_add_del_tunnel (&a, &sw_if_index);
+out:
+  REPLY_MACRO2 (VL_API_VXLAN_ADD_DEL_TUNNEL_V3_REPLY,
 		({ rmp->sw_if_index = ntohl (sw_if_index); }));
 }
 
@@ -261,7 +234,7 @@ static void send_vxlan_tunnel_details
 
   rmp = vl_msg_api_alloc (sizeof (*rmp));
   clib_memset (rmp, 0, sizeof (*rmp));
-  rmp->_vl_msg_id = ntohs (VL_API_VXLAN_TUNNEL_DETAILS);
+  rmp->_vl_msg_id = ntohs (REPLY_MSG_ID_BASE + VL_API_VXLAN_TUNNEL_DETAILS);
 
   ip_address_encode (&t->src, IP46_TYPE_ANY, &rmp->src_address);
   ip_address_encode (&t->dst, IP46_TYPE_ANY, &rmp->dst_address);
@@ -322,7 +295,7 @@ send_vxlan_tunnel_v2_details (vxlan_tunnel_t *t, vl_api_registration_t *reg,
 
   rmp = vl_msg_api_alloc (sizeof (*rmp));
   clib_memset (rmp, 0, sizeof (*rmp));
-  rmp->_vl_msg_id = ntohs (VL_API_VXLAN_TUNNEL_V2_DETAILS);
+  rmp->_vl_msg_id = ntohs (REPLY_MSG_ID_BASE + VL_API_VXLAN_TUNNEL_V2_DETAILS);
 
   ip_address_encode (&t->src, IP46_TYPE_ANY, &rmp->src_address);
   ip_address_encode (&t->dst, IP46_TYPE_ANY, &rmp->dst_address);
@@ -375,46 +348,18 @@ vl_api_vxlan_tunnel_v2_dump_t_handler (vl_api_vxlan_tunnel_v2_dump_t *mp)
     }
 }
 
-/*
- * vpe_api_hookup
- * Add vpe's API message handlers to the table.
- * vlib has already mapped shared memory and
- * added the client registration handlers.
- * See .../vlib-api/vlibmemory/memclnt_vlib.c:memclnt_process()
- */
-#define vl_msg_name_crc_list
-#include <vnet/vnet_all_api_h.h>
-#undef vl_msg_name_crc_list
-
-static void
-setup_message_id_table (api_main_t * am)
-{
-#define _(id,n,crc) vl_msg_api_add_msg_name_crc (am, #n "_" #crc, id);
-  foreach_vl_msg_name_crc_vxlan;
-#undef _
-}
-
+#include <vxlan/vxlan.api.c>
 static clib_error_t *
 vxlan_api_hookup (vlib_main_t * vm)
 {
   api_main_t *am = vlibapi_get_main ();
-
-#define _(N,n)                                                  \
-    vl_msg_api_set_handlers(VL_API_##N, #n,                     \
-                           vl_api_##n##_t_handler,              \
-                           vl_noop_handler,                     \
-                           vl_api_##n##_t_endian,               \
-                           vl_api_##n##_t_print,                \
-                           sizeof(vl_api_##n##_t), 1);
-  foreach_vpe_api_msg;
-#undef _
 
   am->api_trace_cfg[VL_API_VXLAN_ADD_DEL_TUNNEL].size += 16 * sizeof (u32);
 
   /*
    * Set up the (msg_name, crc, message-id) table
    */
-  setup_message_id_table (am);
+  msg_id_base = setup_message_id_table ();
 
   return 0;
 }

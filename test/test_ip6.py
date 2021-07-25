@@ -7,14 +7,14 @@ import unittest
 from parameterized import parameterized
 import scapy.compat
 import scapy.layers.inet6 as inet6
-from scapy.layers.inet import UDP
+from scapy.layers.inet import UDP, IP
 from scapy.contrib.mpls import MPLS
 from scapy.layers.inet6 import IPv6, ICMPv6ND_NS, ICMPv6ND_RS, \
     ICMPv6ND_RA, ICMPv6NDOptMTU, ICMPv6NDOptSrcLLAddr, ICMPv6NDOptPrefixInfo, \
     ICMPv6ND_NA, ICMPv6NDOptDstLLAddr, ICMPv6DestUnreach, icmp6types, \
     ICMPv6TimeExceeded, ICMPv6EchoRequest, ICMPv6EchoReply, \
     IPv6ExtHdrHopByHop, ICMPv6MLReport2, ICMPv6MLDMultAddrRec
-from scapy.layers.l2 import Ether, Dot1Q
+from scapy.layers.l2 import Ether, Dot1Q, GRE
 from scapy.packet import Raw
 from scapy.utils6 import in6_getnsma, in6_getnsmac, in6_ptop, in6_islladdr, \
     in6_mactoifaceid
@@ -28,13 +28,15 @@ from vpp_ip_route import VppIpRoute, VppRoutePath, find_route, VppIpMRoute, \
     VppMRoutePath, VppMplsIpBind, \
     VppMplsRoute, VppMplsTable, VppIpTable, FibPathType, FibPathProto, \
     VppIpInterfaceAddress, find_route_in_dump, find_mroute_in_dump, \
-    VppIp6LinkLocalAddress
+    VppIp6LinkLocalAddress, VppIpRouteV2
 from vpp_neighbor import find_nbr, VppNeighbor
 from vpp_ipip_tun_interface import VppIpIpTunInterface
 from vpp_pg_interface import is_ipv6_misc
 from vpp_sub_interface import VppSubInterface, VppDot1QSubint
 from vpp_policer import VppPolicer, PolicerAction
 from ipaddress import IPv6Network, IPv6Address
+from vpp_gre_interface import VppGreInterface
+from vpp_teib import VppTeib
 
 AF_INET6 = socket.AF_INET6
 
@@ -503,6 +505,18 @@ class TestIPv6(TestIPv6ND):
                                 "NS to/from link-local",
                                 dst_ip=self.pg0._remote_hosts[3].ip6_ll,
                                 tgt_ip=self.pg0.local_ip6_ll)
+
+        #
+        # do not respond to a NS for the peer's address
+        #
+        p = (Ether(dst=in6_getnsmac(nsma), src=self.pg0.remote_mac) /
+             IPv6(dst=d,
+                  src=self.pg0._remote_hosts[3].ip6_ll) /
+             ICMPv6ND_NS(tgt=self.pg0._remote_hosts[3].ip6_ll) /
+             ICMPv6NDOptSrcLLAddr(
+                 lladdr=self.pg0.remote_mac))
+
+        self.send_and_assert_no_replies(self.pg0, p)
 
         #
         # we should have learned an ND entry for the peer's link-local
@@ -2320,7 +2334,7 @@ class TestIP6Punt(IP6PuntSetup, VppTestCase):
 
 class TestIP6PuntHandoff(IP6PuntSetup, VppTestCase):
     """ IPv6 Punt Police/Redirect """
-    worker_config = "workers 2"
+    vpp_worker_count = 2
 
     def setUp(self):
         super(TestIP6PuntHandoff, self).setUp()
@@ -2990,6 +3004,11 @@ class TestIP6LinkLocal(VppTestCase):
         ll2 = "fe80:2::2"
         ll3 = "fe80:3::3"
 
+        VppNeighbor(self,
+                    self.pg0.sw_if_index,
+                    self.pg0.remote_mac,
+                    ll2).add_vpp_config()
+
         VppIpInterfaceAddress(self, self.pg0, ll1, 128).add_vpp_config()
 
         #
@@ -3036,6 +3055,75 @@ class TestIP6LinkLocal(VppTestCase):
 
         VppIp6LinkLocalAddress(self, self.pg1, ll3).add_vpp_config()
         self.send_and_expect(self.pg1, [p_echo_request_3], self.pg1)
+
+    def test_ip6_ll_p2p(self):
+        """ IPv6 Link Local P2P (GRE)"""
+
+        self.pg0.config_ip4()
+        self.pg0.resolve_arp()
+        gre_if = VppGreInterface(self,
+                                 self.pg0.local_ip4,
+                                 self.pg0.remote_ip4).add_vpp_config()
+        gre_if.admin_up()
+
+        ll1 = "fe80:1::1"
+        ll2 = "fe80:2::2"
+
+        VppIpInterfaceAddress(self, gre_if, ll1, 128).add_vpp_config()
+
+        self.logger.info(self.vapi.cli("sh ip6-ll gre0 fe80:2::2"))
+
+        p_echo_request_1 = (Ether(src=self.pg0.remote_mac,
+                                  dst=self.pg0.local_mac) /
+                            IP(src=self.pg0.remote_ip4,
+                               dst=self.pg0.local_ip4) /
+                            GRE() /
+                            IPv6(src=ll2, dst=ll1) /
+                            ICMPv6EchoRequest())
+        self.send_and_expect(self.pg0, [p_echo_request_1], self.pg0)
+
+        self.pg0.unconfig_ip4()
+        gre_if.remove_vpp_config()
+
+    def test_ip6_ll_p2mp(self):
+        """ IPv6 Link Local P2MP (GRE)"""
+
+        self.pg0.config_ip4()
+        self.pg0.resolve_arp()
+
+        gre_if = VppGreInterface(
+            self,
+            self.pg0.local_ip4,
+            "0.0.0.0",
+            mode=(VppEnum.vl_api_tunnel_mode_t.
+                  TUNNEL_API_MODE_MP)).add_vpp_config()
+        gre_if.admin_up()
+
+        ll1 = "fe80:1::1"
+        ll2 = "fe80:2::2"
+
+        VppIpInterfaceAddress(self, gre_if, ll1, 128).add_vpp_config()
+
+        p_echo_request_1 = (Ether(src=self.pg0.remote_mac,
+                                  dst=self.pg0.local_mac) /
+                            IP(src=self.pg0.remote_ip4,
+                               dst=self.pg0.local_ip4) /
+                            GRE() /
+                            IPv6(src=ll2, dst=ll1) /
+                            ICMPv6EchoRequest())
+
+        # no route back at this point
+        self.send_and_assert_no_replies(self.pg0, [p_echo_request_1])
+
+        # add teib entry for the peer
+        teib = VppTeib(self, gre_if, ll2, self.pg0.remote_ip4)
+        teib.add_vpp_config()
+
+        self.logger.info(self.vapi.cli("sh ip6-ll gre0 %s" % ll2))
+        self.send_and_expect(self.pg0, [p_echo_request_1], self.pg0)
+
+        # teardown
+        self.pg0.unconfig_ip4()
 
 
 class TestIPv6PathMTU(VppTestCase):
@@ -3267,6 +3355,232 @@ class TestIPv6PathMTU(VppTestCase):
         pmtu.remove_vpp_config()
         self.send_and_expect(self.pg0, [p_2k], self.pg1, n_rx=2)
         self.send_and_expect(self.pg0, [p_1k], self.pg1)
+
+
+class TestIPFibSource(VppTestCase):
+    """ IPv6 Table FibSource """
+
+    @classmethod
+    def setUpClass(cls):
+        super(TestIPFibSource, cls).setUpClass()
+
+    @classmethod
+    def tearDownClass(cls):
+        super(TestIPFibSource, cls).tearDownClass()
+
+    def setUp(self):
+        super(TestIPFibSource, self).setUp()
+
+        self.create_pg_interfaces(range(2))
+
+        for i in self.pg_interfaces:
+            i.admin_up()
+            i.config_ip6()
+            i.resolve_arp()
+            i.generate_remote_hosts(2)
+            i.configure_ipv6_neighbors()
+
+    def tearDown(self):
+        super(TestIPFibSource, self).tearDown()
+        for i in self.pg_interfaces:
+            i.admin_down()
+            i.unconfig_ip4()
+
+    def test_fib_source(self):
+        """ IP Table FibSource """
+
+        routes = self.vapi.ip_route_v2_dump(0, True)
+
+        # 2 interfaces (4 routes) + 2 specials + 4 neighbours = 10 routes
+        self.assertEqual(len(routes), 10)
+
+        # dump all the sources in the FIB
+        sources = self.vapi.fib_source_dump()
+        for source in sources:
+            if (source.src.name == "API"):
+                api_source = source.src
+            if (source.src.name == "interface"):
+                intf_source = source.src
+            if (source.src.name == "adjacency"):
+                adj_source = source.src
+            if (source.src.name == "special"):
+                special_source = source.src
+            if (source.src.name == "default-route"):
+                dr_source = source.src
+
+        # dump the individual route types
+        routes = self.vapi.ip_route_v2_dump(0, True, src=adj_source.id)
+        self.assertEqual(len(routes), 4)
+        routes = self.vapi.ip_route_v2_dump(0, True, src=intf_source.id)
+        self.assertEqual(len(routes), 4)
+        routes = self.vapi.ip_route_v2_dump(0, True, src=special_source.id)
+        self.assertEqual(len(routes), 1)
+        routes = self.vapi.ip_route_v2_dump(0, True, src=dr_source.id)
+        self.assertEqual(len(routes), 1)
+
+        # add a new soure that'a better than the API
+        self.vapi.fib_source_add(src={'name': "bgp",
+                                      "priority": api_source.priority - 1})
+
+        # dump all the sources to check our new one is there
+        sources = self.vapi.fib_source_dump()
+
+        for source in sources:
+            if (source.src.name == "bgp"):
+                bgp_source = source.src
+
+        self.assertTrue(bgp_source)
+        self.assertEqual(bgp_source.priority,
+                         api_source.priority - 1)
+
+        # add a route with the default API source
+        r1 = VppIpRouteV2(
+            self, "2001::1", 128,
+            [VppRoutePath(self.pg0.remote_ip6,
+                          self.pg0.sw_if_index)]).add_vpp_config()
+
+        r2 = VppIpRouteV2(self, "2001::1", 128,
+                          [VppRoutePath(self.pg1.remote_ip6,
+                                        self.pg1.sw_if_index)],
+                          src=bgp_source.id).add_vpp_config()
+
+        # ensure the BGP source takes priority
+        p = (Ether(src=self.pg0.remote_mac,
+                   dst=self.pg0.local_mac) /
+             IPv6(src=self.pg0.remote_ip6, dst="2001::1") /
+             inet6.UDP(sport=1234, dport=1234) /
+             Raw(b'\xa5' * 100))
+
+        self.send_and_expect(self.pg0, [p], self.pg1)
+
+        r2.remove_vpp_config()
+        r1.remove_vpp_config()
+
+        self.assertFalse(find_route(self, "2001::1", 128))
+
+
+class TestIPxAF(VppTestCase):
+    """ IP cross AF """
+
+    @classmethod
+    def setUpClass(cls):
+        super(TestIPxAF, cls).setUpClass()
+
+    @classmethod
+    def tearDownClass(cls):
+        super(TestIPxAF, cls).tearDownClass()
+
+    def setUp(self):
+        super(TestIPxAF, self).setUp()
+
+        self.create_pg_interfaces(range(2))
+
+        for i in self.pg_interfaces:
+            i.admin_up()
+            i.config_ip6()
+            i.config_ip4()
+            i.resolve_arp()
+            i.resolve_ndp()
+
+    def tearDown(self):
+        super(TestIPxAF, self).tearDown()
+        for i in self.pg_interfaces:
+            i.admin_down()
+            i.unconfig_ip4()
+            i.unconfig_ip6()
+
+    def test_x_af(self):
+        """ Cross AF routing """
+
+        N_PKTS = 63
+        # a v4 route via a v6 attached next-hop
+        VppIpRoute(
+            self, "1.1.1.1", 32,
+            [VppRoutePath(self.pg1.remote_ip6,
+                          self.pg1.sw_if_index)]).add_vpp_config()
+
+        p = (Ether(src=self.pg0.remote_mac,
+                   dst=self.pg0.local_mac) /
+             IP(src=self.pg0.remote_ip4, dst="1.1.1.1") /
+             UDP(sport=1234, dport=1234) /
+             Raw(b'\xa5' * 100))
+        rxs = self.send_and_expect(self.pg0, p * N_PKTS, self.pg1)
+
+        for rx in rxs:
+            self.assertEqual(rx[IP].dst, "1.1.1.1")
+
+        # a v6 route via a v4 attached next-hop
+        VppIpRoute(
+            self, "2001::1", 128,
+            [VppRoutePath(self.pg1.remote_ip4,
+                          self.pg1.sw_if_index)]).add_vpp_config()
+
+        p = (Ether(src=self.pg0.remote_mac,
+                   dst=self.pg0.local_mac) /
+             IPv6(src=self.pg0.remote_ip6, dst="2001::1") /
+             UDP(sport=1234, dport=1234) /
+             Raw(b'\xa5' * 100))
+        rxs = self.send_and_expect(self.pg0, p * N_PKTS, self.pg1)
+
+        for rx in rxs:
+            self.assertEqual(rx[IPv6].dst, "2001::1")
+
+        # a recursive v4 route via a v6 next-hop (from above)
+        VppIpRoute(
+            self, "2.2.2.2", 32,
+            [VppRoutePath("2001::1",
+                          0xffffffff)]).add_vpp_config()
+
+        p = (Ether(src=self.pg0.remote_mac,
+                   dst=self.pg0.local_mac) /
+             IP(src=self.pg0.remote_ip4, dst="2.2.2.2") /
+             UDP(sport=1234, dport=1234) /
+             Raw(b'\xa5' * 100))
+        rxs = self.send_and_expect(self.pg0, p * N_PKTS, self.pg1)
+
+        # a recursive v4 route via a v6 next-hop
+        VppIpRoute(
+            self, "2.2.2.3", 32,
+            [VppRoutePath(self.pg1.remote_ip6,
+                          0xffffffff)]).add_vpp_config()
+
+        p = (Ether(src=self.pg0.remote_mac,
+                   dst=self.pg0.local_mac) /
+             IP(src=self.pg0.remote_ip4, dst="2.2.2.3") /
+             UDP(sport=1234, dport=1234) /
+             Raw(b'\xa5' * 100))
+        rxs = self.send_and_expect(self.pg0, p * N_PKTS, self.pg1)
+
+        # a recursive v6 route via a v4 next-hop
+        VppIpRoute(
+            self, "3001::1", 128,
+            [VppRoutePath(self.pg1.remote_ip4,
+                          0xffffffff)]).add_vpp_config()
+
+        p = (Ether(src=self.pg0.remote_mac,
+                   dst=self.pg0.local_mac) /
+             IPv6(src=self.pg0.remote_ip6, dst="3001::1") /
+             UDP(sport=1234, dport=1234) /
+             Raw(b'\xa5' * 100))
+        rxs = self.send_and_expect(self.pg0, p * N_PKTS, self.pg1)
+
+        for rx in rxs:
+            self.assertEqual(rx[IPv6].dst, "3001::1")
+
+        VppIpRoute(
+            self, "3001::2", 128,
+            [VppRoutePath("1.1.1.1",
+                          0xffffffff)]).add_vpp_config()
+
+        p = (Ether(src=self.pg0.remote_mac,
+                   dst=self.pg0.local_mac) /
+             IPv6(src=self.pg0.remote_ip6, dst="3001::2") /
+             UDP(sport=1234, dport=1234) /
+             Raw(b'\xa5' * 100))
+        rxs = self.send_and_expect(self.pg0, p * N_PKTS, self.pg1)
+
+        for rx in rxs:
+            self.assertEqual(rx[IPv6].dst, "3001::2")
 
 
 if __name__ == '__main__':

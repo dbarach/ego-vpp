@@ -128,9 +128,16 @@ vcl_worker_cleanup (vcl_worker_t * wrk, u8 notify_vpp)
 
   if (wrk->mqs_epfd > 0)
     close (wrk->mqs_epfd);
+  pool_free (wrk->sessions);
+  pool_free (wrk->mq_evt_conns);
   hash_free (wrk->session_index_by_vpp_handles);
   vec_free (wrk->mq_events);
   vec_free (wrk->mq_msg_vector);
+  vec_free (wrk->unhandled_evts_vector);
+  vec_free (wrk->pending_session_wrk_updates);
+  clib_bitmap_free (wrk->rd_bitmap);
+  clib_bitmap_free (wrk->wr_bitmap);
+  clib_bitmap_free (wrk->ex_bitmap);
   vcl_worker_free (wrk);
   clib_spinlock_unlock (&vcm->workers_lock);
 }
@@ -138,8 +145,14 @@ vcl_worker_cleanup (vcl_worker_t * wrk, u8 notify_vpp)
 static void
 vcl_worker_cleanup_cb (void *arg)
 {
-  vcl_worker_t *wrk = vcl_worker_get_current ();
-  u32 wrk_index = wrk->wrk_index;
+  vcl_worker_t *wrk;
+  u32 wrk_index;
+
+  wrk_index = vcl_get_worker_index ();
+  wrk = vcl_worker_get_if_valid (wrk_index);
+  if (!wrk)
+    return;
+
   vcl_worker_cleanup (wrk, 1 /* notify vpp */ );
   vcl_set_worker_index (~0);
   VDBG (0, "cleaned up worker %u", wrk_index);
@@ -182,6 +195,7 @@ vcl_worker_alloc_and_init ()
 	}
     }
 
+  wrk->ep_lt_current = VCL_INVALID_SESSION_INDEX;
   wrk->session_index_by_vpp_handles = hash_create (0, sizeof (uword));
   clib_time_init (&wrk->clib_time);
   vec_validate (wrk->mq_events, 64);
@@ -302,11 +316,30 @@ vcl_session_write_ready (vcl_session_t * s)
       else
 	return VPPCOM_EBADFD;
     }
+  else if (s->session_state == VCL_STATE_UPDATED)
+    {
+      return 0;
+    }
   else
     {
       return (s->session_state == VCL_STATE_DISCONNECT) ?
 	VPPCOM_ECONNRESET : VPPCOM_ENOTCONN;
     }
+}
+
+int
+vcl_session_alloc_ext_cfg (vcl_session_t *s,
+			   transport_endpt_ext_cfg_type_t type, u32 len)
+{
+  if (s->ext_config)
+    return -1;
+
+  s->ext_config = clib_mem_alloc (len);
+  clib_memset (s->ext_config, 0, len);
+  s->ext_config->len = len;
+  s->ext_config->type = type;
+
+  return 0;
 }
 
 int
@@ -453,8 +486,11 @@ vcl_session_detach_fifos (vcl_session_t *s)
   fifo_segment_free_client_fifo (fs, s->tx_fifo);
   if (s->ct_rx_fifo)
     {
-      fs = fifo_segment_get_segment (&vcm->segment_main,
-				     s->ct_rx_fifo->segment_index);
+      fs = fifo_segment_get_segment_if_valid (&vcm->segment_main,
+					      s->ct_rx_fifo->segment_index);
+      if (!fs)
+	goto done;
+
       fifo_segment_free_client_fifo (fs, s->ct_rx_fifo);
       fifo_segment_free_client_fifo (fs, s->ct_tx_fifo);
     }
@@ -506,6 +542,52 @@ vcl_segment_discover_mqs (uword segment_handle, int *fds, u32 n_fds)
   fifo_segment_msg_qs_discover (fs, fds, n_fds);
 
   clib_rwlock_reader_unlock (&vcm->segment_table_lock);
+
+  return 0;
+}
+
+svm_fifo_chunk_t *
+vcl_segment_alloc_chunk (uword segment_handle, u32 slice_index, u32 size,
+			 uword *offset)
+{
+  svm_fifo_chunk_t *c;
+  fifo_segment_t *fs;
+  u32 fs_index;
+
+  fs_index = vcl_segment_table_lookup (segment_handle);
+  if (fs_index == VCL_INVALID_SEGMENT_INDEX)
+    {
+      VDBG (0, "ERROR: mq segment %lx for is not attached!", segment_handle);
+      return 0;
+    }
+
+  clib_rwlock_reader_lock (&vcm->segment_table_lock);
+
+  fs = fifo_segment_get_segment (&vcm->segment_main, fs_index);
+  c = fifo_segment_alloc_chunk_w_slice (fs, slice_index, size);
+  *offset = fifo_segment_chunk_offset (fs, c);
+
+  clib_rwlock_reader_unlock (&vcm->segment_table_lock);
+
+  return c;
+}
+
+int
+vcl_session_share_fifos (vcl_session_t *s, svm_fifo_t *rxf, svm_fifo_t *txf)
+{
+  vcl_worker_t *wrk = vcl_worker_get_current ();
+  fifo_segment_t *fs;
+
+  clib_rwlock_reader_lock (&vcm->segment_table_lock);
+
+  fs = fifo_segment_get_segment (&vcm->segment_main, rxf->segment_index);
+  s->rx_fifo = fifo_segment_duplicate_fifo (fs, rxf);
+  s->tx_fifo = fifo_segment_duplicate_fifo (fs, txf);
+
+  clib_rwlock_reader_unlock (&vcm->segment_table_lock);
+
+  svm_fifo_add_subscriber (s->rx_fifo, wrk->vpp_wrk_index);
+  svm_fifo_add_subscriber (s->tx_fifo, wrk->vpp_wrk_index);
 
   return 0;
 }

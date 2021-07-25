@@ -147,7 +147,6 @@ typedef struct _transport_connection
 #define c_pacer connection.pacer
 #define c_flags connection.flags
 #define s_ho_handle pacer.bytes_per_sec
-#define c_s_ho_handle connection.pacer.bytes_per_sec
 } transport_connection_t;
 
 STATIC_ASSERT (STRUCT_OFFSET_OF (transport_connection_t, s_index)
@@ -164,7 +163,8 @@ STATIC_ASSERT (sizeof (transport_connection_t) <= 128,
   _ (NONE, "ct", "C")                                                         \
   _ (TLS, "tls", "J")                                                         \
   _ (QUIC, "quic", "Q")                                                       \
-  _ (DTLS, "dtls", "D")
+  _ (DTLS, "dtls", "D")                                                       \
+  _ (SRTP, "srtp", "R")
 
 typedef enum _transport_proto
 {
@@ -202,11 +202,15 @@ typedef enum transport_endpt_cfg_flags_
   TRANSPORT_CFG_F_UNIDIRECTIONAL = 1 << 1,
 } transport_endpt_cfg_flags_t;
 
+/* clang-format off */
 #define foreach_transport_endpoint_cfg_fields				\
   foreach_transport_endpoint_fields					\
-  _(transport_endpoint_t, peer)						\
-  _(u16, mss)								\
-  _(u8, transport_flags)						\
+  _ (transport_endpoint_t, peer)            				\
+  _ (u32, next_node_index) 						\
+  _ (u32, next_node_opaque)						\
+  _ (u16, mss)           						\
+  _ (u8, transport_flags)						\
+/* clang-format on */
 
 typedef struct transport_endpoint_pair_
 {
@@ -214,6 +218,74 @@ typedef struct transport_endpoint_pair_
   foreach_transport_endpoint_cfg_fields
 #undef _
 } transport_endpoint_cfg_t;
+
+#define foreach_transport_endpt_cfg_flags                                     \
+  _ (CSUM_OFFLOAD)                                                            \
+  _ (GSO)                                                                     \
+  _ (RATE_SAMPLING)
+
+typedef enum transport_endpt_attr_flag_bit_
+{
+#define _(name) TRANSPORT_ENDPT_ATTR_F_BIT_##name,
+  foreach_transport_endpt_cfg_flags
+#undef _
+} __clib_packed transport_endpt_attr_flag_bit_t;
+
+typedef enum transport_endpt_attr_flag_
+{
+#define _(name)                                                               \
+  TRANSPORT_ENDPT_ATTR_F_##name = 1 << TRANSPORT_ENDPT_ATTR_F_BIT_##name,
+  foreach_transport_endpt_cfg_flags
+#undef _
+} __clib_packed transport_endpt_attr_flag_t;
+
+#define foreach_transport_attr_fields                                         \
+  _ (u64, next_output_node, NEXT_OUTPUT_NODE)                                 \
+  _ (u16, mss, MSS)                                                           \
+  _ (u8, flags, FLAGS)                                                        \
+  _ (u8, cc_algo, CC_ALGO)
+
+typedef enum transport_endpt_attr_type_
+{
+#define _(type, name, str) TRANSPORT_ENDPT_ATTR_##str,
+  foreach_transport_attr_fields
+#undef _
+} __clib_packed transport_endpt_attr_type_t;
+
+typedef struct transport_endpt_attr_
+{
+  transport_endpt_attr_type_t type;
+  union
+  {
+#define _(type, name, str) type name;
+    foreach_transport_attr_fields
+#undef _
+  };
+} transport_endpt_attr_t;
+
+typedef enum transport_endpt_ext_cfg_type_
+{
+  TRANSPORT_ENDPT_EXT_CFG_NONE,
+  TRANSPORT_ENDPT_EXT_CFG_CRYPTO,
+} transport_endpt_ext_cfg_type_t;
+
+typedef struct transport_endpt_crypto_cfg_
+{
+  u32 ckpair_index;
+  u8 crypto_engine;
+  u8 hostname[256]; /**< full domain len is 255 as per rfc 3986 */
+} transport_endpt_crypto_cfg_t;
+
+typedef struct transport_endpt_ext_cfg_
+{
+  u16 type;
+  u16 len;
+  union
+  {
+    transport_endpt_crypto_cfg_t crypto;
+    u8 data[0];
+  };
+} transport_endpt_ext_cfg_t;
 
 typedef clib_bihash_24_8_t transport_endpoint_table_t;
 

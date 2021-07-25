@@ -22,8 +22,6 @@
 #include <vnet/ipsec/ipsec.h>
 #include <vnet/ipsec/ipsec_io.h>
 
-#if WITH_LIBSSL > 0
-
 #define foreach_ipsec_output_error                   \
  _(RX_PKTS, "IPSec pkts received")                   \
  _(POLICY_DISCARD, "IPSec policy discard")           \
@@ -297,7 +295,7 @@ ipsec_output_inline (vlib_main_t * vm, vlib_node_runtime_t * node,
 	    {
 	      ipsec_sa_t *sa = 0;
 	      nc_protect++;
-	      sa = pool_elt_at_index (im->sad, p0->sa_index);
+	      sa = ipsec_sa_get (p0->sa_index);
 	      if (sa->protocol == IPSEC_PROTOCOL_ESP)
 		if (is_ipv6)
 		  next_node_index = im->esp6_encrypt_node_index;
@@ -311,7 +309,7 @@ ipsec_output_inline (vlib_main_t * vm, vlib_node_runtime_t * node,
 
 	      if (PREDICT_FALSE (b0->flags & VNET_BUFFER_F_OFFLOAD))
 		{
-		  u32 oflags = vnet_buffer2 (b0)->oflags;
+		  vnet_buffer_oflags_t oflags = vnet_buffer (b0)->oflags;
 
 		  /*
 		   * Clearing offload flags before checksum is computed
@@ -458,7 +456,6 @@ VLIB_NODE_FN (ipsec6_output_node) (vlib_main_t * vm,
   return ipsec_output_inline (vm, node, frame, 1);
 }
 
-/* *INDENT-OFF* */
 VLIB_REGISTER_NODE (ipsec6_output_node) = {
   .name = "ipsec6-output-feature",
   .vector_size = sizeof (u32),
@@ -475,38 +472,4 @@ VLIB_REGISTER_NODE (ipsec6_output_node) = {
 #undef _
   },
 };
-/* *INDENT-ON* */
 
-#else /* IPSEC > 1 */
-
-/* Dummy ipsec output node, in case when IPSec is disabled */
-
-static uword
-ipsec_output_node_fn (vlib_main_t * vm,
-		      vlib_node_runtime_t * node, vlib_frame_t * frame)
-{
-  return 0;
-}
-
-/* *INDENT-OFF* */
-VLIB_REGISTER_NODE (ipsec4_output_node) = {
-  .vector_size = sizeof (u32),
-  .function = ipsec_output_node_fn,
-  .name = "ipsec4-output-feature",
-};
-
-VLIB_REGISTER_NODE (ipsec6_output_node) = {
-  .vector_size = sizeof (u32),
-  .function = ipsec_output_node_fn,
-  .name = "ipsec6-output-feature",
-};
-/* *INDENT-ON* */
-#endif
-
-/*
- * fd.io coding-style-patch-verification: ON
- *
- * Local Variables:
- * eval: (c-set-style "gnu")
- * End:
- */

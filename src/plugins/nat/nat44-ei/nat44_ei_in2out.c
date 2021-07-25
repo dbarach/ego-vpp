@@ -257,7 +257,12 @@ nat44_i2o_is_idle_session_cb (clib_bihash_kv_8_8_t * kv, void *arg)
     vec_elt_at_index (nm->per_thread_data, ctx->thread_index);
   clib_bihash_kv_8_8_t s_kv;
 
-  s = pool_elt_at_index (tnm->sessions, kv->value);
+  if (ctx->thread_index != nat_value_get_thread_index (kv))
+    {
+      return 0;
+    }
+
+  s = pool_elt_at_index (tnm->sessions, nat_value_get_session_index (kv));
   sess_timeout_time = s->last_heard + (f64) nat_session_get_timeout (
 					&nm->timeouts, s->nat_proto, s->state);
   if (ctx->now >= sess_timeout_time)
@@ -336,8 +341,8 @@ slow_path (nat44_ei_main_t *nm, vlib_buffer_t *b0, ip4_header_t *ip0,
     {
       /* Try to create dynamic translation */
       if (nm->alloc_addr_and_port (
-	    nm->addresses, rx_fib_index0, thread_index, nat_proto, &sm_addr,
-	    &sm_port, nm->port_per_thread,
+	    nm->addresses, rx_fib_index0, thread_index, nat_proto,
+	    ip0->src_address, &sm_addr, &sm_port, nm->port_per_thread,
 	    nm->per_thread_data[thread_index].snat_thread_index))
 	{
 	  b0->error = node->errors[NAT44_EI_IN2OUT_ERROR_OUT_OF_PORTS];
@@ -959,8 +964,8 @@ nat44_ei_in2out_node_fn_inline (vlib_main_t *vm, vlib_node_runtime_t *node,
 	  vlib_prefetch_buffer_header (p2, LOAD);
 	  vlib_prefetch_buffer_header (p3, LOAD);
 
-	  CLIB_PREFETCH (p2->data, CLIB_CACHE_LINE_BYTES, LOAD);
-	  CLIB_PREFETCH (p3->data, CLIB_CACHE_LINE_BYTES, LOAD);
+	  clib_prefetch_load (p2->data);
+	  clib_prefetch_load (p3->data);
 	}
 
       if (is_output_feature)

@@ -110,7 +110,12 @@ nat44_o2i_is_idle_session_cb (clib_bihash_kv_8_8_t * kv, void *arg)
     vec_elt_at_index (nm->per_thread_data, ctx->thread_index);
   clib_bihash_kv_8_8_t s_kv;
 
-  s = pool_elt_at_index (tnm->sessions, kv->value);
+  if (ctx->thread_index != nat_value_get_thread_index (kv))
+    {
+      return 0;
+    }
+
+  s = pool_elt_at_index (tnm->sessions, nat_value_get_session_index (kv));
   sess_timeout_time = s->last_heard + (f64) nat_session_get_timeout (
 					&nm->timeouts, s->nat_proto, s->state);
   if (ctx->now >= sess_timeout_time)
@@ -753,8 +758,8 @@ VLIB_NODE_FN (nat44_ei_out2in_node)
 	  vlib_prefetch_buffer_header (p2, LOAD);
 	  vlib_prefetch_buffer_header (p3, LOAD);
 
-	  CLIB_PREFETCH (p2->data, CLIB_CACHE_LINE_BYTES, LOAD);
-	  CLIB_PREFETCH (p3->data, CLIB_CACHE_LINE_BYTES, LOAD);
+	  clib_prefetch_load (p2->data);
+	  clib_prefetch_load (p3->data);
 	}
 
       vnet_buffer (b0)->snat.flags = 0;

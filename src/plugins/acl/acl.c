@@ -1772,7 +1772,7 @@ macip_acl_interface_add_del_acl (u32 sw_if_index, u8 is_add,
  *
  */
 static int
-verify_message_len (void *mp, u32 expected_len, char *where)
+verify_message_len (void *mp, u64 expected_len, char *where)
 {
   u32 supplied_len = vl_msg_api_get_msg_length (mp);
   if (supplied_len < expected_len)
@@ -1796,7 +1796,7 @@ vl_api_acl_add_replace_t_handler (vl_api_acl_add_replace_t * mp)
   int rv;
   u32 acl_list_index = ntohl (mp->acl_index);
   u32 acl_count = ntohl (mp->count);
-  u32 expected_len = sizeof (*mp) + acl_count * sizeof (mp->r[0]);
+  u64 expected_len = sizeof (*mp) + acl_count * sizeof (mp->r[0]);
 
   if (verify_message_len (mp, expected_len, "acl_add_replace"))
     {
@@ -2085,7 +2085,7 @@ vl_api_macip_acl_add_t_handler (vl_api_macip_acl_add_t * mp)
   int rv;
   u32 acl_list_index = ~0;
   u32 acl_count = ntohl (mp->count);
-  u32 expected_len = sizeof (*mp) + acl_count * sizeof (mp->r[0]);
+  u64 expected_len = sizeof (*mp) + acl_count * sizeof (mp->r[0]);
 
   if (verify_message_len (mp, expected_len, "macip_acl_add"))
     {
@@ -2112,7 +2112,7 @@ vl_api_macip_acl_add_replace_t_handler (vl_api_macip_acl_add_replace_t * mp)
   int rv;
   u32 acl_list_index = ntohl (mp->acl_index);
   u32 acl_count = ntohl (mp->count);
-  u32 expected_len = sizeof (*mp) + acl_count * sizeof (mp->r[0]);
+  u64 expected_len = sizeof (*mp) + acl_count * sizeof (mp->r[0]);
 
   if (verify_message_len (mp, expected_len, "macip_acl_add_replace"))
     {
@@ -2837,8 +2837,7 @@ acl_set_aclplugin_acl_fn (vlib_main_t * vm,
   u32 port2 = 0;
   u32 action = 0;
   u32 tcpflags, tcpmask;
-  u32 src_prefix_length = 0, dst_prefix_length = 0;
-  ip46_address_t src, dst;
+  ip_prefix_t src, dst;
   u8 *tag = 0;
 
   if (!unformat_user (input, unformat_line_input, line_input))
@@ -2870,25 +2869,15 @@ acl_set_aclplugin_acl_fn (vlib_main_t * vm,
 	  vec_validate_acl_rules (rules, rule_idx);
 	  rules[rule_idx].is_permit = action;
 	}
-      else if (unformat (line_input, "src %U/%d",
-			 unformat_ip46_address, &src, IP46_TYPE_ANY,
-			 &src_prefix_length))
+      else if (unformat (line_input, "src %U", unformat_ip_prefix, &src))
 	{
 	  vec_validate_acl_rules (rules, rule_idx);
-	  ip_address_encode (&src, IP46_TYPE_ANY,
-			     &rules[rule_idx].src_prefix.address);
-	  rules[rule_idx].src_prefix.address.af = ADDRESS_IP4;
-	  rules[rule_idx].src_prefix.len = src_prefix_length;
+	  ip_prefix_encode2 (&src, &rules[rule_idx].src_prefix);
 	}
-      else if (unformat (line_input, "dst %U/%d",
-			 unformat_ip46_address, &dst, IP46_TYPE_ANY,
-			 &dst_prefix_length))
+      else if (unformat (line_input, "dst %U", unformat_ip_prefix, &dst))
 	{
 	  vec_validate_acl_rules (rules, rule_idx);
-	  ip_address_encode (&dst, IP46_TYPE_ANY,
-			     &rules[rule_idx].dst_prefix.address);
-	  rules[rule_idx].dst_prefix.address.af = ADDRESS_IP4;
-	  rules[rule_idx].dst_prefix.len = dst_prefix_length;
+	  ip_prefix_encode2 (&dst, &rules[rule_idx].dst_prefix);
 	}
       else if (unformat (line_input, "sport %d-%d", &port1, &port2))
 	{

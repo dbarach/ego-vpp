@@ -86,6 +86,12 @@ VNET_FEATURE_INIT (ip4_nat_classify, static) = {
   .runs_after = VNET_FEATURES ("acl-plugin-in-ip4-fa",
 			       "ip4-sv-reassembly-feature"),
 };
+VNET_FEATURE_INIT (ip4_nat_handoff_classify, static) = {
+  .arc_name = "ip4-unicast",
+  .node_name = "nat44-ei-handoff-classify",
+  .runs_after = VNET_FEATURES ("acl-plugin-in-ip4-fa",
+			       "ip4-sv-reassembly-feature"),
+};
 VNET_FEATURE_INIT (ip4_nat44_ei_in2out, static) = {
   .arc_name = "ip4-unicast",
   .node_name = "nat44-ei-in2out",
@@ -322,8 +328,6 @@ nat44_ei_init (vlib_main_t *vm)
   nm->fq_out2in_index = ~0;
   nm->fq_in2out_index = ~0;
   nm->fq_in2out_output_index = ~0;
-  nm->worker_in2out_cb = nat44_ei_get_in2out_worker_index;
-  nm->worker_out2in_cb = nat44_ei_get_out2in_worker_index;
 
   nm->log_level = NAT_LOG_ERROR;
 
@@ -424,6 +428,9 @@ nat44_ei_plugin_enable (nat44_ei_config_t c)
   if (!c.sessions)
     c.sessions = 10 * 1024;
 
+  if (!c.user_sessions)
+    c.user_sessions = c.sessions;
+
   nm->rconfig = c;
 
   if (!nm->frame_queue_nelts)
@@ -444,8 +451,7 @@ nat44_ei_plugin_enable (nat44_ei_config_t c)
 
   nm->max_users_per_thread = c.users;
   nm->max_translations_per_thread = c.sessions;
-  nm->max_translations_per_user =
-    c.user_sessions ? c.user_sessions : nm->max_translations_per_thread;
+  nm->max_translations_per_user = c.user_sessions;
 
   nm->inside_vrf_id = c.inside_vrf;
   nm->inside_fib_index = fib_table_find_or_create_and_lock (
@@ -577,7 +583,9 @@ feature_set:
 
 		  if (nm->num_workers > 1)
 		    {
-		      del_feature_name = "nat44-handoff-classify";
+		      del_feature_name = "nat44-ei-handoff-classify";
+		      clib_warning (
+			"del_feature_name = nat44-ei-handoff-classify");
 		      feature_name = !is_inside ?
 				       "nat44-ei-in2out-worker-handoff" :
 				       "nat44-ei-out2in-worker-handoff";
@@ -585,6 +593,7 @@ feature_set:
 		  else
 		    {
 		      del_feature_name = "nat44-ei-classify";
+		      clib_warning ("del_feature_name = nat44-ei-classify");
 		      feature_name =
 			!is_inside ? "nat44-ei-in2out" : "nat44-ei-out2in";
 		    }
@@ -593,15 +602,21 @@ feature_set:
 		    ip4_sv_reass_enable_disable_with_refcnt (sw_if_index, 0);
 		  if (rv)
 		    return rv;
-		  vnet_feature_enable_disable ("ip4-unicast", del_feature_name,
-					       sw_if_index, 0, 0, 0);
-		  vnet_feature_enable_disable ("ip4-unicast", feature_name,
-					       sw_if_index, 1, 0, 0);
+		  rv = vnet_feature_enable_disable (
+		    "ip4-unicast", del_feature_name, sw_if_index, 0, 0, 0);
+		  if (rv)
+		    return rv;
+		  rv = vnet_feature_enable_disable (
+		    "ip4-unicast", feature_name, sw_if_index, 1, 0, 0);
+		  if (rv)
+		    return rv;
 		  if (!is_inside)
 		    {
-		      vnet_feature_enable_disable ("ip4-local",
-						   "nat44-ei-hairpinning",
-						   sw_if_index, 1, 0, 0);
+		      rv = vnet_feature_enable_disable ("ip4-local",
+							"nat44-ei-hairpinning",
+							sw_if_index, 1, 0, 0);
+		      if (rv)
+			return rv;
 		    }
 		}
 	      else
@@ -610,14 +625,18 @@ feature_set:
 		    ip4_sv_reass_enable_disable_with_refcnt (sw_if_index, 0);
 		  if (rv)
 		    return rv;
-		  vnet_feature_enable_disable ("ip4-unicast", feature_name,
-					       sw_if_index, 0, 0, 0);
+		  rv = vnet_feature_enable_disable (
+		    "ip4-unicast", feature_name, sw_if_index, 0, 0, 0);
+		  if (rv)
+		    return rv;
 		  pool_put (nm->interfaces, i);
 		  if (is_inside)
 		    {
-		      vnet_feature_enable_disable ("ip4-local",
-						   "nat44-ei-hairpinning",
-						   sw_if_index, 0, 0, 0);
+		      rv = vnet_feature_enable_disable ("ip4-local",
+							"nat44-ei-hairpinning",
+							sw_if_index, 0, 0, 0);
+		      if (rv)
+			return rv;
 		    }
 		}
 	    }
@@ -632,27 +651,35 @@ feature_set:
 		  del_feature_name = !is_inside ?
 				       "nat44-ei-in2out-worker-handoff" :
 				       "nat44-ei-out2in-worker-handoff";
-		  feature_name = "nat44-handoff-classify";
+		  feature_name = "nat44-ei-handoff-classify";
+		  clib_warning ("feature_name = nat44-ei-handoff-classify");
 		}
 	      else
 		{
 		  del_feature_name =
 		    !is_inside ? "nat44-ei-in2out" : "nat44-ei-out2in";
 		  feature_name = "nat44-ei-classify";
+		  clib_warning ("feature_name = nat44-ei-classify");
 		}
 
 	      int rv =
 		ip4_sv_reass_enable_disable_with_refcnt (sw_if_index, 1);
 	      if (rv)
 		return rv;
-	      vnet_feature_enable_disable ("ip4-unicast", del_feature_name,
-					   sw_if_index, 0, 0, 0);
-	      vnet_feature_enable_disable ("ip4-unicast", feature_name,
-					   sw_if_index, 1, 0, 0);
+	      rv = vnet_feature_enable_disable (
+		"ip4-unicast", del_feature_name, sw_if_index, 0, 0, 0);
+	      if (rv)
+		return rv;
+	      rv = vnet_feature_enable_disable ("ip4-unicast", feature_name,
+						sw_if_index, 1, 0, 0);
+	      if (rv)
+		return rv;
 	      if (!is_inside)
 		{
-		  vnet_feature_enable_disable (
+		  rv = vnet_feature_enable_disable (
 		    "ip4-local", "nat44-ei-hairpinning", sw_if_index, 0, 0, 0);
+		  if (rv)
+		    return rv;
 		}
 	      goto set_flags;
 	    }
@@ -672,17 +699,21 @@ feature_set:
   i->flags = 0;
   nat_validate_interface_counters (nm, sw_if_index);
 
-  vnet_feature_enable_disable ("ip4-unicast", feature_name, sw_if_index, 1, 0,
-			       0);
+  int rv = vnet_feature_enable_disable ("ip4-unicast", feature_name,
+					sw_if_index, 1, 0, 0);
+  if (rv)
+    return rv;
 
-  int rv = ip4_sv_reass_enable_disable_with_refcnt (sw_if_index, 1);
+  rv = ip4_sv_reass_enable_disable_with_refcnt (sw_if_index, 1);
   if (rv)
     return rv;
 
   if (is_inside && !nm->out2in_dpo)
     {
-      vnet_feature_enable_disable ("ip4-local", "nat44-ei-hairpinning",
-				   sw_if_index, 1, 0, 0);
+      rv = vnet_feature_enable_disable ("ip4-local", "nat44-ei-hairpinning",
+					sw_if_index, 1, 0, 0);
+      if (rv)
+	return rv;
     }
 
 set_flags:
@@ -777,10 +808,14 @@ feature_set:
 	ip4_sv_reass_output_enable_disable_with_refcnt (sw_if_index, !is_del);
       if (rv)
 	return rv;
-      vnet_feature_enable_disable ("ip4-unicast", "nat44-ei-hairpin-dst",
-				   sw_if_index, !is_del, 0, 0);
-      vnet_feature_enable_disable ("ip4-output", "nat44-ei-hairpin-src",
-				   sw_if_index, !is_del, 0, 0);
+      rv = vnet_feature_enable_disable ("ip4-unicast", "nat44-ei-hairpin-dst",
+					sw_if_index, !is_del, 0, 0);
+      if (rv)
+	return rv;
+      rv = vnet_feature_enable_disable ("ip4-output", "nat44-ei-hairpin-src",
+					sw_if_index, !is_del, 0, 0);
+      if (rv)
+	return rv;
       goto fq;
     }
 
@@ -793,12 +828,16 @@ feature_set:
 	ip4_sv_reass_output_enable_disable_with_refcnt (sw_if_index, !is_del);
       if (rv)
 	return rv;
-      vnet_feature_enable_disable ("ip4-unicast",
-				   "nat44-ei-out2in-worker-handoff",
-				   sw_if_index, !is_del, 0, 0);
-      vnet_feature_enable_disable ("ip4-output",
-				   "nat44-ei-in2out-output-worker-handoff",
-				   sw_if_index, !is_del, 0, 0);
+      rv = vnet_feature_enable_disable ("ip4-unicast",
+					"nat44-ei-out2in-worker-handoff",
+					sw_if_index, !is_del, 0, 0);
+      if (rv)
+	return rv;
+      rv = vnet_feature_enable_disable (
+	"ip4-output", "nat44-ei-in2out-output-worker-handoff", sw_if_index,
+	!is_del, 0, 0);
+      if (rv)
+	return rv;
     }
   else
     {
@@ -809,10 +848,14 @@ feature_set:
 	ip4_sv_reass_output_enable_disable_with_refcnt (sw_if_index, !is_del);
       if (rv)
 	return rv;
-      vnet_feature_enable_disable ("ip4-unicast", "nat44-ei-out2in",
-				   sw_if_index, !is_del, 0, 0);
-      vnet_feature_enable_disable ("ip4-output", "nat44-ei-in2out-output",
-				   sw_if_index, !is_del, 0, 0);
+      rv = vnet_feature_enable_disable ("ip4-unicast", "nat44-ei-out2in",
+					sw_if_index, !is_del, 0, 0);
+      if (rv)
+	return rv;
+      rv = vnet_feature_enable_disable ("ip4-output", "nat44-ei-in2out-output",
+					sw_if_index, !is_del, 0, 0);
+      if (rv)
+	return rv;
     }
 
 fq:
@@ -1407,7 +1450,7 @@ nat44_ei_get_out2in_worker_index (vlib_buffer_t *b, ip4_header_t *ip0,
 
   proto = ip_proto_to_nat_proto (ip0->protocol);
   udp = ip4_next_header (ip0);
-  port = udp->dst_port;
+  port = vnet_buffer (b)->ip.reass.l4_dst_port;
 
   /* unknown protocol */
   if (PREDICT_FALSE (proto == NAT_PROTOCOL_OTHER))
@@ -1468,7 +1511,8 @@ nat44_ei_get_out2in_worker_index (vlib_buffer_t *b, ip4_header_t *ip0,
 static int
 nat44_ei_alloc_default_cb (nat44_ei_address_t *addresses, u32 fib_index,
 			   u32 thread_index, nat_protocol_t proto,
-			   ip4_address_t *addr, u16 *port, u16 port_per_thread,
+			   ip4_address_t s_addr, ip4_address_t *addr,
+			   u16 *port, u16 port_per_thread,
 			   u32 snat_thread_index)
 {
   nat44_ei_main_t *nm = &nat44_ei_main;
@@ -1476,11 +1520,16 @@ nat44_ei_alloc_default_cb (nat44_ei_address_t *addresses, u32 fib_index,
   u32 portnum;
   int i;
 
-  for (i = 0; i < vec_len (addresses); i++)
+  if (vec_len (addresses) > 0)
     {
-      a = addresses + i;
-      switch (proto)
+
+      int s_addr_offset = s_addr.as_u32 % vec_len (addresses);
+
+      for (i = s_addr_offset; i < vec_len (addresses); ++i)
 	{
+	  a = addresses + i;
+	  switch (proto)
+	    {
 #define _(N, j, n, s)                                                         \
   case NAT_PROTOCOL_##N:                                                      \
     if (a->busy_##n##_ports_per_thread[thread_index] < port_per_thread)       \
@@ -1509,41 +1558,39 @@ nat44_ei_alloc_default_cb (nat44_ei_address_t *addresses, u32 fib_index,
 	  }                                                                   \
       }                                                                       \
     break;
-	  foreach_nat_protocol
-#undef _
-	    default : nat_elog_info (nm, "unknown protocol");
-	  return 1;
+	      foreach_nat_protocol;
+	    default:
+	      nat_elog_info (nm, "unknown protocol");
+	      return 1;
+	    }
 	}
-    }
 
+      for (i = 0; i < s_addr_offset; ++i)
+	{
+	  a = addresses + i;
+	  switch (proto)
+	    {
+	      foreach_nat_protocol;
+	    default:
+	      nat_elog_info (nm, "unknown protocol");
+	      return 1;
+	    }
+	}
   if (ga)
     {
       a = ga;
+      // fake fib index to reuse macro
+      fib_index = ~0;
       switch (proto)
 	{
-#define _(N, j, n, s)                                                         \
-  case NAT_PROTOCOL_##N:                                                      \
-    while (1)                                                                 \
-      {                                                                       \
-	portnum =                                                             \
-	  (port_per_thread * snat_thread_index) +                             \
-	  nat_random_port (&nm->random_seed, 0, port_per_thread - 1) + 1024;  \
-	if (a->busy_##n##_port_refcounts[portnum])                            \
-	  continue;                                                           \
-	++a->busy_##n##_port_refcounts[portnum];                              \
-	a->busy_##n##_ports_per_thread[thread_index]++;                       \
-	a->busy_##n##_ports++;                                                \
-	*addr = a->addr;                                                      \
-	*port = clib_host_to_net_u16 (portnum);                               \
-	return 0;                                                             \
-      }
-	  break;
-	  foreach_nat_protocol
-#undef _
+	  foreach_nat_protocol;
 	    default : nat_elog_info (nm, "unknown protocol");
 	  return 1;
 	}
     }
+    }
+
+#undef _
 
   /* Totally out of translations to use... */
   nat_ipfix_logging_addresses_exhausted (thread_index, 0);
@@ -1553,8 +1600,8 @@ nat44_ei_alloc_default_cb (nat44_ei_address_t *addresses, u32 fib_index,
 static int
 nat44_ei_alloc_range_cb (nat44_ei_address_t *addresses, u32 fib_index,
 			 u32 thread_index, nat_protocol_t proto,
-			 ip4_address_t *addr, u16 *port, u16 port_per_thread,
-			 u32 snat_thread_index)
+			 ip4_address_t s_addr, ip4_address_t *addr, u16 *port,
+			 u16 port_per_thread, u32 snat_thread_index)
 {
   nat44_ei_main_t *nm = &nat44_ei_main;
   nat44_ei_address_t *a = addresses;
@@ -1600,8 +1647,8 @@ exhausted:
 static int
 nat44_ei_alloc_mape_cb (nat44_ei_address_t *addresses, u32 fib_index,
 			u32 thread_index, nat_protocol_t proto,
-			ip4_address_t *addr, u16 *port, u16 port_per_thread,
-			u32 snat_thread_index)
+			ip4_address_t s_addr, ip4_address_t *addr, u16 *port,
+			u16 port_per_thread, u32 snat_thread_index)
 {
   nat44_ei_main_t *nm = &nat44_ei_main;
   nat44_ei_address_t *a = addresses;
@@ -1740,26 +1787,23 @@ nat44_ei_del_session (nat44_ei_main_t *nm, ip4_address_t *addr, u16 port,
 {
   nat44_ei_main_per_thread_data_t *tnm;
   clib_bihash_kv_8_8_t kv, value;
-  ip4_header_t ip;
   u32 fib_index = fib_table_find (FIB_PROTOCOL_IP4, vrf_id);
   nat44_ei_session_t *s;
   clib_bihash_8_8_t *t;
-
-  ip.dst_address.as_u32 = ip.src_address.as_u32 = addr->as_u32;
-  if (nm->num_workers > 1)
-    tnm = vec_elt_at_index (nm->per_thread_data,
-			    nm->worker_in2out_cb (&ip, fib_index, 0));
-  else
-    tnm = vec_elt_at_index (nm->per_thread_data, nm->num_workers);
 
   init_nat_k (&kv, *addr, port, fib_index, proto);
   t = is_in ? &nm->in2out : &nm->out2in;
   if (!clib_bihash_search_8_8 (t, &kv, &value))
     {
-      if (pool_is_free_index (tnm->sessions, value.value))
+      // this is called from API/CLI, so the world is stopped here
+      // it's safe to manipulate arbitrary per-thread data
+      u32 thread_index = nat_value_get_thread_index (&value);
+      tnm = vec_elt_at_index (nm->per_thread_data, thread_index);
+      u32 session_index = nat_value_get_session_index (&value);
+      if (pool_is_free_index (tnm->sessions, session_index))
 	return VNET_API_ERROR_UNSPECIFIED;
 
-      s = pool_elt_at_index (tnm->sessions, value.value);
+      s = pool_elt_at_index (tnm->sessions, session_index);
       nat44_ei_free_session_data_v2 (nm, s, tnm - nm->per_thread_data, 0);
       nat44_ei_delete_session (nm, s, tnm - nm->per_thread_data);
       return 0;
@@ -2032,7 +2076,8 @@ nat44_ei_add_del_static_mapping (ip4_address_t l_addr, ip4_address_t e_addr,
 	  ip4_header_t ip = {
 	    .src_address = m->local_addr,
 	  };
-	  vec_add1 (m->workers, nm->worker_in2out_cb (&ip, m->fib_index, 0));
+	  vec_add1 (m->workers,
+		    nat44_ei_get_in2out_worker_index (&ip, m->fib_index, 0));
 	  tnm = vec_elt_at_index (nm->per_thread_data, m->workers[0]);
 	}
       else
@@ -2317,8 +2362,9 @@ format_nat44_ei_session_kvp (u8 *s, va_list *args)
 {
   clib_bihash_kv_8_8_t *v = va_arg (*args, clib_bihash_kv_8_8_t *);
 
-  s =
-    format (s, "%U session-index %llu", format_nat44_ei_key, v->key, v->value);
+  s = format (s, "%U thread-index %llu session-index %llu",
+	      format_nat44_ei_key, v->key, nat_value_get_thread_index (v),
+	      nat_value_get_session_index (v));
 
   return s;
 }
@@ -2896,8 +2942,9 @@ match:
 			"i4", rv);
 }
 
-VLIB_NODE_FN (nat44_ei_classify_node)
-(vlib_main_t *vm, vlib_node_runtime_t *node, vlib_frame_t *frame)
+static_always_inline uword
+nat44_ei_classify_inline_fn (vlib_main_t *vm, vlib_node_runtime_t *node,
+			     vlib_frame_t *frame)
 {
   u32 n_left_from, *from, *to_next;
   nat44_ei_classify_next_t next_index;
@@ -2996,6 +3043,12 @@ VLIB_NODE_FN (nat44_ei_classify_node)
   return frame->n_vectors;
 }
 
+VLIB_NODE_FN (nat44_ei_classify_node)
+(vlib_main_t *vm, vlib_node_runtime_t *node, vlib_frame_t *frame)
+{
+  return nat44_ei_classify_inline_fn (vm, node, frame);
+}
+
 VLIB_REGISTER_NODE (nat44_ei_classify_node) = {
   .name = "nat44-ei-classify",
   .vector_size = sizeof (u32),
@@ -3007,6 +3060,27 @@ VLIB_REGISTER_NODE (nat44_ei_classify_node) = {
   .next_nodes = {
     [NAT44_EI_CLASSIFY_NEXT_IN2OUT] = "nat44-ei-in2out",
     [NAT44_EI_CLASSIFY_NEXT_OUT2IN] = "nat44-ei-out2in",
+    [NAT44_EI_CLASSIFY_NEXT_DROP] = "error-drop",
+  },
+};
+
+VLIB_NODE_FN (nat44_ei_handoff_classify_node)
+(vlib_main_t *vm, vlib_node_runtime_t *node, vlib_frame_t *frame)
+{
+  return nat44_ei_classify_inline_fn (vm, node, frame);
+}
+
+VLIB_REGISTER_NODE (nat44_ei_handoff_classify_node) = {
+  .name = "nat44-ei-handoff-classify",
+  .vector_size = sizeof (u32),
+  .format_trace = format_nat44_ei_classify_trace,
+  .type = VLIB_NODE_TYPE_INTERNAL,
+  .n_errors = ARRAY_LEN(nat44_ei_classify_error_strings),
+  .error_strings = nat44_ei_classify_error_strings,
+  .n_next_nodes = NAT44_EI_CLASSIFY_N_NEXT,
+  .next_nodes = {
+    [NAT44_EI_CLASSIFY_NEXT_IN2OUT] = "nat44-ei-in2out-worker-handoff",
+    [NAT44_EI_CLASSIFY_NEXT_OUT2IN] = "nat44-ei-out2in-worker-handoff",
     [NAT44_EI_CLASSIFY_NEXT_DROP] = "error-drop",
   },
 };

@@ -53,6 +53,7 @@ extern "C"
     VPPCOM_PROTO_TLS,
     VPPCOM_PROTO_QUIC,
     VPPCOM_PROTO_DTLS,
+    VPPCOM_PROTO_SRTP,
   } vppcom_proto_t;
 
   typedef enum
@@ -96,7 +97,10 @@ typedef enum
   VPPCOM_ENOTCONN = -ENOTCONN,
   VPPCOM_ECONNREFUSED = -ECONNREFUSED,
   VPPCOM_ETIMEDOUT = -ETIMEDOUT,
-  VPPCOM_EEXIST = -EEXIST
+  VPPCOM_EEXIST = -EEXIST,
+  VPPCOM_ENOPROTOOPT = -ENOPROTOOPT,
+  VPPCOM_EPIPE = -EPIPE,
+  VPPCOM_ENOENT = -ENOENT,
 } vppcom_error_t;
 
 typedef enum
@@ -135,13 +139,12 @@ typedef enum
   VPPCOM_ATTR_SET_TCP_KEEPINTVL,
   VPPCOM_ATTR_GET_TCP_USER_MSS,
   VPPCOM_ATTR_SET_TCP_USER_MSS,
-  VPPCOM_ATTR_SET_SHUT,
-  VPPCOM_ATTR_GET_SHUT,
   VPPCOM_ATTR_SET_CONNECTED,
   VPPCOM_ATTR_SET_CKPAIR,
   VPPCOM_ATTR_SET_VRF,
   VPPCOM_ATTR_GET_VRF,
   VPPCOM_ATTR_GET_DOMAIN,
+  VPPCOM_ATTR_SET_ENDPT_EXT_CFG,
 } vppcom_attr_op_t;
 
 typedef struct _vcl_poll
@@ -170,6 +173,7 @@ extern int vppcom_app_create (const char *app_name);
 extern void vppcom_app_destroy (void);
 
 extern int vppcom_session_create (uint8_t proto, uint8_t is_nonblocking);
+extern int vppcom_session_shutdown (uint32_t session_handle, int how);
 extern int vppcom_session_close (uint32_t session_handle);
 extern int vppcom_session_bind (uint32_t session_handle, vppcom_endpt_t * ep);
 extern int vppcom_session_listen (uint32_t session_handle, uint32_t q_len);

@@ -23,7 +23,8 @@ vcl_api_connect_app_socket (vcl_worker_t * wrk)
   int rv = 0;
 
   cs->config = (char *) vcm->cfg.vpp_app_socket_api;
-  cs->flags = CLIB_SOCKET_F_IS_CLIENT | CLIB_SOCKET_F_SEQPACKET;
+  cs->flags =
+    CLIB_SOCKET_F_IS_CLIENT | CLIB_SOCKET_F_SEQPACKET | CLIB_SOCKET_F_BLOCKING;
 
   wrk->vcl_needs_real_epoll = 1;
 
@@ -94,7 +95,6 @@ vcl_api_attach_reply_handler (app_sapi_attach_reply_msg_t * mp, int *fds)
   vcl_segment_attach_mq (vcl_vpp_worker_segment_handle (0), mp->vpp_ctrl_mq,
 			 mp->vpp_ctrl_mq_thread, &wrk->ctrl_mq);
   vcm->ctrl_mq = wrk->ctrl_mq;
-
   vcm->app_index = mp->app_index;
 
   return 0;
@@ -156,7 +156,7 @@ vcl_sapi_attach (void)
   app_sapi_msg_t _rmp, *rmp = &_rmp;
   clib_error_t *err;
   clib_socket_t *cs;
-  int fds[SESSION_N_FD_TYPE];
+  int fds[32];
 
   /*
    * Init client socket and send attach

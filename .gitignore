@@ -20,6 +20,9 @@
 /test/run/
 /test/build/
 /test/coverage/
+/test/venv/
+/test/vapi_test/
+/test/doc/build/
 /build-config.mk
 /build/external/*.tar.gz
 /build/external/*.tar.xz
@@ -39,7 +42,6 @@ config.log
 config.guess
 config.sub
 config.status
-configure
 configure.scan
 coverage_report
 depcomp
@@ -113,3 +115,9 @@ compile_commands.json
 
 # extras gomemif build files
 /extras/gomemif/bazel*
+
+# vpptop build files
+/extras/vpptop/build/*
+
+# debian packaging
+.pc

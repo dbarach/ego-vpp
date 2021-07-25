@@ -42,6 +42,9 @@
 #include <vnet/devices/virtio/vhost_user.h>
 #include <vnet/devices/virtio/vhost_user_inline.h>
 
+#include <vnet/ip/ip4_packet.h>
+#include <vnet/ip/ip6_packet.h>
+
 /*
  * When an RX queue is down but active, received packets
  * must be discarded. This value controls up to how many
@@ -160,8 +163,8 @@ vhost_user_input_copy (vhost_user_intf_t * vui, vhost_copy_t * cpy,
 	      (!(src3 = map_guest_mem (vui, cpy[3].src, map_hint))))
 	    return 1;
 
-	  CLIB_PREFETCH (src2, 64, LOAD);
-	  CLIB_PREFETCH (src3, 64, LOAD);
+	  clib_prefetch_load (src2);
+	  clib_prefetch_load (src3);
 
 	  clib_memcpy_fast ((void *) cpy[0].dst, src0, cpy[0].len);
 	  clib_memcpy_fast ((void *) cpy[1].dst, src1, cpy[1].len);
@@ -253,7 +256,7 @@ vhost_user_handle_rx_offload (vlib_buffer_t * b0, u8 * b0_data,
   ethernet_header_t *eh = (ethernet_header_t *) b0_data;
   u16 ethertype = clib_net_to_host_u16 (eh->type);
   u16 l2hdr_sz = sizeof (ethernet_header_t);
-  u32 oflags = 0;
+  vnet_buffer_oflags_t oflags = 0;
 
   if (ethernet_frame_is_tagged (ethertype))
     {
@@ -686,8 +689,6 @@ vhost_user_if_input (vlib_main_t *vm, vhost_user_main_t *vum,
       last_avail_idx++;
       last_used_idx++;
 
-      VLIB_BUFFER_TRACE_TRAJECTORY_INIT (b_head);
-
       vnet_buffer (b_head)->sw_if_index[VLIB_RX] = vui->sw_if_index;
       vnet_buffer (b_head)->sw_if_index[VLIB_TX] = (u32) ~ 0;
       b_head->error = 0;
@@ -871,10 +872,10 @@ vhost_user_input_copy_packed (vhost_user_intf_t * vui, vhost_copy_t * cpy,
       bad = (src4 == 0) + (src5 == 0) + (src6 == 0) + (src7 == 0);
       if (PREDICT_FALSE (bad))
 	goto one_by_one;
-      CLIB_PREFETCH (src4, 64, LOAD);
-      CLIB_PREFETCH (src5, 64, LOAD);
-      CLIB_PREFETCH (src6, 64, LOAD);
-      CLIB_PREFETCH (src7, 64, LOAD);
+      clib_prefetch_load (src4);
+      clib_prefetch_load (src5);
+      clib_prefetch_load (src6);
+      clib_prefetch_load (src7);
 
       while (PREDICT_TRUE (copy_len >= 8))
 	{
@@ -891,10 +892,10 @@ vhost_user_input_copy_packed (vhost_user_intf_t * vui, vhost_copy_t * cpy,
 	  if (PREDICT_FALSE (bad))
 	    break;
 
-	  CLIB_PREFETCH (src4, 64, LOAD);
-	  CLIB_PREFETCH (src5, 64, LOAD);
-	  CLIB_PREFETCH (src6, 64, LOAD);
-	  CLIB_PREFETCH (src7, 64, LOAD);
+	  clib_prefetch_load (src4);
+	  clib_prefetch_load (src5);
+	  clib_prefetch_load (src6);
+	  clib_prefetch_load (src7);
 
 	  clib_memcpy_fast ((void *) cpy[0].dst, src0, cpy[0].len);
 	  clib_memcpy_fast ((void *) cpy[1].dst, src1, cpy[1].len);
@@ -1317,8 +1318,6 @@ vhost_user_if_input_packed (vlib_main_t *vm, vhost_user_main_t *vum,
 
       b_head->total_length_not_including_first_buffer -=
 	b_head->current_length;
-
-      VLIB_BUFFER_TRACE_TRAJECTORY_INIT (b_head);
 
       vnet_buffer (b_head)->sw_if_index[VLIB_RX] = vui->sw_if_index;
       vnet_buffer (b_head)->sw_if_index[VLIB_TX] = ~0;

@@ -85,6 +85,8 @@ typedef struct
 #define VEP_DEFAULT_ET_MASK  (EPOLLIN|EPOLLOUT)
 #define VEP_UNSUPPORTED_EVENTS (EPOLLONESHOT|EPOLLEXCLUSIVE)
   u32 et_mask;
+  u32 lt_next;
+  u32 lt_prev;
 } vppcom_epoll_t;
 
 /* Select uses the vcl_si_set as if a clib_bitmap. Make sure they are the
@@ -126,8 +128,6 @@ typedef enum
   VCL_SESS_ATTR_TCP_NODELAY,	// SOL_TCP,TCP_NODELAY
   VCL_SESS_ATTR_TCP_KEEPIDLE,	// SOL_TCP,TCP_KEEPIDLE
   VCL_SESS_ATTR_TCP_KEEPINTVL,	// SOL_TCP,TCP_KEEPINTVL
-  VCL_SESS_ATTR_SHUT_RD,
-  VCL_SESS_ATTR_SHUT_WR,
   VCL_SESS_ATTR_MAX
 } vppcom_session_attr_t;
 
@@ -137,6 +137,8 @@ typedef enum vcl_session_flags_
   VCL_SESSION_F_IS_VEP = 1 << 1,
   VCL_SESSION_F_IS_VEP_SESSION = 1 << 2,
   VCL_SESSION_F_HAS_RX_EVT = 1 << 3,
+  VCL_SESSION_F_RD_SHUTDOWN = 1 << 4,
+  VCL_SESSION_F_WR_SHUTDOWN = 1 << 5,
 } __clib_packed vcl_session_flags_t;
 
 typedef struct vcl_session_
@@ -160,12 +162,12 @@ typedef struct vcl_session_
   vppcom_epoll_t vep;
   u32 attributes;		/**< see @ref vppcom_session_attr_t */
   int libc_epfd;
-  u32 ckpair_index;
   u32 vrf;
 
   u32 sndbuf_size;		// VPP-TBD: Hack until support setsockopt(SO_SNDBUF)
   u32 rcvbuf_size;		// VPP-TBD: Hack until support setsockopt(SO_RCVBUF)
-  u32 user_mss;			// VPP-TBD: Hack until support setsockopt(TCP_MAXSEG)
+
+  transport_endpt_ext_cfg_t *ext_config;
 
 #if VCL_ELOG
   elog_track_t elog_track;
@@ -253,6 +255,9 @@ typedef struct vcl_worker_
   /** Per worker buffer for receiving mq epoll events */
   struct epoll_event *mq_events;
 
+  /** Next session to be lt polled */
+  u32 ep_lt_current;
+
   /** Hash table for disconnect processing */
   uword *session_index_by_vpp_handles;
 
@@ -286,10 +291,15 @@ typedef struct vcl_worker_
   clib_socket_t app_api_sock;
   socket_client_main_t bapi_sock_ctx;
   api_main_t bapi_api_ctx;
+  memory_client_main_t bapi_mem_ctx;
 
   /* State of the connection, shared between msg RX thread and main thread */
   volatile vcl_bapi_app_state_t bapi_app_state;
   volatile uword bapi_return;
+
+  u8 session_attr_op;
+  int session_attr_op_rv;
+  transport_endpt_attr_t session_attr_rv;
 
   /** vcl needs next epoll_create to go to libc_epoll */
   u8 vcl_needs_real_epoll;
@@ -383,6 +393,8 @@ vcl_session_free (vcl_worker_t * wrk, vcl_session_t * s)
   /* Debug level set to 1 to avoid debug messages while ldp is cleaning up */
   VDBG (1, "session %u [0x%llx] removed", s->session_index, s->vpp_handle);
   vcl_session_detach_fifos (s);
+  if (s->ext_config)
+    clib_mem_free (s->ext_config);
   pool_put (wrk->sessions, s);
 }
 
@@ -519,6 +531,12 @@ vcl_session_table_lookup_listener (vcl_worker_t * wrk, u64 handle)
       return 0;
     }
 
+  if (s->session_state == VCL_STATE_DISCONNECT)
+    {
+      VDBG (0, "listen session [0x%llx] is closing", s->vpp_handle);
+      return 0;
+    }
+
   ASSERT (s->session_state == VCL_STATE_LISTEN
 	  || s->session_state == VCL_STATE_LISTEN_NO_MQ
 	  || vcl_session_is_connectable_listener (wrk, s));
@@ -612,7 +630,8 @@ vcl_ip_copy_to_ep (ip46_address_t * ip, vppcom_endpt_t * ep, u8 is_ip4)
 static inline int
 vcl_proto_is_dgram (uint8_t proto)
 {
-  return proto == VPPCOM_PROTO_UDP || proto == VPPCOM_PROTO_DTLS;
+  return proto == VPPCOM_PROTO_UDP || proto == VPPCOM_PROTO_DTLS ||
+	 proto == VPPCOM_PROTO_SRTP;
 }
 
 static inline u8
@@ -657,6 +676,8 @@ void vcl_segment_table_del (u64 segment_handle);
 
 int vcl_session_read_ready (vcl_session_t * session);
 int vcl_session_write_ready (vcl_session_t * session);
+int vcl_session_alloc_ext_cfg (vcl_session_t *s,
+			       transport_endpt_ext_cfg_type_t type, u32 len);
 
 static inline vcl_worker_t *
 vcl_worker_get (u32 wrk_index)
@@ -705,6 +726,11 @@ int vcl_segment_attach_session (uword segment_handle, uword rxf_offset,
 int vcl_segment_attach_mq (uword segment_handle, uword mq_offset, u32 mq_index,
 			   svm_msg_q_t **mq);
 int vcl_segment_discover_mqs (uword segment_handle, int *fds, u32 n_fds);
+svm_fifo_chunk_t *vcl_segment_alloc_chunk (uword segment_handle,
+					   u32 slice_index, u32 size,
+					   uword *offset);
+int vcl_session_share_fifos (vcl_session_t *s, svm_fifo_t *rxf,
+			     svm_fifo_t *txf);
 
 /*
  * VCL Binary API

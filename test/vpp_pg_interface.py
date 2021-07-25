@@ -9,6 +9,7 @@ import scapy.compat
 from scapy.utils import wrpcap, rdpcap, PcapReader
 from scapy.plist import PacketList
 from vpp_interface import VppInterface
+from vpp_papi import VppEnum
 
 from scapy.layers.l2 import Ether, ARP
 from scapy.layers.inet6 import IPv6, ICMPv6ND_NS, ICMPv6ND_NA,\
@@ -69,29 +70,33 @@ class VppPGInterface(VppInterface):
         """pcap file path - captured packets"""
         return self._out_path
 
-    @property
-    def in_path(self):
+    def get_in_path(self, worker):
         """ pcap file path - injected packets"""
-        return self._in_path
+        if worker is not None:
+            return "%s/pg%u_wrk%u_in.pcap" % (self.test.tempdir, self.pg_index,
+                                              worker)
+        return "%s/pg%u_in.pcap" % (self.test.tempdir, self.pg_index)
 
     @property
     def capture_cli(self):
         """CLI string to start capture on this interface"""
         return self._capture_cli
 
-    @property
-    def cap_name(self):
-        """capture name for this interface"""
+    def get_cap_name(self, worker=None):
+        """return capture name for this interface and given worker"""
+        if worker is not None:
+            return self._cap_name + "-worker%d" % worker
         return self._cap_name
 
-    @property
-    def input_cli(self):
-        """CLI string to load the injected packets"""
-        if self._nb_replays is not None:
-            return "%s limit %d" % (self._input_cli, self._nb_replays)
-        if self._worker is not None:
-            return "%s worker %d" % (self._input_cli, self._worker)
-        return self._input_cli
+    def get_input_cli(self, nb_replays=None, worker=None):
+        """return CLI string to load the injected packets"""
+        input_cli = "packet-generator new pcap %s source pg%u name %s" % (
+            self.get_in_path(worker), self.pg_index, self.get_cap_name(worker))
+        if nb_replays is not None:
+            return "%s limit %d" % (input_cli, nb_replays)
+        if worker is not None:
+            return "%s worker %d" % (input_cli, worker)
+        return input_cli
 
     @property
     def in_history_counter(self):
@@ -107,11 +112,11 @@ class VppPGInterface(VppInterface):
         self._out_history_counter += 1
         return v
 
-    def __init__(self, test, pg_index, gso, gso_size):
+    def __init__(self, test, pg_index, gso, gso_size, mode):
         """ Create VPP packet-generator interface """
-        super(VppPGInterface, self).__init__(test)
+        super().__init__(test)
 
-        r = test.vapi.pg_create_interface(pg_index, gso, gso_size)
+        r = test.vapi.pg_create_interface_v2(pg_index, gso, gso_size, mode)
         self.set_sw_if_index(r.sw_if_index)
 
         self._in_history_counter = 0
@@ -123,19 +128,13 @@ class VppPGInterface(VppInterface):
         self._coalesce_enabled = 0
         self._out_file = "pg%u_out.pcap" % self.pg_index
         self._out_path = self.test.tempdir + "/" + self._out_file
-        self._in_file = "pg%u_in.pcap" % self.pg_index
-        self._in_path = self.test.tempdir + "/" + self._in_file
         self._capture_cli = "packet-generator capture pg%u pcap %s" % (
             self.pg_index, self.out_path)
         self._cap_name = "pcap%u-sw_if_index-%s" % (
             self.pg_index, self.sw_if_index)
-        self._input_cli = \
-            "packet-generator new pcap %s source pg%u name %s" % (
-                self.in_path, self.pg_index, self.cap_name)
-        self._nb_replays = None
 
-    def _rename_previous_capture_file(self, path, counter, file):
-        # if a file from a previous capture exists, rename it.
+    def rename_old_pcap_file(self, path, counter):
+        filename = os.path.basename(path)
         try:
             if os.path.isfile(path):
                 name = "%s/history.[timestamp:%f].[%s-counter:%04d].%s" % \
@@ -143,13 +142,13 @@ class VppPGInterface(VppInterface):
                      time.time(),
                      self.name,
                      counter,
-                     file)
+                     filename)
                 self.test.logger.debug("Renaming %s->%s" %
                                        (path, name))
                 os.rename(path, name)
         except OSError:
             self.test.logger.debug("OSError: Could not rename %s %s" %
-                                   (path, file))
+                                   (path, filename))
 
     def enable_capture(self):
         """ Enable capture on this packet-generator interface
@@ -158,9 +157,7 @@ class VppPGInterface(VppInterface):
         """
         # disable the capture to flush the capture
         self.disable_capture()
-        self._rename_previous_capture_file(self.out_path,
-                                           self.out_history_counter,
-                                           self._out_file)
+        self.rename_old_pcap_file(self.out_path, self.out_history_counter)
         # FIXME this should be an API, but no such exists atm
         self.test.vapi.cli(self.capture_cli)
         self._pcap_reader = None
@@ -187,15 +184,10 @@ class VppPGInterface(VppInterface):
         :param pkts: iterable packets
 
         """
-        self._worker = worker
-        self._nb_replays = nb_replays
-        self._rename_previous_capture_file(self.in_path,
-                                           self.in_history_counter,
-                                           self._in_file)
-        wrpcap(self.in_path, pkts)
-        self.test.register_capture(self.cap_name)
+        wrpcap(self.get_in_path(worker), pkts)
+        self.test.register_pcap(self, worker)
         # FIXME this should be an API, but no such exists atm
-        self.test.vapi.cli(self.input_cli)
+        self.test.vapi.cli(self.get_input_cli(nb_replays, worker))
 
     def generate_debug_aid(self, kind):
         """ Create a hardlink to the out file with a counter and a file

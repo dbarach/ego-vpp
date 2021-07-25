@@ -468,8 +468,8 @@ ip4_sv_reass_inline (vlib_main_t * vm, vlib_node_runtime_t * node,
 	  vlib_prefetch_buffer_header (p2, LOAD);
 	  vlib_prefetch_buffer_header (p3, LOAD);
 
-	  CLIB_PREFETCH (p2->data, CLIB_CACHE_LINE_BYTES, LOAD);
-	  CLIB_PREFETCH (p3->data, CLIB_CACHE_LINE_BYTES, LOAD);
+	  clib_prefetch_load (p2->data);
+	  clib_prefetch_load (p3->data);
 	}
 
       ip4_header_t *ip0 =
@@ -1334,6 +1334,10 @@ show_ip4_reass (vlib_main_t * vm,
 		   "Maximum configured concurrent shallow virtual IP4 reassemblies per worker-thread: %lu\n",
 		   (long unsigned) rm->max_reass_n);
   vlib_cli_output (vm,
+		   "Maximum configured amount of fragments per shallow "
+		   "virtual IP4 reassembly: %lu\n",
+		   (long unsigned) rm->max_reass_len);
+  vlib_cli_output (vm,
 		   "Maximum configured shallow virtual IP4 reassembly timeout: %lums\n",
 		   (long unsigned) rm->timeout_ms);
   vlib_cli_output (vm,
@@ -1436,9 +1440,8 @@ ip4_sv_reass_handoff_node_inline (vlib_main_t * vm,
       ti += 1;
       b += 1;
     }
-  n_enq =
-    vlib_buffer_enqueue_to_thread (vm, fq_index, from, thread_indices,
-				   frame->n_vectors, 1);
+  n_enq = vlib_buffer_enqueue_to_thread (vm, node, fq_index, from,
+					 thread_indices, frame->n_vectors, 1);
 
   if (n_enq < frame->n_vectors)
     vlib_node_increment_counter (vm, node->node_index,

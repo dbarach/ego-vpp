@@ -222,7 +222,33 @@ format_cpu_flags (u8 * s, va_list * args)
 #endif
 }
 
+__clib_export u32
+clib_get_current_cpu_id ()
+{
+  unsigned cpu, node;
+  syscall (__NR_getcpu, &cpu, &node, 0);
+  return cpu;
+}
 
+__clib_export u32
+clib_get_current_numa_node ()
+{
+  unsigned cpu, node;
+  syscall (__NR_getcpu, &cpu, &node, 0);
+  return node;
+}
+
+__clib_export u8 *
+format_march_variant (u8 *s, va_list *args)
+{
+  clib_march_variant_type_t t = va_arg (*args, clib_march_variant_type_t);
+  char *variants[] = { [0] = "default",
+#define _(s, n) [CLIB_MARCH_VARIANT_TYPE_##s] = n,
+		       foreach_march_variant
+#undef _
+  };
+  return format (s, "%s", variants[t]);
+}
 
 /*
  * fd.io coding-style-patch-verification: ON

@@ -128,7 +128,8 @@ show_perfmon_bundle_command_fn (vlib_main_t *vm, unformat_input_t *input,
     vlib_cli_output (vm, "%U\n", format_perfmon_bundle, 0, 0);
 
   for (int i = 0; i < vec_len (vb); i++)
-    vlib_cli_output (vm, "%U\n", format_perfmon_bundle, vb[i], verbose);
+    if (!vb[i]->cpu_supports || vb[i]->cpu_supports ())
+      vlib_cli_output (vm, "%U\n", format_perfmon_bundle, vb[i], verbose);
 
   vec_free (vb);
   return 0;
@@ -250,7 +251,6 @@ show_perfmon_active_bundle_command_fn (vlib_main_t *vm,
   perfmon_main_t *pm = &perfmon_main;
 
   vlib_cli_output (vm, "%U\n", format_perfmon_bundle, pm->active_bundle, 1);
-
   return 0;
 }
 
@@ -277,12 +277,13 @@ show_perfmon_stats_command_fn (vlib_main_t *vm, unformat_input_t *input,
   int n_row = 0;
 
   if (b == 0)
-    return clib_error_return (0, "no budle selected");
+    return clib_error_return (0, "no bundle selected");
 
   n_instances = vec_len (it->instances);
   vec_validate (readings, n_instances - 1);
 
-  for (int i = 0; i < n_instances; i++)
+  /*Only perform read() for THREAD or SYSTEM bundles*/
+  for (int i = 0; i < n_instances && b->type != PERFMON_BUNDLE_TYPE_NODE; i++)
     {
       in = vec_elt_at_index (it->instances, i);
       r = vec_elt_at_index (readings, i);
@@ -325,6 +326,7 @@ show_perfmon_stats_command_fn (vlib_main_t *vm, unformat_input_t *input,
 		table_set_cell_align (t, col, -1, TTAA_RIGHT);
 		table_set_cell_fg_color (t, col, -1, TTAC_CYAN);
 		clib_memcpy_fast (&ns, tr->node_stats + j, sizeof (ns));
+
 		for (int j = 0; j < n_row; j++)
 		  table_format_cell (t, col, j, "%U", b->format_fn, &ns, j);
 	      }
@@ -351,45 +353,8 @@ done:
 
 VLIB_CLI_COMMAND (show_perfmon_stats_command, static) = {
   .path = "show perfmon statistics",
-  .short_help = "show perfmon statistics",
+  .short_help = "show perfmon statistics [raw]",
   .function = show_perfmon_stats_command_fn,
-  .is_mp_safe = 1,
-};
-
-static clib_error_t *
-set_perfmon_bundle_command_fn (vlib_main_t *vm, unformat_input_t *input,
-			       vlib_cli_command_t *cmd)
-{
-  perfmon_main_t *pm = &perfmon_main;
-  unformat_input_t _line_input, *line_input = &_line_input;
-  perfmon_bundle_t *b = 0;
-
-  if (unformat_user (input, unformat_line_input, line_input) == 0)
-    return clib_error_return (0, "please specify bundle name");
-
-  while (unformat_check_input (line_input) != UNFORMAT_END_OF_INPUT)
-    {
-      if (unformat (line_input, "%U", unformat_perfmon_bundle_name, &b))
-	;
-      else
-	return clib_error_return (0, "unknown input '%U'",
-				  format_unformat_error, line_input);
-    }
-  unformat_free (line_input);
-
-  if (b == 0)
-    return clib_error_return (0, "please specify bundle name");
-
-  if (pm->is_running)
-    return clib_error_return (0, "please stop first");
-
-  return perfmon_set (vm, b);
-}
-
-VLIB_CLI_COMMAND (set_perfmon_bundle_command, static) = {
-  .path = "set perfmon bundle",
-  .short_help = "set perfmon bundle [<bundle-name>]",
-  .function = set_perfmon_bundle_command_fn,
   .is_mp_safe = 1,
 };
 
@@ -412,12 +377,35 @@ static clib_error_t *
 perfmon_start_command_fn (vlib_main_t *vm, unformat_input_t *input,
 			  vlib_cli_command_t *cmd)
 {
-  return perfmon_start (vm);
+  perfmon_main_t *pm = &perfmon_main;
+  unformat_input_t _line_input, *line_input = &_line_input;
+  perfmon_bundle_t *b = 0;
+
+  if (pm->is_running)
+    return clib_error_return (0, "please stop first");
+
+  if (unformat_user (input, unformat_line_input, line_input) == 0)
+    return clib_error_return (0, "please specify bundle name");
+
+  while (unformat_check_input (line_input) != UNFORMAT_END_OF_INPUT)
+    {
+      if (unformat (line_input, "bundle %U", unformat_perfmon_bundle_name, &b))
+	;
+      else
+	return clib_error_return (0, "unknown input '%U'",
+				  format_unformat_error, line_input);
+    }
+  unformat_free (line_input);
+
+  if (b == 0)
+    return clib_error_return (0, "please specify bundle name");
+
+  return perfmon_start (vm, b);
 }
 
 VLIB_CLI_COMMAND (perfmon_start_command, static) = {
   .path = "perfmon start",
-  .short_help = "perfmon start",
+  .short_help = "perfmon start bundle [<bundle-name>]",
   .function = perfmon_start_command_fn,
   .is_mp_safe = 1,
 };

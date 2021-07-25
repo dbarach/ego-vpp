@@ -8,12 +8,11 @@
 import os
 import time
 from collections import deque
-
+import queue
 from six import moves, iteritems
 from vpp_papi import VPPApiClient, mac_pton
 from hook import Hook
 from vpp_ip_route import MPLS_IETF_MAX_LABEL, MPLS_LABEL_INVALID
-
 
 #
 # Dictionary keyed on message name to override default values for
@@ -36,7 +35,6 @@ defaultmapping = {
     'bridge_domain_add_del': {'flood': 1, 'uu_flood': 1, 'forward': 1,
                               'learn': 1, 'is_add': 1, },
     'bvi_delete': {},
-    'gbp_subnet_add_del': {'sw_if_index': 4294967295, 'epg_id': 65535, },
     'geneve_add_del_tunnel': {'mcast_sw_if_index': 4294967295, 'is_add': 1,
                               'decap_next_index': 4294967295, },
     'input_acl_set_interface': {'ip4_table_index': 4294967295,
@@ -49,7 +47,6 @@ defaultmapping = {
                          'classify_table_index': 4294967295, 'is_add': 1, },
     'ip_mroute_add_del': {'is_add': 1, },
     'ip_neighbor_add_del': {'is_add': 1, },
-    'ip_route_add_del': {'is_add': 1, },
     'ipsec_interface_add_del_spd': {'is_add': 1, },
     'ipsec_spd_add_del': {'is_add': 1, },
     'ipsec_spd_dump': {'sa_id': 4294967295, },
@@ -131,10 +128,9 @@ class VppPapiProvider(object):
 
     _zero, _negative = range(2)
 
-    def __init__(self, name, shm_prefix, test_class, read_timeout):
+    def __init__(self, name, test_class, read_timeout):
         self.hook = Hook(test_class)
         self.name = name
-        self.shm_prefix = shm_prefix
         self.test_class = test_class
         self._expect_api_retval = self._zero
         self._expect_stack = []
@@ -143,18 +139,11 @@ class VppPapiProvider(object):
         # calling the constructor.
         VPPApiClient.apidir = os.getenv('VPP_INSTALL_PATH')
 
-        use_socket = False
-        try:
-            if os.environ['SOCKET'] == '1':
-                use_socket = True
-        except KeyError:
-            pass
-
         self.vpp = VPPApiClient(logger=test_class.logger,
                                 read_timeout=read_timeout,
-                                use_socket=use_socket,
-                                server_address=test_class.api_sock)
-        self._events = deque()
+                                use_socket=True,
+                                server_address=test_class.get_api_sock_path())
+        self._events = queue.Queue()
 
     def __enter__(self):
         return self
@@ -193,9 +182,14 @@ class VppPapiProvider(object):
 
     def collect_events(self):
         """ Collect all events from the internal queue and clear the queue. """
-        e = self._events
-        self._events = deque()
-        return e
+        result = []
+        while True:
+            try:
+                e = self._events.get(block=False)
+                result.append(e)
+            except queue.Empty:
+                return result
+        return result
 
     def wait_for_event(self, timeout, name=None):
         """ Wait for and return next event. """
@@ -205,28 +199,21 @@ class VppPapiProvider(object):
         else:
             self.test_class.logger.debug("Expecting event within %ss",
                                          timeout)
-        if self._events:
-            self.test_class.logger.debug("Not waiting, event already queued")
-        limit = time.time() + timeout
-        while time.time() < limit:
-            if self._events:
-                e = self._events.popleft()
-                if name and type(e).__name__ != name:
-                    raise Exception(
-                        "Unexpected event received: %s, expected: %s" %
-                        (type(e).__name__, name))
-                self.test_class.logger.debug("Returning event %s:%s" %
-                                             (name, e))
-                return e
-            self.test_class.sleep(0)  # yield
-        raise Exception("Event did not occur within timeout")
+        try:
+            e = self._events.get(timeout=timeout)
+        except queue.Empty:
+            raise Exception("Event did not occur within timeout")
+        msgname = type(e).__name__
+        if name and msgname != name:
+            raise Exception("Unexpected event received: %s, expected: %s"
+                            % msgname)
+        self.test_class.logger.debug("Returning event %s:%s" % (name, e))
+        return e
 
     def __call__(self, name, event):
         """ Enqueue event in the internal event queue. """
-        # FIXME use the name instead of relying on type(e).__name__ ?
-        # FIXME #2 if this throws, it is eaten silently, Ole?
         self.test_class.logger.debug("New event: %s: %s" % (name, event))
-        self._events.append(event)
+        self._events.put(event)
 
     def factory(self, name, apifn):
         def f(*a, **ka):
@@ -262,7 +249,14 @@ class VppPapiProvider(object):
 
     def connect(self):
         """Connect the API to VPP"""
-        self.vpp.connect(self.name, self.shm_prefix)
+        # This might be called before VPP is prepared to listen to the socket
+        retries = 0
+        while not os.path.exists(self.test_class.get_api_sock_path()):
+            time.sleep(0.5)
+            retries += 1
+            if retries > 120:
+                break
+        self.vpp.connect(self.name[:63])
         self.papi = self.vpp.api
         self.vpp.register_event_callback(self)
 
@@ -413,6 +407,16 @@ class VppPapiProvider(object):
                             'table_id': table_id,
                             'is_ip6': is_ip6
                         }})
+
+    def ip_route_v2_dump(self, table_id, is_ip6=False, src=0):
+        return self.api(self.papi.ip_route_v2_dump,
+                        {
+                            'src': src,
+                            'table': {
+                                'table_id': table_id,
+                                'is_ip6': is_ip6
+                            }
+                        })
 
     def ip_neighbor_add_del(self,
                             sw_if_index,
@@ -988,135 +992,17 @@ class VppPapiProvider(object):
         return self.api(self.papi.punt_socket_deregister,
                         {'punt': reg})
 
-    def gbp_endpoint_add(self, sw_if_index, ips, mac, sclass, flags,
-                         tun_src, tun_dst):
-        """ GBP endpoint Add """
-        return self.api(self.papi.gbp_endpoint_add,
-                        {'endpoint': {
-                            'sw_if_index': sw_if_index,
-                            'ips': ips,
-                            'n_ips': len(ips),
-                            'mac': mac,
-                            'sclass': sclass,
-                            'flags': flags,
-                            'tun': {
-                                'src': tun_src,
-                                'dst': tun_dst,
-                            }}})
-
-    def gbp_endpoint_del(self, handle):
-        """ GBP endpoint Del """
-        return self.api(self.papi.gbp_endpoint_del,
-                        {'handle': handle})
-
     def gbp_endpoint_dump(self):
         """ GBP endpoint Dump """
         return self.api(self.papi.gbp_endpoint_dump, {})
-
-    def gbp_endpoint_group_add(self, vnid, sclass, bd,
-                               rd, uplink_sw_if_index,
-                               retention):
-        """ GBP endpoint group Add """
-        return self.api(self.papi.gbp_endpoint_group_add,
-                        {'epg':
-                            {
-                                'uplink_sw_if_index': uplink_sw_if_index,
-                                'bd_id': bd,
-                                'rd_id': rd,
-                                'vnid': vnid,
-                                'sclass': sclass,
-                                'retention': retention
-                            }})
-
-    def gbp_endpoint_group_del(self, sclass):
-        """ GBP endpoint group Del """
-        return self.api(self.papi.gbp_endpoint_group_del,
-                        {'sclass': sclass})
-
-    def gbp_bridge_domain_add(self, bd_id, rd_id, flags,
-                              bvi_sw_if_index,
-                              uu_fwd_sw_if_index,
-                              bm_flood_sw_if_index):
-        """ GBP bridge-domain Add """
-        return self.api(self.papi.gbp_bridge_domain_add,
-                        {'bd':
-                            {
-                                'flags': flags,
-                                'bvi_sw_if_index': bvi_sw_if_index,
-                                'uu_fwd_sw_if_index': uu_fwd_sw_if_index,
-                                'bm_flood_sw_if_index': bm_flood_sw_if_index,
-                                'bd_id': bd_id,
-                                'rd_id': rd_id
-                            }})
-
-    def gbp_bridge_domain_del(self, bd_id):
-        """ GBP bridge-domain Del """
-        return self.api(self.papi.gbp_bridge_domain_del,
-                        {'bd_id': bd_id})
-
-    def gbp_route_domain_add(self, rd_id,
-                             scope,
-                             ip4_table_id,
-                             ip6_table_id,
-                             ip4_uu_sw_if_index,
-                             ip6_uu_sw_if_index):
-        """ GBP route-domain Add """
-        return self.api(self.papi.gbp_route_domain_add,
-                        {'rd':
-                            {
-                                'scope': scope,
-                                'ip4_table_id': ip4_table_id,
-                                'ip6_table_id': ip6_table_id,
-                                'ip4_uu_sw_if_index': ip4_uu_sw_if_index,
-                                'ip6_uu_sw_if_index': ip6_uu_sw_if_index,
-                                'rd_id': rd_id
-                            }})
-
-    def gbp_route_domain_del(self, rd_id):
-        """ GBP route-domain Del """
-        return self.api(self.papi.gbp_route_domain_del,
-                        {'rd_id': rd_id})
-
-    def gbp_recirc_add_del(self, is_add, sw_if_index, sclass, is_ext):
-        """ GBP recirc Add/Del """
-        return self.api(self.papi.gbp_recirc_add_del,
-                        {'is_add': is_add,
-                         'recirc': {
-                             'is_ext': is_ext,
-                             'sw_if_index': sw_if_index,
-                             'sclass': sclass}})
 
     def gbp_recirc_dump(self):
         """ GBP recirc Dump """
         return self.api(self.papi.gbp_recirc_dump, {})
 
-    def gbp_ext_itf_add_del(self, is_add, sw_if_index, bd_id, rd_id, flags):
-        """ GBP recirc Add/Del """
-        return self.api(self.papi.gbp_ext_itf_add_del,
-                        {'is_add': is_add,
-                         'ext_itf': {
-                             'sw_if_index': sw_if_index,
-                             'bd_id': bd_id,
-                             'rd_id': rd_id,
-                             'flags': flags}})
-
     def gbp_ext_itf_dump(self):
         """ GBP recirc Dump """
         return self.api(self.papi.gbp_ext_itf_dump, {})
-
-    def gbp_subnet_add_del(self, is_add, rd_id,
-                           prefix, type,
-                           sw_if_index=0xffffffff,
-                           sclass=0xffff):
-        """ GBP Subnet Add/Del """
-        return self.api(self.papi.gbp_subnet_add_del,
-                        {'is_add': is_add,
-                         'subnet': {
-                             'type': type,
-                             'sw_if_index': sw_if_index,
-                             'sclass': sclass,
-                             'prefix': prefix,
-                             'rd_id': rd_id}})
 
     def gbp_subnet_dump(self):
         """ GBP Subnet Dump """
@@ -1125,25 +1011,6 @@ class VppPapiProvider(object):
     def gbp_contract_dump(self):
         """ GBP contract Dump """
         return self.api(self.papi.gbp_contract_dump, {})
-
-    def gbp_vxlan_tunnel_add(self, vni, bd_rd_id, mode, src):
-        """ GBP VXLAN tunnel add """
-        return self.api(self.papi.gbp_vxlan_tunnel_add,
-                        {
-                            'tunnel': {
-                                'vni': vni,
-                                'mode': mode,
-                                'bd_rd_id': bd_rd_id,
-                                'src': src
-                            }
-                        })
-
-    def gbp_vxlan_tunnel_del(self, vni):
-        """ GBP VXLAN tunnel del """
-        return self.api(self.papi.gbp_vxlan_tunnel_del,
-                        {
-                            'vni': vni,
-                        })
 
     def gbp_vxlan_tunnel_dump(self):
         """ GBP VXLAN tunnel add/del """

@@ -124,14 +124,14 @@ u8 *
 format_transport_half_open_connection (u8 * s, va_list * args)
 {
   u32 transport_proto = va_arg (*args, u32);
-  u32 listen_index = va_arg (*args, u32);
+  u32 ho_index = va_arg (*args, u32);
   transport_proto_vft_t *tp_vft;
 
   tp_vft = transport_protocol_get_vft (transport_proto);
   if (!tp_vft)
     return s;
 
-  s = format (s, "%U", tp_vft->format_half_open, listen_index);
+  s = format (s, "%U", tp_vft->format_half_open, ho_index);
   return s;
 }
 
@@ -307,7 +307,7 @@ transport_cleanup (transport_proto_t tp, u32 conn_index, u8 thread_index)
 void
 transport_cleanup_half_open (transport_proto_t tp, u32 conn_index)
 {
-  if (tp_vfts[tp].cleanup)
+  if (tp_vfts[tp].cleanup_ho)
     tp_vfts[tp].cleanup_ho (conn_index);
 }
 
@@ -315,6 +315,13 @@ int
 transport_connect (transport_proto_t tp, transport_endpoint_cfg_t * tep)
 {
   return tp_vfts[tp].connect (tep);
+}
+
+void
+transport_half_close (transport_proto_t tp, u32 conn_index, u8 thread_index)
+{
+  if (tp_vfts[tp].half_close)
+    tp_vfts[tp].half_close (conn_index, thread_index);
 }
 
 void
@@ -397,6 +404,17 @@ transport_get_listener_endpoint (transport_proto_t tp, u32 conn_index,
       tc = transport_get_listener (tp, conn_index);
       default_get_transport_endpoint (tc, tep, is_lcl);
     }
+}
+
+int
+transport_connection_attribute (transport_proto_t tp, u32 conn_index,
+				u8 thread_index, u8 is_get,
+				transport_endpt_attr_t *attr)
+{
+  if (!tp_vfts[tp].attribute)
+    return -1;
+
+  return tp_vfts[tp].attribute (conn_index, thread_index, is_get, attr);
 }
 
 #define PORT_MASK ((1 << 16)- 1)
@@ -763,6 +781,12 @@ transport_connection_tx_pacer_update_bytes (transport_connection_t * tc,
 }
 
 void
+transport_update_pacer_time (u32 thread_index, clib_time_type_t now)
+{
+  session_wrk_update_time (session_main_get_worker (thread_index), now);
+}
+
+void
 transport_connection_reschedule (transport_connection_t * tc)
 {
   tc->flags &= ~TRANSPORT_CONNECTION_F_DESCHED;
@@ -829,7 +853,11 @@ transport_init (void)
 			 smm->local_endpoints_table_memory);
   num_threads = 1 /* main thread */  + vtm->n_threads;
   if (num_threads > 1)
-    clib_spinlock_init (&local_endpoints_lock);
+    {
+      clib_spinlock_init (&local_endpoints_lock);
+      /* Main not polled if there are workers */
+      smm->transport_cl_thread = 1;
+    }
 }
 
 /*

@@ -536,8 +536,8 @@ nat_ipfix_header_create (flow_report_main_t * frm,
 }
 
 static inline void
-nat_ipfix_send (u32 thread_index, flow_report_main_t * frm,
-		 vlib_frame_t * f, vlib_buffer_t * b0, u16 template_id)
+nat_ipfix_send (flow_report_main_t *frm, vlib_frame_t *f, vlib_buffer_t *b0,
+		u16 template_id)
 {
   ip4_ipfix_template_packet_t *tp;
   ipfix_message_header_t *h = 0;
@@ -613,7 +613,6 @@ nat_ipfix_logging_nat44_ses (u32 thread_index, u8 nat_event, u32 src_ip,
 	}
 
       b0 = sitd->nat44_session_buffer = vlib_get_buffer (vm, bi0);
-      VLIB_BUFFER_TRACE_TRAJECTORY_INIT (b0);
       offset = 0;
     }
   else
@@ -674,7 +673,7 @@ nat_ipfix_logging_nat44_ses (u32 thread_index, u8 nat_event, u32 src_ip,
       template_id = clib_atomic_fetch_or (
         &silm->nat44_session_template_id,
         0);
-      nat_ipfix_send (thread_index, frm, f, b0, template_id);
+      nat_ipfix_send (frm, f, b0, template_id);
       sitd->nat44_session_frame = 0;
       sitd->nat44_session_buffer = 0;
       offset = 0;
@@ -714,7 +713,6 @@ nat_ipfix_logging_addr_exhausted (u32 thread_index, u32 pool_id, int do_flush)
 	}
 
       b0 = sitd->addr_exhausted_buffer = vlib_get_buffer (vm, bi0);
-      VLIB_BUFFER_TRACE_TRAJECTORY_INIT (b0);
       offset = 0;
     }
   else
@@ -758,7 +756,7 @@ nat_ipfix_logging_addr_exhausted (u32 thread_index, u32 pool_id, int do_flush)
       template_id = clib_atomic_fetch_or (
           &silm->addr_exhausted_template_id,
           0);
-      nat_ipfix_send (thread_index, frm, f, b0, template_id);
+      nat_ipfix_send (frm, f, b0, template_id);
       sitd->addr_exhausted_frame = 0;
       sitd->addr_exhausted_buffer = 0;
       offset = 0;
@@ -780,7 +778,7 @@ nat_ipfix_logging_max_entries_per_usr (u32 thread_index,
   vlib_main_t *vm = vlib_get_main ();
   u64 now;
   u8 nat_event = QUOTA_EXCEEDED;
-  u32 quota_event = MAX_ENTRIES_PER_USER;
+  u32 quota_event = clib_host_to_net_u32 (MAX_ENTRIES_PER_USER);
   u16 template_id;
 
   now = (u64) ((vlib_time_now (vm) - silm->vlib_time_0) * 1e3);
@@ -800,7 +798,6 @@ nat_ipfix_logging_max_entries_per_usr (u32 thread_index,
 	}
 
       b0 = sitd->max_entries_per_user_buffer = vlib_get_buffer (vm, bi0);
-      VLIB_BUFFER_TRACE_TRAJECTORY_INIT (b0);
       offset = 0;
     }
   else
@@ -835,6 +832,7 @@ nat_ipfix_logging_max_entries_per_usr (u32 thread_index,
       clib_memcpy_fast (b0->data + offset, &quota_event, sizeof (quota_event));
       offset += sizeof (quota_event);
 
+      limit = clib_host_to_net_u32 (limit);
       clib_memcpy_fast (b0->data + offset, &limit, sizeof (limit));
       offset += sizeof (limit);
 
@@ -850,7 +848,7 @@ nat_ipfix_logging_max_entries_per_usr (u32 thread_index,
       template_id = clib_atomic_fetch_or (
           &silm->max_entries_per_user_template_id,
           0);
-      nat_ipfix_send (thread_index, frm, f, b0, template_id);
+      nat_ipfix_send (frm, f, b0, template_id);
       sitd->max_entries_per_user_frame = 0;
       sitd->max_entries_per_user_buffer = 0;
       offset = 0;
@@ -871,7 +869,7 @@ nat_ipfix_logging_max_ses (u32 thread_index, u32 limit, int do_flush)
   vlib_main_t *vm = vlib_get_main ();
   u64 now;
   u8 nat_event = QUOTA_EXCEEDED;
-  u32 quota_event = MAX_SESSION_ENTRIES;
+  u32 quota_event = clib_host_to_net_u32 (MAX_SESSION_ENTRIES);
   u16 template_id;
 
   now = (u64) ((vlib_time_now (vm) - silm->vlib_time_0) * 1e3);
@@ -891,7 +889,6 @@ nat_ipfix_logging_max_ses (u32 thread_index, u32 limit, int do_flush)
 	}
 
       b0 = sitd->max_sessions_buffer = vlib_get_buffer (vm, bi0);
-      VLIB_BUFFER_TRACE_TRAJECTORY_INIT (b0);
       offset = 0;
     }
   else
@@ -926,6 +923,7 @@ nat_ipfix_logging_max_ses (u32 thread_index, u32 limit, int do_flush)
       clib_memcpy_fast (b0->data + offset, &quota_event, sizeof (quota_event));
       offset += sizeof (quota_event);
 
+      limit = clib_host_to_net_u32 (limit);
       clib_memcpy_fast (b0->data + offset, &limit, sizeof (limit));
       offset += sizeof (limit);
 
@@ -938,7 +936,7 @@ nat_ipfix_logging_max_ses (u32 thread_index, u32 limit, int do_flush)
       template_id = clib_atomic_fetch_or (
         &silm->max_sessions_template_id,
         0);
-      nat_ipfix_send (thread_index, frm, f, b0, template_id);
+      nat_ipfix_send (frm, f, b0, template_id);
       sitd->max_sessions_frame = 0;
       sitd->max_sessions_buffer = 0;
       offset = 0;
@@ -959,7 +957,7 @@ nat_ipfix_logging_max_bib (u32 thread_index, u32 limit, int do_flush)
   vlib_main_t *vm = vlib_get_main ();
   u64 now;
   u8 nat_event = QUOTA_EXCEEDED;
-  u32 quota_event = MAX_BIB_ENTRIES;
+  u32 quota_event = clib_host_to_net_u32 (MAX_BIB_ENTRIES);
   u16 template_id;
 
   now = (u64) ((vlib_time_now (vm) - silm->vlib_time_0) * 1e3);
@@ -979,7 +977,6 @@ nat_ipfix_logging_max_bib (u32 thread_index, u32 limit, int do_flush)
 	}
 
       b0 = sitd->max_bibs_buffer = vlib_get_buffer (vm, bi0);
-      VLIB_BUFFER_TRACE_TRAJECTORY_INIT (b0);
       offset = 0;
     }
   else
@@ -1014,6 +1011,7 @@ nat_ipfix_logging_max_bib (u32 thread_index, u32 limit, int do_flush)
       clib_memcpy_fast (b0->data + offset, &quota_event, sizeof (quota_event));
       offset += sizeof (quota_event);
 
+      limit = clib_host_to_net_u32 (limit);
       clib_memcpy_fast (b0->data + offset, &limit, sizeof (limit));
       offset += sizeof (limit);
 
@@ -1026,7 +1024,7 @@ nat_ipfix_logging_max_bib (u32 thread_index, u32 limit, int do_flush)
       template_id = clib_atomic_fetch_or (
         &silm->max_bibs_template_id,
         0);
-      nat_ipfix_send (thread_index, frm, f, b0, template_id);
+      nat_ipfix_send (frm, f, b0, template_id);
       sitd->max_bibs_frame = 0;
       sitd->max_bibs_buffer = 0;
       offset = 0;
@@ -1068,7 +1066,6 @@ nat_ipfix_logging_nat64_bibe (u32 thread_index, u8 nat_event,
 	}
 
       b0 = sitd->nat64_bib_buffer = vlib_get_buffer (vm, bi0);
-      VLIB_BUFFER_TRACE_TRAJECTORY_INIT (b0);
       offset = 0;
     }
   else
@@ -1128,7 +1125,7 @@ nat_ipfix_logging_nat64_bibe (u32 thread_index, u8 nat_event,
       template_id = clib_atomic_fetch_or (
         &silm->nat64_bib_template_id,
         0);
-      nat_ipfix_send (thread_index, frm, f, b0, template_id);
+      nat_ipfix_send (frm, f, b0, template_id);
       sitd->nat64_bib_frame = 0;
       sitd->nat64_bib_buffer = 0;
       offset = 0;
@@ -1172,7 +1169,6 @@ nat_ipfix_logging_nat64_ses (u32 thread_index, u8 nat_event,
 	}
 
       b0 = sitd->nat64_ses_buffer = vlib_get_buffer (vm, bi0);
-      VLIB_BUFFER_TRACE_TRAJECTORY_INIT (b0);
       offset = 0;
     }
   else
@@ -1244,7 +1240,7 @@ nat_ipfix_logging_nat64_ses (u32 thread_index, u8 nat_event,
       template_id = clib_atomic_fetch_or (
         &silm->nat64_ses_template_id,
         0);
-      nat_ipfix_send (thread_index, frm, f, b0, template_id);
+      nat_ipfix_send (frm, f, b0, template_id);
       sitd->nat64_ses_frame = 0;
       sitd->nat64_ses_buffer = 0;
       offset = 0;
@@ -1288,12 +1284,12 @@ nat_ipfix_flush_from_main (void)
 
   if (PREDICT_FALSE (!silm->worker_vms))
     {
-      for (i = 1; i < vec_len (vlib_mains); i++)
-        {
-          worker_vm = vlib_mains[i];
-          if (worker_vm)
-            vec_add1 (silm->worker_vms, worker_vm);
-        }
+      for (i = 1; i < vlib_get_n_threads (); i++)
+	{
+	  worker_vm = vlib_get_main_by_index (i);
+	  if (worker_vm)
+	    vec_add1 (silm->worker_vms, worker_vm);
+	}
     }
 
   /* Trigger flush for each worker thread */

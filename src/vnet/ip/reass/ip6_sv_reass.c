@@ -1158,6 +1158,10 @@ show_ip6_sv_reass (vlib_main_t * vm, unformat_input_t * input,
 		   "Maximum configured concurrent shallow virtual IP6 reassemblies per worker-thread: %lu\n",
 		   (long unsigned) rm->max_reass_n);
   vlib_cli_output (vm,
+		   "Maximum configured amount of fragments per shallow "
+		   "virtual IP6 reassembly: %lu\n",
+		   (long unsigned) rm->max_reass_len);
+  vlib_cli_output (vm,
 		   "Maximum configured shallow virtual IP6 reassembly timeout: %lums\n",
 		   (long unsigned) rm->timeout_ms);
   vlib_cli_output (vm,
@@ -1261,9 +1265,8 @@ ip6_sv_reassembly_handoff_inline (vlib_main_t * vm,
       ti += 1;
       b += 1;
     }
-  n_enq =
-    vlib_buffer_enqueue_to_thread (vm, fq_index, from, thread_indices,
-				   frame->n_vectors, 1);
+  n_enq = vlib_buffer_enqueue_to_thread (vm, node, fq_index, from,
+					 thread_indices, frame->n_vectors, 1);
 
   if (n_enq < frame->n_vectors)
     vlib_node_increment_counter (vm, node->node_index,

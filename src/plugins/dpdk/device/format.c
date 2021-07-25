@@ -44,18 +44,22 @@
   _ (tx_bytes_ok, q_obytes)                     \
   _ (rx_errors, q_errors)
 
-#define foreach_dpdk_pkt_rx_offload_flag                                \
-  _ (PKT_RX_VLAN, "RX packet is a 802.1q VLAN packet")                  \
-  _ (PKT_RX_RSS_HASH, "RX packet with RSS hash result")                 \
-  _ (PKT_RX_FDIR, "RX packet with FDIR infos")                          \
-  _ (PKT_RX_L4_CKSUM_BAD, "L4 cksum of RX pkt. is not OK")              \
-  _ (PKT_RX_IP_CKSUM_BAD, "IP cksum of RX pkt. is not OK")              \
-  _ (PKT_RX_EIP_CKSUM_BAD, "External IP header checksum error")         \
-  _ (PKT_RX_VLAN_STRIPPED, "RX packet VLAN tag stripped")               \
-  _ (PKT_RX_IP_CKSUM_GOOD, "IP cksum of RX pkt. is valid")              \
-  _ (PKT_RX_L4_CKSUM_GOOD, "L4 cksum of RX pkt. is valid")              \
-  _ (PKT_RX_IEEE1588_PTP, "RX IEEE1588 L2 Ethernet PT Packet")          \
-  _ (PKT_RX_IEEE1588_TMST, "RX IEEE1588 L2/L4 timestamped packet")      \
+#if RTE_VERSION < RTE_VERSION_NUM(21, 5, 0, 0)
+#define PKT_RX_OUTER_IP_CKSUM_BAD PKT_RX_EIP_CKSUM_BAD
+#endif
+
+#define foreach_dpdk_pkt_rx_offload_flag                                      \
+  _ (PKT_RX_VLAN, "RX packet is a 802.1q VLAN packet")                        \
+  _ (PKT_RX_RSS_HASH, "RX packet with RSS hash result")                       \
+  _ (PKT_RX_FDIR, "RX packet with FDIR infos")                                \
+  _ (PKT_RX_L4_CKSUM_BAD, "L4 cksum of RX pkt. is not OK")                    \
+  _ (PKT_RX_IP_CKSUM_BAD, "IP cksum of RX pkt. is not OK")                    \
+  _ (PKT_RX_OUTER_IP_CKSUM_BAD, "External IP header checksum error")          \
+  _ (PKT_RX_VLAN_STRIPPED, "RX packet VLAN tag stripped")                     \
+  _ (PKT_RX_IP_CKSUM_GOOD, "IP cksum of RX pkt. is valid")                    \
+  _ (PKT_RX_L4_CKSUM_GOOD, "L4 cksum of RX pkt. is valid")                    \
+  _ (PKT_RX_IEEE1588_PTP, "RX IEEE1588 L2 Ethernet PT Packet")                \
+  _ (PKT_RX_IEEE1588_TMST, "RX IEEE1588 L2/L4 timestamped packet")            \
   _ (PKT_RX_QINQ_STRIPPED, "RX packet QinQ tags stripped")
 
 #define foreach_dpdk_pkt_type                                           \
@@ -98,11 +102,14 @@
   _ (INNER_L4, ICMP, "Inner ICMP packet")                               \
   _ (INNER_L4, NONFRAG, "Inner non-fragmented IP packet")
 
-#define foreach_dpdk_pkt_tx_offload_flag                                \
-  _ (PKT_TX_VLAN_PKT, "TX packet is a 802.1q VLAN packet")              \
-  _ (PKT_TX_IP_CKSUM, "IP cksum of TX pkt. computed by NIC")            \
-  _ (PKT_TX_TCP_CKSUM, "TCP cksum of TX pkt. computed by NIC")          \
-  _ (PKT_TX_SCTP_CKSUM, "SCTP cksum of TX pkt. computed by NIC")        \
+#define foreach_dpdk_pkt_tx_offload_flag                                      \
+  _ (PKT_TX_VLAN_PKT, "TX packet is a 802.1q VLAN packet")                    \
+  _ (PKT_TX_TUNNEL_VXLAN, "TX packet is a VXLAN packet")                      \
+  _ (PKT_TX_IP_CKSUM, "IP cksum of TX pkt. computed by NIC")                  \
+  _ (PKT_TX_TCP_CKSUM, "TCP cksum of TX pkt. computed by NIC")                \
+  _ (PKT_TX_SCTP_CKSUM, "SCTP cksum of TX pkt. computed by NIC")              \
+  _ (PKT_TX_OUTER_IP_CKSUM, "Outer IP cksum of Tx pkt. computed by NIC")      \
+  _ (PKT_TX_TCP_SEG, "TSO of TX pkt. done by NIC")                            \
   _ (PKT_TX_IEEE1588_TMST, "TX IEEE1588 packet to timestamp")
 
 #define foreach_dpdk_pkt_offload_flag           \
@@ -877,6 +884,17 @@ format_dpdk_pkt_offload_flags (u8 * s, va_list * va)
 }
 
 u8 *
+format_dpdk_rte_mbuf_tso (u8 *s, va_list *va)
+{
+  struct rte_mbuf *mb = va_arg (*va, struct rte_mbuf *);
+  if (mb->ol_flags & PKT_TX_TCP_SEG)
+    {
+      s = format (s, "l4_len %u tso_segsz %u", mb->l4_len, mb->tso_segsz);
+    }
+  return s;
+}
+
+u8 *
 format_dpdk_rte_mbuf_vlan (u8 * s, va_list * va)
 {
   ethernet_vlan_header_tv_t *vlan_hdr =
@@ -904,17 +922,19 @@ format_dpdk_rte_mbuf (u8 * s, va_list * va)
   ethernet_header_t *eth_hdr = va_arg (*va, ethernet_header_t *);
   u32 indent = format_get_indent (s) + 2;
 
-  s = format (s, "PKT MBUF: port %d, nb_segs %d, pkt_len %d"
-	      "\n%Ubuf_len %d, data_len %d, ol_flags 0x%lx, data_off %d, phys_addr 0x%x"
-	      "\n%Upacket_type 0x%x l2_len %u l3_len %u outer_l2_len %u outer_l3_len %u"
-	      "\n%Urss 0x%x fdir.hi 0x%x fdir.lo 0x%x",
-	      mb->port, mb->nb_segs, mb->pkt_len,
-	      format_white_space, indent,
-	      mb->buf_len, mb->data_len, mb->ol_flags, mb->data_off,
-	      mb->buf_iova, format_white_space, indent, mb->packet_type,
-	      mb->l2_len, mb->l3_len, mb->outer_l2_len, mb->outer_l3_len,
-	      format_white_space, indent, mb->hash.rss, mb->hash.fdir.hi,
-	      mb->hash.fdir.lo);
+  s = format (
+    s,
+    "PKT MBUF: port %d, nb_segs %d, pkt_len %d"
+    "\n%Ubuf_len %d, data_len %d, ol_flags 0x%lx, data_off %d, phys_addr 0x%x"
+    "\n%Upacket_type 0x%x l2_len %u l3_len %u outer_l2_len %u outer_l3_len %u "
+    "%U"
+    "\n%Urss 0x%x fdir.hi 0x%x fdir.lo 0x%x",
+    mb->port, mb->nb_segs, mb->pkt_len, format_white_space, indent,
+    mb->buf_len, mb->data_len, mb->ol_flags, mb->data_off, mb->buf_iova,
+    format_white_space, indent, mb->packet_type, mb->l2_len, mb->l3_len,
+    mb->outer_l2_len, mb->outer_l3_len, format_dpdk_rte_mbuf_tso, mb,
+    format_white_space, indent, mb->hash.rss, mb->hash.fdir.hi,
+    mb->hash.fdir.lo);
 
   if (mb->ol_flags)
     s = format (s, "\n%U%U", format_white_space, indent,

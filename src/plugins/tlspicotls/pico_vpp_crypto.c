@@ -141,7 +141,8 @@ ptls_vpp_crypto_aead_decrypt (ptls_aead_context_t *_ctx, void *_output,
   ctx->op.dst = _output;
   ctx->op.src = (void *) input;
   ctx->op.len = inlen - tag_size;;
-  ctx->op.iv = ctx->static_iv;
+  ctx->op.iv = ctx->iv;
+  ptls_aead__build_iv (ctx->super.algo, ctx->op.iv, ctx->static_iv, seq);
   ctx->op.aad = (void *) aad;
   ctx->op.aad_len = aadlen;
   ctx->op.tag = (void *) input + inlen - tag_size;
@@ -160,7 +161,6 @@ ptls_vpp_crypto_aead_encrypt_init (ptls_aead_context_t *_ctx, uint64_t seq,
   struct vpp_aead_context_t *ctx = (struct vpp_aead_context_t *) _ctx;
   ctx->op.iv = ctx->iv;
   ptls_aead__build_iv (ctx->super.algo, ctx->op.iv, ctx->static_iv, seq);
-  ctx->op.iv = ctx->static_iv;
   ctx->op.aad = (void *) aad;
   ctx->op.aad_len = aadlen;
   ctx->op.n_chunks = 2;
@@ -290,22 +290,28 @@ ptls_vpp_crypto_aead_aes256gcm_setup_crypto (ptls_aead_context_t *ctx,
 					    VNET_CRYPTO_ALG_AES_256_GCM);
 }
 
-ptls_cipher_algorithm_t ptls_vpp_crypto_aes128ctr = { "AES128-CTR",
+ptls_cipher_algorithm_t ptls_vpp_crypto_aes128ctr = {
+  "AES128-CTR",
   PTLS_AES128_KEY_SIZE,
-  1, PTLS_AES_IV_SIZE,
+  1,
+  PTLS_AES_IV_SIZE,
   sizeof (struct vpp_aead_context_t),
   ptls_vpp_crypto_aes128ctr_setup_crypto
 };
 
-ptls_cipher_algorithm_t ptls_vpp_crypto_aes256ctr = { "AES256-CTR",
+ptls_cipher_algorithm_t ptls_vpp_crypto_aes256ctr = {
+  "AES256-CTR",
   PTLS_AES256_KEY_SIZE,
-  1 /* block size */ ,
+  1 /* block size */,
   PTLS_AES_IV_SIZE,
   sizeof (struct vpp_aead_context_t),
   ptls_vpp_crypto_aes256ctr_setup_crypto
 };
 
-ptls_aead_algorithm_t ptls_vpp_crypto_aes128gcm = { "AES128-GCM",
+ptls_aead_algorithm_t ptls_vpp_crypto_aes128gcm = {
+  "AES128-GCM",
+  PTLS_AESGCM_CONFIDENTIALITY_LIMIT,
+  PTLS_AESGCM_INTEGRITY_LIMIT,
   &ptls_vpp_crypto_aes128ctr,
   NULL,
   PTLS_AES128_KEY_SIZE,
@@ -315,7 +321,10 @@ ptls_aead_algorithm_t ptls_vpp_crypto_aes128gcm = { "AES128-GCM",
   ptls_vpp_crypto_aead_aes128gcm_setup_crypto
 };
 
-ptls_aead_algorithm_t ptls_vpp_crypto_aes256gcm = { "AES256-GCM",
+ptls_aead_algorithm_t ptls_vpp_crypto_aes256gcm = {
+  "AES256-GCM",
+  PTLS_AESGCM_CONFIDENTIALITY_LIMIT,
+  PTLS_AESGCM_INTEGRITY_LIMIT,
   &ptls_vpp_crypto_aes256ctr,
   NULL,
   PTLS_AES256_KEY_SIZE,

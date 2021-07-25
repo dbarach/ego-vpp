@@ -50,6 +50,7 @@
 #include <vnet/dpo/load_balance_map.h>
 #include <vnet/dpo/classify_dpo.h>
 #include <vnet/classify/vnet_classify.h>
+#include <vnet/pg/pg.h>
 
 #ifndef CLIB_MARCH_VARIANT
 #include <vppinfra/bihash_template.c>
@@ -1333,9 +1334,9 @@ ip6_local_inline (vlib_main_t * vm, vlib_node_runtime_t * node,
 	  flags[0] = b[0]->flags;
 	  flags[1] = b[1]->flags;
 
-	  u32 oflags[2];
-	  oflags[0] = vnet_buffer2 (b[0])->oflags;
-	  oflags[1] = vnet_buffer2 (b[1])->oflags;
+	  vnet_buffer_oflags_t oflags[2];
+	  oflags[0] = vnet_buffer (b[0])->oflags;
+	  oflags[1] = vnet_buffer (b[1])->oflags;
 
 	  u32 l4_offload[2];
 	  l4_offload[0] = (flags[0] & VNET_BUFFER_F_OFFLOAD) &&
@@ -1524,7 +1525,7 @@ ip6_local_inline (vlib_main_t * vm, vlib_node_runtime_t * node,
 
 	  u32 flags = b[0]->flags;
 
-	  u32 oflags = vnet_buffer2 (b[0])->oflags;
+	  vnet_buffer_oflags_t oflags = vnet_buffer (b[0])->oflags;
 
 	  u32 l4_offload = (flags & VNET_BUFFER_F_OFFLOAD) &&
 			   (oflags & (VNET_BUFFER_OFFLOAD_F_TCP_CKSUM |
@@ -1779,8 +1780,8 @@ ip6_rewrite_inline_with_gso (vlib_main_t * vm,
 	    vlib_prefetch_buffer_header (p2, LOAD);
 	    vlib_prefetch_buffer_header (p3, LOAD);
 
-	    CLIB_PREFETCH (p2->pre_data, 32, STORE);
-	    CLIB_PREFETCH (p3->pre_data, 32, STORE);
+	    clib_prefetch_store (p2->pre_data);
+	    clib_prefetch_store (p3->pre_data);
 
 	    CLIB_PREFETCH (p2->data, sizeof (ip0[0]), STORE);
 	    CLIB_PREFETCH (p3->data, sizeof (ip0[0]), STORE);

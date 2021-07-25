@@ -52,6 +52,7 @@
 #include <vnet/l2/l2_input.h>
 #include <vnet/classify/vnet_classify.h>
 #include <vnet/interface/rx_queue_funcs.h>
+#include <vnet/interface/tx_queue_funcs.h>
 static int
 compare_interface_names (void *a1, void *a2)
 {
@@ -1612,7 +1613,7 @@ show_interface_rx_placement_fn (vlib_main_t * vm, unformat_input_t * input,
   vnet_hw_if_rx_queue_t **all_queues = 0;
   vnet_hw_if_rx_queue_t **qptr;
   vnet_hw_if_rx_queue_t *q;
-  vec_foreach (q, vnm->interface_main.hw_if_rx_queues)
+  pool_foreach (q, vnm->interface_main.hw_if_rx_queues)
     vec_add1 (all_queues, q);
   vec_sort_with_function (all_queues, vnet_hw_if_rxq_cmp_cli_api);
   u32 prev_node = ~0;
@@ -1809,6 +1810,101 @@ VLIB_CLI_COMMAND (cmd_set_if_rx_placement,static) = {
 /* *INDENT-ON* */
 
 clib_error_t *
+set_hw_interface_tx_queue (u32 hw_if_index, u32 queue_id, uword *bitmap)
+{
+  vnet_main_t *vnm = vnet_get_main ();
+  vnet_device_main_t *vdm = &vnet_device_main;
+  vnet_hw_interface_t *hw;
+  vnet_hw_if_tx_queue_t *txq;
+  u32 queue_index;
+  u32 thread_index;
+
+  hw = vnet_get_hw_interface (vnm, hw_if_index);
+
+  /* highest set bit in bitmap should not exceed last worker thread index */
+  thread_index = clib_bitmap_last_set (bitmap);
+  if ((thread_index != ~0) && (thread_index > vdm->last_worker_thread_index))
+    return clib_error_return (0, "please specify valid thread(s)");
+
+  queue_index =
+    vnet_hw_if_get_tx_queue_index_by_id (vnm, hw_if_index, queue_id);
+  if (queue_index == ~0)
+    return clib_error_return (0, "unknown queue %u on interface %s", queue_id,
+			      hw->name);
+
+  txq = vnet_hw_if_get_tx_queue (vnm, queue_index);
+
+  // free the existing bitmap
+  if (clib_bitmap_count_set_bits (txq->threads))
+    {
+      txq->shared_queue = 0;
+      clib_bitmap_free (txq->threads);
+    }
+
+  clib_bitmap_foreach (thread_index, bitmap)
+    vnet_hw_if_tx_queue_assign_thread (vnm, queue_index, thread_index);
+
+  vnet_hw_if_update_runtime_data (vnm, hw_if_index);
+  return 0;
+}
+
+static clib_error_t *
+set_interface_tx_queue (vlib_main_t *vm, unformat_input_t *input,
+			vlib_cli_command_t *cmd)
+{
+  clib_error_t *error = 0;
+  unformat_input_t _line_input, *line_input = &_line_input;
+  vnet_main_t *vnm = vnet_get_main ();
+  u32 hw_if_index = (u32) ~0;
+  u32 queue_id = (u32) 0;
+  uword *bitmap = 0;
+
+  if (!unformat_user (input, unformat_line_input, line_input))
+    return 0;
+
+  while (unformat_check_input (line_input) != UNFORMAT_END_OF_INPUT)
+    {
+      if (unformat (line_input, "%U", unformat_vnet_hw_interface, vnm,
+		    &hw_if_index))
+	;
+      else if (unformat (line_input, "queue %d", &queue_id))
+	;
+      else if (unformat (line_input, "threads %U", unformat_bitmap_list,
+			 &bitmap))
+	;
+      else
+	{
+	  error = clib_error_return (0, "parse error: '%U'",
+				     format_unformat_error, line_input);
+	  unformat_free (line_input);
+	  return error;
+	}
+    }
+
+  unformat_free (line_input);
+
+  if (hw_if_index == (u32) ~0)
+    {
+      error = clib_error_return (0, "please specify valid interface name");
+      goto error;
+    }
+
+  error = set_hw_interface_tx_queue (hw_if_index, queue_id, bitmap);
+
+error:
+  clib_bitmap_free (bitmap);
+  return (error);
+}
+
+VLIB_CLI_COMMAND (cmd_set_if_tx_queue, static) = {
+  .path = "set interface tx-queue",
+  .short_help = "set interface tx-queue <interface> queue <n> "
+		"[threads <list>]",
+  .function = set_interface_tx_queue,
+  .is_mp_safe = 1,
+};
+
+clib_error_t *
 set_interface_rss_queues (vlib_main_t * vm, u32 hw_if_index,
 			  clib_bitmap_t * bitmap)
 {
@@ -1930,7 +2026,8 @@ int
 vnet_pcap_dispatch_trace_configure (vnet_pcap_dispatch_trace_args_t * a)
 {
   vlib_main_t *vm = vlib_get_main ();
-  vnet_pcap_t *pp = &vm->pcap;
+  vnet_main_t *vnm = vnet_get_main ();
+  vnet_pcap_t *pp = &vnm->pcap;
   pcap_main_t *pm = &pp->pcap_main;
   vnet_classify_main_t *cm = &vnet_classify_main;
 
@@ -1971,7 +2068,8 @@ vnet_pcap_dispatch_trace_configure (vnet_pcap_dispatch_trace_args_t * a)
 
   /* Classify filter specified, but no classify filter configured */
   if ((a->rx_enable + a->tx_enable + a->drop_enable) && a->filter &&
-      cm->classify_table_index_by_sw_if_index[0] == ~0)
+      (!cm->classify_table_index_by_sw_if_index ||
+       cm->classify_table_index_by_sw_if_index[0] == ~0))
     return VNET_API_ERROR_NO_SUCH_LABEL;
 
   if (a->rx_enable + a->tx_enable + a->drop_enable)
@@ -2032,6 +2130,7 @@ vnet_pcap_dispatch_trace_configure (vnet_pcap_dispatch_trace_args_t * a)
 	  cm->classify_table_index_by_sw_if_index[0];
       else
 	pp->filter_classify_table_index = ~0;
+      pp->pcap_error_index = a->drop_err;
       pp->pcap_rx_enable = a->rx_enable;
       pp->pcap_tx_enable = a->tx_enable;
       pp->pcap_drop_enable = a->drop_enable;
@@ -2043,6 +2142,7 @@ vnet_pcap_dispatch_trace_configure (vnet_pcap_dispatch_trace_args_t * a)
       pp->pcap_tx_enable = 0;
       pp->pcap_drop_enable = 0;
       pp->filter_classify_table_index = ~0;
+      pp->pcap_error_index = ~0;
       if (pm->n_packets_captured)
 	{
 	  clib_error_t *error;
@@ -2089,6 +2189,7 @@ pcap_trace_command_fn (vlib_main_t * vm,
   int filter = 0;
   int free_data = 0;
   u32 sw_if_index = 0;		/* default: any interface */
+  vlib_error_t drop_err = ~0;	/* default: any error */
 
   /* Get a line of input. */
   if (!unformat_user (input, unformat_line_input, line_input))
@@ -2122,6 +2223,9 @@ pcap_trace_command_fn (vlib_main_t * vm,
       else if (unformat (line_input, "interface %U",
 			 unformat_vnet_sw_interface, vnm, &sw_if_index))
 	;
+      else if (unformat (line_input, "error %U", unformat_vlib_error, vm,
+			 &drop_err))
+	;
       else if (unformat (line_input, "preallocate-data %=",
 			 &preallocate_data, 1))
 	;
@@ -2153,6 +2257,7 @@ pcap_trace_command_fn (vlib_main_t * vm,
   a->sw_if_index = sw_if_index;
   a->filter = filter;
   a->max_bytes_per_pkt = max_bytes_per_pkt;
+  a->drop_err = drop_err;
 
   rv = vnet_pcap_dispatch_trace_configure (a);
 
@@ -2233,6 +2338,9 @@ pcap_trace_command_fn (vlib_main_t * vm,
  *   filter. The filter will only be executed if the per-interface or
  *   any-interface tests fail.
  *
+ * - <b>error <node>.<error></b> - filter packets based on a specific error.
+ *   For example: error {ip4-udp-lookup}.{No listener for dst port}
+ *
  * - <b>file <name></b> - Used to specify the output filename. The file will
  *   be placed in the '<em>/tmp</em>' directory, so only the filename is
  *   supported. Directory should not be entered. If file already exists, file
@@ -2253,7 +2361,8 @@ pcap_trace_command_fn (vlib_main_t * vm,
  * pcap tx capture is off...
  * @cliexend
  * Example of how to start a tx packet capture:
- * @cliexstart{pcap trace tx max 35 intfc GigabitEthernet0/8/0 file vppTest.pcap}
+ * @cliexstart{pcap trace tx max 35 intfc GigabitEthernet0/8/0 file
+vppTest.pcap}
  * @cliexend
  * Example of how to display the status of a tx packet capture in progress:
  * @cliexstart{pcap trace status}

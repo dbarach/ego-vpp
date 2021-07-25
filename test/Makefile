@@ -13,23 +13,12 @@ ifndef TEST_DIR
 	$(error TEST_DIR is not set)
 endif
 
-export TEST_BR = $(BR)/build-test
-export TEST_DOC_BR = $(TEST_BR)/doc
-export BUILD_TEST_SRC = $(TEST_BR)/src
+export TEST_BR = $(TEST_DIR)
+export TEST_DOC_BR = $(TEST_DIR)/doc/build
 FAILED_DIR=/tmp/vpp-failed-unittests/
-PLUGIN_TEST_DIRS=$(shell find $(PLUGIN_SRC_DIR) -type d -name test -exec echo -n " -d {}" \;)
-CORE_TEST_DIRS=$(shell find $(WS_ROOT)/src -not \( -path $(INTERN_PLUGIN_SRC_DIR) -prune \) -type d -name test -exec echo -n " -d {}" \;)
-VPP_TEST_DIRS=$(shell ls -d $(TEST_DIR)$(PLUGIN_TEST_DIRS)$(CORE_TEST_DIRS) $(EXTERN_TESTS))
-VPP_TEST_SRC=$(shell for dir in $(VPP_TEST_DIRS) ; do ls $$dir/*.py; done)
+VPP_TEST_DIRS=$(shell ls -d $(TEST_DIR) $(EXTERN_TESTS))
 
-.PHONY: verify-no-running-vpp
-
-ifdef VPP_ZOMBIE_NOCHECK
-VPP_PIDS=
-else
-VPP_PIDS=$(shell pgrep -d, -x vpp_main)
-endif
-
+FORCE_NO_WIPE=0
 ifeq ($(DEBUG),gdb)
 FORCE_FOREGROUND=1
 else ifeq ($(DEBUG),gdbserver)
@@ -40,6 +29,9 @@ else ifeq ($(DEBUG),gdbserver-all)
 FORCE_FOREGROUND=1
 else ifeq ($(DEBUG),core)
 FORCE_FOREGROUND=1
+else ifeq ($(DEBUG),attach)
+FORCE_FOREGROUND=1
+FORCE_NO_WIPE=1
 else ifeq ($(STEP),yes)
 FORCE_FOREGROUND=1
 else ifeq ($(STEP),y)
@@ -63,16 +55,6 @@ PYTHON_PROFILE_OPTS=-m cProfile $(PROFILE_OUTPUT_OPTS) -s $(PROFILE_SORT_BY)
 FORCE_FOREGROUND=1
 endif
 
-verify-no-running-vpp:
-	@if [ "$(VPP_PIDS)" != "" ]; then \
-		echo; \
-		echo "*** Existing vpp processes detected (PID(s): $(VPP_PIDS)). Running tests under these conditions is not supported. ***"; \
-		echo; \
-		ps -fp $(VPP_PIDS);\
-		echo; \
-		false; \
-	fi
-
 UNITTEST_EXTRA_OPTS=
 UNITTEST_FAILFAST_OPTS=
 
@@ -84,7 +66,7 @@ ifneq ($(EXTERN_TESTS),)
 UNITTEST_EXTRA_OPTS=$(UNITTEST_FAILFAST_OPTS) -d $(EXTERN_TESTS)
 endif
 
-VENV_PATH=$(TEST_BR)/venv
+VENV_PATH=$(TEST_DIR)/venv
 
 ifeq ($(TEST_DEBUG),1)
 VENV_RUN_DIR:=$(VENV_PATH)/run-debug
@@ -119,7 +101,7 @@ PAPI_WIPE_DIST=$(WS_ROOT)/src/vpp-api/vapi/__pycache__ \
 $(PIP_TOOLS_INSTALL_DONE):
 	@rm -rf $(VENV_PATH)
 	@mkdir -p $(VENV_RUN_DIR)
-	@virtualenv $(VENV_PATH) -p $(PYTHON_INTERP)
+	@$(PYTHON_INTERP) -m venv $(VENV_PATH)
 	# pip version pinning
 	@bash -c "source $(VENV_PATH)/bin/activate && \
 		  $(PYTHON_INTERP) -m pip install pip===$(PIP_VERSION)"
@@ -167,7 +149,7 @@ PLUGIN_SRC_DIR=$(INTERN_PLUGIN_SRC_DIR)
 endif
 
 define retest-func
-@env FORCE_FOREGROUND=$(FORCE_FOREGROUND) FAILED_DIR=$(FAILED_DIR) VENV_PATH=$(VENV_PATH) scripts/setsid_wrapper.sh $(FORCE_FOREGROUND) $(VENV_PATH)/bin/activate $(PYTHON_INTERP) $(PYTHON_PROFILE_OPTS) $(BUILD_TEST_SRC)/run_tests.py -d $(BUILD_TEST_SRC) $(UNITTEST_EXTRA_OPTS) || env FAILED_DIR=$(FAILED_DIR) COMPRESS_FAILED_TEST_LOGS=$(COMPRESS_FAILED_TEST_LOGS) scripts/compress_failed.sh
+@env VPP_IN_GDB=$(VPP_IN_GDB) FORCE_FOREGROUND=$(FORCE_FOREGROUND) FAILED_DIR=$(FAILED_DIR) VENV_PATH=$(VENV_PATH) scripts/setsid_wrapper.sh $(FORCE_FOREGROUND) $(VENV_PATH)/bin/activate $(PYTHON_INTERP) $(PYTHON_PROFILE_OPTS) run_tests.py -d $(TEST_DIR) $(UNITTEST_EXTRA_OPTS) || env FAILED_DIR=$(FAILED_DIR) COMPRESS_FAILED_TEST_LOGS=$(COMPRESS_FAILED_TEST_LOGS) scripts/compress_failed.sh
 endef
 
 .PHONY: sanity
@@ -176,8 +158,8 @@ ifeq ($(SANITY),no)
 SANITY_IMPORT_VPP_PAPI_CMD=true
 SANITY_RUN_VPP_CMD=true
 else
-SANITY_IMPORT_VPP_PAPI_CMD=source $(VENV_PATH)/bin/activate && $(PYTHON_INTERP) $(BUILD_TEST_SRC)/sanity_import_vpp_papi.py
-SANITY_RUN_VPP_CMD=source $(VENV_PATH)/bin/activate && PYTHONPATH=$(BUILD_TEST_SRC) $(PYTHON_INTERP) $(BUILD_TEST_SRC)/sanity_run_vpp.py
+SANITY_IMPORT_VPP_PAPI_CMD=source $(VENV_PATH)/bin/activate && $(PYTHON_INTERP) sanity_import_vpp_papi.py
+SANITY_RUN_VPP_CMD=source $(VENV_PATH)/bin/activate && $(PYTHON_INTERP) sanity_run_vpp.py
 endif
 
 ifndef TEST_JOBS
@@ -192,8 +174,7 @@ else
 PARALLEL_ILLEGAL=1
 endif
 
-sanity: test-dep verify-no-running-vpp
-	@sys_req/dev_shm_size.sh
+sanity: test-dep
 	@bash -c "test $(PARALLEL_ILLEGAL) -eq 0 ||\
 	    (echo \"*******************************************************************\" &&\
 		 echo \"* Sanity check failed, TEST_JOBS is not 1 or 'auto' and DEBUG, STEP or PROFILE is set\" &&\
@@ -213,22 +194,14 @@ sanity: test-dep verify-no-running-vpp
 	         echo \"*******************************************************************\" &&\
 		 false)"
 
-.PHONY: ext-test-apps
-ext-test-apps:
-	make -C ext test-apps
-
-$(BUILD_TEST_SRC): verify-env
-	@mkdir -p $@
-	@for file in $(VPP_TEST_SRC); do if [ ! -L $$file ] && [ ! -e $(BUILD_TEST_SRC)/$$(basename $$file) ] ; then ln -s $$file $(BUILD_TEST_SRC) ; fi ; done
-
 $(FAILED_DIR): reset
 	@mkdir -p $@
 
 .PHONY: test-dep
-test-dep: $(BUILD_TEST_SRC) $(PAPI_INSTALL_DONE) $(FAILED_DIR)
+test-dep: $(PAPI_INSTALL_DONE) $(FAILED_DIR)
 
 .PHONY: test
-test: test-dep ext-test-apps sanity
+test: test-dep sanity
 	$(call retest-func)
 
 .PHONY: retest
@@ -238,11 +211,9 @@ retest: verify-env sanity $(FAILED_DIR)
 .PHONY: shell
 shell: test-dep
 	@echo "source $(VENV_PATH)/bin/activate;\
-		cd $(BUILD_TEST_SRC);\
-		export PYTHONPATH=$(BUILD_TEST_SRC);\
 		export RND_SEED=$(RND_SEED);\
 		echo '***';\
-		echo PYTHONPATH=$(BUILD_TEST_SRC);\
+		echo PYTHONPATH=$(PYTHONPATH);\
 		echo RND_SEED=$(RND_SEED);\
 		echo VPP_BUILD_DIR=$(VPP_BUILD_DIR);\
 		echo VPP_BIN=$(VPP_BIN);\
@@ -259,23 +230,21 @@ shell: test-dep
 .PHONY: reset
 reset:
 	@rm -f /dev/shm/vpp-unittest-*
-	@rm -rf /tmp/vpp-unittest-*
+	@if [ $(FORCE_NO_WIPE) -eq "0" ] ; then rm -rf /tmp/vpp-unittest-*;  fi
 	@rm -f /tmp/api_post_mortem.*
 	@rm -rf $(FAILED_DIR)
 
 .PHONY: wipe
 wipe: reset
-	@make -C ext clean
 	@rm -rf $(VENV_PATH)
 	@rm -rf $(patsubst %,%/__pycache__, $(VPP_TEST_DIRS))
-	@rm -rf  $(BUILD_TEST_SRC)
 
 $(TEST_DOC_BR): $(PIP_INSTALL_DONE)
 	@mkdir -p $@
 	@bash -c "source $(VENV_PATH)/bin/activate && make -C doc html"
 
 .PHONY: doc
-doc: $(BUILD_TEST_SRC) $(PIP_PATCH_DONE) $(TEST_DOC_BR)
+doc: $(PIP_PATCH_DONE) $(TEST_DOC_BR)
 	@echo
 	@echo "Test Documentation URL: $(TEST_DOC_BR)/html/index.html"
 	@echo "Run 'make test-wipe-doc test-doc' to rebuild the test docs"
@@ -313,18 +282,39 @@ wipe-papi:
 wipe-all: wipe wipe-papi wipe-doc wipe-cov
 	@rm -rf $(TEST_BR)
 
-.PHONY: checkstyle
-checkstyle: $(BUILD_TEST_SRC) $(PIP_INSTALL_DONE)
+.PHONY: checkstyle-diff
+checkstyle-diff: $(PIP_INSTALL_DONE)
 	@bash -c "source $(VENV_PATH)/bin/activate &&\
 		  $(PYTHON_INTERP) -m pip install pycodestyle"
 	@bash -c "source $(VENV_PATH)/bin/activate &&\
-		pycodestyle --show-source --ignore=W504,E126,E241,E226,E305,E704,E741,E722 -v $(BUILD_TEST_SRC)/*.py ||\
+		cd $(WS_ROOT) && git diff --name-only --no-color --relative HEAD~1 ':!*.patch' | grep '.py$$' | xargs -n 1 -I XXX \
+		pycodestyle --show-source --ignore=W504,E126,E241,E226,E305,E704,E741,E722 -v XXX ||\
+		(echo \"*********************************************************************\" &&\
+		 echo \"* Test framework PEP8 compliance check FAILED (checked changed files)\" &&\
+	         echo \"*********************************************************************\" &&\
+		 false)"
+	@echo "*********************************************************************"
+	@echo "* Test framework PEP8 compliance check passed (checked changed files)"
+	@echo "*********************************************************************"
+
+.PHONY: start-gdb
+start-gdb: sanity
+	$(eval VPP_IN_GDB=1)
+	$(eval FORCE_FOREGROUND=1)
+	$(call retest-func)
+
+.PHONY: checkstyle
+checkstyle: $(PIP_INSTALL_DONE)
+	@bash -c "source $(VENV_PATH)/bin/activate &&\
+		  $(PYTHON_INTERP) -m pip install pycodestyle"
+	@bash -c "source $(VENV_PATH)/bin/activate &&\
+		pycodestyle --show-source --ignore=W504,E126,E241,E226,E305,E704,E741,E722 -v *.py ||\
 		(echo \"*******************************************************************\" &&\
-		 echo \"* Test framework PEP8 compliance check FAILED \" &&\
+		 echo \"* Test framework PEP8 compliance check FAILED (checked all files)\" &&\
 	         echo \"*******************************************************************\" &&\
 		 false)"
 	@echo "*******************************************************************"
-	@echo "* Test framework PEP8 compliance check passed"
+	@echo "* Test framework PEP8 compliance check passed (checked all files)"
 	@echo "*******************************************************************"
 
 .PHONY: help
@@ -341,7 +331,6 @@ help:
 	@echo " retest-all-debug       - run functional and extended tests (debug build)"
 	@echo " test-cov               - generate code coverage report for test framework"
 	@echo " test-gcov                      - build and run functional tests (gcov build)"
-
 	@echo " test-wipe              - wipe (temporary) files generated by unit tests"
 	@echo " test-wipe-cov          - wipe code coverage report for test framework"
 	@echo " test-wipe-doc          - wipe documentation for test framework"
@@ -349,13 +338,14 @@ help:
 	@echo " test-wipe-all          - wipe (temporary) files generated by unit tests, docs, and coverage"
 	@echo " test-shell             - enter shell with test environment"
 	@echo " test-shell-debug       - enter shell with test environment (debug build)"
-	@echo " test-checkstyle      - check PEP8 compliance for test framework"
-	@echo " test-refresh-deps    - refresh the Python dependencies for the tests"
+	@echo " test-checkstyle        - check PEP8 compliance for test framework"
+	@echo " test-refresh-deps      - refresh the Python dependencies for the tests"
 	@echo ""
 	@echo "Arguments controlling test runs:"
 	@echo " V=[0|1|2]              - set test verbosity level"
 	@echo "                          0=ERROR, 1=INFO, 2=DEBUG"
-	@echo " TEST_JOBS=[<n>|auto]   - use <n> parallel processes for test execution or automatic discovery of maximum acceptable processes (default: 1)"
+	@echo " TEST_JOBS=[<n>|auto]   - use at most <n> parallel python processes for test execution, if auto, set to number of available cpus (default: 1)"
+	@echo " MAX_VPP_CPUS=[<n>|auto]- use at most <n> cpus for running vpp main and worker threads, if auto, set to number of available cpus (default: auto)"
 	@echo " CACHE_OUTPUT=[0|1]     - cache VPP stdout/stderr and log as one block after test finishes (default: 1)"
 	@echo " FAILFAST=[0|1]         - fail fast if 1, complete all tests if 0"
 	@echo " TIMEOUT=<timeout>      - fail test suite if any single test takes longer than <timeout> (in seconds) to finish (default: 600)"
@@ -367,6 +357,8 @@ help:
 	@echo "                          and tearing down a testcase"
 	@echo "    DEBUG=gdbserver     - run gdb inside a gdb server, otherwise"
 	@echo "                          same as above"
+	@echo "    DEBUG=attach        - attach test case to already running vpp in gdb (see test-start-vpp-in-gdb)"
+	@echo ""
 	@echo " STEP=[yes|no]          - ease debugging by stepping through a testcase"
 	@echo " SANITY=[yes|no]        - perform sanity import of vpp-api/sanity vpp run before running tests (default: yes)"
 	@echo " EXTENDED_TESTS=[1|y]   - used by '[re]test-all' & '[re]test-all-debug' to run extended tests"
@@ -384,7 +376,6 @@ help:
 	@echo "                          e.g. VARIANT=skx test the skx march variants"
 	@echo "                          e.g. VARIANT=icl test the icl march variants"
 	@echo ""
-	@echo " VPP_ZOMBIE_NOCHECK=1   - skip checking for vpp (zombie) processes (CAUTION)"
 	@echo " COREDUMP_SIZE=<size>   - pass <size> as unix { coredump-size <size> } argument to vpp"
 	@echo "                          e.g. COREDUMP_SIZE=4g"
 	@echo "                               COREDUMP_SIZE=unlimited"
@@ -401,9 +392,18 @@ help:
 	@echo ""
 	@echo " SKIP_AARCH64=1         - skip tests that are failing on the ARM platorm in FD.io CI"
 	@echo ""
-	@echo " SOCKET=1               - Communicate with VPP over Unix domain socket instead of SHM"
-	@echo ""
 	@echo " RND_SEED=seed          - Seed RND with given seed"
+	@echo ""
+	@echo "Starting VPP in GDB for use with DEBUG=attach:"
+	@echo ""
+	@echo " test-start-vpp-in-gdb       - start VPP in gdb (release)"
+	@echo " test-start-vpp-debug-in-gdb - start VPP in gdb (debug)"
+	@echo ""
+	@echo "Arguments controlling VPP in GDB runs:"
+	@echo " "
+	@echo " VPP_IN_GDB_TMP_DIR     - specify directory to run VPP IN (default: /tmp/unittest-attach-gdb)"
+	@echo " VPP_IN_GDB_NO_RMDIR=0  - don't remove existing tmp dir but fail instead"
+	@echo " VPP_IN_GDB_CMDLINE=1   - add 'interactive' to VPP arguments to run with command line"
 	@echo ""
 	@echo "Creating test documentation"
 	@echo " test-doc               - generate documentation for test framework"

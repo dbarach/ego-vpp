@@ -56,6 +56,9 @@ typedef struct session_tx_context_
   u8 n_bufs_per_seg;
     CLIB_CACHE_LINE_ALIGN_MARK (cacheline1);
   session_dgram_hdr_t hdr;
+
+  /** Vector of tx buffer free lists */
+  u32 *tx_buffers;
 } session_tx_context_t;
 
 typedef struct session_evt_elt
@@ -68,6 +71,18 @@ typedef struct session_ctrl_evt_data_
 {
   u8 data[SESSION_CTRL_MSG_MAX_SIZE];
 } session_evt_ctrl_data_t;
+
+typedef enum session_wrk_state_
+{
+  SESSION_WRK_POLLING,
+  SESSION_WRK_INTERRUPT,
+  SESSION_WRK_IDLE,
+} __clib_packed session_wrk_state_t;
+
+typedef enum session_wrk_flags_
+{
+  SESSION_WRK_F_ADAPTIVE = 1 << 0,
+} __clib_packed session_wrk_flag_t;
 
 typedef struct session_worker_
 {
@@ -91,11 +106,17 @@ typedef struct session_worker_
   /** Per-proto vector of sessions to enqueue */
   u32 **session_to_enqueue;
 
+  /** Timerfd used to periodically signal wrk session queue node */
+  int timerfd;
+
+  /** Worker flags */
+  session_wrk_flag_t flags;
+
+  /** Worker state */
+  session_wrk_state_t state;
+
   /** Context for session tx */
   session_tx_context_t ctx;
-
-  /** Vector of tx buffer free lists */
-  u32 *tx_buffers;
 
   /** Pool of session event list elements */
   session_evt_elt_t *event_elts;
@@ -120,6 +141,18 @@ typedef struct session_worker_
 
   /** Vector of nexts for the pending tx buffers */
   u16 *pending_tx_nexts;
+
+  /** Clib file for timerfd. Used only if adaptive mode is on */
+  uword timerfd_file;
+
+  /** List of pending connects for first worker */
+  clib_llist_index_t pending_connects;
+
+  /** Flag that is set if main thread signaled to handle connects */
+  u32 n_pending_connects;
+
+  /** Main thread loops in poll mode without a connect */
+  u32 no_connect_loops;
 
 #if SESSION_DEBUG
   /** last event poll time by thread */
@@ -156,6 +189,9 @@ typedef struct session_main_
    * Trade memory for speed, for now */
   u32 *session_type_to_next;
 
+  /** Thread for cl and ho that rely on cl allocs */
+  u32 transport_cl_thread;
+
   transport_proto_t last_transport_proto_type;
 
   /*
@@ -173,6 +209,12 @@ typedef struct session_main_
 
   /** Poll session node in main thread */
   u8 poll_main;
+
+  /** Allocate private rx mqs for external apps */
+  u8 use_private_rx_mqs;
+
+  /** Do not enable session queue node adaptive mode */
+  u8 no_adaptive;
 
   /** vpp fifo event queue configured length */
   u32 configured_event_queue_length;
@@ -199,6 +241,7 @@ typedef struct session_main_
   /** Preallocate session config parameter */
   u32 preallocated_sessions;
 
+  u16 msg_id_base;
 } session_main_t;
 
 extern session_main_t session_main;
@@ -215,32 +258,18 @@ typedef enum session_q_process_evt_
 #define TRANSPORT_PROTO_INVALID (session_main.last_transport_proto_type + 1)
 #define TRANSPORT_N_PROTOS (session_main.last_transport_proto_type + 1)
 
-static inline session_evt_elt_t *
-session_evt_elt_alloc (session_worker_t * wrk)
-{
-  session_evt_elt_t *elt;
-  pool_get (wrk->event_elts, elt);
-  return elt;
-}
-
-static inline void
-session_evt_elt_free (session_worker_t * wrk, session_evt_elt_t * elt)
-{
-  pool_put (wrk->event_elts, elt);
-}
-
 static inline void
 session_evt_add_old (session_worker_t * wrk, session_evt_elt_t * elt)
 {
   clib_llist_add_tail (wrk->event_elts, evt_list, elt,
-		       pool_elt_at_index (wrk->event_elts, wrk->old_head));
+		       clib_llist_elt (wrk->event_elts, wrk->old_head));
 }
 
 static inline void
 session_evt_add_head_old (session_worker_t * wrk, session_evt_elt_t * elt)
 {
   clib_llist_add (wrk->event_elts, evt_list, elt,
-		  pool_elt_at_index (wrk->event_elts, wrk->old_head));
+		  clib_llist_elt (wrk->event_elts, wrk->old_head));
 }
 
 
@@ -256,9 +285,9 @@ static inline session_evt_elt_t *
 session_evt_alloc_ctrl (session_worker_t * wrk)
 {
   session_evt_elt_t *elt;
-  elt = session_evt_elt_alloc (wrk);
+  clib_llist_get (wrk->event_elts, elt);
   clib_llist_add_tail (wrk->event_elts, evt_list, elt,
-		       pool_elt_at_index (wrk->event_elts, wrk->ctrl_head));
+		       clib_llist_elt (wrk->event_elts, wrk->ctrl_head));
   return elt;
 }
 
@@ -280,9 +309,9 @@ static inline session_evt_elt_t *
 session_evt_alloc_new (session_worker_t * wrk)
 {
   session_evt_elt_t *elt;
-  elt = session_evt_elt_alloc (wrk);
+  clib_llist_get (wrk->event_elts, elt);
   clib_llist_add_tail (wrk->event_elts, evt_list, elt,
-		       pool_elt_at_index (wrk->event_elts, wrk->new_head));
+		       clib_llist_elt (wrk->event_elts, wrk->new_head));
   return elt;
 }
 
@@ -290,17 +319,18 @@ static inline session_evt_elt_t *
 session_evt_alloc_old (session_worker_t * wrk)
 {
   session_evt_elt_t *elt;
-  elt = session_evt_elt_alloc (wrk);
+  clib_llist_get (wrk->event_elts, elt);
   clib_llist_add_tail (wrk->event_elts, evt_list, elt,
-		       pool_elt_at_index (wrk->event_elts, wrk->old_head));
+		       clib_llist_elt (wrk->event_elts, wrk->old_head));
   return elt;
 }
+
+int session_wrk_handle_mq (session_worker_t *wrk, svm_msg_q_t *mq);
 
 session_t *session_alloc (u32 thread_index);
 void session_free (session_t * s);
 void session_free_w_fifos (session_t * s);
-void session_cleanup_half_open (transport_proto_t tp,
-				session_handle_t ho_handle);
+void session_cleanup_half_open (session_handle_t ho_handle);
 u8 session_is_valid (u32 si, u8 thread_index);
 
 always_inline session_t *
@@ -421,11 +451,13 @@ session_clone_safe (u32 session_index, u32 thread_index)
   return new_s;
 }
 
-int session_open (u32 app_index, session_endpoint_t * tep, u32 opaque);
+int session_open (session_endpoint_cfg_t *sep, session_handle_t *rsh);
 int session_listen (session_t * s, session_endpoint_cfg_t * sep);
 int session_stop_listen (session_t * s);
+void session_half_close (session_t *s);
 void session_close (session_t * s);
 void session_reset (session_t * s);
+void session_transport_half_close (session_t *s);
 void session_transport_close (session_t * s);
 void session_transport_reset (session_t * s);
 void session_transport_cleanup (session_t * s);
@@ -445,6 +477,8 @@ void sesssion_reschedule_tx (transport_connection_t * tc);
 transport_connection_t *session_get_transport (session_t * s);
 void session_get_endpoint (session_t * s, transport_endpoint_t * tep,
 			   u8 is_lcl);
+int session_transport_attribute (session_t *s, u8 is_get,
+				 transport_endpt_attr_t *attr);
 
 u8 *format_session (u8 * s, va_list * args);
 uword unformat_session (unformat_input_t * input, va_list * args);
@@ -470,8 +504,9 @@ int session_dgram_connect_notify (transport_connection_t * tc,
 int session_stream_accept_notify (transport_connection_t * tc);
 void session_transport_closing_notify (transport_connection_t * tc);
 void session_transport_delete_notify (transport_connection_t * tc);
-void session_half_open_delete_notify (transport_proto_t tp,
-				      session_handle_t ho_handle);
+void session_half_open_delete_notify (transport_connection_t *tc);
+void session_half_open_migrate_notify (transport_connection_t *tc);
+int session_half_open_migrated_notify (transport_connection_t *tc);
 void session_transport_closed_notify (transport_connection_t * tc);
 void session_transport_reset_notify (transport_connection_t * tc);
 int session_stream_accept (transport_connection_t * tc, u32 listener_index,
@@ -540,6 +575,13 @@ transport_rx_fifo_has_ooo_data (transport_connection_t * tc)
   return svm_fifo_has_ooo_data (s->rx_fifo);
 }
 
+always_inline void
+transport_rx_fifo_req_deq_ntf (transport_connection_t *tc)
+{
+  session_t *s = session_get (tc->s_index, tc->thread_index);
+  svm_fifo_add_want_deq_ntf (s->rx_fifo, SVM_FIFO_WANT_DEQ_NOTIF);
+}
+
 always_inline clib_time_type_t
 transport_time_now (u32 thread_index)
 {
@@ -565,6 +607,12 @@ transport_add_tx_event (transport_connection_t * tc)
   if (svm_fifo_has_event (s->tx_fifo))
     return;
   session_send_io_evt_to_thread (s->tx_fifo, SESSION_IO_EVT_TX);
+}
+
+always_inline u32
+transport_cl_thread (void)
+{
+  return session_main.transport_cl_thread;
 }
 
 /*
@@ -612,6 +660,30 @@ always_inline void
 listen_session_free (session_t * s)
 {
   ASSERT (!s->rx_fifo);
+  session_free (s);
+}
+
+always_inline session_t *
+ho_session_alloc (void)
+{
+  session_t *s;
+  ASSERT (vlib_get_thread_index () == 0);
+  s = session_alloc (0);
+  s->session_state = SESSION_STATE_CONNECTING;
+  s->flags |= SESSION_F_HALF_OPEN;
+  return s;
+}
+
+always_inline session_t *
+ho_session_get (u32 ho_index)
+{
+  return session_get (ho_index, 0 /* half-open thread */);
+}
+
+always_inline void
+ho_session_free (session_t *s)
+{
+  ASSERT (!s->rx_fifo && s->thread_index == 0);
   session_free (s);
 }
 
@@ -677,13 +749,24 @@ session_add_pending_tx_buffer (u32 thread_index, u32 bi, u32 next_node)
   session_worker_t *wrk = session_main_get_worker (thread_index);
   vec_add1 (wrk->pending_tx_buffers, bi);
   vec_add1 (wrk->pending_tx_nexts, next_node);
+  if (PREDICT_FALSE (wrk->state == SESSION_WRK_INTERRUPT))
+    vlib_node_set_interrupt_pending (wrk->vm, session_queue_node.index);
 }
 
+always_inline void
+session_wrk_update_time (session_worker_t *wrk, f64 now)
+{
+  wrk->last_vlib_time = now;
+  wrk->last_vlib_us_time = wrk->last_vlib_time * CLIB_US_TIME_FREQ;
+}
+
+void session_wrk_enable_adaptive_mode (session_worker_t *wrk);
 fifo_segment_t *session_main_get_evt_q_segment (void);
 void session_node_enable_disable (u8 is_en);
 clib_error_t *vnet_session_enable_disable (vlib_main_t * vm, u8 is_en);
 
 session_t *session_alloc_for_connection (transport_connection_t * tc);
+session_t *session_alloc_for_half_open (transport_connection_t *tc);
 
 #endif /* __included_session_h__ */
 
