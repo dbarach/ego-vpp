@@ -39,6 +39,9 @@ ego_g2_thread_fn (void *arg)
   pthread_cond_init(&g2_thread_cv, NULL);
   __os_thread_index = 0;
 
+  /* Bootstrap the ego runtime here... */
+  OsInit();
+
   while (1) {
     pthread_mutex_lock (&g2_thread_lock);
     pthread_cond_wait (&g2_thread_cv, &g2_thread_lock);
@@ -65,9 +68,9 @@ VLIB_REGISTER_THREAD (ego_g2_thread_reg, static) = {
 };
 /* *INDENT-ON* */
 
-void ego_start_thread (vlib_cli_command_function_t *fp)
+void ego_start_thread (void)
 {
-  ego_g2_fp = (void *) fp;
+  ego_g2_fp = (void *) Vpp_start_g2;
   pthread_cond_signal(&g2_thread_cv);
 }
 
@@ -102,6 +105,25 @@ int ego_gtk_start_check (void)
   /* gtk may start, e.g. if $DISPLAY is OK, etc. */
   return (0);
 }
+
+static clib_error_t *
+event_log_viewer_command_fn (vlib_main_t * vm,
+			  unformat_input_t * input, vlib_cli_command_t * cmd)
+{
+  vlib_cli_output (vm, "Starting the event log viewer...");
+  ego_start_thread();
+  return 0;
+}
+
+/* *INDENT-OFF* */
+VLIB_CLI_COMMAND (event_log_viewer_command, static) =
+{
+  .path = "event-logger viewer",
+  .short_help = "Start the graphical event viewer",
+  .function = event_log_viewer_command_fn,
+  .is_mp_safe = 1,
+};
+/* *INDENT-ON* */
 
 /*
  * fd.io coding-style-patch-verification: ON
