@@ -93,6 +93,12 @@ mq_try_lock_and_alloc_msg (svm_msg_q_t * app_mq, svm_msg_q_msg_t * msg)
 						SVM_Q_NOWAIT, msg);
       if (!rv)
 	return 0;
+      /*
+       * Break the loop if mq is full, usually this is because the
+       * app has crashed or is hanging on somewhere.
+       */
+      if (rv != -1)
+	break;
       try++;
       usleep (1);
     }
@@ -282,6 +288,7 @@ mq_send_session_connected_cb (u32 app_wrk_index, u32 api_context,
       m.server_rx_fifo = fifo_segment_fifo_offset (s->rx_fifo);
       m.server_tx_fifo = fifo_segment_fifo_offset (s->tx_fifo);
       m.segment_handle = session_segment_handle (s);
+      m.mq_index = s->thread_index;
     }
   else
     {
@@ -301,6 +308,7 @@ mq_send_session_connected_cb (u32 app_wrk_index, u32 api_context,
       m.ct_rx_fifo = fifo_segment_fifo_offset (ss->tx_fifo);
       m.ct_tx_fifo = fifo_segment_fifo_offset (ss->rx_fifo);
       m.ct_segment_handle = session_segment_handle (ss);
+      m.mq_index = s->thread_index;
     }
 
   /* Setup client session index in advance, in case data arrives
@@ -361,6 +369,7 @@ mq_send_session_bound_cb (u32 app_wrk_index, u32 api_context,
   app = application_get (app_wrk->app_index);
   eq_seg = application_get_rx_mqs_segment (app);
   m.vpp_evt_q = fifo_segment_msg_q_offset (eq_seg, ls->thread_index);
+  m.mq_index = ls->thread_index;
 
   if (session_transport_service_type (ls) == TRANSPORT_SERVICE_CL &&
       ls->rx_fifo)
@@ -850,6 +859,55 @@ done:
       rmp->appns_index = clib_host_to_net_u32 (appns_index);
   }));
   /* *INDENT-ON* */
+}
+
+static void
+vl_api_app_namespace_add_del_v2_t_handler (
+  vl_api_app_namespace_add_del_v2_t *mp)
+{
+  vl_api_app_namespace_add_del_v2_reply_t *rmp;
+  u8 *ns_id = 0, *netns = 0;
+  u32 appns_index = 0;
+  int rv = 0;
+
+  if (session_main_is_enabled () == 0)
+    {
+      rv = VNET_API_ERROR_FEATURE_DISABLED;
+      goto done;
+    }
+
+  mp->namespace_id[sizeof (mp->namespace_id) - 1] = 0;
+  mp->netns[sizeof (mp->netns) - 1] = 0;
+  ns_id = format (0, "%s", &mp->namespace_id);
+  netns = format (0, "%s", &mp->netns);
+
+  vnet_app_namespace_add_del_args_t args = {
+    .ns_id = ns_id,
+    .netns = netns,
+    .secret = clib_net_to_host_u64 (mp->secret),
+    .sw_if_index = clib_net_to_host_u32 (mp->sw_if_index),
+    .ip4_fib_id = clib_net_to_host_u32 (mp->ip4_fib_id),
+    .ip6_fib_id = clib_net_to_host_u32 (mp->ip6_fib_id),
+    .is_add = 1
+  };
+  rv = vnet_app_namespace_add_del (&args);
+  if (!rv)
+    {
+      appns_index = app_namespace_index_from_id (ns_id);
+      if (appns_index == APP_NAMESPACE_INVALID_INDEX)
+	{
+	  clib_warning ("app ns lookup failed");
+	  rv = VNET_API_ERROR_UNSPECIFIED;
+	}
+    }
+  vec_free (ns_id);
+  vec_free (netns);
+
+done:
+  REPLY_MACRO2 (VL_API_APP_NAMESPACE_ADD_DEL_V2_REPLY, ({
+		  if (!rv)
+		    rmp->appns_index = clib_host_to_net_u32 (appns_index);
+		}));
 }
 
 static void
@@ -1601,7 +1659,11 @@ appns_sapi_add_ns_socket (app_namespace_t * app_ns)
       goto error;
     }
 
-  app_ns->sock_name = format (0, "%v%v%c", dir, app_ns->ns_id, 0);
+  /* Use abstract sockets if a netns was provided */
+  if (app_ns->netns)
+    app_ns->sock_name = format (0, "@vpp/session/%v%c", app_ns->ns_id, 0);
+  else
+    app_ns->sock_name = format (0, "%v%v%c", dir, app_ns->ns_id, 0);
 
   /*
    * Create and initialize socket to listen on
@@ -1612,14 +1674,14 @@ appns_sapi_add_ns_socket (app_namespace_t * app_ns)
     CLIB_SOCKET_F_ALLOW_GROUP_WRITE |
     CLIB_SOCKET_F_SEQPACKET | CLIB_SOCKET_F_PASSCRED;
 
-  if ((err = clib_socket_init (cs)))
+  if ((err = clib_socket_init_netns (cs, app_ns->netns)))
     {
       clib_error_report (err);
       rv = -1;
       goto error;
     }
 
-  if (stat ((char *) app_ns->sock_name, &file_stat) == -1)
+  if (!app_ns->netns && stat ((char *) app_ns->sock_name, &file_stat) == -1)
     {
       rv = -1;
       goto error;
