@@ -223,15 +223,16 @@ typedef enum
   APP_OPTIONS_N_OPTIONS
 } app_attach_options_index_t;
 
-#define foreach_app_options_flags				\
-  _(ACCEPT_REDIRECT, "Use FIFO with redirects")			\
-  _(ADD_SEGMENT, "Add segment and signal app if needed")	\
-  _(IS_BUILTIN, "Application is builtin")			\
-  _(IS_TRANSPORT_APP, "Application is a transport proto")	\
-  _(IS_PROXY, "Application is proxying")			\
-  _(USE_GLOBAL_SCOPE, "App can use global session scope")	\
-  _(USE_LOCAL_SCOPE, "App can use local session scope")		\
-  _(EVT_MQ_USE_EVENTFD, "Use eventfds for signaling")		\
+#define foreach_app_options_flags                                             \
+  _ (ACCEPT_REDIRECT, "Use FIFO with redirects")                              \
+  _ (ADD_SEGMENT, "Add segment and signal app if needed")                     \
+  _ (IS_BUILTIN, "Application is builtin")                                    \
+  _ (IS_TRANSPORT_APP, "Application is a transport proto")                    \
+  _ (IS_PROXY, "Application is proxying")                                     \
+  _ (USE_GLOBAL_SCOPE, "App can use global session scope")                    \
+  _ (USE_LOCAL_SCOPE, "App can use local session scope")                      \
+  _ (EVT_MQ_USE_EVENTFD, "Use eventfds for signaling")                        \
+  _ (MEMFD_FOR_BUILTIN, "Use memfd for builtin app segs")
 
 typedef enum _app_options
 {
@@ -351,6 +352,7 @@ typedef struct session_bound_msg_
   uword tx_fifo;
   uword vpp_evt_q;
   u64 segment_handle;
+  u32 mq_index;
 } __clib_packed session_bound_msg_t;
 
 typedef struct session_unlisten_msg_
@@ -434,10 +436,8 @@ typedef struct session_connected_msg_
   uword ct_tx_fifo;
   u64 ct_segment_handle;
   uword vpp_event_queue_address;
-  u32 segment_size;
-  u8 segment_name_length;
-  u8 segment_name[64];
   transport_endpoint_t lcl;
+  u32 mq_index;
 } __clib_packed session_connected_msg_t;
 
 typedef struct session_shutdown_msg_

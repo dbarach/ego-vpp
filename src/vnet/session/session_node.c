@@ -227,6 +227,7 @@ session_mq_handle_connects_rpc (void *arg)
       next = clib_llist_next (fwrk->event_elts, evt_list, elt);
       clib_llist_remove (fwrk->event_elts, evt_list, elt);
       session_mq_connect_one (session_evt_ctrl_data (fwrk, elt));
+      session_evt_ctrl_data_free (fwrk, elt);
       clib_llist_put (fwrk->event_elts, elt);
       elt = next;
       n_connects += 1;
@@ -387,15 +388,18 @@ app_mq_detach_handler (void *data)
 }
 
 static void
-session_mq_unlisten_handler (void *data)
+session_mq_unlisten_rpc (session_unlisten_msg_t *mp)
 {
-  session_unlisten_msg_t *mp = (session_unlisten_msg_t *) data;
+  vlib_main_t *vm = vlib_get_main ();
   vnet_unlisten_args_t _a, *a = &_a;
   app_worker_t *app_wrk;
+  session_handle_t sh;
   application_t *app;
+  u32 context;
   int rv;
 
-  app_check_thread_and_barrier (session_mq_unlisten_handler, mp);
+  sh = mp->handle;
+  context = mp->context;
 
   app = application_lookup (mp->client_index);
   if (!app)
@@ -403,16 +407,41 @@ session_mq_unlisten_handler (void *data)
 
   clib_memset (a, 0, sizeof (*a));
   a->app_index = app->app_index;
-  a->handle = mp->handle;
+  a->handle = sh;
   a->wrk_map_index = mp->wrk_index;
+
+  vlib_worker_thread_barrier_sync (vm);
+
   if ((rv = vnet_unlisten (a)))
     clib_warning ("unlisten returned: %d", rv);
+
+  vlib_worker_thread_barrier_release (vm);
 
   app_wrk = application_get_worker (app, a->wrk_map_index);
   if (!app_wrk)
     return;
 
-  mq_send_unlisten_reply (app_wrk, mp->handle, mp->context, rv);
+  mq_send_unlisten_reply (app_wrk, sh, context, rv);
+  clib_mem_free (mp);
+}
+
+static void
+session_mq_unlisten_handler (session_worker_t *wrk, session_evt_elt_t *elt)
+{
+  u32 thread_index = wrk - session_main.wrk;
+  session_unlisten_msg_t *mp, *arg;
+
+  mp = session_evt_ctrl_data (wrk, elt);
+  arg = clib_mem_alloc (sizeof (session_unlisten_msg_t));
+  clib_memcpy_fast (arg, mp, sizeof (*arg));
+
+  if (PREDICT_FALSE (!thread_index))
+    {
+      session_mq_unlisten_rpc (arg);
+      return;
+    }
+
+  session_send_rpc_evt_to_thread_force (0, session_mq_unlisten_rpc, arg);
 }
 
 static void
@@ -457,7 +486,7 @@ session_mq_accepted_reply_handler (void *data)
   if (!session_has_transport (s))
     {
       s->session_state = SESSION_STATE_READY;
-      if (ct_session_connect_notify (s))
+      if (ct_session_connect_notify (s, SESSION_E_NONE))
 	return;
     }
   else
@@ -1468,7 +1497,7 @@ session_event_dispatch_ctrl (session_worker_t * wrk, session_evt_elt_t * elt)
       session_mq_listen_uri_handler (session_evt_ctrl_data (wrk, elt));
       break;
     case SESSION_CTRL_EVT_UNLISTEN:
-      session_mq_unlisten_handler (session_evt_ctrl_data (wrk, elt));
+      session_mq_unlisten_handler (wrk, elt);
       break;
     case SESSION_CTRL_EVT_CONNECT:
       session_mq_connect_handler (wrk, elt);

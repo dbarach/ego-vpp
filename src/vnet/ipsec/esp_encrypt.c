@@ -129,7 +129,8 @@ esp_add_footer_and_icv (vlib_main_t *vm, vlib_buffer_t **last, u8 esp_align,
 				      last[0]->current_length + pad_bytes);
   u16 tail_sz = sizeof (esp_footer_t) + pad_bytes + icv_sz;
 
-  if (last[0]->current_length + tail_sz > buffer_data_size)
+  if (last[0]->current_data + last[0]->current_length + tail_sz >
+      buffer_data_size)
     {
       u32 tmp_bi = 0;
       if (vlib_buffer_alloc (vm, &tmp_bi, 1) != 1)
@@ -378,7 +379,7 @@ esp_encrypt_chain_integ (vlib_main_t * vm, ipsec_per_thread_data_t * ptd,
 always_inline void
 esp_prepare_sync_op (vlib_main_t *vm, ipsec_per_thread_data_t *ptd,
 		     vnet_crypto_op_t **crypto_ops,
-		     vnet_crypto_op_t **integ_ops, ipsec_sa_t *sa0,
+		     vnet_crypto_op_t **integ_ops, ipsec_sa_t *sa0, u32 seq_hi,
 		     u8 *payload, u16 payload_len, u8 iv_sz, u8 icv_sz, u32 bi,
 		     vlib_buffer_t **b, vlib_buffer_t *lb, u32 hdr_len,
 		     esp_header_t *esp)
@@ -407,7 +408,7 @@ esp_prepare_sync_op (vlib_main_t *vm, ipsec_per_thread_data_t *ptd,
 	    {
 	      /* constuct aad in a scratch space in front of the nonce */
 	      op->aad = (u8 *) nonce - sizeof (esp_aead_t);
-	      op->aad_len = esp_aad_fill (op->aad, esp, sa0);
+	      op->aad_len = esp_aad_fill (op->aad, esp, sa0, seq_hi);
 	      op->tag = payload + op->len;
 	      op->tag_len = 16;
 	    }
@@ -464,8 +465,8 @@ esp_prepare_sync_op (vlib_main_t *vm, ipsec_per_thread_data_t *ptd,
 	}
       else if (ipsec_sa_is_set_USE_ESN (sa0))
 	{
-	  u32 seq_hi = clib_net_to_host_u32 (sa0->seq_hi);
-	  clib_memcpy_fast (op->digest, &seq_hi, sizeof (seq_hi));
+	  u32 tmp = clib_net_to_host_u32 (seq_hi);
+	  clib_memcpy_fast (op->digest, &tmp, sizeof (seq_hi));
 	  op->len += sizeof (seq_hi);
 	}
     }
@@ -507,7 +508,7 @@ esp_prepare_async_frame (vlib_main_t *vm, ipsec_per_thread_data_t *ptd,
 	{
 	  /* constuct aad in a scratch space in front of the nonce */
 	  aad = (u8 *) nonce - sizeof (esp_aead_t);
-	  esp_aad_fill (aad, esp, sa);
+	  esp_aad_fill (aad, esp, sa, sa->seq_hi);
 	  key_index = sa->crypto_key_index;
 	}
       else
@@ -625,9 +626,9 @@ esp_encrypt_inline (vlib_main_t *vm, vlib_node_runtime_t *node,
 	  u8 *p;
 	  vlib_prefetch_buffer_header (b[2], LOAD);
 	  p = vlib_buffer_get_current (b[1]);
-	  CLIB_PREFETCH (p, CLIB_CACHE_LINE_BYTES, LOAD);
+	  clib_prefetch_load (p);
 	  p -= CLIB_CACHE_LINE_BYTES;
-	  CLIB_PREFETCH (p, CLIB_CACHE_LINE_BYTES, LOAD);
+	  clib_prefetch_load (p);
 	  /* speculate that the trailer goes in the first buffer */
 	  CLIB_PREFETCH (vlib_buffer_get_tail (b[1]),
 			 CLIB_CACHE_LINE_BYTES, LOAD);
@@ -655,7 +656,7 @@ esp_encrypt_inline (vlib_main_t *vm, vlib_node_runtime_t *node,
 	  sa0 = ipsec_sa_get (sa_index0);
 
 	  /* fetch the second cacheline ASAP */
-	  CLIB_PREFETCH (sa0->cacheline1, CLIB_CACHE_LINE_BYTES, LOAD);
+	  clib_prefetch_load (sa0->cacheline1);
 
 	  current_sa_index = sa_index0;
 	  spi = clib_net_to_host_u32 (sa0->spi);
@@ -955,9 +956,9 @@ esp_encrypt_inline (vlib_main_t *vm, vlib_node_runtime_t *node,
 				   async_next_node, lb);
 	}
       else
-	esp_prepare_sync_op (vm, ptd, crypto_ops, integ_ops, sa0, payload,
-			     payload_len, iv_sz, icv_sz, n_sync, b, lb,
-			     hdr_len, esp);
+	esp_prepare_sync_op (vm, ptd, crypto_ops, integ_ops, sa0, sa0->seq_hi,
+			     payload, payload_len, iv_sz, icv_sz, n_sync, b,
+			     lb, hdr_len, esp);
 
       vlib_buffer_advance (b[0], 0LL - hdr_len);
 

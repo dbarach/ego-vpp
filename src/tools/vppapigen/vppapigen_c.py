@@ -1344,6 +1344,8 @@ def generate_c_boilerplate(services, defines, counters, file_crc,
               '   .cleanup = vl_noop_handler,\n'
               '   .endian = vl_api_{n}_t_endian,\n'
               '   .print = vl_api_{n}_t_print,\n'
+              '   .traced = 1,\n'
+              '   .replay = 1,\n'
               '   .is_autoendian = {auto}}};\n'
               .format(n=s.caller, ID=s.caller.upper(),
                       auto=d.autoendian))
@@ -1683,7 +1685,9 @@ def generate_c_test2_boilerplate(services, defines, module, stream):
 #include <vnet/ethernet/ethernet_format_fns.h>
 
 #define vl_typedefs             /* define message structures */
-#include <vpp/api/vpe_all_api_h.h>
+#include <vlibmemory/vl_memory_api_h.h>
+#include <vpp/api/vpe_types.api.h>
+#include <vpp/api/vpe.api.h>
 #undef vl_typedefs
 
 #include "{module}.api_enum.h"

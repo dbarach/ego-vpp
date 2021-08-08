@@ -29,51 +29,16 @@
 #include <vnet/fib/fib.h>
 #include <vnet/ipip/ipip.h>
 #include <vnet/tunnel/tunnel_types_api.h>
-
-#include <vnet/vnet_msg_enum.h>
-
 #include <vnet/ipsec/ipsec.h>
 #include <vnet/ipsec/ipsec_tun.h>
 #include <vnet/ipsec/ipsec_itf.h>
 
-#define vl_typedefs		/* define message structures */
-#include <vnet/vnet_all_api_h.h>
-#undef vl_typedefs
+#include <vnet/format_fns.h>
+#include <vnet/ipsec/ipsec.api_enum.h>
+#include <vnet/ipsec/ipsec.api_types.h>
 
-#define vl_endianfun		/* define message structures */
-#include <vnet/vnet_all_api_h.h>
-#undef vl_endianfun
-
-/* instantiate all the print functions we know about */
-#define vl_print(handle, ...) vlib_cli_output (handle, __VA_ARGS__)
-#define vl_printfun
-#include <vnet/vnet_all_api_h.h>
-#undef vl_printfun
-
+#define REPLY_MSG_ID_BASE ipsec_main.msg_id_base
 #include <vlibapi/api_helper_macros.h>
-
-#define foreach_vpe_api_msg                                                   \
-  _ (IPSEC_SPD_ADD_DEL, ipsec_spd_add_del)                                    \
-  _ (IPSEC_INTERFACE_ADD_DEL_SPD, ipsec_interface_add_del_spd)                \
-  _ (IPSEC_SPD_ENTRY_ADD_DEL, ipsec_spd_entry_add_del)                        \
-  _ (IPSEC_SAD_ENTRY_ADD_DEL, ipsec_sad_entry_add_del)                        \
-  _ (IPSEC_SAD_ENTRY_ADD_DEL_V2, ipsec_sad_entry_add_del_v2)                  \
-  _ (IPSEC_SAD_ENTRY_ADD_DEL_V3, ipsec_sad_entry_add_del_v3)                  \
-  _ (IPSEC_SA_DUMP, ipsec_sa_dump)                                            \
-  _ (IPSEC_SA_V2_DUMP, ipsec_sa_v2_dump)                                      \
-  _ (IPSEC_SA_V3_DUMP, ipsec_sa_v3_dump)                                      \
-  _ (IPSEC_SPDS_DUMP, ipsec_spds_dump)                                        \
-  _ (IPSEC_SPD_DUMP, ipsec_spd_dump)                                          \
-  _ (IPSEC_SPD_INTERFACE_DUMP, ipsec_spd_interface_dump)                      \
-  _ (IPSEC_ITF_CREATE, ipsec_itf_create)                                      \
-  _ (IPSEC_ITF_DELETE, ipsec_itf_delete)                                      \
-  _ (IPSEC_ITF_DUMP, ipsec_itf_dump)                                          \
-  _ (IPSEC_SELECT_BACKEND, ipsec_select_backend)                              \
-  _ (IPSEC_BACKEND_DUMP, ipsec_backend_dump)                                  \
-  _ (IPSEC_TUNNEL_PROTECT_UPDATE, ipsec_tunnel_protect_update)                \
-  _ (IPSEC_TUNNEL_PROTECT_DEL, ipsec_tunnel_protect_del)                      \
-  _ (IPSEC_TUNNEL_PROTECT_DUMP, ipsec_tunnel_protect_dump)                    \
-  _ (IPSEC_SET_ASYNC_MODE, ipsec_set_async_mode)
 
 static void
 vl_api_ipsec_spd_add_del_t_handler (vl_api_ipsec_spd_add_del_t * mp)
@@ -174,7 +139,8 @@ send_ipsec_tunnel_protect_details (index_t itpi, void *arg)
 
   mp = vl_msg_api_alloc (sizeof (*mp) + (sizeof (u32) * itp->itp_n_sa_in));
   clib_memset (mp, 0, sizeof (*mp));
-  mp->_vl_msg_id = ntohs (VL_API_IPSEC_TUNNEL_PROTECT_DETAILS);
+  mp->_vl_msg_id =
+    ntohs (REPLY_MSG_ID_BASE + VL_API_IPSEC_TUNNEL_PROTECT_DETAILS);
   mp->context = ctx->context;
 
   mp->tun.sw_if_index = htonl (itp->itp_sw_if_index);
@@ -325,6 +291,11 @@ static void vl_api_ipsec_sad_entry_add_del_t_handler
   int rv;
 
   id = ntohl (mp->entry.sad_id);
+  if (!mp->is_add)
+    {
+      rv = ipsec_sa_unlock_id (id);
+      goto out;
+    }
   spi = ntohl (mp->entry.spi);
 
   rv = ipsec_proto_decode (mp->entry.protocol, &proto);
@@ -350,13 +321,10 @@ static void vl_api_ipsec_sad_entry_add_del_t_handler
   ip_address_decode2 (&mp->entry.tunnel_src, &tun.t_src);
   ip_address_decode2 (&mp->entry.tunnel_dst, &tun.t_dst);
 
-  if (mp->is_add)
-    rv = ipsec_sa_add_and_lock (
-      id, spi, proto, crypto_alg, &crypto_key, integ_alg, &integ_key, flags,
-      mp->entry.salt, htons (mp->entry.udp_src_port),
-      htons (mp->entry.udp_dst_port), &tun, &sa_index);
-  else
-    rv = ipsec_sa_unlock_id (id);
+  rv = ipsec_sa_add_and_lock (id, spi, proto, crypto_alg, &crypto_key,
+			      integ_alg, &integ_key, flags, mp->entry.salt,
+			      htons (mp->entry.udp_src_port),
+			      htons (mp->entry.udp_dst_port), &tun, &sa_index);
 
 out:
   /* *INDENT-OFF* */
@@ -389,6 +357,12 @@ static void vl_api_ipsec_sad_entry_add_del_v2_t_handler
   };
 
   id = ntohl (mp->entry.sad_id);
+  if (!mp->is_add)
+    {
+      rv = ipsec_sa_unlock_id (id);
+      goto out;
+    }
+
   spi = ntohl (mp->entry.spi);
 
   rv = ipsec_proto_decode (mp->entry.protocol, &proto);
@@ -421,13 +395,10 @@ static void vl_api_ipsec_sad_entry_add_del_v2_t_handler
   ip_address_decode2 (&mp->entry.tunnel_src, &tun.t_src);
   ip_address_decode2 (&mp->entry.tunnel_dst, &tun.t_dst);
 
-  if (mp->is_add)
     rv = ipsec_sa_add_and_lock (
       id, spi, proto, crypto_alg, &crypto_key, integ_alg, &integ_key, flags,
       mp->entry.salt, htons (mp->entry.udp_src_port),
       htons (mp->entry.udp_dst_port), &tun, &sa_index);
-  else
-    rv = ipsec_sa_unlock_id (id);
 
 out:
   /* *INDENT-OFF* */
@@ -438,61 +409,100 @@ out:
   /* *INDENT-ON* */
 }
 
-static void
-vl_api_ipsec_sad_entry_add_del_v3_t_handler (
-  vl_api_ipsec_sad_entry_add_del_v3_t *mp)
+static int
+ipsec_sad_entry_add_v3 (const vl_api_ipsec_sad_entry_v3_t *entry,
+			u32 *sa_index)
 {
-  vl_api_ipsec_sad_entry_add_del_v3_reply_t *rmp;
   ipsec_key_t crypto_key, integ_key;
   ipsec_crypto_alg_t crypto_alg;
   ipsec_integ_alg_t integ_alg;
   ipsec_protocol_t proto;
   ipsec_sa_flags_t flags;
-  u32 id, spi, sa_index = ~0;
+  u32 id, spi;
   tunnel_t tun;
   int rv;
 
-  id = ntohl (mp->entry.sad_id);
-  spi = ntohl (mp->entry.spi);
+  id = ntohl (entry->sad_id);
+  spi = ntohl (entry->spi);
 
-  rv = ipsec_proto_decode (mp->entry.protocol, &proto);
-
-  if (rv)
-    goto out;
-
-  rv = ipsec_crypto_algo_decode (mp->entry.crypto_algorithm, &crypto_alg);
+  rv = ipsec_proto_decode (entry->protocol, &proto);
 
   if (rv)
-    goto out;
+    return (rv);
 
-  rv = ipsec_integ_algo_decode (mp->entry.integrity_algorithm, &integ_alg);
+  rv = ipsec_crypto_algo_decode (entry->crypto_algorithm, &crypto_alg);
 
   if (rv)
-    goto out;
+    return (rv);
 
-  flags = ipsec_sa_flags_decode (mp->entry.flags);
+  rv = ipsec_integ_algo_decode (entry->integrity_algorithm, &integ_alg);
+
+  if (rv)
+    return (rv);
+
+  flags = ipsec_sa_flags_decode (entry->flags);
 
   if (flags & IPSEC_SA_FLAG_IS_TUNNEL)
     {
-      rv = tunnel_decode (&mp->entry.tunnel, &tun);
+      rv = tunnel_decode (&entry->tunnel, &tun);
 
       if (rv)
-	goto out;
+	return (rv);
     }
 
-  ipsec_key_decode (&mp->entry.crypto_key, &crypto_key);
-  ipsec_key_decode (&mp->entry.integrity_key, &integ_key);
+  ipsec_key_decode (&entry->crypto_key, &crypto_key);
+  ipsec_key_decode (&entry->integrity_key, &integ_key);
 
-  if (mp->is_add)
-    rv = ipsec_sa_add_and_lock (
-      id, spi, proto, crypto_alg, &crypto_key, integ_alg, &integ_key, flags,
-      mp->entry.salt, htons (mp->entry.udp_src_port),
-      htons (mp->entry.udp_dst_port), &tun, &sa_index);
+  return ipsec_sa_add_and_lock (id, spi, proto, crypto_alg, &crypto_key,
+				integ_alg, &integ_key, flags, entry->salt,
+				htons (entry->udp_src_port),
+				htons (entry->udp_dst_port), &tun, sa_index);
+}
+
+static void
+vl_api_ipsec_sad_entry_add_del_v3_t_handler (
+  vl_api_ipsec_sad_entry_add_del_v3_t *mp)
+{
+  vl_api_ipsec_sad_entry_add_del_v3_reply_t *rmp;
+  u32 id, sa_index = ~0;
+  int rv;
+
+  id = ntohl (mp->entry.sad_id);
+
+  if (!mp->is_add)
+    {
+      rv = ipsec_sa_unlock_id (id);
+    }
   else
-    rv = ipsec_sa_unlock_id (id);
+    {
+      rv = ipsec_sad_entry_add_v3 (&mp->entry, &sa_index);
+    }
 
-out:
   REPLY_MACRO2 (VL_API_IPSEC_SAD_ENTRY_ADD_DEL_V3_REPLY,
+		{ rmp->stat_index = htonl (sa_index); });
+}
+
+static void
+vl_api_ipsec_sad_entry_del_t_handler (vl_api_ipsec_sad_entry_del_t *mp)
+{
+  vl_api_ipsec_sad_entry_del_reply_t *rmp;
+  int rv;
+
+  rv = ipsec_sa_unlock_id (ntohl (mp->id));
+
+  REPLY_MACRO (VL_API_IPSEC_SAD_ENTRY_DEL_REPLY);
+}
+
+static void
+vl_api_ipsec_sad_entry_add_t_handler (vl_api_ipsec_sad_entry_add_t *mp)
+{
+  vl_api_ipsec_sad_entry_add_reply_t *rmp;
+  u32 sa_index = ~0;
+  int rv;
+
+  rv = ipsec_sad_entry_add_v3 (&mp->entry, &sa_index);
+
+  REPLY_MACRO2 (VL_API_IPSEC_SAD_ENTRY_ADD_REPLY,
 		{ rmp->stat_index = htonl (sa_index); });
 }
 
@@ -505,7 +515,7 @@ send_ipsec_spds_details (ipsec_spd_t * spd, vl_api_registration_t * reg,
 
   mp = vl_msg_api_alloc (sizeof (*mp));
   clib_memset (mp, 0, sizeof (*mp));
-  mp->_vl_msg_id = ntohs (VL_API_IPSEC_SPDS_DETAILS);
+  mp->_vl_msg_id = ntohs (REPLY_MSG_ID_BASE + VL_API_IPSEC_SPDS_DETAILS);
   mp->context = context;
 
   mp->spd_id = htonl (spd->id);
@@ -557,7 +567,7 @@ send_ipsec_spd_details (ipsec_policy_t * p, vl_api_registration_t * reg,
 
   mp = vl_msg_api_alloc (sizeof (*mp));
   clib_memset (mp, 0, sizeof (*mp));
-  mp->_vl_msg_id = ntohs (VL_API_IPSEC_SPD_DETAILS);
+  mp->_vl_msg_id = ntohs (REPLY_MSG_ID_BASE + VL_API_IPSEC_SPD_DETAILS);
   mp->context = context;
 
   mp->entry.spd_id = htonl (p->id);
@@ -625,7 +635,8 @@ send_ipsec_spd_interface_details (vl_api_registration_t * reg, u32 spd_index,
 
   mp = vl_msg_api_alloc (sizeof (*mp));
   clib_memset (mp, 0, sizeof (*mp));
-  mp->_vl_msg_id = ntohs (VL_API_IPSEC_SPD_INTERFACE_DETAILS);
+  mp->_vl_msg_id =
+    ntohs (REPLY_MSG_ID_BASE + VL_API_IPSEC_SPD_INTERFACE_DETAILS);
   mp->context = context;
 
   mp->spd_index = htonl (spd_index);
@@ -696,9 +707,40 @@ vl_api_ipsec_itf_delete_t_handler (vl_api_ipsec_itf_delete_t * mp)
   REPLY_MACRO (VL_API_IPSEC_ITF_DELETE_REPLY);
 }
 
+static walk_rc_t
+send_ipsec_itf_details (ipsec_itf_t *itf, void *arg)
+{
+  ipsec_dump_walk_ctx_t *ctx = arg;
+  vl_api_ipsec_itf_details_t *mp;
+
+  mp = vl_msg_api_alloc (sizeof (*mp));
+  clib_memset (mp, 0, sizeof (*mp));
+  mp->_vl_msg_id = ntohs (REPLY_MSG_ID_BASE + VL_API_IPSEC_ITF_DETAILS);
+  mp->context = ctx->context;
+
+  mp->itf.mode = tunnel_mode_encode (itf->ii_mode);
+  mp->itf.user_instance = htonl (itf->ii_user_instance);
+  mp->itf.sw_if_index = htonl (itf->ii_sw_if_index);
+  vl_api_send_msg (ctx->reg, (u8 *) mp);
+
+  return (WALK_CONTINUE);
+}
+
 static void
 vl_api_ipsec_itf_dump_t_handler (vl_api_ipsec_itf_dump_t * mp)
 {
+  vl_api_registration_t *reg;
+
+  reg = vl_api_client_index_to_registration (mp->client_index);
+  if (!reg)
+    return;
+
+  ipsec_dump_walk_ctx_t ctx = {
+    .reg = reg,
+    .context = mp->context,
+  };
+
+  ipsec_itf_walk (send_ipsec_itf_details, &ctx);
 }
 
 typedef struct ipsec_sa_dump_match_ctx_t_
@@ -742,7 +784,7 @@ send_ipsec_sa_details (ipsec_sa_t * sa, void *arg)
 
   mp = vl_msg_api_alloc (sizeof (*mp));
   clib_memset (mp, 0, sizeof (*mp));
-  mp->_vl_msg_id = ntohs (VL_API_IPSEC_SA_DETAILS);
+  mp->_vl_msg_id = ntohs (REPLY_MSG_ID_BASE + VL_API_IPSEC_SA_DETAILS);
   mp->context = ctx->context;
 
   mp->entry.sad_id = htonl (sa->id);
@@ -784,11 +826,11 @@ send_ipsec_sa_details (ipsec_sa_t * sa, void *arg)
     }
 
   mp->seq_outbound = clib_host_to_net_u64 (((u64) sa->seq));
-  mp->last_seq_inbound = clib_host_to_net_u64 (((u64) sa->last_seq));
+  mp->last_seq_inbound = clib_host_to_net_u64 (((u64) sa->seq));
   if (ipsec_sa_is_set_USE_ESN (sa))
     {
       mp->seq_outbound |= (u64) (clib_host_to_net_u32 (sa->seq_hi));
-      mp->last_seq_inbound |= (u64) (clib_host_to_net_u32 (sa->last_seq_hi));
+      mp->last_seq_inbound |= (u64) (clib_host_to_net_u32 (sa->seq_hi));
     }
   if (ipsec_sa_is_set_USE_ANTI_REPLAY (sa))
     mp->replay_window = clib_host_to_net_u64 (sa->replay_window);
@@ -825,7 +867,7 @@ send_ipsec_sa_v2_details (ipsec_sa_t * sa, void *arg)
 
   mp = vl_msg_api_alloc (sizeof (*mp));
   clib_memset (mp, 0, sizeof (*mp));
-  mp->_vl_msg_id = ntohs (VL_API_IPSEC_SA_V2_DETAILS);
+  mp->_vl_msg_id = ntohs (REPLY_MSG_ID_BASE + VL_API_IPSEC_SA_V2_DETAILS);
   mp->context = ctx->context;
 
   mp->entry.sad_id = htonl (sa->id);
@@ -871,11 +913,11 @@ send_ipsec_sa_v2_details (ipsec_sa_t * sa, void *arg)
   mp->entry.dscp = ip_dscp_encode (sa->tunnel.t_dscp);
 
   mp->seq_outbound = clib_host_to_net_u64 (((u64) sa->seq));
-  mp->last_seq_inbound = clib_host_to_net_u64 (((u64) sa->last_seq));
+  mp->last_seq_inbound = clib_host_to_net_u64 (((u64) sa->seq));
   if (ipsec_sa_is_set_USE_ESN (sa))
     {
       mp->seq_outbound |= (u64) (clib_host_to_net_u32 (sa->seq_hi));
-      mp->last_seq_inbound |= (u64) (clib_host_to_net_u32 (sa->last_seq_hi));
+      mp->last_seq_inbound |= (u64) (clib_host_to_net_u32 (sa->seq_hi));
     }
   if (ipsec_sa_is_set_USE_ANTI_REPLAY (sa))
     mp->replay_window = clib_host_to_net_u64 (sa->replay_window);
@@ -912,7 +954,7 @@ send_ipsec_sa_v3_details (ipsec_sa_t *sa, void *arg)
 
   mp = vl_msg_api_alloc (sizeof (*mp));
   clib_memset (mp, 0, sizeof (*mp));
-  mp->_vl_msg_id = ntohs (VL_API_IPSEC_SA_V3_DETAILS);
+  mp->_vl_msg_id = ntohs (REPLY_MSG_ID_BASE + VL_API_IPSEC_SA_V3_DETAILS);
   mp->context = ctx->context;
 
   mp->entry.sad_id = htonl (sa->id);
@@ -951,11 +993,11 @@ send_ipsec_sa_v3_details (ipsec_sa_t *sa, void *arg)
     }
 
   mp->seq_outbound = clib_host_to_net_u64 (((u64) sa->seq));
-  mp->last_seq_inbound = clib_host_to_net_u64 (((u64) sa->last_seq));
+  mp->last_seq_inbound = clib_host_to_net_u64 (((u64) sa->seq));
   if (ipsec_sa_is_set_USE_ESN (sa))
     {
       mp->seq_outbound |= (u64) (clib_host_to_net_u32 (sa->seq_hi));
-      mp->last_seq_inbound |= (u64) (clib_host_to_net_u32 (sa->last_seq_hi));
+      mp->last_seq_inbound |= (u64) (clib_host_to_net_u32 (sa->seq_hi));
     }
   if (ipsec_sa_is_set_USE_ANTI_REPLAY (sa))
     mp->replay_window = clib_host_to_net_u64 (sa->replay_window);
@@ -1005,7 +1047,7 @@ vl_api_ipsec_backend_dump_t_handler (vl_api_ipsec_backend_dump_t * mp)
   pool_foreach (ab, im->ah_backends) {
     vl_api_ipsec_backend_details_t *mp = vl_msg_api_alloc (sizeof (*mp));
     clib_memset (mp, 0, sizeof (*mp));
-    mp->_vl_msg_id = ntohs (VL_API_IPSEC_BACKEND_DETAILS);
+    mp->_vl_msg_id = ntohs (REPLY_MSG_ID_BASE + VL_API_IPSEC_BACKEND_DETAILS);
     mp->context = context;
     snprintf ((char *)mp->name, sizeof (mp->name), "%.*s", vec_len (ab->name),
               ab->name);
@@ -1017,7 +1059,7 @@ vl_api_ipsec_backend_dump_t_handler (vl_api_ipsec_backend_dump_t * mp)
   pool_foreach (eb, im->esp_backends) {
     vl_api_ipsec_backend_details_t *mp = vl_msg_api_alloc (sizeof (*mp));
     clib_memset (mp, 0, sizeof (*mp));
-    mp->_vl_msg_id = ntohs (VL_API_IPSEC_BACKEND_DETAILS);
+    mp->_vl_msg_id = ntohs (REPLY_MSG_ID_BASE + VL_API_IPSEC_BACKEND_DETAILS);
     mp->context = context;
     snprintf ((char *)mp->name, sizeof (mp->name), "%.*s", vec_len (eb->name),
               eb->name);
@@ -1074,44 +1116,14 @@ vl_api_ipsec_set_async_mode_t_handler (vl_api_ipsec_set_async_mode_t * mp)
   REPLY_MACRO (VL_API_IPSEC_SET_ASYNC_MODE_REPLY);
 }
 
-/*
- * ipsec_api_hookup
- * Add vpe's API message handlers to the table.
- * vlib has already mapped shared memory and
- * added the client registration handlers.
- * See .../vlib-api/vlibmemory/memclnt_vlib.c:memclnt_process()
- */
-#define vl_msg_name_crc_list
-#include <vnet/vnet_all_api_h.h>
-#undef vl_msg_name_crc_list
-
-static void
-setup_message_id_table (api_main_t * am)
-{
-#define _(id,n,crc) vl_msg_api_add_msg_name_crc (am, #n "_" #crc, id);
-  foreach_vl_msg_name_crc_ipsec;
-#undef _
-}
-
+#include <vnet/ipsec/ipsec.api.c>
 static clib_error_t *
 ipsec_api_hookup (vlib_main_t * vm)
 {
-  api_main_t *am = vlibapi_get_main ();
-
-#define _(N,n)                                                  \
-    vl_msg_api_set_handlers(VL_API_##N, #n,                     \
-                           vl_api_##n##_t_handler,              \
-                           vl_noop_handler,                     \
-                           vl_api_##n##_t_endian,               \
-                           vl_api_##n##_t_print,                \
-                           sizeof(vl_api_##n##_t), 1);
-  foreach_vpe_api_msg;
-#undef _
-
   /*
    * Set up the (msg_name, crc, message-id) table
    */
-  setup_message_id_table (am);
+  REPLY_MSG_ID_BASE = setup_message_id_table ();
 
   return 0;
 }

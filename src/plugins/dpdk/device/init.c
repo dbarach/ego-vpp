@@ -452,6 +452,7 @@ dpdk_lib_init (dpdk_main_t * dm)
 	      xd->flags |= DPDK_DEVICE_FLAG_INT_UNMASKABLE;
 	    case VNET_DPDK_PMD_E1000EM:
 	    case VNET_DPDK_PMD_IGB:
+	    case VNET_DPDK_PMD_IGC:
 	    case VNET_DPDK_PMD_IXGBE:
 	    case VNET_DPDK_PMD_ICE:
 	      xd->port_type = port_type_from_speed_capa (&dev_info);
@@ -564,6 +565,14 @@ dpdk_lib_init (dpdk_main_t * dm)
 	      xd->port_type = VNET_DPDK_PORT_TYPE_ETH_1G;
 	      xd->nb_rx_desc = DPDK_NB_RX_DESC_VIRTIO;
 	      xd->nb_tx_desc = DPDK_NB_TX_DESC_VIRTIO;
+	      /*
+	       * Enable use of RX interrupts if supported.
+	       *
+	       * There is no device flag or capability for this, so
+	       * use the same check that the virtio driver does.
+	       */
+	      if (pci_dev && rte_intr_cap_multiple (&pci_dev->intr_handle))
+		xd->port_conf.intr_conf.rxq = 1;
 	      break;
 
 	      /* vmxnet3 */
@@ -1912,8 +1921,6 @@ dpdk_init (vlib_main_t * vm)
 		 "Data in cache line 0 is bigger than cache line size");
   STATIC_ASSERT (offsetof (frame_queue_trace_t, cacheline0) == 0,
 		 "Cache line marker must be 1st element in frame_queue_trace_t");
-  STATIC_ASSERT (RTE_CACHE_LINE_SIZE == 1 << CLIB_LOG2_CACHE_LINE_BYTES,
-		 "DPDK RTE CACHE LINE SIZE does not match with 1<<CLIB_LOG2_CACHE_LINE_BYTES");
 
   dpdk_cli_reference ();
 

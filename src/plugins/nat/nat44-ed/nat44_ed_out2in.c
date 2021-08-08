@@ -472,7 +472,7 @@ create_session_for_static_mapping_ed (
       snat_address_t *filter = 0;
 
       // if exact address is specified use this address
-      if (is_exact_address (mapping))
+      if (is_sm_exact_address (mapping->flags))
 	{
 	  snat_address_t *ap;
 	  vec_foreach (ap, sm->twice_nat_addresses)
@@ -838,7 +838,7 @@ nat44_ed_out2in_fast_path_node_fn_inline (vlib_main_t * vm,
 
 	  vlib_prefetch_buffer_header (p2, LOAD);
 
-	  CLIB_PREFETCH (p2->data, CLIB_CACHE_LINE_BYTES, LOAD);
+	  clib_prefetch_load (p2->data);
 	}
 
       next[0] = vnet_buffer2 (b0)->nat.arc_next;
@@ -1020,16 +1020,18 @@ nat44_ed_out2in_fast_path_node_fn_inline (vlib_main_t * vm,
 		  nat_free_session_data (sm, s0, thread_index, 0);
 		  nat_ed_session_delete (sm, s0, thread_index, 1);
 		  next[0] = NAT_NEXT_DROP;
+		  b0->error = node->errors[NAT_OUT2IN_ED_ERROR_TRNSL_FAILED];
 		  goto trace0;
 		}
 	    }
 	}
 
       if (NAT_ED_TRNSL_ERR_SUCCESS !=
-	  (translation_error = nat_6t_flow_buf_translate (
-	     sm, b0, ip0, f, proto0, 0 /* is_output_feature */)))
+	  (translation_error = nat_6t_flow_buf_translate_o2i (
+	     vm, sm, b0, ip0, f, proto0, 0 /* is_output_feature */)))
 	{
 	  next[0] = NAT_NEXT_DROP;
+	  b0->error = node->errors[NAT_OUT2IN_ED_ERROR_TRNSL_FAILED];
 	  goto trace0;
 	}
 
@@ -1180,11 +1182,14 @@ nat44_ed_out2in_slow_path_node_fn_inline (vlib_main_t * vm,
 	      if (!s0)
 		next[0] = NAT_NEXT_DROP;
 	    }
-	  if (NAT_NEXT_DROP != next[0] &&
+	  if (NAT_NEXT_DROP != next[0] && s0 &&
 	      NAT_ED_TRNSL_ERR_SUCCESS !=
-		(translation_error = nat_6t_flow_buf_translate (
-		   sm, b0, ip0, &s0->o2i, proto0, 0 /* is_output_feature */)))
+		(translation_error = nat_6t_flow_buf_translate_o2i (
+		   vm, sm, b0, ip0, &s0->o2i, proto0,
+		   0 /* is_output_feature */)))
 	    {
+	      next[0] = NAT_NEXT_DROP;
+	      b0->error = node->errors[NAT_OUT2IN_ED_ERROR_TRNSL_FAILED];
 	      goto trace0;
 	    }
 
@@ -1201,9 +1206,12 @@ nat44_ed_out2in_slow_path_node_fn_inline (vlib_main_t * vm,
 
 	  if (NAT_NEXT_DROP != next[0] && s0 &&
 	      NAT_ED_TRNSL_ERR_SUCCESS !=
-		(translation_error = nat_6t_flow_buf_translate (
-		   sm, b0, ip0, &s0->o2i, proto0, 0 /* is_output_feature */)))
+		(translation_error = nat_6t_flow_buf_translate_o2i (
+		   vm, sm, b0, ip0, &s0->o2i, proto0,
+		   0 /* is_output_feature */)))
 	    {
+	      next[0] = NAT_NEXT_DROP;
+	      b0->error = node->errors[NAT_OUT2IN_ED_ERROR_TRNSL_FAILED];
 	      goto trace0;
 	    }
 
@@ -1311,8 +1319,8 @@ nat44_ed_out2in_slow_path_node_fn_inline (vlib_main_t * vm,
 	}
 
       if (NAT_ED_TRNSL_ERR_SUCCESS !=
-	  (translation_error = nat_6t_flow_buf_translate (
-	     sm, b0, ip0, &s0->o2i, proto0, 0 /* is_output_feature */)))
+	  (translation_error = nat_6t_flow_buf_translate_o2i (
+	     vm, sm, b0, ip0, &s0->o2i, proto0, 0 /* is_output_feature */)))
 	{
 	  next[0] = NAT_NEXT_DROP;
 	  goto trace0;
@@ -1399,7 +1407,6 @@ VLIB_NODE_FN (nat44_ed_out2in_node) (vlib_main_t * vm,
     }
 }
 
-/* *INDENT-OFF* */
 VLIB_REGISTER_NODE (nat44_ed_out2in_node) = {
   .name = "nat44-ed-out2in",
   .vector_size = sizeof (u32),
@@ -1410,7 +1417,6 @@ VLIB_REGISTER_NODE (nat44_ed_out2in_node) = {
   .error_strings = nat_out2in_ed_error_strings,
   .runtime_data_bytes = sizeof (snat_runtime_t),
 };
-/* *INDENT-ON* */
 
 VLIB_NODE_FN (nat44_ed_out2in_slowpath_node) (vlib_main_t * vm,
 					      vlib_node_runtime_t * node,
@@ -1419,7 +1425,6 @@ VLIB_NODE_FN (nat44_ed_out2in_slowpath_node) (vlib_main_t * vm,
   return nat44_ed_out2in_slow_path_node_fn_inline (vm, node, frame);
 }
 
-/* *INDENT-OFF* */
 VLIB_REGISTER_NODE (nat44_ed_out2in_slowpath_node) = {
   .name = "nat44-ed-out2in-slowpath",
   .vector_size = sizeof (u32),
@@ -1430,7 +1435,6 @@ VLIB_REGISTER_NODE (nat44_ed_out2in_slowpath_node) = {
   .error_strings = nat_out2in_ed_error_strings,
   .runtime_data_bytes = sizeof (snat_runtime_t),
 };
-/* *INDENT-ON* */
 
 static u8 *
 format_nat_pre_trace (u8 * s, va_list * args)
@@ -1450,7 +1454,6 @@ VLIB_NODE_FN (nat_pre_out2in_node) (vlib_main_t * vm,
 				 NAT_NEXT_OUT2IN_ED_FAST_PATH);
 }
 
-/* *INDENT-OFF* */
 VLIB_REGISTER_NODE (nat_pre_out2in_node) = {
   .name = "nat-pre-out2in",
   .vector_size = sizeof (u32),
@@ -1459,7 +1462,6 @@ VLIB_REGISTER_NODE (nat_pre_out2in_node) = {
   .type = VLIB_NODE_TYPE_INTERNAL,
   .n_errors = 0,
  };
-/* *INDENT-ON* */
 
 /*
  * fd.io coding-style-patch-verification: ON

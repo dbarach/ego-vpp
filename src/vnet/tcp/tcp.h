@@ -184,14 +184,14 @@ typedef struct tcp_configuration_
   /** Timer ticks to wait in closing for fin ack */
   u32 closing_time;
 
+  /** Timer ticks to wait for free buffer */
+  u32 alloc_err_timeout;
+
   /** Time to wait (sec) before cleaning up the connection */
   f32 cleanup_time;
 
   /** Number of preallocated connections */
   u32 preallocated_connections;
-
-  /** Number of preallocated half-open connections */
-  u32 preallocated_half_open_connections;
 
   /** Maxium allowed GSO packet size */
   u32 max_gso_size;
@@ -220,9 +220,6 @@ typedef struct _tcp_main
 
   /** Dispatch table by state and flags */
   tcp_lookup_dispatch_t dispatch_table[TCP_N_STATES][64];
-
-  /** Pool of half-open connections on which we've sent a SYN */
-  tcp_connection_t *half_open_connections;
 
   /** Seed used to generate random iss */
   tcp_iss_seed_t iss_seed;
@@ -253,6 +250,9 @@ typedef struct _tcp_main
 
   /** Protocol configuration */
   tcp_configuration_t cfg;
+
+  /** message ID base for API */
+  u16 msg_id_base;
 } tcp_main_t;
 
 extern tcp_main_t tcp_main;
@@ -288,7 +288,7 @@ tcp_get_worker (u32 thread_index)
 
 tcp_connection_t *tcp_connection_alloc (u8 thread_index);
 tcp_connection_t *tcp_connection_alloc_w_base (u8 thread_index,
-					       tcp_connection_t * base);
+					       tcp_connection_t **base);
 void tcp_connection_free (tcp_connection_t * tc);
 void tcp_connection_close (tcp_connection_t * tc);
 void tcp_connection_cleanup (tcp_connection_t * tc);

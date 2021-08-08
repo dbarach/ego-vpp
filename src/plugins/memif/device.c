@@ -143,8 +143,7 @@ retry:
       u32 saved_ptd_buffers_len = _vec_len (ptd->buffers);
       u16 saved_slot = slot;
 
-      CLIB_PREFETCH (&ring->desc[(slot + 8) & mask], CLIB_CACHE_LINE_BYTES,
-		     LOAD);
+      clib_prefetch_load (&ring->desc[(slot + 8) & mask]);
 
       d0 = &ring->desc[slot & mask];
       if (PREDICT_FALSE (last_region != d0->region))
@@ -177,6 +176,7 @@ retry:
 		{
 		  slot++;
 		  free_slots--;
+		  d0->length = dst_off;
 		  d0->flags = MEMIF_DESC_FLAG_NEXT;
 		  d0 = &ring->desc[slot & mask];
 		  dst_off = 0;
@@ -234,10 +234,10 @@ no_free_slots:
   co = ptd->copy_ops;
   while (n_copy_op >= 8)
     {
-      CLIB_PREFETCH (co[4].data, CLIB_CACHE_LINE_BYTES, LOAD);
-      CLIB_PREFETCH (co[5].data, CLIB_CACHE_LINE_BYTES, LOAD);
-      CLIB_PREFETCH (co[6].data, CLIB_CACHE_LINE_BYTES, LOAD);
-      CLIB_PREFETCH (co[7].data, CLIB_CACHE_LINE_BYTES, LOAD);
+      clib_prefetch_load (co[4].data);
+      clib_prefetch_load (co[5].data);
+      clib_prefetch_load (co[6].data);
+      clib_prefetch_load (co[7].data);
 
       b0 = vlib_get_buffer (vm, ptd->buffers[co[0].buffer_vec_index]);
       b1 = vlib_get_buffer (vm, ptd->buffers[co[1].buffer_vec_index]);
@@ -314,8 +314,7 @@ retry:
       memif_desc_t *d0;
       u32 bi0;
 
-      CLIB_PREFETCH (&ring->desc[(slot + 8) & mask], CLIB_CACHE_LINE_BYTES,
-		     STORE);
+      clib_prefetch_store (&ring->desc[(slot + 8) & mask]);
 
       if (PREDICT_TRUE (n_left >= 4))
 	vlib_prefetch_buffer_header (vlib_get_buffer (vm, buffers[3]), LOAD);
@@ -388,10 +387,11 @@ VNET_DEVICE_CLASS_TX_FN (memif_device_class) (vlib_main_t * vm,
     {
       ASSERT (tx_queues > 0);
       mq = vec_elt_at_index (mif->tx_queues, thread_index % tx_queues);
-      clib_spinlock_lock_if_init (&mif->lockp);
     }
   else
     mq = vec_elt_at_index (mif->tx_queues, thread_index);
+
+  clib_spinlock_lock_if_init (&mif->lockp);
 
   from = vlib_frame_vector_args (frame);
   n_left = frame->n_vectors;

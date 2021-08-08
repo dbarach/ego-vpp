@@ -207,8 +207,7 @@ memif_device_input_inline (vlib_main_t *vm, vlib_node_runtime_t *node,
       dst_off = start_offset;
 
     next_slot:
-      CLIB_PREFETCH (&ring->desc[(cur_slot + 8) & mask],
-		     CLIB_CACHE_LINE_BYTES, LOAD);
+      clib_prefetch_load (&ring->desc[(cur_slot + 8) & mask]);
       s0 = cur_slot & mask;
       d0 = &ring->desc[s0];
       n_bytes_left = d0->length;
@@ -277,10 +276,10 @@ memif_device_input_inline (vlib_main_t *vm, vlib_node_runtime_t *node,
   co = ptd->copy_ops;
   while (n_left >= 8)
     {
-      CLIB_PREFETCH (co[4].data, CLIB_CACHE_LINE_BYTES, LOAD);
-      CLIB_PREFETCH (co[5].data, CLIB_CACHE_LINE_BYTES, LOAD);
-      CLIB_PREFETCH (co[6].data, CLIB_CACHE_LINE_BYTES, LOAD);
-      CLIB_PREFETCH (co[7].data, CLIB_CACHE_LINE_BYTES, LOAD);
+      clib_prefetch_load (co[4].data);
+      clib_prefetch_load (co[5].data);
+      clib_prefetch_load (co[6].data);
+      clib_prefetch_load (co[7].data);
 
       b0 = vlib_get_buffer (vm, ptd->buffers[co[0].buffer_vec_index]);
       b1 = vlib_get_buffer (vm, ptd->buffers[co[1].buffer_vec_index]);
@@ -574,8 +573,7 @@ memif_device_input_zc_inline (vlib_main_t *vm, vlib_node_runtime_t *node,
       bi0 = mq->buffers[s0];
       ptd->buffers[n_rx_packets++] = bi0;
 
-      CLIB_PREFETCH (&ring->desc[(cur_slot + 8) & mask],
-		     CLIB_CACHE_LINE_BYTES, LOAD);
+      clib_prefetch_load (&ring->desc[(cur_slot + 8) & mask]);
       d0 = &ring->desc[s0];
       hb = b0 = vlib_get_buffer (vm, bi0);
       b0->current_data = start_offset;
@@ -587,6 +585,7 @@ memif_device_input_zc_inline (vlib_main_t *vm, vlib_node_runtime_t *node,
       if (PREDICT_FALSE ((d0->flags & MEMIF_DESC_FLAG_NEXT) && n_slots))
 	{
 	  hb->flags |= VLIB_BUFFER_TOTAL_LENGTH_VALID;
+	  hb->total_length_not_including_first_buffer = 0;
 	next_slot:
 	  s0 = cur_slot & mask;
 	  d0 = &ring->desc[s0];
@@ -775,7 +774,7 @@ refill:
   n_alloc = vlib_buffer_alloc_to_ring_from_pool (
     vm, mq->buffers, slot, ring_size, n_slots, mq->buffer_pool_index);
   dt->region = mq->buffer_pool_index + 1;
-  offset = (u64) mif->regions[dt->region].shm + start_offset;
+  offset = (u64) mif->regions[dt->region].shm - start_offset;
 
   if (PREDICT_FALSE (n_alloc != n_slots))
     vlib_error_count (vm, node->node_index,
@@ -809,7 +808,7 @@ refill:
       d[6].offset = (u64) vlib_get_buffer (vm, bi[6])->data - offset;
       d[7].offset = (u64) vlib_get_buffer (vm, bi[7])->data - offset;
 
-      slot += 8;
+      slot = (slot + 8) & mask;
       n_alloc -= 8;
       continue;
 

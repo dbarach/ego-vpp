@@ -328,7 +328,7 @@ vnet_classify_prefetch_bucket (vnet_classify_table_t * t, u64 hash)
 
   bucket_index = hash & (t->nbuckets - 1);
 
-  CLIB_PREFETCH (&t->buckets[bucket_index], CLIB_CACHE_LINE_BYTES, LOAD);
+  clib_prefetch_load (&t->buckets[bucket_index]);
 }
 
 static inline vnet_classify_entry_t *
@@ -389,7 +389,7 @@ vnet_classify_prefetch_entry (vnet_classify_table_t * t, u64 hash)
 
   e = vnet_classify_entry_at_index (t, e, value_index);
 
-  CLIB_PREFETCH (e, CLIB_CACHE_LINE_BYTES, LOAD);
+  clib_prefetch_load (e);
 }
 
 vnet_classify_entry_t *vnet_classify_find_entry (vnet_classify_table_t * t,
@@ -458,7 +458,7 @@ vnet_classify_find_entry_inline (vnet_classify_table_t *t, const u8 *h,
 	  abort ();
 	}
 
-      if (u32x4_zero_byte_mask (result.as_u32x4) == 0xffff)
+      if (u32x4_is_all_zero (result.as_u32x4))
 	{
 	  if (PREDICT_TRUE (now))
 	    {

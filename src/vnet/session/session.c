@@ -347,16 +347,15 @@ void
 session_half_open_delete_notify (transport_connection_t *tc)
 {
   /* Notification from ctrl thread accepted without rpc */
-  if (tc->thread_index <= 1)
+  if (!tc->thread_index)
     {
       session_half_open_free (ho_session_get (tc->s_index));
     }
   else
     {
       void *args = uword_to_pointer ((uword) tc->s_index, void *);
-      u32 ctrl_thread = vlib_num_workers () ? 1 : 0;
-      session_send_rpc_evt_to_thread (ctrl_thread, session_half_open_free_rpc,
-				      args);
+      session_send_rpc_evt_to_thread_force (0, session_half_open_free_rpc,
+					    args);
     }
 }
 
@@ -1287,8 +1286,6 @@ session_dgram_accept (transport_connection_t * tc, u32 listener_index,
       session_free (s);
       return rv;
     }
-
-  s->session_state = SESSION_STATE_READY;
 
   return 0;
 }

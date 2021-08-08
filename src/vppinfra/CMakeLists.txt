@@ -77,6 +77,7 @@ set(VPPINFRA_SRCS
   random.c
   random_isaac.c
   rbtree.c
+  sanitizer.c
   serialize.c
   socket.c
   std-formats.c
@@ -187,7 +188,9 @@ set(VPPINFRA_HEADERS
   vector_altivec.h
   vector_avx2.h
   vector_avx512.h
-  vector_funcs.h
+  vector/mask_compare.h
+  vector/compress.h
+  vector/array_mask.h
   vector.h
   vector_neon.h
   vector_sse42.h
@@ -201,6 +204,7 @@ if("${CMAKE_SYSTEM_NAME}" STREQUAL "Linux")
     elf_clib.c
     linux/mem.c
     linux/sysfs.c
+    linux/netns.c
    )
 endif()
 
@@ -263,13 +267,14 @@ if(VPP_BUILD_VPPINFRA_TESTS)
   endforeach()
 
 set(test_files
-  test_vector_funcs_compress.c
-  test_vector_funcs_mask_compare.c
+  vector/test/compress.c
+  vector/test/mask_compare.c
+  vector/test/array_mask.c
 )
 
 add_vpp_executable(test_vector_funcs
   SOURCES
-  test_vector_funcs.c
+  vector/test/test.c
   ${test_files}
   LINK_LIBRARIES vppinfra
 )

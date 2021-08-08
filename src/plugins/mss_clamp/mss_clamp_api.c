@@ -35,12 +35,15 @@ vl_api_mss_clamp_enable_disable_t_handler (
   mssc_main_t *cm = &mssc_main;
   vl_api_mss_clamp_enable_disable_reply_t *rmp;
   int rv;
+  u32 sw_if_index;
+
+  sw_if_index = ntohl (mp->sw_if_index);
 
   VALIDATE_SW_IF_INDEX (mp);
 
-  rv = mssc_enable_disable (ntohl (mp->sw_if_index), mp->ipv4_direction,
-			    mp->ipv6_direction, ntohs (mp->ipv4_mss),
-			    ntohs (mp->ipv6_mss));
+  rv =
+    mssc_enable_disable (sw_if_index, mp->ipv4_direction, mp->ipv6_direction,
+			 ntohs (mp->ipv4_mss), ntohs (mp->ipv6_mss));
 
   BAD_SW_IF_INDEX_LABEL;
   REPLY_MACRO (VL_API_MSS_CLAMP_ENABLE_DISABLE_REPLY);
@@ -92,8 +95,8 @@ vl_api_mss_clamp_get_t_handler (vl_api_mss_clamp_get_t *mp)
 	  return;
 	}
 
-      REPLY_AND_DETAILS_MACRO (
-	VL_API_MSS_CLAMP_GET_REPLY, cm->dir_enabled4,
+      REPLY_AND_DETAILS_VEC_MACRO (
+	VL_API_MSS_CLAMP_GET_REPLY, cm->dir_enabled4, mp, rmp, rv,
 	({ send_mss_clamp_details (cursor, reg, mp->context); }));
     }
   else

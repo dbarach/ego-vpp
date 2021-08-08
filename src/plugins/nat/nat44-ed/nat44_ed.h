@@ -28,6 +28,7 @@
 #include <vppinfra/elog.h>
 #include <vppinfra/bihash_8_8.h>
 #include <vppinfra/bihash_16_8.h>
+#include <vppinfra/hash.h>
 #include <vppinfra/dlist.h>
 #include <vppinfra/error.h>
 #include <vlibapi/api.h>
@@ -42,12 +43,11 @@
 #define SNAT_FLAG_HAIRPINNING (1 << 0)
 
 /* NAT44 API Configuration flags */
-#define foreach_nat44_config_flag  \
-  _(0x00, IS_ENDPOINT_INDEPENDENT) \
-  _(0x01, IS_ENDPOINT_DEPENDENT)   \
-  _(0x02, IS_STATIC_MAPPING_ONLY)  \
-  _(0x04, IS_CONNECTION_TRACKING)  \
-  _(0x08, IS_OUT2IN_DPO)
+#define foreach_nat44_config_flag                                             \
+  _ (0x00, IS_ENDPOINT_INDEPENDENT)                                           \
+  _ (0x01, IS_ENDPOINT_DEPENDENT)                                             \
+  _ (0x02, IS_STATIC_MAPPING_ONLY)                                            \
+  _ (0x04, IS_CONNECTION_TRACKING)
 
 typedef enum nat44_config_flags_t_
 {
@@ -124,13 +124,14 @@ typedef enum
 #undef _
 } snat_session_state_t;
 
-#define foreach_nat_in2out_ed_error                     \
-_(UNSUPPORTED_PROTOCOL, "unsupported protocol")         \
-_(OUT_OF_PORTS, "out of ports")                         \
-_(BAD_ICMP_TYPE, "unsupported ICMP type")               \
-_(MAX_SESSIONS_EXCEEDED, "maximum sessions exceeded")   \
-_(NON_SYN, "non-SYN packet try to create session")      \
-_(TCP_CLOSED, "drops due to TCP in transitory timeout")
+#define foreach_nat_in2out_ed_error                                           \
+  _ (UNSUPPORTED_PROTOCOL, "unsupported protocol")                            \
+  _ (OUT_OF_PORTS, "out of ports")                                            \
+  _ (BAD_ICMP_TYPE, "unsupported ICMP type")                                  \
+  _ (MAX_SESSIONS_EXCEEDED, "maximum sessions exceeded")                      \
+  _ (NON_SYN, "non-SYN packet try to create session")                         \
+  _ (TCP_CLOSED, "drops due to TCP in transitory timeout")                    \
+  _ (TRNSL_FAILED, "couldn't translate packet")
 
 typedef enum
 {
@@ -148,7 +149,8 @@ typedef enum
   _ (MAX_SESSIONS_EXCEEDED, "maximum sessions exceeded")                      \
   _ (NON_SYN, "non-SYN packet try to create session")                         \
   _ (TCP_CLOSED, "drops due to TCP in transitory timeout")                    \
-  _ (HASH_ADD_FAILED, "hash table add failed")
+  _ (HASH_ADD_FAILED, "hash table add failed")                                \
+  _ (TRNSL_FAILED, "couldn't translate packet")
 
 typedef enum
 {
@@ -184,11 +186,14 @@ typedef enum
 #define NAT_INTERFACE_FLAG_IS_OUTSIDE 2
 
 /* Static mapping flags */
-#define NAT_STATIC_MAPPING_FLAG_ADDR_ONLY      1
-#define NAT_STATIC_MAPPING_FLAG_OUT2IN_ONLY    2
-#define NAT_STATIC_MAPPING_FLAG_IDENTITY_NAT   4
-#define NAT_STATIC_MAPPING_FLAG_LB             8
-#define NAT_STATIC_MAPPING_FLAG_EXACT_ADDRESS  16
+#define NAT_SM_FLAG_SELF_TWICE_NAT (1 << 1)
+#define NAT_SM_FLAG_TWICE_NAT	   (1 << 2)
+#define NAT_SM_FLAG_IDENTITY_NAT   (1 << 3)
+#define NAT_SM_FLAG_ADDR_ONLY	   (1 << 4)
+#define NAT_SM_FLAG_EXACT_ADDRESS  (1 << 5)
+#define NAT_SM_FLAG_OUT2IN_ONLY	   (1 << 6)
+#define NAT_SM_FLAG_LB		   (1 << 7)
+#define NAT_SM_FLAG_SWITCH_ADDRESS (1 << 8)
 
 typedef CLIB_PACKED(struct
 {
@@ -417,8 +422,6 @@ typedef struct
   u16 local_port;
   /* external port */
   u16 external_port;
-  /* is twice-nat */
-  twice_nat_type_t twice_nat;
   /* local FIB table */
   u32 vrf_id;
   u32 fib_index;
@@ -683,7 +686,7 @@ typedef struct
 typedef struct
 {
   u32 cached_sw_if_index;
-  u32 cached_ip4_address;
+  uword *cached_presence_by_ip4_address;
 } snat_runtime_t;
 
 extern snat_main_t snat_main;
@@ -783,36 +786,6 @@ unformat_function_t unformat_nat_protocol;
 */
 #define nat44_is_ses_closed(s) s->state == 0xf
 
-/** \brief Check if NAT static mapping is address only (1:1NAT).
-    @param sm NAT static mapping
-    @return 1 if 1:1NAT, 0 if 1:1NAPT
-*/
-#define is_addr_only_static_mapping(sm) (sm->flags & NAT_STATIC_MAPPING_FLAG_ADDR_ONLY)
-
-/** \brief Check if NAT static mapping match only out2in direction.
-    @param sm NAT static mapping
-    @return 1 if rule match only out2in direction
-*/
-#define is_out2in_only_static_mapping(sm) (sm->flags & NAT_STATIC_MAPPING_FLAG_OUT2IN_ONLY)
-
-/** \brief Check if NAT static mapping is identity NAT.
-    @param sm NAT static mapping
-    @return 1 if identity NAT
-*/
-#define is_identity_static_mapping(sm) (sm->flags & NAT_STATIC_MAPPING_FLAG_IDENTITY_NAT)
-
-/** \brief Check if NAT static mapping is load-balancing.
-    @param sm NAT static mapping
-    @return 1 if load-balancing
-*/
-#define is_lb_static_mapping(sm) (sm->flags & NAT_STATIC_MAPPING_FLAG_LB)
-
-/** \brief Check if exact pool address should be used.
-    @param s SNAT session
-    @return 1 if exact pool address or 0
-*/
-#define is_exact_address(s) (s->flags & NAT_STATIC_MAPPING_FLAG_EXACT_ADDRESS)
-
 /** \brief Check if client initiating TCP connection (received SYN from client)
     @param t TCP header
     @return 1 if client initiating TCP connection
@@ -821,6 +794,54 @@ always_inline bool
 tcp_flags_is_init (u8 f)
 {
   return (f & TCP_FLAG_SYN) && !(f & TCP_FLAG_ACK);
+}
+
+always_inline bool
+is_sm_addr_only (u32 f)
+{
+  return (f & NAT_SM_FLAG_ADDR_ONLY);
+}
+
+always_inline bool
+is_sm_out2in_only (u32 f)
+{
+  return (f & NAT_SM_FLAG_OUT2IN_ONLY);
+}
+
+always_inline bool
+is_sm_identity_nat (u32 f)
+{
+  return (f & NAT_SM_FLAG_IDENTITY_NAT);
+}
+
+always_inline bool
+is_sm_lb (u32 f)
+{
+  return (f & NAT_SM_FLAG_LB);
+}
+
+always_inline bool
+is_sm_exact_address (u32 f)
+{
+  return (f & NAT_SM_FLAG_EXACT_ADDRESS);
+}
+
+always_inline bool
+is_sm_self_twice_nat (u32 f)
+{
+  return (f & NAT_SM_FLAG_SELF_TWICE_NAT);
+}
+
+always_inline bool
+is_sm_twice_nat (u32 f)
+{
+  return (f & NAT_SM_FLAG_TWICE_NAT);
+}
+
+always_inline bool
+is_sm_switch_address (u32 f)
+{
+  return (f & NAT_SM_FLAG_SWITCH_ADDRESS);
 }
 
 /* logging */
@@ -834,6 +855,28 @@ tcp_flags_is_init (u8 f)
   vlib_log(VLIB_LOG_LEVEL_INFO, snat_main.log_class, __VA_ARGS__)
 #define nat_log_debug(...)\
   vlib_log(VLIB_LOG_LEVEL_DEBUG, snat_main.log_class, __VA_ARGS__)
+
+int nat44_ed_add_static_mapping (ip4_address_t l_addr, ip4_address_t e_addr,
+				 u16 l_port, u16 e_port, nat_protocol_t proto,
+				 u32 vrf_id, u32 sw_if_index, u32 flags,
+				 ip4_address_t pool_addr, u8 *tag);
+
+int nat44_ed_del_static_mapping (ip4_address_t l_addr, ip4_address_t e_addr,
+				 u16 l_port, u16 e_port, nat_protocol_t proto,
+				 u32 vrf_id, u32 sw_if_index, u32 flags);
+
+int nat44_ed_add_lb_static_mapping (ip4_address_t e_addr, u16 e_port,
+				    nat_protocol_t proto,
+				    nat44_lb_addr_port_t *locals, u32 flags,
+				    u8 *tag, u32 affinity);
+
+int nat44_ed_del_lb_static_mapping (ip4_address_t e_addr, u16 e_port,
+				    nat_protocol_t proto, u32 flags);
+
+int nat44_ed_add_del_lb_static_mapping_local (ip4_address_t e_addr, u16 e_port,
+					      ip4_address_t l_addr, u16 l_port,
+					      nat_protocol_t proto, u32 vrf_id,
+					      u8 probability, u8 is_add);
 
 /**
  * @brief Enable NAT44 plugin
@@ -877,71 +920,6 @@ int snat_add_address (snat_main_t * sm, ip4_address_t * addr, u32 vrf_id,
 int snat_del_address (snat_main_t * sm, ip4_address_t addr, u8 delete_sm,
 		      u8 twice_nat);
 
-/**
- * @brief Add/delete external address to FIB DPO (out2in DPO mode)
- *
- * @param addr   IPv4 address
- * @param is_add 1 = add, 0 = delete
- *
- * @return 0 on success, non-zero value otherwise
- */
-void nat44_add_del_address_dpo (ip4_address_t addr, u8 is_add);
-
-/**
- * @brief Add/delete NAT44 static mapping
- *
- * @param l_addr       local IPv4 address
- * @param e_addr       external IPv4 address
- * @param l_port       local port number
- * @param e_port       external port number
- * @param vrf_id       local VRF ID
- * @param addr_only    1 = 1:1NAT, 0 = 1:1NAPT
- * @param sw_if_index  use interface address as external IPv4 address
- * @param proto        L4 protocol
- * @param is_add       1 = add, 0 = delete
- * @param twice_nat    twice-nat mode
- * @param out2in_only  if 1 rule match only out2in direction
- * @param tag          opaque string tag
- * @param identity_nat identity NAT
- * @param pool_addr    pool IPv4 address
- * @param exact        1 = exact pool address
- *
- * @return 0 on success, non-zero value otherwise
- */
-int snat_add_static_mapping (ip4_address_t l_addr, ip4_address_t e_addr,
-			     u16 l_port, u16 e_port, u32 vrf_id,
-			     int addr_only, u32 sw_if_index,
-			     nat_protocol_t proto, int is_add,
-			     twice_nat_type_t twice_nat, u8 out2in_only,
-			     u8 * tag, u8 identity_nat,
-			     ip4_address_t pool_addr, int exact);
-
-/**
- * @brief Add/delete static mapping with load-balancing (multiple backends)
- *
- * @param e_addr      external IPv4 address
- * @param e_port      external port number
- * @param proto       L4 protocol
- * @param locals      list of local backends
- * @param is_add      1 = add, 0 = delete
- * @param twice_nat   twice-nat mode
- * @param out2in_only if 1 rule match only out2in direction
- * @param tag         opaque string tag
- * @param affinity    0 = disabled, otherwise client IP affinity sticky time
- *
- * @return 0 on success, non-zero value otherwise
- */
-int nat44_add_del_lb_static_mapping (ip4_address_t e_addr, u16 e_port,
-				     nat_protocol_t proto,
-				     nat44_lb_addr_port_t * locals, u8 is_add,
-				     twice_nat_type_t twice_nat,
-				     u8 out2in_only, u8 * tag, u32 affinity);
-
-int nat44_lb_static_mapping_add_del_local (ip4_address_t e_addr, u16 e_port,
-					   ip4_address_t l_addr, u16 l_port,
-					   nat_protocol_t proto, u32 vrf_id,
-					   u8 probability, u8 is_add);
-
 clib_error_t *nat44_api_hookup (vlib_main_t * vm);
 
 /**
@@ -953,28 +931,10 @@ clib_error_t *nat44_api_hookup (vlib_main_t * vm);
  */
 int snat_set_workers (uword * bitmap);
 
-/**
- * @brief Enable/disable NAT44 feature on the interface
- *
- * @param sw_if_index software index of the interface
- * @param is_inside   1 = inside, 0 = outside
- * @param is_del      1 = delete, 0 = add
- *
- * @return 0 on success, non-zero value otherwise
- */
-int snat_interface_add_del (u32 sw_if_index, u8 is_inside, int is_del);
-
-/**
- * @brief Enable/disable NAT44 output feature on the interface (postrouting NAT)
- *
- * @param sw_if_index software index of the interface
- * @param is_inside   1 = inside, 0 = outside
- * @param is_del      1 = delete, 0 = add
- *
- * @return 0 on success, non-zero value otherwise
- */
-int snat_interface_add_del_output_feature (u32 sw_if_index, u8 is_inside,
-					   int is_del);
+int nat44_ed_add_interface (u32 sw_if_index, u8 is_inside);
+int nat44_ed_del_interface (u32 sw_if_index, u8 is_inside);
+int nat44_ed_add_output_interface (u32 sw_if_index);
+int nat44_ed_del_output_interface (u32 sw_if_index);
 
 /**
  * @brief Add/delete NAT44 pool address from specific interface
@@ -1000,8 +960,8 @@ int snat_add_interface_address (snat_main_t * sm, u32 sw_if_index, int is_del,
  *
  * @return 0 on success, non-zero value otherwise
  */
-int nat44_del_ed_session (snat_main_t * sm, ip4_address_t * addr, u16 port,
-			  ip4_address_t * eh_addr, u16 eh_port, u8 proto,
+int nat44_ed_del_session (snat_main_t *sm, ip4_address_t *addr, u16 port,
+			  ip4_address_t *eh_addr, u16 eh_port, u8 proto,
 			  u32 vrf_id, int is_in);
 
 /**
@@ -1089,30 +1049,6 @@ int snat_static_mapping_match (
 void snat_add_del_addr_to_fib (ip4_address_t * addr,
 			       u8 p_len, u32 sw_if_index, int is_add);
 
-#if 0
-void
-nat_ha_sadd_ed_cb (ip4_address_t * in_addr, u16 in_port,
-		   ip4_address_t * out_addr, u16 out_port,
-		   ip4_address_t * eh_addr, u16 eh_port,
-		   ip4_address_t * ehn_addr, u16 ehn_port, u8 proto,
-		   u32 fib_index, u16 flags, u32 thread_index);
-
-void
-nat_ha_sdel_ed_cb (ip4_address_t * out_addr, u16 out_port,
-		   ip4_address_t * eh_addr, u16 eh_port, u8 proto,
-		   u32 fib_index, u32 ti);
-
-void
-nat_ha_sref_ed_cb (ip4_address_t * out_addr, u16 out_port,
-		   ip4_address_t * eh_addr, u16 eh_port, u8 proto,
-		   u32 fib_index, u32 total_pkts, u64 total_bytes,
-		   u32 thread_index);
-#endif
-
-int nat_set_outside_address_and_port (snat_address_t *addresses,
-				      u32 thread_index, ip4_address_t addr,
-				      u16 port, nat_protocol_t protocol);
-
 /*
  * Why is this here? Because we don't need to touch this layer to
  * simply reply to an icmp. We need to change id to a unique
@@ -1149,12 +1085,18 @@ typedef enum
   NAT_ED_TRNSL_ERR_SUCCESS = 0,
   NAT_ED_TRNSL_ERR_TRANSLATION_FAILED = 1,
   NAT_ED_TRNSL_ERR_FLOW_MISMATCH = 2,
+  NAT_ED_TRNSL_ERR_PACKET_TRUNCATED = 3,
+  NAT_ED_TRNSL_ERR_INNER_IP_CORRUPT = 4,
+  NAT_ED_TRNSL_ERR_INVALID_CSUM = 5,
 } nat_translation_error_e;
 
-nat_translation_error_e
-nat_6t_flow_buf_translate (snat_main_t *sm, vlib_buffer_t *b, ip4_header_t *ip,
-			   nat_6t_flow_t *f, nat_protocol_t proto,
-			   int is_output_feature);
+nat_translation_error_e nat_6t_flow_buf_translate_i2o (
+  vlib_main_t *vm, snat_main_t *sm, vlib_buffer_t *b, ip4_header_t *ip,
+  nat_6t_flow_t *f, nat_protocol_t proto, int is_output_feature);
+
+nat_translation_error_e nat_6t_flow_buf_translate_o2i (
+  vlib_main_t *vm, snat_main_t *sm, vlib_buffer_t *b, ip4_header_t *ip,
+  nat_6t_flow_t *f, nat_protocol_t proto, int is_output_feature);
 
 void nat_6t_l3_l4_csum_calc (nat_6t_flow_t *f);
 

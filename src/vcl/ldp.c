@@ -724,10 +724,11 @@ ldp_pselect (int nfds, fd_set * __restrict readfds,
       time_out = (timeout->tv_sec == 0 && timeout->tv_nsec == 0) ?
 	(f64) 0 : (f64) timeout->tv_sec + (f64) timeout->tv_nsec / (f64) 1e9;
 
+      time_out += clib_time_now (&ldpw->clib_time);
+
       /* select as fine grained sleep */
       if (!nfds)
 	{
-	  time_out += clib_time_now (&ldpw->clib_time);
 	  while (clib_time_now (&ldpw->clib_time) < time_out)
 	    ;
 	  return 0;
@@ -1530,6 +1531,15 @@ recv (int fd, void *buf, size_t n, int flags)
   return size;
 }
 
+ssize_t
+__recv_chk (int fd, void *buf, size_t n, size_t buflen, int flags)
+{
+  if (n > buflen)
+    return -1;
+
+  return recv (fd, buf, n, flags);
+}
+
 static int
 ldp_vls_sendo (vls_handle_t vlsh, const void *buf, size_t n, int flags,
 	       __CONST_SOCKADDR_ARG addr, socklen_t addr_len)
@@ -1603,7 +1613,7 @@ sendto (int fd, const void *buf, size_t n, int flags,
   ldp_init_check ();
 
   vlsh = ldp_fd_to_vlsh (fd);
-  if (vlsh != INVALID_SESSION_ID)
+  if (vlsh != VLS_INVALID_HANDLE)
     {
       size = ldp_vls_sendo (vlsh, buf, n, flags, addr, addr_len);
       if (size < 0)
@@ -1702,7 +1712,7 @@ sendmmsg (int fd, struct mmsghdr *vmessages, unsigned int vlen, int flags)
 
   ldp_init_check ();
 
-  if (sh != INVALID_SESSION_ID)
+  if (sh != VLS_INVALID_HANDLE)
     {
       clib_warning ("LDP<%d>: LDP-TBD", getpid ());
       errno = ENOSYS;
@@ -1802,7 +1812,7 @@ recvmmsg (int fd, struct mmsghdr *vmessages,
 
   ldp_init_check ();
 
-  if (sh != INVALID_SESSION_ID)
+  if (sh != VLS_INVALID_HANDLE)
     {
       clib_warning ("LDP<%d>: LDP-TBD", getpid ());
       errno = ENOSYS;
@@ -1944,6 +1954,9 @@ getsockopt (int fd, int level, int optname,
 	      break;
 	    case SO_ERROR:
 	      rv = vls_attr (vlsh, VPPCOM_ATTR_GET_ERROR, optval, optlen);
+	      break;
+	    case SO_BINDTODEVICE:
+	      rv = 0;
 	      break;
 	    default:
 	      LDBG (0, "ERROR: fd %d: getsockopt SOL_SOCKET: vlsh %u "
@@ -2175,8 +2188,7 @@ int
 shutdown (int fd, int how)
 {
   vls_handle_t vlsh;
-  int rv = 0, flags;
-  u32 flags_len = sizeof (flags);
+  int rv = 0;
 
   ldp_init_check ();
 
@@ -2184,23 +2196,7 @@ shutdown (int fd, int how)
   if (vlsh != VLS_INVALID_HANDLE)
     {
       LDBG (0, "called shutdown: fd %u vlsh %u how %d", fd, vlsh, how);
-
-      if (vls_attr (vlsh, VPPCOM_ATTR_SET_SHUT, &how, &flags_len))
-	{
-	  close (fd);
-	  return -1;
-	}
-
-      if (vls_attr (vlsh, VPPCOM_ATTR_GET_SHUT, &flags, &flags_len))
-	{
-	  close (fd);
-	  return -1;
-	}
-
-      if (flags == SHUT_RDWR)
-	rv = close (fd);
-      else if (flags == SHUT_WR)
-	rv = vls_shutdown (vlsh);
+      rv = vls_shutdown (vlsh, how);
     }
   else
     {

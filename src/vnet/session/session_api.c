@@ -21,37 +21,14 @@
 #include <vnet/session/session_rules_table.h>
 #include <vnet/session/session_table.h>
 #include <vnet/session/session.h>
-
 #include <vnet/ip/ip_types_api.h>
 
-#include <vnet/vnet_msg_enum.h>
+#include <vnet/format_fns.h>
+#include <vnet/session/session.api_enum.h>
+#include <vnet/session/session.api_types.h>
 
-#define vl_typedefs		/* define message structures */
-#include <vnet/vnet_all_api_h.h>
-#undef vl_typedefs
-
-#define vl_endianfun		/* define message structures */
-#include <vnet/vnet_all_api_h.h>
-#undef vl_endianfun
-
-/* instantiate all the print functions we know about */
-#define vl_print(handle, ...) vlib_cli_output (handle, __VA_ARGS__)
-#define vl_printfun
-#include <vnet/vnet_all_api_h.h>
-#undef vl_printfun
-
+#define REPLY_MSG_ID_BASE session_main.msg_id_base
 #include <vlibapi/api_helper_macros.h>
-
-#define foreach_session_api_msg                                         \
-_(APP_ATTACH, app_attach)						\
-_(APPLICATION_DETACH, application_detach)				\
-_(SESSION_ENABLE_DISABLE, session_enable_disable)                   	\
-_(APP_NAMESPACE_ADD_DEL, app_namespace_add_del)				\
-_(SESSION_RULE_ADD_DEL, session_rule_add_del)				\
-_(SESSION_RULES_DUMP, session_rules_dump)				\
-_(APP_ADD_CERT_KEY_PAIR, app_add_cert_key_pair)				\
-_(APP_DEL_CERT_KEY_PAIR, app_del_cert_key_pair)				\
-_(APP_WORKER_ADD_DEL, app_worker_add_del)				\
 
 static transport_proto_t
 api_session_transport_proto_decode (const vl_api_transport_proto_t * api_tp)
@@ -116,6 +93,12 @@ mq_try_lock_and_alloc_msg (svm_msg_q_t * app_mq, svm_msg_q_msg_t * msg)
 						SVM_Q_NOWAIT, msg);
       if (!rv)
 	return 0;
+      /*
+       * Break the loop if mq is full, usually this is because the
+       * app has crashed or is hanging on somewhere.
+       */
+      if (rv != -1)
+	break;
       try++;
       usleep (1);
     }
@@ -305,6 +288,7 @@ mq_send_session_connected_cb (u32 app_wrk_index, u32 api_context,
       m.server_rx_fifo = fifo_segment_fifo_offset (s->rx_fifo);
       m.server_tx_fifo = fifo_segment_fifo_offset (s->tx_fifo);
       m.segment_handle = session_segment_handle (s);
+      m.mq_index = s->thread_index;
     }
   else
     {
@@ -324,6 +308,7 @@ mq_send_session_connected_cb (u32 app_wrk_index, u32 api_context,
       m.ct_rx_fifo = fifo_segment_fifo_offset (ss->tx_fifo);
       m.ct_tx_fifo = fifo_segment_fifo_offset (ss->rx_fifo);
       m.ct_segment_handle = session_segment_handle (ss);
+      m.mq_index = s->thread_index;
     }
 
   /* Setup client session index in advance, in case data arrives
@@ -384,6 +369,7 @@ mq_send_session_bound_cb (u32 app_wrk_index, u32 api_context,
   app = application_get (app_wrk->app_index);
   eq_seg = application_get_rx_mqs_segment (app);
   m.vpp_evt_q = fifo_segment_msg_q_offset (eq_seg, ls->thread_index);
+  m.mq_index = ls->thread_index;
 
   if (session_transport_service_type (ls) == TRANSPORT_SERVICE_CL &&
       ls->rx_fifo)
@@ -876,6 +862,55 @@ done:
 }
 
 static void
+vl_api_app_namespace_add_del_v2_t_handler (
+  vl_api_app_namespace_add_del_v2_t *mp)
+{
+  vl_api_app_namespace_add_del_v2_reply_t *rmp;
+  u8 *ns_id = 0, *netns = 0;
+  u32 appns_index = 0;
+  int rv = 0;
+
+  if (session_main_is_enabled () == 0)
+    {
+      rv = VNET_API_ERROR_FEATURE_DISABLED;
+      goto done;
+    }
+
+  mp->namespace_id[sizeof (mp->namespace_id) - 1] = 0;
+  mp->netns[sizeof (mp->netns) - 1] = 0;
+  ns_id = format (0, "%s", &mp->namespace_id);
+  netns = format (0, "%s", &mp->netns);
+
+  vnet_app_namespace_add_del_args_t args = {
+    .ns_id = ns_id,
+    .netns = netns,
+    .secret = clib_net_to_host_u64 (mp->secret),
+    .sw_if_index = clib_net_to_host_u32 (mp->sw_if_index),
+    .ip4_fib_id = clib_net_to_host_u32 (mp->ip4_fib_id),
+    .ip6_fib_id = clib_net_to_host_u32 (mp->ip6_fib_id),
+    .is_add = 1
+  };
+  rv = vnet_app_namespace_add_del (&args);
+  if (!rv)
+    {
+      appns_index = app_namespace_index_from_id (ns_id);
+      if (appns_index == APP_NAMESPACE_INVALID_INDEX)
+	{
+	  clib_warning ("app ns lookup failed");
+	  rv = VNET_API_ERROR_UNSPECIFIED;
+	}
+    }
+  vec_free (ns_id);
+  vec_free (netns);
+
+done:
+  REPLY_MACRO2 (VL_API_APP_NAMESPACE_ADD_DEL_V2_REPLY, ({
+		  if (!rv)
+		    rmp->appns_index = clib_host_to_net_u32 (appns_index);
+		}));
+}
+
+static void
 vl_api_session_rule_add_del_t_handler (vl_api_session_rule_add_del_t * mp)
 {
   vl_api_session_rule_add_del_reply_t *rmp;
@@ -921,7 +956,7 @@ send_session_rule_details4 (mma_rule_16_t * rule, u8 is_local,
 
   rmp = vl_msg_api_alloc (sizeof (*rmp));
   clib_memset (rmp, 0, sizeof (*rmp));
-  rmp->_vl_msg_id = ntohs (VL_API_SESSION_RULES_DETAILS);
+  rmp->_vl_msg_id = ntohs (REPLY_MSG_ID_BASE + VL_API_SESSION_RULES_DETAILS);
   rmp->context = context;
 
   clib_memset (&lcl, 0, sizeof (lcl));
@@ -963,7 +998,7 @@ send_session_rule_details6 (mma_rule_40_t * rule, u8 is_local,
 
   rmp = vl_msg_api_alloc (sizeof (*rmp));
   clib_memset (rmp, 0, sizeof (*rmp));
-  rmp->_vl_msg_id = ntohs (VL_API_SESSION_RULES_DETAILS);
+  rmp->_vl_msg_id = ntohs (REPLY_MSG_ID_BASE + VL_API_SESSION_RULES_DETAILS);
   rmp->context = context;
 
   clib_memset (&lcl, 0, sizeof (lcl));
@@ -1137,50 +1172,6 @@ application_reaper_cb (u32 client_index)
 }
 
 VL_MSG_API_REAPER_FUNCTION (application_reaper_cb);
-
-#define vl_msg_name_crc_list
-#include <vnet/vnet_all_api_h.h>
-#undef vl_msg_name_crc_list
-
-static void
-setup_message_id_table (api_main_t * am)
-{
-#define _(id,n,crc) vl_msg_api_add_msg_name_crc (am, #n "_" #crc, id);
-  foreach_vl_msg_name_crc_session;
-#undef _
-}
-
-/*
- * session_api_hookup
- * Add uri's API message handlers to the table.
- * vlib has already mapped shared memory and
- * added the client registration handlers.
- * See .../open-repo/vlib/memclnt_vlib.c:memclnt_process()
- */
-static clib_error_t *
-session_api_hookup (vlib_main_t * vm)
-{
-  api_main_t *am = vlibapi_get_main ();
-
-#define _(N,n)                                                  \
-    vl_msg_api_set_handlers(VL_API_##N, #n,                     \
-                           vl_api_##n##_t_handler,              \
-                           vl_noop_handler,                     \
-                           vl_api_##n##_t_endian,               \
-                           vl_api_##n##_t_print,                \
-                           sizeof(vl_api_##n##_t), 1);
-  foreach_session_api_msg;
-#undef _
-
-  /*
-   * Set up the (msg_name, crc, message-id) table
-   */
-  setup_message_id_table (am);
-
-  return 0;
-}
-
-VLIB_API_INIT_FUNCTION (session_api_hookup);
 
 /*
  * Socket api functions
@@ -1668,7 +1659,11 @@ appns_sapi_add_ns_socket (app_namespace_t * app_ns)
       goto error;
     }
 
-  app_ns->sock_name = format (0, "%v%v%c", dir, app_ns->ns_id, 0);
+  /* Use abstract sockets if a netns was provided */
+  if (app_ns->netns)
+    app_ns->sock_name = format (0, "@vpp/session/%v%c", app_ns->ns_id, 0);
+  else
+    app_ns->sock_name = format (0, "%v%v%c", dir, app_ns->ns_id, 0);
 
   /*
    * Create and initialize socket to listen on
@@ -1679,14 +1674,14 @@ appns_sapi_add_ns_socket (app_namespace_t * app_ns)
     CLIB_SOCKET_F_ALLOW_GROUP_WRITE |
     CLIB_SOCKET_F_SEQPACKET | CLIB_SOCKET_F_PASSCRED;
 
-  if ((err = clib_socket_init (cs)))
+  if ((err = clib_socket_init_netns (cs, app_ns->netns)))
     {
       clib_error_report (err);
       rv = -1;
       goto error;
     }
 
-  if (stat ((char *) app_ns->sock_name, &file_stat) == -1)
+  if (!app_ns->netns && stat ((char *) app_ns->sock_name, &file_stat) == -1)
     {
       rv = -1;
       goto error;
@@ -1712,6 +1707,33 @@ error:
   vec_free (dir);
   return rv;
 }
+
+static void
+vl_api_application_tls_cert_add_t_handler (
+  vl_api_application_tls_cert_add_t *mp)
+{
+  /* deprecated */
+}
+
+static void
+vl_api_application_tls_key_add_t_handler (vl_api_application_tls_key_add_t *mp)
+{
+  /* deprecated */
+}
+
+#include <vnet/session/session.api.c>
+static clib_error_t *
+session_api_hookup (vlib_main_t *vm)
+{
+  /*
+   * Set up the (msg_name, crc, message-id) table
+   */
+  REPLY_MSG_ID_BASE = setup_message_id_table ();
+
+  return 0;
+}
+
+VLIB_API_INIT_FUNCTION (session_api_hookup);
 
 /*
  * fd.io coding-style-patch-verification: ON

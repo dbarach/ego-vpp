@@ -217,8 +217,6 @@ class VppIpsecSA(VppObject):
         if (tun_src):
             self.tun_src = ip_address(text_type(tun_src))
             self.flags = self.flags | e.IPSEC_API_SAD_FLAG_IS_TUNNEL
-            if (self.tun_src.version == 6):
-                self.flags = self.flags | e.IPSEC_API_SAD_FLAG_IS_TUNNEL_V6
         if (tun_dst):
             self.tun_dst = ip_address(text_type(tun_dst))
         self.udp_src = udp_src
@@ -267,31 +265,13 @@ class VppIpsecSA(VppObject):
             entry['udp_src_port'] = self.udp_src
         if self.udp_dst:
             entry['udp_dst_port'] = self.udp_dst
-        r = self.test.vapi.ipsec_sad_entry_add_del_v3(is_add=1, entry=entry)
+        r = self.test.vapi.ipsec_sad_entry_add(entry=entry)
         self.stat_index = r.stat_index
         self.test.registry.register(self, self.test.logger)
         return self
 
     def remove_vpp_config(self):
-        r = self.test.vapi.ipsec_sad_entry_add_del_v3(
-            is_add=0,
-            entry={
-                'sad_id': self.id,
-                'spi': self.spi,
-                'integrity_algorithm': self.integ_alg,
-                'integrity_key': {
-                    'length': len(self.integ_key),
-                    'data': self.integ_key,
-                },
-                'crypto_algorithm': self.crypto_alg,
-                'crypto_key': {
-                    'data': self.crypto_key,
-                    'length': len(self.crypto_key),
-                },
-                'protocol': self.proto,
-                'tunnel': self.tunnel_encode(),
-                'salt': self.salt
-            })
+        self.test.vapi.ipsec_sad_entry_del(id=self.id)
 
     def object_id(self):
         return "ipsec-sa-%d" % self.id
@@ -412,6 +392,8 @@ class VppIpsecInterface(VppInterface):
         })
         self.set_sw_if_index(r.sw_if_index)
         self.test.registry.register(self, self.test.logger)
+        ts = self.test.vapi.ipsec_itf_dump(sw_if_index=self._sw_if_index)
+        self.instance = ts[0].itf.user_instance
         return self
 
     def remove_vpp_config(self):
@@ -420,7 +402,7 @@ class VppIpsecInterface(VppInterface):
     def query_vpp_config(self):
         ts = self.test.vapi.ipsec_itf_dump(sw_if_index=0xffffffff)
         for t in ts:
-            if t.tunnel.sw_if_index == self._sw_if_index:
+            if t.itf.sw_if_index == self._sw_if_index:
                 return True
         return False
 
@@ -428,4 +410,4 @@ class VppIpsecInterface(VppInterface):
         return self.object_id()
 
     def object_id(self):
-        return "ipsec-%d" % self._sw_if_index
+        return "ipsec%d" % self.instance

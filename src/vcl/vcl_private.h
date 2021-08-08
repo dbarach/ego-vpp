@@ -85,6 +85,8 @@ typedef struct
 #define VEP_DEFAULT_ET_MASK  (EPOLLIN|EPOLLOUT)
 #define VEP_UNSUPPORTED_EVENTS (EPOLLONESHOT|EPOLLEXCLUSIVE)
   u32 et_mask;
+  u32 lt_next;
+  u32 lt_prev;
 } vppcom_epoll_t;
 
 /* Select uses the vcl_si_set as if a clib_bitmap. Make sure they are the
@@ -126,8 +128,6 @@ typedef enum
   VCL_SESS_ATTR_TCP_NODELAY,	// SOL_TCP,TCP_NODELAY
   VCL_SESS_ATTR_TCP_KEEPIDLE,	// SOL_TCP,TCP_KEEPIDLE
   VCL_SESS_ATTR_TCP_KEEPINTVL,	// SOL_TCP,TCP_KEEPINTVL
-  VCL_SESS_ATTR_SHUT_RD,
-  VCL_SESS_ATTR_SHUT_WR,
   VCL_SESS_ATTR_MAX
 } vppcom_session_attr_t;
 
@@ -137,7 +137,8 @@ typedef enum vcl_session_flags_
   VCL_SESSION_F_IS_VEP = 1 << 1,
   VCL_SESSION_F_IS_VEP_SESSION = 1 << 2,
   VCL_SESSION_F_HAS_RX_EVT = 1 << 3,
-  VCL_SESSION_F_SHUTDOWN = 1 << 4,
+  VCL_SESSION_F_RD_SHUTDOWN = 1 << 4,
+  VCL_SESSION_F_WR_SHUTDOWN = 1 << 5,
 } __clib_packed vcl_session_flags_t;
 
 typedef struct vcl_session_
@@ -253,6 +254,9 @@ typedef struct vcl_worker_
 
   /** Per worker buffer for receiving mq epoll events */
   struct epoll_event *mq_events;
+
+  /** Next session to be lt polled */
+  u32 ep_lt_current;
 
   /** Hash table for disconnect processing */
   uword *session_index_by_vpp_handles;
@@ -717,14 +721,16 @@ void vcl_segment_detach (u64 segment_handle);
 void vcl_send_session_unlisten (vcl_worker_t * wrk, vcl_session_t * s);
 
 int vcl_segment_attach_session (uword segment_handle, uword rxf_offset,
-				uword txf_offset, uword mq_offset, u8 is_ct,
-				vcl_session_t *s);
+				uword txf_offset, uword mq_offset,
+				u32 mq_index, u8 is_ct, vcl_session_t *s);
 int vcl_segment_attach_mq (uword segment_handle, uword mq_offset, u32 mq_index,
 			   svm_msg_q_t **mq);
 int vcl_segment_discover_mqs (uword segment_handle, int *fds, u32 n_fds);
 svm_fifo_chunk_t *vcl_segment_alloc_chunk (uword segment_handle,
 					   u32 slice_index, u32 size,
 					   uword *offset);
+int vcl_session_share_fifos (vcl_session_t *s, svm_fifo_t *rxf,
+			     svm_fifo_t *txf);
 
 /*
  * VCL Binary API

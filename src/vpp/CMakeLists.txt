@@ -64,7 +64,6 @@ set(VPP_SOURCES
   stats/stat_segment_provider.c
   api/api.c
   api/json_format.c
-  api/custom_dump.c
   api/types.c
 )
 
@@ -75,6 +74,7 @@ if(VPP_API_TEST_BUILTIN)
     api/plugin.c
     api/types.c
     ../vnet/arp/arp_test.c
+    ../vnet/ip/ip_test.c
   )
   add_definitions(-DVPP_API_TEST_BUILTIN=1)
 endif()

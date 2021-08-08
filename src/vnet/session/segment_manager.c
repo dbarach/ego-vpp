@@ -87,9 +87,9 @@ segment_manager_segment_index (segment_manager_t * sm, fifo_segment_t * seg)
  * If needed a writer's lock is acquired before allocating a new segment
  * to avoid affecting any of the segments pool readers.
  */
-int
-segment_manager_add_segment (segment_manager_t *sm, uword segment_size,
-			     u8 notify_app)
+static inline int
+segment_manager_add_segment_inline (segment_manager_t *sm, uword segment_size,
+				    u8 notify_app, u8 flags)
 {
   segment_manager_main_t *smm = &sm_main;
   segment_manager_props_t *props;
@@ -161,6 +161,7 @@ segment_manager_add_segment (segment_manager_t *sm, uword segment_size,
   fs->h->high_watermark = sm->high_watermark;
   fs->h->low_watermark = sm->low_watermark;
   fs->h->pct_first_alloc = props->pct_first_alloc;
+  fs->h->flags = flags;
   fs->h->flags &= ~FIFO_SEGMENT_F_MEM_LIMIT;
 
   if (notify_app)
@@ -179,6 +180,20 @@ done:
     clib_rwlock_writer_unlock (&sm->segments_rwlock);
 
   return fs_index;
+}
+
+int
+segment_manager_add_segment (segment_manager_t *sm, uword segment_size,
+			     u8 notify_app)
+{
+  return segment_manager_add_segment_inline (sm, segment_size, notify_app, 0);
+}
+
+int
+segment_manager_add_segment2 (segment_manager_t *sm, uword segment_size,
+			      u8 flags)
+{
+  return segment_manager_add_segment_inline (sm, segment_size, 0, flags);
 }
 
 /**
@@ -498,8 +513,8 @@ sm_free_w_index_helper (void *arg)
     segment_manager_free (sm);
 }
 
-static void
-segment_manager_free_safe (segment_manager_t * sm)
+void
+segment_manager_free_safe (segment_manager_t *sm)
 {
   if (!vlib_thread_is_main_w_barrier ())
     {
@@ -738,16 +753,16 @@ segment_manager_alloc_session_fifos (segment_manager_t * sm,
 
   segment_manager_segment_reader_lock (sm);
 
-  /* *INDENT-OFF* */
   pool_foreach (cur, sm->segments)  {
-    free_bytes = fifo_segment_available_bytes (cur);
-    if (free_bytes > max_free_bytes)
-      {
-        max_free_bytes = free_bytes;
-        fs = cur;
-      }
+      if (fifo_segment_flags (cur) & FIFO_SEGMENT_F_CUSTOM_USE)
+	continue;
+      free_bytes = fifo_segment_available_bytes (cur);
+      if (free_bytes > max_free_bytes)
+	{
+	  max_free_bytes = free_bytes;
+	  fs = cur;
+	}
   }
-  /* *INDENT-ON* */
 
   if (fs)
     {
@@ -1057,10 +1072,11 @@ segment_manager_format_sessions (segment_manager_t * sm, int verbose)
   if (!sm)
     {
       if (verbose)
-	vlib_cli_output (vm, "%-40s%-20s%-15s%-10s", "Connection", "App",
-			 "API Client", "SegManager");
+	vlib_cli_output (vm, "%-" SESSION_CLI_ID_LEN "s%-20s%-15s%-10s",
+			 "Connection", "App", "API Client", "SegManager");
       else
-	vlib_cli_output (vm, "%-40s%-20s", "Connection", "App");
+	vlib_cli_output (vm, "%-" SESSION_CLI_ID_LEN "s%-20s", "Connection",
+			 "App");
       return;
     }
 
@@ -1086,11 +1102,11 @@ segment_manager_format_sessions (segment_manager_t * sm, int verbose)
 	    str = format (0, "%U", format_session, session, verbose);
 
 	    if (verbose)
-	      s = format (s, "%-40v%-20v%-15u%-10u", str, app_name,
-			  app_wrk->api_client_index,
+	      s = format (s, "%-" SESSION_CLI_ID_LEN "v%-20v%-15u%-10u", str,
+			  app_name, app_wrk->api_client_index,
 			  app_wrk->connects_seg_manager);
 	    else
-	      s = format (s, "%-40v%-20v", str, app_name);
+	      s = format (s, "%-" SESSION_CLI_ID_LEN "v%-20v", str, app_name);
 
 	    vlib_cli_output (vm, "%v", s);
 	    vec_reset_length (s);

@@ -326,7 +326,7 @@ nat44_ed_external_sm_lookup (snat_main_t *sm, ip4_address_t match_addr,
   if (dport)
     {
       /* Address only mapping doesn't change port */
-      *dport = is_addr_only_static_mapping (m) ? match_port : m->local_port;
+      *dport = is_sm_addr_only (m->flags) ? match_port : m->local_port;
     }
   return 1;
 }
@@ -342,24 +342,13 @@ slow_path_ed (vlib_main_t *vm, snat_main_t *sm, vlib_buffer_t *b,
   ip4_address_t outside_addr;
   u16 outside_port;
   u32 outside_fib_index;
-  u8 is_identity_nat;
+  u8 is_identity_nat = 0;
 
   u32 nat_proto = ip_proto_to_nat_proto (proto);
   snat_session_t *s = NULL;
   lb_nat_type_t lb = 0;
   ip4_address_t daddr = r_addr;
   u16 dport = r_port;
-
-  if (PREDICT_TRUE (nat_proto == NAT_PROTOCOL_TCP))
-    {
-      if (PREDICT_FALSE
-	  (!tcp_flags_is_init
-	   (vnet_buffer (b)->ip.reass.icmp_type_or_tcp_flags)))
-	{
-	  b->error = node->errors[NAT_IN2OUT_ED_ERROR_NON_SYN];
-	  return NAT_NEXT_DROP;
-	}
-    }
 
   if (PREDICT_FALSE
       (nat44_ed_maximum_sessions_exceeded (sm, rx_fib_index, thread_index)))
@@ -402,13 +391,22 @@ slow_path_ed (vlib_main_t *vm, snat_main_t *sm, vlib_buffer_t *b,
     }
   else
     {
+      if (PREDICT_FALSE (is_identity_nat))
+	{
+	  *sessionp = NULL;
+	  return next;
+	}
       is_sm = 1;
     }
 
-  if (PREDICT_FALSE (is_sm && is_identity_nat))
+  if (PREDICT_TRUE (nat_proto == NAT_PROTOCOL_TCP))
     {
-      *sessionp = NULL;
-      return next;
+      if (PREDICT_FALSE (!tcp_flags_is_init (
+	    vnet_buffer (b)->ip.reass.icmp_type_or_tcp_flags)))
+	{
+	  b->error = node->errors[NAT_IN2OUT_ED_ERROR_NON_SYN];
+	  return NAT_NEXT_DROP;
+	}
     }
 
   s = nat_ed_session_alloc (sm, thread_index, now, proto);
@@ -1012,7 +1010,7 @@ nat44_ed_in2out_fast_path_node_fn_inline (vlib_main_t *vm,
 
 	  vlib_prefetch_buffer_header (p2, LOAD);
 
-	  CLIB_PREFETCH (p2->data, CLIB_CACHE_LINE_BYTES, LOAD);
+	  clib_prefetch_load (p2->data);
 	}
 
       if (is_output_feature)
@@ -1030,7 +1028,7 @@ nat44_ed_in2out_fast_path_node_fn_inline (vlib_main_t *vm,
 	fib_table_get_index_for_sw_if_index (FIB_PROTOCOL_IP4, sw_if_index0);
       lookup.fib_index = rx_fib_index0;
 
-      if (PREDICT_FALSE (ip0->ttl == 1))
+      if (PREDICT_FALSE (!is_output_feature && ip0->ttl == 1))
 	{
 	  vnet_buffer (b0)->sw_if_index[VLIB_TX] = (u32) ~ 0;
 	  icmp4_error_set_vnet_buffer (b0, ICMP4_time_exceeded,
@@ -1179,16 +1177,18 @@ nat44_ed_in2out_fast_path_node_fn_inline (vlib_main_t *vm,
 	  nat_free_session_data (sm, s0, thread_index, 0);
 	  nat_ed_session_delete (sm, s0, thread_index, 1);
 	  next[0] = NAT_NEXT_DROP;
+	  b0->error = node->errors[NAT_IN2OUT_ED_ERROR_TRNSL_FAILED];
 	  goto trace0;
 	}
 
       if (NAT_ED_TRNSL_ERR_SUCCESS !=
-	  (translation_error = nat_6t_flow_buf_translate (
-	     sm, b0, ip0, f, proto0, is_output_feature)))
+	  (translation_error = nat_6t_flow_buf_translate_i2o (
+	     vm, sm, b0, ip0, f, proto0, is_output_feature)))
 	{
 	  nat_free_session_data (sm, s0, thread_index, 0);
 	  nat_ed_session_delete (sm, s0, thread_index, 1);
 	  next[0] = NAT_NEXT_DROP;
+	  b0->error = node->errors[NAT_IN2OUT_ED_ERROR_TRNSL_FAILED];
 	  goto trace0;
 	}
 
@@ -1308,7 +1308,7 @@ nat44_ed_in2out_slow_path_node_fn_inline (vlib_main_t *vm,
       rx_fib_index0 =
 	fib_table_get_index_for_sw_if_index (FIB_PROTOCOL_IP4, sw_if_index0);
 
-      if (PREDICT_FALSE (ip0->ttl == 1))
+      if (PREDICT_FALSE (!is_output_feature && ip0->ttl == 1))
 	{
 	  vnet_buffer (b0)->sw_if_index[VLIB_TX] = (u32) ~ 0;
 	  icmp4_error_set_vnet_buffer (b0, ICMP4_time_exceeded,
@@ -1329,10 +1329,15 @@ nat44_ed_in2out_slow_path_node_fn_inline (vlib_main_t *vm,
 	  if (!s0)
 	    next[0] = NAT_NEXT_DROP;
 
-	  if (NAT_ED_TRNSL_ERR_SUCCESS !=
-	      (translation_error = nat_6t_flow_buf_translate (
-		 sm, b0, ip0, &s0->i2o, proto0, is_output_feature)))
+	  if (NAT_NEXT_DROP != next[0] && s0 &&
+	      NAT_ED_TRNSL_ERR_SUCCESS !=
+		(translation_error = nat_6t_flow_buf_translate_i2o (
+		   vm, sm, b0, ip0, &s0->i2o, proto0, is_output_feature)))
 	    {
+	      nat_free_session_data (sm, s0, thread_index, 0);
+	      nat_ed_session_delete (sm, s0, thread_index, 1);
+	      next[0] = NAT_NEXT_DROP;
+	      b0->error = node->errors[NAT_IN2OUT_ED_ERROR_TRNSL_FAILED];
 	      goto trace0;
 	    }
 
@@ -1348,9 +1353,13 @@ nat44_ed_in2out_slow_path_node_fn_inline (vlib_main_t *vm,
 	    now, thread_index, proto0, &s0, is_multi_worker);
 	  if (NAT_NEXT_DROP != next[0] && s0 &&
 	      NAT_ED_TRNSL_ERR_SUCCESS !=
-		(translation_error = nat_6t_flow_buf_translate (
-		   sm, b0, ip0, &s0->i2o, proto0, is_output_feature)))
+		(translation_error = nat_6t_flow_buf_translate_i2o (
+		   vm, sm, b0, ip0, &s0->i2o, proto0, is_output_feature)))
 	    {
+	      nat_free_session_data (sm, s0, thread_index, 0);
+	      nat_ed_session_delete (sm, s0, thread_index, 1);
+	      next[0] = NAT_NEXT_DROP;
+	      b0->error = node->errors[NAT_IN2OUT_ED_ERROR_TRNSL_FAILED];
 	      goto trace0;
 	    }
 
@@ -1425,12 +1434,13 @@ nat44_ed_in2out_slow_path_node_fn_inline (vlib_main_t *vm,
       b0->flags |= VNET_BUFFER_F_IS_NATED;
 
       if (NAT_ED_TRNSL_ERR_SUCCESS !=
-	  (translation_error = nat_6t_flow_buf_translate (
-	     sm, b0, ip0, &s0->i2o, proto0, is_output_feature)))
+	  (translation_error = nat_6t_flow_buf_translate_i2o (
+	     vm, sm, b0, ip0, &s0->i2o, proto0, is_output_feature)))
 	{
 	  nat_free_session_data (sm, s0, thread_index, 0);
 	  nat_ed_session_delete (sm, s0, thread_index, 1);
-	  s0 = NULL;
+	  next[0] = NAT_NEXT_DROP;
+	  b0->error = node->errors[NAT_IN2OUT_ED_ERROR_TRNSL_FAILED];
 	  goto trace0;
 	}
 

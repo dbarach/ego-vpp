@@ -128,9 +128,16 @@ vcl_worker_cleanup (vcl_worker_t * wrk, u8 notify_vpp)
 
   if (wrk->mqs_epfd > 0)
     close (wrk->mqs_epfd);
+  pool_free (wrk->sessions);
+  pool_free (wrk->mq_evt_conns);
   hash_free (wrk->session_index_by_vpp_handles);
   vec_free (wrk->mq_events);
   vec_free (wrk->mq_msg_vector);
+  vec_free (wrk->unhandled_evts_vector);
+  vec_free (wrk->pending_session_wrk_updates);
+  clib_bitmap_free (wrk->rd_bitmap);
+  clib_bitmap_free (wrk->wr_bitmap);
+  clib_bitmap_free (wrk->ex_bitmap);
   vcl_worker_free (wrk);
   clib_spinlock_unlock (&vcm->workers_lock);
 }
@@ -188,6 +195,7 @@ vcl_worker_alloc_and_init ()
 	}
     }
 
+  wrk->ep_lt_current = VCL_INVALID_SESSION_INDEX;
   wrk->session_index_by_vpp_handles = hash_create (0, sizeof (uword));
   clib_time_init (&wrk->clib_time);
   vec_validate (wrk->mq_events, 64);
@@ -308,6 +316,10 @@ vcl_session_write_ready (vcl_session_t * s)
       else
 	return VPPCOM_EBADFD;
     }
+  else if (s->session_state == VCL_STATE_UPDATED)
+    {
+      return 0;
+    }
   else
     {
       return (s->session_state == VCL_STATE_DISCONNECT) ?
@@ -397,8 +409,8 @@ vcl_segment_detach (u64 segment_handle)
 
 int
 vcl_segment_attach_session (uword segment_handle, uword rxf_offset,
-			    uword txf_offset, uword mq_offset, u8 is_ct,
-			    vcl_session_t *s)
+			    uword txf_offset, uword mq_offset, u32 mq_index,
+			    u8 is_ct, vcl_session_t *s)
 {
   u32 fs_index, eqs_index;
   svm_fifo_t *rxf, *txf;
@@ -431,8 +443,7 @@ vcl_segment_attach_session (uword segment_handle, uword rxf_offset,
   if (!is_ct && mq_offset != (uword) ~0)
     {
       fs = fifo_segment_get_segment (&vcm->segment_main, eqs_index);
-      s->vpp_evt_q =
-	fifo_segment_msg_q_attach (fs, mq_offset, rxf->shr->slice_index);
+      s->vpp_evt_q = fifo_segment_msg_q_attach (fs, mq_offset, mq_index);
     }
 
   clib_rwlock_reader_unlock (&vcm->segment_table_lock);
@@ -558,6 +569,26 @@ vcl_segment_alloc_chunk (uword segment_handle, u32 slice_index, u32 size,
   clib_rwlock_reader_unlock (&vcm->segment_table_lock);
 
   return c;
+}
+
+int
+vcl_session_share_fifos (vcl_session_t *s, svm_fifo_t *rxf, svm_fifo_t *txf)
+{
+  vcl_worker_t *wrk = vcl_worker_get_current ();
+  fifo_segment_t *fs;
+
+  clib_rwlock_reader_lock (&vcm->segment_table_lock);
+
+  fs = fifo_segment_get_segment (&vcm->segment_main, rxf->segment_index);
+  s->rx_fifo = fifo_segment_duplicate_fifo (fs, rxf);
+  s->tx_fifo = fifo_segment_duplicate_fifo (fs, txf);
+
+  clib_rwlock_reader_unlock (&vcm->segment_table_lock);
+
+  svm_fifo_add_subscriber (s->rx_fifo, wrk->vpp_wrk_index);
+  svm_fifo_add_subscriber (s->tx_fifo, wrk->vpp_wrk_index);
+
+  return 0;
 }
 
 /*
