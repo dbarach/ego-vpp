@@ -6,12 +6,13 @@ define TRUNK_MACADDR 48:f8:b3:e0:85:1a
 define BVI_MACADDR 48:f8:b3:e0:85:1b
 
 comment { inside subnet 192.168.<inside_subnet>.0/24 }
-define INSIDE_SUBNET 2
+define INSIDE_SUBNET 1
 
 define INSIDE_PORT1 GigabitEthernet0/14/0
 define INSIDE_PORT2 GigabitEthernet0/14/1
 define INSIDE_PORT3 GigabitEthernet0/14/2
 define INSIDE_PORT4 GigabitEthernet0/14/3
+define SSH_PORT 22342
 
 comment { feature selections }
 define FEATURE_ADL uncomment
