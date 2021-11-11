@@ -468,6 +468,15 @@ tso_segment_buffer (vlib_main_t * vm, vnet_interface_per_thread_data_t * ptd,
   return n_tx_bytes;
 }
 
+__clib_unused u32
+gso_segment_buffer (vlib_main_t *vm, vnet_interface_per_thread_data_t *ptd,
+		    u32 bi, vlib_buffer_t *b, generic_header_offset_t *gho,
+		    u32 n_bytes_b, u8 is_l2, u8 is_ip6)
+{
+
+  return tso_segment_buffer (vm, ptd, bi, b, gho, n_bytes_b, is_l2, is_ip6);
+}
+
 static_always_inline void
 drop_one_buffer_and_count (vlib_main_t * vm, vnet_main_t * vnm,
 			   vlib_node_runtime_t * node, u32 * pbi0,
@@ -799,7 +808,8 @@ vnet_gso_inline (vlib_main_t * vm,
       hi = vnet_get_sup_hw_interface (vnm,
 				      vnet_buffer (b)->sw_if_index[VLIB_TX]);
 
-      if (hi->caps & VNET_HW_INTERFACE_CAP_SUPPORTS_TCP_GSO)
+      if (hi->caps & (VNET_HW_INTERFACE_CAP_SUPPORTS_TCP_GSO |
+		      VNET_HW_INTERFACE_CAP_SUPPORTS_VXLAN_TNL_GSO))
 	return vnet_gso_node_inline (vm, node, frame, vnm, hi,
 				     is_l2, is_ip4, is_ip6,
 				     /* do_segmentation */ 0);

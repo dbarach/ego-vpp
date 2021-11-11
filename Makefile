@@ -1,4 +1,4 @@
-# Copyright (c) 2016 Cisco and/or its affiliates.
+# Copyright (c) 2021 Cisco and/or its affiliates.
 # Licensed under the Apache License, Version 2.0 (the "License");
 # you may not use this file except in compliance with the License.
 # You may obtain a copy of the License at:
@@ -63,7 +63,7 @@ endif
 # +libganglia1-dev if building the gmond plugin
 
 DEB_DEPENDS  = curl build-essential autoconf automake ccache
-DEB_DEPENDS += debhelper dkms git libtool libapr1-dev dh-systemd dh-python
+DEB_DEPENDS += debhelper dkms git libtool libapr1-dev dh-python
 DEB_DEPENDS += libconfuse-dev git-review exuberant-ctags cscope pkg-config
 DEB_DEPENDS += lcov chrpath autoconf libnuma-dev
 DEB_DEPENDS += python3-all python3-setuptools check
@@ -72,7 +72,7 @@ DEB_DEPENDS += cmake ninja-build uuid-dev python3-jsonschema python3-yaml
 DEB_DEPENDS += python3-venv  # ensurepip
 DEB_DEPENDS += python3-dev   # needed for python3 -m pip install psutil
 DEB_DEPENDS += libnl-3-dev libnl-route-3-dev
-# python3.6 on 16.04 requires python36-dev
+DEB_DEPENDS += enchant  # for docs
 
 LIBFFI=libffi6 # works on all but 20.04 and debian-testing
 
@@ -84,14 +84,18 @@ else ifeq ($(OS_VERSION_ID),20.04)
 	DEB_DEPENDS += python3-virtualenv
 	DEB_DEPENDS += libssl-dev
 	DEB_DEPENDS += libelf-dev # for libbpf (af_xdp)
-	DEB_DEPENDS += clang-format-10
+	# TODO: change CLANG_FORMAT_VER default in extras/scripts/checkstyle.sh
+	#       when clang-format-10 is removed
+	DEB_DEPENDS += clang-11 clang-format-11 clang-format-10
 	LIBFFI=libffi7
 else ifeq ($(OS_VERSION_ID),20.10)
-        DEB_DEPENDS += python3-virtualenv
-        DEB_DEPENDS += libssl-dev
-        DEB_DEPENDS += libelf-dev # for libbpf (af_xdp)
-        DEB_DEPENDS += clang-format-10
-        LIBFFI=libffi8ubuntu1
+	DEB_DEPENDS += python3-virtualenv
+	DEB_DEPENDS += libssl-dev
+	DEB_DEPENDS += libelf-dev # for libbpf (af_xdp)
+	# TODO: change CLANG_FORMAT_VER default in extras/scripts/checkstyle.sh
+	#       when clang-format-10 is removed
+	DEB_DEPENDS += clang-11 clang-format-11 clang-format-10
+	LIBFFI=libffi8ubuntu1
 else ifeq ($(OS_ID)-$(OS_VERSION_ID),debian-10)
 	DEB_DEPENDS += python3-virtualenv virtualenv
 	DEB_DEPENDS += libssl-dev
@@ -116,6 +120,7 @@ RPM_DEPENDS += ccache
 RPM_DEPENDS += xmlto
 RPM_DEPENDS += elfutils-libelf-devel
 RPM_DEPENDS += libnl3-devel
+RPM_DEPENDS += enchant # for docs
 
 ifeq ($(OS_ID),fedora)
 	RPM_DEPENDS += dnf-utils
@@ -209,9 +214,9 @@ help:
 	@echo " checkstyle-test-diff - check test framework coding style (only changed files)"
 	@echo " checkstyle-api       - check api for incompatible changes"
 	@echo " fixstyle             - fix coding style"
-	@echo " doxygen              - (re)generate documentation"
-	@echo " bootstrap-doxygen    - setup Doxygen dependencies"
-	@echo " wipe-doxygen         - wipe all generated documentation"
+	@echo " doxygen              - DEPRECATED - use 'make docs'"
+	@echo " bootstrap-doxygen    - DEPRECATED"
+	@echo " wipe-doxygen         - DEPRECATED"
 	@echo " checkfeaturelist     - check FEATURE.yaml according to schema"
 	@echo " featurelist          - dump feature list in markdown"
 	@echo " json-api-files       - (re)-generate json api files"
@@ -377,8 +382,6 @@ wipe-release: test-wipe $(BR)/.deps.ok
 .PHONY: rebuild-release
 rebuild-release: wipe-release build-release
 
-libexpand = $(subst $(subst ,, ),:,$(foreach lib,$(1),$(BR)/install-$(2)-native/vpp/$(lib)/$(3)))
-
 export TEST_DIR ?= $(WS_ROOT)/test
 export RND_SEED ?= $(shell python3 -c 'import time; print(time.time())')
 
@@ -388,10 +391,7 @@ define test
 	make -C test \
 	  VPP_BUILD_DIR=$(BR)/build-$(2)-native \
 	  VPP_BIN=$(BR)/install-$(2)-native/vpp/bin/vpp \
-	  VPP_PLUGIN_PATH=$(call libexpand,$(libs),$(2),vpp_plugins) \
-	  VPP_TEST_PLUGIN_PATH=$(call libexpand,$(libs),$(2),vpp_api_test_plugins) \
 	  VPP_INSTALL_PATH=$(BR)/install-$(2)-native/ \
-	  LD_LIBRARY_PATH=$(call libexpand,$(libs),$(2),) \
 	  EXTENDED_TESTS=$(EXTENDED_TESTS) \
 	  PYTHON=$(PYTHON) \
 	  OS_ID=$(OS_ID) \
@@ -456,11 +456,13 @@ test-dep:
 
 .PHONY: test-doc
 test-doc:
-	@make -C test doc
+	@echo "make test-doc is DEPRECATED: use 'make docs'"
+	sleep 300
 
 .PHONY: test-wipe-doc
 test-wipe-doc:
-	@make -C test wipe-doc
+	@echo "make test-wipe-doc is DEPRECATED"
+	sleep 300
 
 .PHONY: test-cov
 test-cov:
@@ -672,42 +674,28 @@ checkfeaturelist: centos-pyyaml
 # Build the documentation
 #
 
-# Doxygen configuration and our utility scripts
-export DOXY_DIR ?= $(WS_ROOT)/doxygen
-
-define make-doxy
-	@OS_ID="$(OS_ID)" make -C $(DOXY_DIR) $@
-endef
-
 .PHONY: bootstrap-doxygen
 bootstrap-doxygen:
-	$(call make-doxy)
+	@echo "make bootstrap-doxygen is DEPRECATED"
+	sleep 300
 
 .PHONY: doxygen
-doxygen: bootstrap-doxygen
-	$(call make-doxy)
+doxygen: docs
+	@echo "make doxygen is DEPRECATED: use 'make docs'"
+	sleep 300
 
 .PHONY: wipe-doxygen
 wipe-doxygen:
-	$(call make-doxy)
+	@echo "make wipe-doxygen is DEPRECATED"
+	sleep 300
 
-# Sphinx Documents
-export DOCS_DIR = $(WS_ROOT)/docs
-export VENV_DIR = $(WS_ROOT)/sphinx_venv
-export SPHINX_SCRIPTS_DIR = $(WS_ROOT)/docs/scripts
-
-.PHONY: docs-venv
-docs-venv:
-	@($(SPHINX_SCRIPTS_DIR)/sphinx-make.sh venv)
+.PHONY: docs-%
+docs-%:
+	@make -C $(WS_ROOT)/docs $*
 
 .PHONY: docs
-docs: $(DOCS_DIR)
-	@($(SPHINX_SCRIPTS_DIR)/sphinx-make.sh html)
-
-.PHONY: docs-clean
-docs-clean:
-	@rm -rf $(DOCS_DIR)/_build
-	@rm -rf $(VENV_DIR)
+docs:
+	@make -C $(WS_ROOT)/docs docs
 
 .PHONY: pkg-verify
 pkg-verify: install-dep $(BR)/.deps.ok install-ext-deps

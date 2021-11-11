@@ -55,6 +55,7 @@
 #include <linux/vfio.h>
 #include <sys/eventfd.h>
 
+#define SYSFS_DEVICES_PCI "/sys/devices/pci"
 static const char *sysfs_pci_dev_path = "/sys/bus/pci/devices";
 static const char *sysfs_pci_drv_path = "/sys/bus/pci/drivers";
 static char *sysfs_mod_vfio_noiommu =
@@ -347,7 +348,7 @@ vlib_pci_get_device_info (vlib_main_t * vm, vlib_pci_addr_t * addr,
 	    break;
 
 	  len = (tag[2] << 8) | tag[1];
-	  vec_validate (data, len);
+	  vec_validate (data, len - 1);
 
 	  if (read (fd, data, len) != len)
 	    {
@@ -381,6 +382,64 @@ done:
   else
     clib_error_free (err);
   return di;
+}
+
+clib_error_t *__attribute__ ((weak))
+vlib_pci_get_device_root_bus (vlib_pci_addr_t *addr, vlib_pci_addr_t *root_bus)
+{
+  u8 *rel_path = 0, *abs_path = 0, *link_path = 0;
+  unformat_input_t input;
+  int fd = open (sysfs_pci_dev_path, O_RDONLY);
+  u32 size = 0;
+  u32 domain = 0, bus;
+  clib_error_t *err = NULL;
+
+  if (fd < 0)
+    return clib_error_return_unix (0, "failed to open %s", sysfs_pci_dev_path);
+
+  vec_alloc (rel_path, PATH_MAX);
+  vec_alloc (abs_path, PATH_MAX);
+
+  link_path =
+    format (0, "%s/%U", sysfs_pci_dev_path, format_vlib_pci_addr, addr);
+  size = readlinkat (fd, (char *) link_path, (char *) rel_path, PATH_MAX);
+  if (size < 0)
+    {
+      err = clib_error_return_unix (0, "failed to read %s", rel_path);
+      goto done;
+    }
+
+  rel_path[size] = '\0';
+  vec_free (link_path);
+
+  link_path = format (0, "%s/%s", sysfs_pci_dev_path, rel_path);
+  if (!realpath ((char *) link_path, (char *) abs_path))
+    {
+      err = clib_error_return_unix (0, "failed to resolve %s", link_path);
+      goto done;
+    }
+
+  unformat_init_string (&input, (char *) abs_path,
+			clib_strnlen ((char *) abs_path, PATH_MAX));
+
+  if (!unformat (&input, SYSFS_DEVICES_PCI "%x:%x/%s", &domain, &bus,
+		 link_path))
+    {
+      err = clib_error_return (0, "unknown input '%U'", format_unformat_error,
+			       input);
+      goto done;
+    }
+
+  root_bus->domain = domain;
+  root_bus->bus = bus;
+
+done:
+  vec_free (abs_path);
+  vec_free (link_path);
+  vec_free (rel_path);
+  close (fd);
+
+  return err;
 }
 
 static int
@@ -1133,7 +1192,6 @@ vlib_pci_map_region_int (vlib_main_t * vm, vlib_pci_dev_handle_t h,
   linux_pci_device_t *p = linux_pci_get_device (h);
   int fd = -1;
   clib_error_t *error;
-  int flags = MAP_SHARED;
   u64 size = 0, offset = 0;
   u16 command;
 
@@ -1152,9 +1210,6 @@ vlib_pci_map_region_int (vlib_main_t * vm, vlib_pci_dev_handle_t h,
 
   if ((error = vlib_pci_region (vm, h, bar, &fd, &size, &offset)))
     return error;
-
-  if (p->type == LINUX_PCI_DEVICE_TYPE_UIO && addr != 0)
-    flags |= MAP_FIXED;
 
   *result = clib_mem_vm_map_shared (addr, size, fd, offset,
 				    "PCIe %U region %u", format_vlib_pci_addr,

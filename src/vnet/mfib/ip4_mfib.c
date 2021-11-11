@@ -92,6 +92,7 @@ ip4_create_mfib_with_table_id (u32 table_id,
         mfib_table_entry_path_update(mfib_table->mft_index,
                                      &ip4_specials[ii],
                                      MFIB_SOURCE_SPECIAL,
+                                     MFIB_ENTRY_FLAG_NONE,
                                      &path);
     }
 
@@ -142,7 +143,6 @@ ip4_mfib_interface_enable_disable (u32 sw_if_index, int is_enable)
     u32 mfib_index;
     int ii;
 
-    vec_validate (ip4_main.mfib_index_by_sw_if_index, sw_if_index);
     mfib_index = ip4_mfib_table_get_index_for_sw_if_index(sw_if_index);
 
     for (ii = 0; ii < ARRAY_LEN(ip4_specials); ii++)
@@ -152,6 +152,7 @@ ip4_mfib_interface_enable_disable (u32 sw_if_index, int is_enable)
             mfib_table_entry_path_update(mfib_index,
                                          &ip4_specials[ii],
                                          MFIB_SOURCE_SPECIAL,
+                                         MFIB_ENTRY_FLAG_NONE,
                                          &path);
         }
         else
@@ -591,12 +592,13 @@ ip4_show_mfib (vlib_main_t * vm,
     return 0;
 }
 
+/* clang-format off */
 /*?
  * This command displays the IPv4 MulticasrFIB Tables (VRF Tables) and
  * the route entries for each table.
  *
  * @note This command will run for a long time when the FIB tables are
- * comprised of millions of entries. For those senarios, consider displaying
+ * comprised of millions of entries. For those scenarios, consider displaying
  * a single table or summary mode.
  *
  * @cliexpar
@@ -633,10 +635,9 @@ ip4_show_mfib (vlib_main_t * vm,
  *                   32               4
  * @cliexend
  ?*/
-/* *INDENT-OFF* */
+/* clang-format on */
 VLIB_CLI_COMMAND (ip4_show_mfib_command, static) = {
     .path = "show ip mfib",
     .short_help = "show ip mfib [summary] [table <table-id>] [index <fib-id>] [<grp-addr>[/<mask>]] [<grp-addr>] [<src-addr> <grp-addr>]",
     .function = ip4_show_mfib,
 };
-/* *INDENT-ON* */

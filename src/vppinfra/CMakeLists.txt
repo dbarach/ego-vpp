@@ -32,14 +32,14 @@ configure_file(
 
 install(
   FILES ${CMAKE_CURRENT_BINARY_DIR}/config.h
-  DESTINATION include/vppinfra
+  DESTINATION ${CMAKE_INSTALL_INCLUDEDIR}/vppinfra
   COMPONENT vpp-dev
 )
 
 add_definitions(-fvisibility=hidden)
 
 # Ensure symbols from cJSON are exported
-set_source_files_properties( cJSON.c PROPERTIES
+set_source_files_properties( cJSON.c jsonformat.c PROPERTIES
   COMPILE_DEFINITIONS " CJSON_API_VISIBILITY " )
 
 
@@ -57,10 +57,12 @@ set(VPPINFRA_SRCS
   error.c
   fifo.c
   format.c
+  format_table.c
   graph.c
   hash.c
   heap.c
   interrupt.c
+  jsonformat.c
   longjmp.S
   macros.c
   maplog.c
@@ -134,10 +136,12 @@ set(VPPINFRA_HEADERS
   fifo.h
   file.h
   format.h
+  format_table.h
   graph.h
   hash.h
   heap.h
   interrupt.h
+  jsonformat.h
   lb_hash_hash.h
   llist.h
   lock.h
@@ -146,9 +150,7 @@ set(VPPINFRA_HEADERS
   maplog.h
   math.h
   memcpy.h
-  memcpy_avx2.h
-  memcpy_avx512.h
-  memcpy_sse3.h
+  memcpy_x86_64.h
   mem.h
   mhash.h
   mpcap.h
@@ -188,9 +190,12 @@ set(VPPINFRA_HEADERS
   vector_altivec.h
   vector_avx2.h
   vector_avx512.h
-  vector/mask_compare.h
-  vector/compress.h
   vector/array_mask.h
+  vector/compress.h
+  vector/count_equal.h
+  vector/index_to_ptr.h
+  vector/ip_csum.h
+  vector/mask_compare.h
   vector.h
   vector_neon.h
   vector_sse42.h
@@ -267,9 +272,13 @@ if(VPP_BUILD_VPPINFRA_TESTS)
   endforeach()
 
 set(test_files
-  vector/test/compress.c
-  vector/test/mask_compare.c
   vector/test/array_mask.c
+  vector/test/compress.c
+  vector/test/count_equal.c
+  vector/test/index_to_ptr.c
+  vector/test/ip_csum.c
+  vector/test/mask_compare.c
+  vector/test/memcpy_x86_64.c
 )
 
 add_vpp_executable(test_vector_funcs

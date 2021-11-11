@@ -319,6 +319,21 @@ show_sw_interfaces (vlib_main_t * vm,
 	    show_vtr = 1;
 	  else if (unformat (linput, "verbose"))
 	    verbose = 1;
+	  else if (unformat (linput, "%d", &sw_if_index))
+	    {
+	      if (!pool_is_free_index (im->sw_interfaces, sw_if_index))
+		{
+		  si = pool_elt_at_index (im->sw_interfaces, sw_if_index);
+		  vec_add1 (sorted_sis, si[0]);
+		}
+	      else
+		{
+		  vec_free (sorted_sis);
+		  error = clib_error_return (0, "unknown interface index `%d'",
+					     sw_if_index);
+		  goto done;
+		}
+	    }
 	  else
 	    {
 	      vec_free (sorted_sis);
@@ -448,11 +463,11 @@ show_sw_interfaces (vlib_main_t * vm,
 				      1 /* honor unnumbered */,
 	({
 	  ip4_address_t *r4 = ip_interface_address_get_address (lm4, ia);
-	  if (fib4->table_id)
-	    vlib_cli_output (vm, "  L3 %U/%d ip4 table-id %d fib-idx %d",
-			     format_ip4_address, r4, ia->address_length,
-			     fib4->table_id,
-			     ip4_fib_index_from_table_id (fib4->table_id));
+	  if (fib4->hash.table_id)
+	    vlib_cli_output (
+	      vm, "  L3 %U/%d ip4 table-id %d fib-idx %d", format_ip4_address,
+	      r4, ia->address_length, fib4->hash.table_id,
+	      ip4_fib_index_from_table_id (fib4->hash.table_id));
 	  else
 	    vlib_cli_output (vm, "  L3 %U/%d",
 			     format_ip4_address, r4, ia->address_length);
@@ -926,7 +941,6 @@ done:
   return error;
 }
 
-
 /*?
  * This command is used to change the admin state (up/down) of an interface.
  *
@@ -936,9 +950,11 @@ done:
  * '<em>punt</em>' flag (interface is still down).
  *
  * @cliexpar
- * Example of how to configure the admin state of an interface to '<em>up</em?':
+ * Example of how to configure the admin state of an interface to
+ '<em>up</em>':
  * @cliexcmd{set interface state GigabitEthernet2/0/0 up}
- * Example of how to configure the admin state of an interface to '<em>down</em?':
+ * Example of how to configure the admin state of an interface to
+ '<em>down</em>':
  * @cliexcmd{set interface state GigabitEthernet2/0/0 down}
  ?*/
 /* *INDENT-OFF* */
@@ -2377,7 +2393,7 @@ pcap_trace_command_fn (vlib_main_t * vm,
  * @cliexend
  * Example of how to start a tx packet capture:
  * @cliexstart{pcap trace tx max 35 intfc GigabitEthernet0/8/0 file
-vppTest.pcap}
+ * vppTest.pcap}
  * @cliexend
  * Example of how to display the status of a tx packet capture in progress:
  * @cliexstart{pcap trace status}
@@ -2402,6 +2418,55 @@ VLIB_CLI_COMMAND (pcap_tx_trace_command, static) = {
 };
 /* *INDENT-ON* */
 
+static clib_error_t *
+set_interface_name (vlib_main_t *vm, unformat_input_t *input,
+		    vlib_cli_command_t *cmd)
+{
+  clib_error_t *error = 0;
+  unformat_input_t _line_input, *line_input = &_line_input;
+  vnet_main_t *vnm = vnet_get_main ();
+  u32 hw_if_index = ~0;
+  char *name = 0;
+
+  if (!unformat_user (input, unformat_line_input, line_input))
+    return 0;
+
+  while (unformat_check_input (line_input) != UNFORMAT_END_OF_INPUT)
+    {
+      if (unformat (line_input, "%U %s", unformat_vnet_hw_interface, vnm,
+		    &hw_if_index, &name))
+	;
+      else
+	{
+	  error = clib_error_return (0, "parse error: '%U'",
+				     format_unformat_error, line_input);
+	  unformat_free (line_input);
+	  vec_free (name);
+	  return error;
+	}
+    }
+
+  unformat_free (line_input);
+
+  if (hw_if_index == (u32) ~0 || name == 0)
+    {
+      vec_free (name);
+      error = clib_error_return (0, "please specify valid interface name");
+      return error;
+    }
+
+  error = vnet_rename_interface (vnm, hw_if_index, name);
+  vec_free (name);
+
+  return (error);
+}
+
+VLIB_CLI_COMMAND (cmd_set_if_name, static) = {
+  .path = "set interface name",
+  .short_help = "set interface name <interface-name> <new-interface-name>",
+  .function = set_interface_name,
+  .is_mp_safe = 1,
+};
 /*
  * fd.io coding-style-patch-verification: ON
  *

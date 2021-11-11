@@ -232,6 +232,17 @@ done:
 }
 
 u8 *
+format_ipsec_spd_flow_cache (u8 *s, va_list *args)
+{
+  ipsec_main_t *im = &ipsec_main;
+
+  s = format (s, "\nip4-outbound-spd-flow-cache-entries: %u",
+	      im->ipsec4_out_spd_flow_cache_entries);
+
+  return (s);
+}
+
+u8 *
 format_ipsec_key (u8 * s, va_list * args)
 {
   ipsec_key_t *key = va_arg (*args, ipsec_key_t *);
@@ -272,6 +283,7 @@ format_ipsec_sa (u8 * s, va_list * args)
   u32 sai = va_arg (*args, u32);
   ipsec_format_flags_t flags = va_arg (*args, ipsec_format_flags_t);
   vlib_counter_t counts;
+  counter_t lost;
   ipsec_sa_t *sa;
 
   if (pool_is_free_index (ipsec_sa_pool, sai))
@@ -312,7 +324,9 @@ format_ipsec_sa (u8 * s, va_list * args)
 	      clib_host_to_net_u16 (sa->udp_hdr.dst_port));
 
   vlib_get_combined_counter (&ipsec_sa_counters, sai, &counts);
-  s = format (s, "\n   packets %u bytes %u", counts.packets, counts.bytes);
+  lost = vlib_get_simple_counter (&ipsec_sa_lost_counters, sai);
+  s = format (s, "\n   tx/rx:[packets:%Ld bytes:%Ld], lost:[packets:%Ld]",
+	      counts.packets, counts.bytes, lost);
 
   if (ipsec_sa_is_set_IS_TUNNEL (sa))
     s = format (s, "\n%U", format_tunnel, &sa->tunnel, 3);

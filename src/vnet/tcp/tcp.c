@@ -702,7 +702,13 @@ tcp_init_snd_vars (tcp_connection_t * tc)
   tcp_update_time_now (tcp_get_worker (vlib_get_thread_index ()));
 
   tcp_init_rcv_mss (tc);
-  tc->iss = tcp_generate_random_iss (tc);
+  /*
+   * In special case of early-kill of timewait socket, the iss will already
+   * be initialized to ensure it is greater than the last incarnation of the
+   * connection. see syn_during_timewait() for more details.
+   */
+  if (!tc->iss)
+    tc->iss = tcp_generate_random_iss (tc);
   tc->snd_una = tc->iss;
   tc->snd_nxt = tc->iss + 1;
   tc->srtt = 0.1 * THZ;		/* 100 ms */
@@ -831,6 +837,8 @@ tcp_session_open (transport_endpoint_cfg_t * rmt)
   /* The other connection vars will be initialized after SYN ACK */
   tcp_connection_timers_init (tc);
   tc->mss = rmt->mss;
+  if (rmt->peer.sw_if_index != ENDPOINT_INVALID_INDEX)
+    tc->sw_if_index = rmt->peer.sw_if_index;
   tc->next_node_index = rmt->next_node_index;
   tc->next_node_opaque = rmt->next_node_opaque;
 

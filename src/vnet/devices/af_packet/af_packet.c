@@ -38,21 +38,18 @@
 
 af_packet_main_t af_packet_main;
 
-#define AF_PACKET_TX_FRAMES_PER_BLOCK	1024
-#define AF_PACKET_TX_FRAME_SIZE	 	(2048 * 5)
-#define AF_PACKET_TX_BLOCK_NR		1
-#define AF_PACKET_TX_FRAME_NR		(AF_PACKET_TX_BLOCK_NR * \
-					 AF_PACKET_TX_FRAMES_PER_BLOCK)
-#define AF_PACKET_TX_BLOCK_SIZE	 	(AF_PACKET_TX_FRAME_SIZE * \
-					 AF_PACKET_TX_FRAMES_PER_BLOCK)
+VNET_HW_INTERFACE_CLASS (af_packet_ip_device_hw_interface_class, static) = {
+  .name = "af-packet-ip-device",
+  .flags = VNET_HW_INTERFACE_CLASS_FLAG_P2P,
+};
 
-#define AF_PACKET_RX_FRAMES_PER_BLOCK	1024
-#define AF_PACKET_RX_FRAME_SIZE	 	(2048 * 5)
+#define AF_PACKET_DEFAULT_TX_FRAMES_PER_BLOCK 1024
+#define AF_PACKET_DEFAULT_TX_FRAME_SIZE	      (2048 * 5)
+#define AF_PACKET_TX_BLOCK_NR		1
+
+#define AF_PACKET_DEFAULT_RX_FRAMES_PER_BLOCK 1024
+#define AF_PACKET_DEFAULT_RX_FRAME_SIZE	      (2048 * 5)
 #define AF_PACKET_RX_BLOCK_NR		1
-#define AF_PACKET_RX_FRAME_NR		(AF_PACKET_RX_BLOCK_NR * \
-					 AF_PACKET_RX_FRAMES_PER_BLOCK)
-#define AF_PACKET_RX_BLOCK_SIZE		(AF_PACKET_RX_FRAME_SIZE * \
-					 AF_PACKET_RX_FRAMES_PER_BLOCK)
 
 /*defined in net/if.h but clashes with dpdk headers */
 unsigned int if_nametoindex (const char *ifname);
@@ -192,6 +189,15 @@ create_packet_v2_sock (int host_if_index, tpacket_req_t * rx_req,
       goto error;
     }
 
+  if (setsockopt (*fd, SOL_PACKET, PACKET_QDISC_BYPASS, &opt, sizeof (opt)) <
+      0)
+    {
+      vlib_log_debug (apm->log_class,
+		      "Failed to set qdisc bypass error "
+		      "handling option: %s (errno %d)",
+		      strerror (errno), errno);
+    }
+
   if (setsockopt (*fd, SOL_PACKET, PACKET_RX_RING, rx_req, req_sz) < 0)
     {
       vlib_log_debug (apm->log_class,
@@ -232,10 +238,10 @@ error:
 }
 
 int
-af_packet_create_if (vlib_main_t * vm, u8 * host_if_name, u8 * hw_addr_set,
-		     u32 * sw_if_index)
+af_packet_create_if (af_packet_create_if_arg_t *arg)
 {
   af_packet_main_t *apm = &af_packet_main;
+  vlib_main_t *vm = vlib_get_main ();
   int ret, fd = -1, fd2 = -1;
   struct tpacket_req *rx_req = 0;
   struct tpacket_req *tx_req = 0;
@@ -252,28 +258,41 @@ af_packet_create_if (vlib_main_t * vm, u8 * host_if_name, u8 * hw_addr_set,
   uword if_index;
   u8 *host_if_name_dup = 0;
   int host_if_index = -1;
+  u32 rx_frames_per_block, tx_frames_per_block;
+  u32 rx_frame_size, tx_frame_size;
 
-  p = mhash_get (&apm->if_index_by_host_if_name, host_if_name);
+  p = mhash_get (&apm->if_index_by_host_if_name, arg->host_if_name);
   if (p)
     {
       apif = vec_elt_at_index (apm->interfaces, p[0]);
-      *sw_if_index = apif->sw_if_index;
+      arg->sw_if_index = apif->sw_if_index;
       return VNET_API_ERROR_IF_ALREADY_EXISTS;
     }
 
-  host_if_name_dup = vec_dup (host_if_name);
+  host_if_name_dup = vec_dup (arg->host_if_name);
+
+  rx_frames_per_block = arg->rx_frames_per_block ?
+			  arg->rx_frames_per_block :
+			  AF_PACKET_DEFAULT_RX_FRAMES_PER_BLOCK;
+  tx_frames_per_block = arg->tx_frames_per_block ?
+			  arg->tx_frames_per_block :
+			  AF_PACKET_DEFAULT_TX_FRAMES_PER_BLOCK;
+  rx_frame_size =
+    arg->rx_frame_size ? arg->rx_frame_size : AF_PACKET_DEFAULT_RX_FRAME_SIZE;
+  tx_frame_size =
+    arg->tx_frame_size ? arg->tx_frame_size : AF_PACKET_DEFAULT_TX_FRAME_SIZE;
 
   vec_validate (rx_req, 0);
-  rx_req->tp_block_size = AF_PACKET_RX_BLOCK_SIZE;
-  rx_req->tp_frame_size = AF_PACKET_RX_FRAME_SIZE;
+  rx_req->tp_block_size = rx_frame_size * rx_frames_per_block;
+  rx_req->tp_frame_size = rx_frame_size;
   rx_req->tp_block_nr = AF_PACKET_RX_BLOCK_NR;
-  rx_req->tp_frame_nr = AF_PACKET_RX_FRAME_NR;
+  rx_req->tp_frame_nr = AF_PACKET_RX_BLOCK_NR * rx_frames_per_block;
 
   vec_validate (tx_req, 0);
-  tx_req->tp_block_size = AF_PACKET_TX_BLOCK_SIZE;
-  tx_req->tp_frame_size = AF_PACKET_TX_FRAME_SIZE;
+  tx_req->tp_block_size = tx_frame_size * tx_frames_per_block;
+  tx_req->tp_frame_size = tx_frame_size;
   tx_req->tp_block_nr = AF_PACKET_TX_BLOCK_NR;
-  tx_req->tp_frame_nr = AF_PACKET_TX_FRAME_NR;
+  tx_req->tp_frame_nr = AF_PACKET_TX_BLOCK_NR * tx_frames_per_block;
 
   /*
    * make sure host side of interface is 'UP' before binding AF_PACKET
@@ -288,13 +307,14 @@ af_packet_create_if (vlib_main_t * vm, u8 * host_if_name, u8 * hw_addr_set,
       goto error;
     }
 
-  clib_memcpy (ifr.ifr_name, (const char *) host_if_name,
-	       vec_len (host_if_name));
+  clib_memcpy (ifr.ifr_name, (const char *) arg->host_if_name,
+	       vec_len (arg->host_if_name));
   if (ioctl (fd2, SIOCGIFINDEX, &ifr) < 0)
     {
-      vlib_log_debug (apm->log_class,
-		      "Failed to retrieve the interface (%s) index: %s (errno %d)",
-		      host_if_name, strerror (errno), errno);
+      vlib_log_debug (
+	apm->log_class,
+	"Failed to retrieve the interface (%s) index: %s (errno %d)",
+	arg->host_if_name, strerror (errno), errno);
       ret = VNET_API_ERROR_INVALID_INTERFACE;
       goto error;
     }
@@ -333,7 +353,7 @@ af_packet_create_if (vlib_main_t * vm, u8 * host_if_name, u8 * hw_addr_set,
   if (ret != 0)
     goto error;
 
-  ret = is_bridge (host_if_name);
+  ret = is_bridge (arg->host_if_name);
 
   if (ret == 0)			/* is a bridge, ignore state */
     host_if_index = -1;
@@ -352,6 +372,7 @@ af_packet_create_if (vlib_main_t * vm, u8 * host_if_name, u8 * hw_addr_set,
   apif->per_interface_next_index = ~0;
   apif->next_tx_frame = 0;
   apif->next_rx_frame = 0;
+  apif->mode = arg->mode;
 
   ret = af_packet_read_mtu (apif);
   if (ret != 0)
@@ -360,36 +381,44 @@ af_packet_create_if (vlib_main_t * vm, u8 * host_if_name, u8 * hw_addr_set,
   if (tm->n_vlib_mains > 1)
     clib_spinlock_init (&apif->lockp);
 
-  /*use configured or generate random MAC address */
-  if (hw_addr_set)
-    clib_memcpy (hw_addr, hw_addr_set, 6);
+  if (apif->mode != AF_PACKET_IF_MODE_IP)
+    {
+      /*use configured or generate random MAC address */
+      if (arg->hw_addr)
+	clib_memcpy (hw_addr, arg->hw_addr, 6);
+      else
+	{
+	  f64 now = vlib_time_now (vm);
+	  u32 rnd;
+	  rnd = (u32) (now * 1e6);
+	  rnd = random_u32 (&rnd);
+
+	  clib_memcpy (hw_addr + 2, &rnd, sizeof (rnd));
+	  hw_addr[0] = 2;
+	  hw_addr[1] = 0xfe;
+	}
+
+      error = ethernet_register_interface (
+	vnm, af_packet_device_class.index, if_index, hw_addr,
+	&apif->hw_if_index, af_packet_eth_flag_change);
+
+      if (error)
+	{
+	  clib_memset (apif, 0, sizeof (*apif));
+	  pool_put (apm->interfaces, apif);
+	  vlib_log_err (apm->log_class, "Unable to register interface: %U",
+			format_clib_error, error);
+	  clib_error_free (error);
+	  ret = VNET_API_ERROR_SYSCALL_ERROR_1;
+	  goto error;
+	}
+    }
   else
     {
-      f64 now = vlib_time_now (vm);
-      u32 rnd;
-      rnd = (u32) (now * 1e6);
-      rnd = random_u32 (&rnd);
-
-      clib_memcpy (hw_addr + 2, &rnd, sizeof (rnd));
-      hw_addr[0] = 2;
-      hw_addr[1] = 0xfe;
+      apif->hw_if_index = vnet_register_interface (
+	vnm, af_packet_device_class.index, if_index,
+	af_packet_ip_device_hw_interface_class.index, if_index);
     }
-
-  error = ethernet_register_interface (vnm, af_packet_device_class.index,
-				       if_index, hw_addr, &apif->hw_if_index,
-				       af_packet_eth_flag_change);
-
-  if (error)
-    {
-      clib_memset (apif, 0, sizeof (*apif));
-      pool_put (apm->interfaces, apif);
-      vlib_log_err (apm->log_class, "Unable to register interface: %U",
-		    format_clib_error, error);
-      clib_error_free (error);
-      ret = VNET_API_ERROR_SYSCALL_ERROR_1;
-      goto error;
-    }
-
   sw = vnet_get_hw_sw_interface (vnm, apif->hw_if_index);
   hw = vnet_get_hw_interface (vnm, apif->hw_if_index);
   apif->sw_if_index = sw->sw_if_index;
@@ -420,8 +449,7 @@ af_packet_create_if (vlib_main_t * vm, u8 * host_if_name, u8 * hw_addr_set,
 
   mhash_set_mem (&apm->if_index_by_host_if_name, host_if_name_dup, &if_index,
 		 0);
-  if (sw_if_index)
-    *sw_if_index = apif->sw_if_index;
+  arg->sw_if_index = apif->sw_if_index;
 
   return 0;
 
@@ -438,7 +466,7 @@ error:
 }
 
 int
-af_packet_delete_if (vlib_main_t * vm, u8 * host_if_name)
+af_packet_delete_if (u8 *host_if_name)
 {
   vnet_main_t *vnm = vnet_get_main ();
   af_packet_main_t *apm = &af_packet_main;
@@ -490,7 +518,10 @@ af_packet_delete_if (vlib_main_t * vm, u8 * host_if_name)
 
   mhash_unset (&apm->if_index_by_host_if_name, host_if_name, &if_index);
 
-  ethernet_delete_interface (vnm, apif->hw_if_index);
+  if (apif->mode != AF_PACKET_IF_MODE_IP)
+    ethernet_delete_interface (vnm, apif->hw_if_index);
+  else
+    vnet_delete_hw_interface (vnm, apif->hw_if_index);
 
   pool_put (apm->interfaces, apif);
 
@@ -498,7 +529,7 @@ af_packet_delete_if (vlib_main_t * vm, u8 * host_if_name)
 }
 
 int
-af_packet_set_l4_cksum_offload (vlib_main_t * vm, u32 sw_if_index, u8 set)
+af_packet_set_l4_cksum_offload (u32 sw_if_index, u8 set)
 {
   vnet_main_t *vnm = vnet_get_main ();
   vnet_hw_interface_t *hw;
@@ -529,7 +560,6 @@ af_packet_dump_ifs (af_packet_if_detail_t ** out_af_packet_ifs)
   af_packet_if_detail_t *r_af_packet_ifs = NULL;
   af_packet_if_detail_t *af_packet_if = NULL;
 
-  /* *INDENT-OFF* */
   pool_foreach (apif, apm->interfaces)
      {
       vec_add2 (r_af_packet_ifs, af_packet_if, 1);
@@ -541,7 +571,6 @@ af_packet_dump_ifs (af_packet_if_detail_t ** out_af_packet_ifs)
 		       strlen ((const char *) apif->host_if_name)));
 	}
     }
-  /* *INDENT-ON* */
 
   *out_af_packet_ifs = r_af_packet_ifs;
 

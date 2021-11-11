@@ -30,7 +30,6 @@
 #define REPLY_MACRO(t)                                                  \
 do {                                                                    \
     vl_api_registration_t *rp;                                          \
-    rv = vl_msg_api_pd_handler (mp, rv);                                \
     rp = vl_api_client_index_to_registration (mp->client_index);        \
     if (rp == 0)                                                        \
       return;                                                           \
@@ -46,7 +45,6 @@ do {                                                                    \
 #define REPLY_MACRO_END(t)                                              \
 do {                                                                    \
     vl_api_registration_t *rp;                                          \
-    rv = vl_msg_api_pd_handler (mp, rv);                                \
     rp = vl_api_client_index_to_registration (mp->client_index);        \
     if (rp == 0)                                                        \
       return;                                                           \
@@ -65,7 +63,6 @@ do {                                                                    \
 #define REPLY_MACRO2(t, body)                                           \
 do {                                                                    \
     vl_api_registration_t *rp;                                          \
-    rv = vl_msg_api_pd_handler (mp, rv);                                \
     rp = vl_api_client_index_to_registration (mp->client_index);        \
     if (rp == 0)                                                        \
       return;                                                           \
@@ -81,7 +78,6 @@ do {                                                                    \
 #define REPLY_MACRO2_END(t, body)                                       \
 do {                                                                    \
     vl_api_registration_t *rp;                                          \
-    rv = vl_msg_api_pd_handler (mp, rv);                                \
     rp = vl_api_client_index_to_registration (mp->client_index);        \
     if (rp == 0)                                                        \
       return;                                                           \
@@ -101,7 +97,6 @@ do {                                                                    \
 #define REPLY_MACRO2_ZERO(t, body)                                      \
 do {                                                                    \
     vl_api_registration_t *rp;                                          \
-    rv = vl_msg_api_pd_handler (mp, rv);                                \
     rp = vl_api_client_index_to_registration (mp->client_index);        \
     if (rp == 0)                                                        \
       return;                                                           \
@@ -117,7 +112,6 @@ do {                                                                    \
 #define REPLY_MACRO_DETAILS2(t, body)                                   \
 do {                                                                    \
     vl_api_registration_t *rp;                                          \
-    rv = vl_msg_api_pd_handler (mp, rv);                                \
     rp = vl_api_client_index_to_registration (mp->client_index);        \
     if (rp == 0)                                                        \
       return;                                                           \
@@ -141,7 +135,6 @@ do {                                                                    \
 #define REPLY_MACRO3(t, n, body)                                        \
 do {                                                                    \
     vl_api_registration_t *rp;                                          \
-    rv = vl_msg_api_pd_handler (mp, rv);                                \
     rp = vl_api_client_index_to_registration (mp->client_index);        \
     if (rp == 0)                                                        \
       return;                                                           \
@@ -157,7 +150,6 @@ do {                                                                    \
 #define REPLY_MACRO3_ZERO(t, n, body)                                   \
 do {                                                                    \
     vl_api_registration_t *rp;                                          \
-    rv = vl_msg_api_pd_handler (mp, rv);                                \
     rp = vl_api_client_index_to_registration (mp->client_index);        \
     if (rp == 0)                                                        \
       return;                                                           \
@@ -174,7 +166,6 @@ do {                                                                    \
 do {                                                                    \
     vl_api_registration_t *rp;                                          \
     u8 is_error = 0;                                                    \
-    rv = vl_msg_api_pd_handler (mp, rv);                                \
                                                                         \
     rp = vl_api_client_index_to_registration (mp->client_index);        \
     if (rp == 0)                                                        \
@@ -271,12 +262,8 @@ do {								\
 
 
 /* "trust, but verify" */
-
-static inline uword
-vnet_sw_if_index_is_api_valid (u32 sw_if_index)
-{
-  return vnet_sw_interface_is_api_valid (vnet_get_main (), sw_if_index);
-}
+#define vnet_sw_if_index_is_api_valid(sw_if_index)                            \
+  vnet_sw_interface_is_api_valid (vnet_get_main (), sw_if_index)
 
 #define VALIDATE_SW_IF_INDEX(mp)				\
  do { u32 __sw_if_index = ntohl((mp)->sw_if_index);		\
@@ -423,7 +410,7 @@ typedef struct
 
   /* convenience */
   vlib_main_t *vlib_main;
-  vnet_main_t *vnet_main;
+  struct vnet_main_t *vnet_main;
 } vpe_api_main_t;
 
 extern vpe_api_main_t vpe_api_main;

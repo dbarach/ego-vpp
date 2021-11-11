@@ -29,7 +29,6 @@
 #include <vnet/l2/l2_input.h>
 #include <vnet/udp/udp_local.h>
 
-#include <vpp/api/vpe_msg_enum.h>
 #include <vnet/l2/l2_classify.h>
 #include <vnet/l2/l2_vtr.h>
 #include <vnet/classify/in_out_acl.h>
@@ -56,14 +55,13 @@
 #include <inttypes.h>
 #include <sys/stat.h>
 
-#define vl_typedefs		/* define message structures */
-#include <vpp/api/vpe_all_api_h.h>
-#undef vl_typedefs
-
-/* declare message handlers for each api */
+#include <vlibmemory/memclnt.api_enum.h>
+#include <vlibmemory/memclnt.api_types.h>
+#include <vlibmemory/memclnt.api_tojson.h>
+#include <vlibmemory/memclnt.api_fromjson.h>
 
 #define vl_endianfun		/* define message structures */
-#include <vpp/api/vpe_all_api_h.h>
+#include <vlibmemory/memclnt.api.h>
 #undef vl_endianfun
 
 /* instantiate all the print functions we know about */
@@ -73,7 +71,7 @@
 #define vl_print(handle, ...) vlib_cli_output (handle, __VA_ARGS__)
 #endif
 #define vl_printfun
-#include <vpp/api/vpe_all_api_h.h>
+#include <vlibmemory/memclnt.api.h>
 #undef vl_printfun
 
 #define __plugin_msg_base 0
@@ -174,23 +172,6 @@ errmsg (char *fmt, ...)
 }
 
 #if VPP_API_TEST_BUILTIN == 0
-static uword
-api_unformat_sw_if_index (unformat_input_t * input, va_list * args)
-{
-  vat_main_t *vam = va_arg (*args, vat_main_t *);
-  u32 *result = va_arg (*args, u32 *);
-  u8 *if_name;
-  uword *p;
-
-  if (!unformat (input, "%s", &if_name))
-    return 0;
-
-  p = hash_get_mem (vam->sw_if_index_by_interface_name, if_name);
-  if (p == 0)
-    return 0;
-  *result = p[0];
-  return 1;
-}
 
 /* Parse an IP4 address %d.%d.%d.%d. */
 uword
@@ -579,342 +560,8 @@ ip_set (ip46_address_t * dst, void *src, u8 is_ip4)
 }
 
 
-static void
-vl_api_cli_reply_t_handler (vl_api_cli_reply_t * mp)
-{
-  vat_main_t *vam = &vat_main;
-  i32 retval = ntohl (mp->retval);
-
-  vam->retval = retval;
-  vam->shmem_result = uword_to_pointer (mp->reply_in_shmem, u8 *);
-  vam->result_ready = 1;
-}
-
-static void
-vl_api_cli_reply_t_handler_json (vl_api_cli_reply_t * mp)
-{
-  vat_main_t *vam = &vat_main;
-  vat_json_node_t node;
-  void *oldheap;
-  u8 *reply;
-
-  vat_json_init_object (&node);
-  vat_json_object_add_int (&node, "retval", ntohl (mp->retval));
-  vat_json_object_add_uint (&node, "reply_in_shmem",
-			    ntohl (mp->reply_in_shmem));
-  /* Toss the shared-memory original... */
-  oldheap = vl_msg_push_heap ();
-
-  reply = uword_to_pointer (mp->reply_in_shmem, u8 *);
-  vec_free (reply);
-
-  vl_msg_pop_heap (oldheap);
-
-  vat_json_print (vam->ofp, &node);
-  vat_json_free (&node);
-
-  vam->retval = ntohl (mp->retval);
-  vam->result_ready = 1;
-}
-
-static void
-vl_api_cli_inband_reply_t_handler (vl_api_cli_inband_reply_t * mp)
-{
-  vat_main_t *vam = &vat_main;
-  i32 retval = ntohl (mp->retval);
-
-  vec_reset_length (vam->cmd_reply);
-
-  vam->retval = retval;
-  if (retval == 0)
-    vam->cmd_reply = vl_api_from_api_to_new_vec (mp, &mp->reply);
-  vam->result_ready = 1;
-}
-
-static void
-vl_api_cli_inband_reply_t_handler_json (vl_api_cli_inband_reply_t * mp)
-{
-  vat_main_t *vam = &vat_main;
-  vat_json_node_t node;
-  u8 *reply = 0;		/* reply vector */
-
-  reply = vl_api_from_api_to_new_vec (mp, &mp->reply);
-  vec_reset_length (vam->cmd_reply);
-
-  vat_json_init_object (&node);
-  vat_json_object_add_int (&node, "retval", ntohl (mp->retval));
-  vat_json_object_add_string_copy (&node, "reply", reply);
-
-  vat_json_print (vam->ofp, &node);
-  vat_json_free (&node);
-  vec_free (reply);
-
-  vam->retval = ntohl (mp->retval);
-  vam->result_ready = 1;
-}
-
-static void vl_api_get_node_index_reply_t_handler
-  (vl_api_get_node_index_reply_t * mp)
-{
-  vat_main_t *vam = &vat_main;
-  i32 retval = ntohl (mp->retval);
-  if (vam->async_mode)
-    {
-      vam->async_errors += (retval < 0);
-    }
-  else
-    {
-      vam->retval = retval;
-      if (retval == 0)
-	errmsg ("node index %d", ntohl (mp->node_index));
-      vam->result_ready = 1;
-    }
-}
-
-static void vl_api_get_node_index_reply_t_handler_json
-  (vl_api_get_node_index_reply_t * mp)
-{
-  vat_main_t *vam = &vat_main;
-  vat_json_node_t node;
-
-  vat_json_init_object (&node);
-  vat_json_object_add_int (&node, "retval", ntohl (mp->retval));
-  vat_json_object_add_uint (&node, "node_index", ntohl (mp->node_index));
-
-  vat_json_print (vam->ofp, &node);
-  vat_json_free (&node);
-
-  vam->retval = ntohl (mp->retval);
-  vam->result_ready = 1;
-}
-
-static void vl_api_get_next_index_reply_t_handler
-  (vl_api_get_next_index_reply_t * mp)
-{
-  vat_main_t *vam = &vat_main;
-  i32 retval = ntohl (mp->retval);
-  if (vam->async_mode)
-    {
-      vam->async_errors += (retval < 0);
-    }
-  else
-    {
-      vam->retval = retval;
-      if (retval == 0)
-	errmsg ("next node index %d", ntohl (mp->next_index));
-      vam->result_ready = 1;
-    }
-}
-
-static void vl_api_get_next_index_reply_t_handler_json
-  (vl_api_get_next_index_reply_t * mp)
-{
-  vat_main_t *vam = &vat_main;
-  vat_json_node_t node;
-
-  vat_json_init_object (&node);
-  vat_json_object_add_int (&node, "retval", ntohl (mp->retval));
-  vat_json_object_add_uint (&node, "next_index", ntohl (mp->next_index));
-
-  vat_json_print (vam->ofp, &node);
-  vat_json_free (&node);
-
-  vam->retval = ntohl (mp->retval);
-  vam->result_ready = 1;
-}
-
-static void vl_api_add_node_next_reply_t_handler
-  (vl_api_add_node_next_reply_t * mp)
-{
-  vat_main_t *vam = &vat_main;
-  i32 retval = ntohl (mp->retval);
-  if (vam->async_mode)
-    {
-      vam->async_errors += (retval < 0);
-    }
-  else
-    {
-      vam->retval = retval;
-      if (retval == 0)
-	errmsg ("next index %d", ntohl (mp->next_index));
-      vam->result_ready = 1;
-    }
-}
-
-static void vl_api_add_node_next_reply_t_handler_json
-  (vl_api_add_node_next_reply_t * mp)
-{
-  vat_main_t *vam = &vat_main;
-  vat_json_node_t node;
-
-  vat_json_init_object (&node);
-  vat_json_object_add_int (&node, "retval", ntohl (mp->retval));
-  vat_json_object_add_uint (&node, "next_index", ntohl (mp->next_index));
-
-  vat_json_print (vam->ofp, &node);
-  vat_json_free (&node);
-
-  vam->retval = ntohl (mp->retval);
-  vam->result_ready = 1;
-}
-
-static void vl_api_show_version_reply_t_handler
-  (vl_api_show_version_reply_t * mp)
-{
-  vat_main_t *vam = &vat_main;
-  i32 retval = ntohl (mp->retval);
-
-  if (retval >= 0)
-    {
-      errmsg ("        program: %s", mp->program);
-      errmsg ("        version: %s", mp->version);
-      errmsg ("     build date: %s", mp->build_date);
-      errmsg ("build directory: %s", mp->build_directory);
-    }
-  vam->retval = retval;
-  vam->result_ready = 1;
-}
-
-static void vl_api_show_version_reply_t_handler_json
-  (vl_api_show_version_reply_t * mp)
-{
-  vat_main_t *vam = &vat_main;
-  vat_json_node_t node;
-
-  vat_json_init_object (&node);
-  vat_json_object_add_int (&node, "retval", ntohl (mp->retval));
-  vat_json_object_add_string_copy (&node, "program", mp->program);
-  vat_json_object_add_string_copy (&node, "version", mp->version);
-  vat_json_object_add_string_copy (&node, "build_date", mp->build_date);
-  vat_json_object_add_string_copy (&node, "build_directory",
-				   mp->build_directory);
-
-  vat_json_print (vam->ofp, &node);
-  vat_json_free (&node);
-
-  vam->retval = ntohl (mp->retval);
-  vam->result_ready = 1;
-}
-
-static void vl_api_show_threads_reply_t_handler
-  (vl_api_show_threads_reply_t * mp)
-{
-  vat_main_t *vam = &vat_main;
-  i32 retval = ntohl (mp->retval);
-  int i, count = 0;
-
-  if (retval >= 0)
-    count = ntohl (mp->count);
-
-  for (i = 0; i < count; i++)
-    print (vam->ofp,
-	   "\n%-2d %-11s %-11s %-5d %-6d %-4d %-6d",
-	   ntohl (mp->thread_data[i].id), mp->thread_data[i].name,
-	   mp->thread_data[i].type, ntohl (mp->thread_data[i].pid),
-	   ntohl (mp->thread_data[i].cpu_id), ntohl (mp->thread_data[i].core),
-	   ntohl (mp->thread_data[i].cpu_socket));
-
-  vam->retval = retval;
-  vam->result_ready = 1;
-}
-
-static void vl_api_show_threads_reply_t_handler_json
-  (vl_api_show_threads_reply_t * mp)
-{
-  vat_main_t *vam = &vat_main;
-  vat_json_node_t node;
-  vl_api_thread_data_t *td;
-  i32 retval = ntohl (mp->retval);
-  int i, count = 0;
-
-  if (retval >= 0)
-    count = ntohl (mp->count);
-
-  vat_json_init_object (&node);
-  vat_json_object_add_int (&node, "retval", retval);
-  vat_json_object_add_uint (&node, "count", count);
-
-  for (i = 0; i < count; i++)
-    {
-      td = &mp->thread_data[i];
-      vat_json_object_add_uint (&node, "id", ntohl (td->id));
-      vat_json_object_add_string_copy (&node, "name", td->name);
-      vat_json_object_add_string_copy (&node, "type", td->type);
-      vat_json_object_add_uint (&node, "pid", ntohl (td->pid));
-      vat_json_object_add_int (&node, "cpu_id", ntohl (td->cpu_id));
-      vat_json_object_add_int (&node, "core", ntohl (td->id));
-      vat_json_object_add_int (&node, "cpu_socket", ntohl (td->cpu_socket));
-    }
-
-  vat_json_print (vam->ofp, &node);
-  vat_json_free (&node);
-
-  vam->retval = retval;
-  vam->result_ready = 1;
-}
-
-static int
-api_show_threads (vat_main_t * vam)
-{
-  vl_api_show_threads_t *mp;
-  int ret;
-
-  print (vam->ofp,
-	 "\n%-2s %-11s %-11s %-5s %-6s %-4s %-6s",
-	 "ID", "Name", "Type", "LWP", "cpu_id", "Core", "Socket");
-
-  M (SHOW_THREADS, mp);
-
-  S (mp);
-  W (ret);
-  return ret;
-}
-
 #define vl_api_bridge_domain_details_t_endian vl_noop_handler
 #define vl_api_bridge_domain_details_t_print vl_noop_handler
-
-static void vl_api_control_ping_reply_t_handler
-  (vl_api_control_ping_reply_t * mp)
-{
-  vat_main_t *vam = &vat_main;
-  i32 retval = ntohl (mp->retval);
-  if (vam->async_mode)
-    {
-      vam->async_errors += (retval < 0);
-    }
-  else
-    {
-      vam->retval = retval;
-      vam->result_ready = 1;
-    }
-  if (vam->socket_client_main)
-    vam->socket_client_main->control_pings_outstanding--;
-}
-
-static void vl_api_control_ping_reply_t_handler_json
-  (vl_api_control_ping_reply_t * mp)
-{
-  vat_main_t *vam = &vat_main;
-  i32 retval = ntohl (mp->retval);
-
-  if (VAT_JSON_NONE != vam->json_tree.type)
-    {
-      vat_json_print (vam->ofp, &vam->json_tree);
-      vat_json_free (&vam->json_tree);
-      vam->json_tree.type = VAT_JSON_NONE;
-    }
-  else
-    {
-      /* just print [] */
-      vat_json_init_array (&vam->json_tree);
-      vat_json_print (vam->ofp, &vam->json_tree);
-      vam->json_tree.type = VAT_JSON_NONE;
-    }
-
-  vam->retval = retval;
-  vam->result_ready = 1;
-}
-
 
 static void vl_api_get_first_msg_id_reply_t_handler
   (vl_api_get_first_msg_id_reply_t * mp)
@@ -955,95 +602,6 @@ static void vl_api_get_first_msg_id_reply_t_handler_json
   vam->result_ready = 1;
 }
 
-static void vl_api_get_node_graph_reply_t_handler
-  (vl_api_get_node_graph_reply_t * mp)
-{
-  vat_main_t *vam = &vat_main;
-  i32 retval = ntohl (mp->retval);
-  u8 *pvt_copy, *reply;
-  void *oldheap;
-  vlib_node_t *node;
-  int i;
-
-  if (vam->async_mode)
-    {
-      vam->async_errors += (retval < 0);
-    }
-  else
-    {
-      vam->retval = retval;
-      vam->result_ready = 1;
-    }
-
-  /* "Should never happen..." */
-  if (retval != 0)
-    return;
-
-  reply = uword_to_pointer (mp->reply_in_shmem, u8 *);
-  pvt_copy = vec_dup (reply);
-
-  /* Toss the shared-memory original... */
-  oldheap = vl_msg_push_heap ();
-
-  vec_free (reply);
-
-  vl_msg_pop_heap (oldheap);
-
-  if (vam->graph_nodes)
-    {
-      hash_free (vam->graph_node_index_by_name);
-
-      for (i = 0; i < vec_len (vam->graph_nodes[0]); i++)
-	{
-	  node = vam->graph_nodes[0][i];
-	  vec_free (node->name);
-	  vec_free (node->next_nodes);
-	  vec_free (node);
-	}
-      vec_free (vam->graph_nodes[0]);
-      vec_free (vam->graph_nodes);
-    }
-
-  vam->graph_node_index_by_name = hash_create_string (0, sizeof (uword));
-  vam->graph_nodes = vlib_node_unserialize (pvt_copy);
-  vec_free (pvt_copy);
-
-  for (i = 0; i < vec_len (vam->graph_nodes[0]); i++)
-    {
-      node = vam->graph_nodes[0][i];
-      hash_set_mem (vam->graph_node_index_by_name, node->name, i);
-    }
-}
-
-static void vl_api_get_node_graph_reply_t_handler_json
-  (vl_api_get_node_graph_reply_t * mp)
-{
-  vat_main_t *vam = &vat_main;
-  void *oldheap;
-  vat_json_node_t node;
-  u8 *reply;
-
-  /* $$$$ make this real? */
-  vat_json_init_object (&node);
-  vat_json_object_add_int (&node, "retval", ntohl (mp->retval));
-  vat_json_object_add_uint (&node, "reply_in_shmem", mp->reply_in_shmem);
-
-  reply = uword_to_pointer (mp->reply_in_shmem, u8 *);
-
-  /* Toss the shared-memory original... */
-  oldheap = vl_msg_push_heap ();
-
-  vec_free (reply);
-
-  vl_msg_pop_heap (oldheap);
-
-  vat_json_print (vam->ofp, &node);
-  vat_json_free (&node);
-
-  vam->retval = ntohl (mp->retval);
-  vam->result_ready = 1;
-}
-
 /* Format hex dump. */
 u8 *
 format_hex_bytes (u8 * s, va_list * va)
@@ -1069,6 +627,48 @@ format_hex_bytes (u8 * s, va_list * va)
     }
 
   return s;
+}
+
+static void
+vl_api_control_ping_reply_t_handler (vl_api_control_ping_reply_t *mp)
+{
+  vat_main_t *vam = &vat_main;
+  i32 retval = ntohl (mp->retval);
+  if (vam->async_mode)
+    {
+      vam->async_errors += (retval < 0);
+    }
+  else
+    {
+      vam->retval = retval;
+      vam->result_ready = 1;
+    }
+  if (vam->socket_client_main)
+    vam->socket_client_main->control_pings_outstanding--;
+}
+
+static void
+vl_api_control_ping_reply_t_handler_json (vl_api_control_ping_reply_t *mp)
+{
+  vat_main_t *vam = &vat_main;
+  i32 retval = ntohl (mp->retval);
+
+  if (VAT_JSON_NONE != vam->json_tree.type)
+    {
+      vat_json_print (vam->ofp, &vam->json_tree);
+      vat_json_free (&vam->json_tree);
+      vam->json_tree.type = VAT_JSON_NONE;
+    }
+  else
+    {
+      /* just print [] */
+      vat_json_init_array (&vam->json_tree);
+      vat_json_print (vam->ofp, &vam->json_tree);
+      vam->json_tree.type = VAT_JSON_NONE;
+    }
+
+  vam->retval = retval;
+  vam->result_ready = 1;
 }
 
 /*
@@ -1120,15 +720,7 @@ foreach_standard_reply_retval_handler;
 
 #define foreach_vpe_api_reply_msg                                             \
   _ (GET_FIRST_MSG_ID_REPLY, get_first_msg_id_reply)                          \
-  _ (GET_NODE_GRAPH_REPLY, get_node_graph_reply)                              \
-  _ (CONTROL_PING_REPLY, control_ping_reply)                                  \
-  _ (CLI_REPLY, cli_reply)                                                    \
-  _ (CLI_INBAND_REPLY, cli_inband_reply)                                      \
-  _ (GET_NODE_INDEX_REPLY, get_node_index_reply)                              \
-  _ (GET_NEXT_INDEX_REPLY, get_next_index_reply)                              \
-  _ (ADD_NODE_NEXT_REPLY, add_node_next_reply)                                \
-  _ (SHOW_VERSION_REPLY, show_version_reply)                                  \
-  _ (SHOW_THREADS_REPLY, show_threads_reply)                                  \
+  _ (CONTROL_PING_REPLY, control_ping_reply)
 
 #define foreach_standalone_reply_msg					\
 
@@ -1142,57 +734,23 @@ typedef struct
     case L2_VTR_ ## op:         \
         return "" # op;
 
-/*
- * Pass CLI buffers directly in the CLI_INBAND API message,
- * instead of an additional shared memory area.
- */
-static int
-exec_inband (vat_main_t * vam)
+static const char *
+str_vtr_op (u32 vtr_op)
 {
-  vl_api_cli_inband_t *mp;
-  unformat_input_t *i = vam->input;
-  int ret;
-
-  if (vec_len (i->buffer) == 0)
-    return -1;
-
-  if (vam->exec_mode == 0 && unformat (i, "mode"))
+  switch (vtr_op)
     {
-      vam->exec_mode = 1;
-      return 0;
-    }
-  if (vam->exec_mode == 1 && (unformat (i, "exit") || unformat (i, "quit")))
-    {
-      vam->exec_mode = 0;
-      return 0;
+      STR_VTR_OP_CASE (DISABLED);
+      STR_VTR_OP_CASE (PUSH_1);
+      STR_VTR_OP_CASE (PUSH_2);
+      STR_VTR_OP_CASE (POP_1);
+      STR_VTR_OP_CASE (POP_2);
+      STR_VTR_OP_CASE (TRANSLATE_1_1);
+      STR_VTR_OP_CASE (TRANSLATE_1_2);
+      STR_VTR_OP_CASE (TRANSLATE_2_1);
+      STR_VTR_OP_CASE (TRANSLATE_2_2);
     }
 
-  /*
-   * In order for the CLI command to work, it
-   * must be a vector ending in \n, not a C-string ending
-   * in \n\0.
-   */
-  M2 (CLI_INBAND, mp, vec_len (vam->input->buffer));
-  vl_api_vec_to_api_string (vam->input->buffer, &mp->cmd);
-
-  S (mp);
-  W (ret);
-  /* json responses may or may not include a useful reply... */
-  if (vec_len (vam->cmd_reply))
-    print (vam->ofp, "%v", (char *) (vam->cmd_reply));
-  return ret;
-}
-
-int
-exec (vat_main_t *vam)
-{
-  return exec_inband (vam);
-}
-
-int
-api_sw_interface_dump (vat_main_t *vam)
-{
-  return 0;
+  return "UNKNOWN";
 }
 
 uword
@@ -2442,140 +2000,6 @@ api_unformat_classify_match (unformat_input_t * input, va_list * args)
   return 0;
 }
 
-static int
-api_get_node_index (vat_main_t *vam)
-{
-  unformat_input_t *i = vam->input;
-  vl_api_get_node_index_t *mp;
-  u8 *name = 0;
-  int ret;
-
-  while (unformat_check_input (i) != UNFORMAT_END_OF_INPUT)
-    {
-      if (unformat (i, "node %s", &name))
-	;
-      else
-	break;
-    }
-  if (name == 0)
-    {
-      errmsg ("node name required");
-      return -99;
-    }
-  if (vec_len (name) >= ARRAY_LEN (mp->node_name))
-    {
-      errmsg ("node name too long, max %d", ARRAY_LEN (mp->node_name));
-      return -99;
-    }
-
-  M (GET_NODE_INDEX, mp);
-  clib_memcpy (mp->node_name, name, vec_len (name));
-  vec_free (name);
-
-  S (mp);
-  W (ret);
-  return ret;
-}
-
-static int
-api_get_next_index (vat_main_t *vam)
-{
-  unformat_input_t *i = vam->input;
-  vl_api_get_next_index_t *mp;
-  u8 *node_name = 0, *next_node_name = 0;
-  int ret;
-
-  while (unformat_check_input (i) != UNFORMAT_END_OF_INPUT)
-    {
-      if (unformat (i, "node-name %s", &node_name))
-	;
-      else if (unformat (i, "next-node-name %s", &next_node_name))
-	break;
-    }
-
-  if (node_name == 0)
-    {
-      errmsg ("node name required");
-      return -99;
-    }
-  if (vec_len (node_name) >= ARRAY_LEN (mp->node_name))
-    {
-      errmsg ("node name too long, max %d", ARRAY_LEN (mp->node_name));
-      return -99;
-    }
-
-  if (next_node_name == 0)
-    {
-      errmsg ("next node name required");
-      return -99;
-    }
-  if (vec_len (next_node_name) >= ARRAY_LEN (mp->next_name))
-    {
-      errmsg ("next node name too long, max %d", ARRAY_LEN (mp->next_name));
-      return -99;
-    }
-
-  M (GET_NEXT_INDEX, mp);
-  clib_memcpy (mp->node_name, node_name, vec_len (node_name));
-  clib_memcpy (mp->next_name, next_node_name, vec_len (next_node_name));
-  vec_free (node_name);
-  vec_free (next_node_name);
-
-  S (mp);
-  W (ret);
-  return ret;
-}
-
-static int
-api_add_node_next (vat_main_t *vam)
-{
-  unformat_input_t *i = vam->input;
-  vl_api_add_node_next_t *mp;
-  u8 *name = 0;
-  u8 *next = 0;
-  int ret;
-
-  while (unformat_check_input (i) != UNFORMAT_END_OF_INPUT)
-    {
-      if (unformat (i, "node %s", &name))
-	;
-      else if (unformat (i, "next %s", &next))
-	;
-      else
-	break;
-    }
-  if (name == 0)
-    {
-      errmsg ("node name required");
-      return -99;
-    }
-  if (vec_len (name) >= ARRAY_LEN (mp->node_name))
-    {
-      errmsg ("node name too long, max %d", ARRAY_LEN (mp->node_name));
-      return -99;
-    }
-  if (next == 0)
-    {
-      errmsg ("next node required");
-      return -99;
-    }
-  if (vec_len (next) >= ARRAY_LEN (mp->next_name))
-    {
-      errmsg ("next name too long, max %d", ARRAY_LEN (mp->next_name));
-      return -99;
-    }
-
-  M (ADD_NODE_NEXT, mp);
-  clib_memcpy (mp->node_name, name, vec_len (name));
-  clib_memcpy (mp->next_name, next, vec_len (next));
-  vec_free (name);
-  vec_free (next);
-
-  S (mp);
-  W (ret);
-  return ret;
-}
-
 #define foreach_vtr_op                                                        \
   _ ("disable", L2_VTR_DISABLED)                                              \
   _ ("push-1", L2_VTR_PUSH_1)                                                 \
@@ -2586,19 +2010,6 @@ api_add_node_next (vat_main_t *vam)
   _ ("translate-1-2", L2_VTR_TRANSLATE_1_2)                                   \
   _ ("translate-2-1", L2_VTR_TRANSLATE_2_1)                                   \
   _ ("translate-2-2", L2_VTR_TRANSLATE_2_2)
-
-static int
-api_show_version (vat_main_t *vam)
-{
-  vl_api_show_version_t *mp;
-  int ret;
-
-  M (SHOW_VERSION, mp);
-
-  S (mp);
-  W (ret);
-  return ret;
-}
 
 static int
 api_get_first_msg_id (vat_main_t *vam)
@@ -2633,21 +2044,6 @@ api_get_first_msg_id (vat_main_t *vam)
   M (GET_FIRST_MSG_ID, mp);
   clib_memcpy (mp->name, name, vec_len (name));
   S (mp);
-  W (ret);
-  return ret;
-}
-
-static int
-api_get_node_graph (vat_main_t *vam)
-{
-  vl_api_get_node_graph_t *mp;
-  int ret;
-
-  M (GET_NODE_GRAPH, mp);
-
-  /* send it... */
-  S (mp);
-  /* Wait for the reply */
   W (ret);
   return ret;
 }
@@ -2944,12 +2340,10 @@ help (vat_main_t * vam)
 
   print (vam->ofp, "Help is available for the following:");
 
-    /* *INDENT-OFF* */
     hash_foreach_pair (p, vam->function_by_name,
     ({
       vec_add1 (cmds, (u8 *)(p->key));
     }));
-    /* *INDENT-ON* */
 
   vec_sort_with_function (cmds, cmd_cmp);
 
@@ -3022,14 +2416,11 @@ dump_macro_table (vat_main_t * vam)
   int i;
   hash_pair_t *p;
 
-    /* *INDENT-OFF* */
-    hash_foreach_pair (p, vam->macro_main.the_value_table_hash,
-    ({
-      vec_add2 (sort_me, sm, 1);
-      sm->name = (u8 *)(p->key);
-      sm->value = (u8 *) (p->value[0]);
-    }));
-    /* *INDENT-ON* */
+  hash_foreach_pair (p, vam->macro_main.the_value_table_hash, ({
+		       vec_add2 (sort_me, sm, 1);
+		       sm->name = (u8 *) (p->key);
+		       sm->value = (u8 *) (p->value[0]);
+		     }));
 
   vec_sort_with_function (sort_me, macro_sort_cmp);
 
@@ -3065,14 +2456,12 @@ dump_msg_api_table (vat_main_t * vam)
   hash_pair_t *hp;
   int i;
 
-  /* *INDENT-OFF* */
   hash_foreach_pair (hp, am->msg_index_by_name_and_crc,
   ({
     vec_add2 (nses, ns, 1);
     ns->name = (u8 *)(hp->key);
     ns->value = (u32) hp->value[0];
   }));
-  /* *INDENT-ON* */
 
   vec_sort_with_function (nses, value_sort_cmp);
 
@@ -3218,37 +2607,114 @@ echo (vat_main_t * vam)
   return 0;
 }
 
+int exec (vat_main_t *vam) __attribute__ ((weak));
+int
+exec (vat_main_t *vam)
+{
+  return -1;
+}
+
+static int
+name_sort_cmp (void *a1, void *a2)
+{
+  name_sort_t *n1 = a1;
+  name_sort_t *n2 = a2;
+
+  return strcmp ((char *) n1->name, (char *) n2->name);
+}
+
+static int
+dump_interface_table (vat_main_t *vam)
+{
+  hash_pair_t *p;
+  name_sort_t *nses = 0, *ns;
+
+  if (vam->json_output)
+    {
+      clib_warning (
+	"JSON output supported only for VPE API calls and dump_stats_table");
+      return -99;
+    }
+
+  hash_foreach_pair (p, vam->sw_if_index_by_interface_name, ({
+		       vec_add2 (nses, ns, 1);
+		       ns->name = (u8 *) (p->key);
+		       ns->value = (u32) p->value[0];
+		     }));
+
+  vec_sort_with_function (nses, name_sort_cmp);
+
+  print (vam->ofp, "%-25s%-15s", "Interface", "sw_if_index");
+  vec_foreach (ns, nses)
+    {
+      print (vam->ofp, "%-25s%-15d", ns->name, ns->value);
+    }
+  vec_free (nses);
+  return 0;
+}
+
+static int
+dump_sub_interface_table (vat_main_t *vam)
+{
+  const sw_interface_subif_t *sub = NULL;
+
+  if (vam->json_output)
+    {
+      clib_warning (
+	"JSON output supported only for VPE API calls and dump_stats_table");
+      return -99;
+    }
+
+  print (vam->ofp, "%-30s%-12s%-11s%-7s%-5s%-9s%-9s%-6s%-8s%-10s%-10s",
+	 "Interface", "sw_if_index", "sub id", "dot1ad", "tags", "outer id",
+	 "inner id", "exact", "default", "outer any", "inner any");
+
+  vec_foreach (sub, vam->sw_if_subif_table)
+    {
+      print (vam->ofp, "%-30s%-12d%-11d%-7s%-5d%-9d%-9d%-6d%-8d%-10d%-10d",
+	     sub->interface_name, sub->sw_if_index, sub->sub_id,
+	     sub->sub_dot1ad ? "dot1ad" : "dot1q", sub->sub_number_of_tags,
+	     sub->sub_outer_vlan_id, sub->sub_inner_vlan_id,
+	     sub->sub_exact_match, sub->sub_default,
+	     sub->sub_outer_vlan_id_any, sub->sub_inner_vlan_id_any);
+      if (sub->vtr_op != L2_VTR_DISABLED)
+	{
+	  print (vam->ofp,
+		 "  vlan-tag-rewrite - op: %-14s [ dot1q: %d "
+		 "tag1: %d tag2: %d ]",
+		 str_vtr_op (sub->vtr_op), sub->vtr_push_dot1q, sub->vtr_tag1,
+		 sub->vtr_tag2);
+	}
+    }
+
+  return 0;
+}
+
 /* List of API message constructors, CLI names map to api_xxx */
 #define foreach_vpe_api_msg                                             \
-_(get_node_index, "node <node-name")                                    \
-_(add_node_next, "node <node-name> next <next-node-name>")              \
-_(show_version, "")                                                     \
-_(show_threads, "")                                                     \
 _(get_first_msg_id, "client <name>")					\
-_(get_node_graph, " ")                                                  \
-_(get_next_index, "node-name <node-name> next-node-name <node-name>")   \
 _(sock_init_shm, "size <nnn>")						\
 /* List of command functions, CLI names map directly to functions */
-#define foreach_cli_function                                    \
-_(comment, "usage: comment <ignore-rest-of-line>")		\
-_(dump_macro_table, "usage: dump_macro_table ")                 \
-_(dump_msg_api_table, "usage: dump_msg_api_table")		\
-_(elog_setup, "usage: elog_setup [nevents, default 128K]")      \
-_(elog_disable, "usage: elog_disable")                          \
-_(elog_enable, "usage: elog_enable")                            \
-_(elog_save, "usage: elog_save <filename>")                     \
-_(get_msg_id, "usage: get_msg_id name_and_crc")			\
-_(echo, "usage: echo <message>")				\
-_(exec, "usage: exec <vpe-debug-CLI-command>")                  \
-_(exec_inband, "usage: exec_inband <vpe-debug-CLI-command>")    \
-_(help, "usage: help")                                          \
-_(q, "usage: quit")                                             \
-_(quit, "usage: quit")                                          \
-_(search_node_table, "usage: search_node_table <name>...")	\
-_(set, "usage: set <variable-name> <value>")                    \
-_(script, "usage: script <file-name>")                          \
-_(statseg, "usage: statseg")                                    \
-_(unset, "usage: unset <variable-name>")
+#define foreach_cli_function                                                  \
+  _ (comment, "usage: comment <ignore-rest-of-line>")                         \
+  _ (dump_interface_table, "usage: dump_interface_table")                     \
+  _ (dump_sub_interface_table, "usage: dump_sub_interface_table")             \
+  _ (dump_macro_table, "usage: dump_macro_table ")                            \
+  _ (dump_msg_api_table, "usage: dump_msg_api_table")                         \
+  _ (elog_setup, "usage: elog_setup [nevents, default 128K]")                 \
+  _ (elog_disable, "usage: elog_disable")                                     \
+  _ (elog_enable, "usage: elog_enable")                                       \
+  _ (elog_save, "usage: elog_save <filename>")                                \
+  _ (get_msg_id, "usage: get_msg_id name_and_crc")                            \
+  _ (echo, "usage: echo <message>")                                           \
+  _ (help, "usage: help")                                                     \
+  _ (q, "usage: quit")                                                        \
+  _ (quit, "usage: quit")                                                     \
+  _ (search_node_table, "usage: search_node_table <name>...")                 \
+  _ (set, "usage: set <variable-name> <value>")                               \
+  _ (script, "usage: script <file-name>")                                     \
+  _ (statseg, "usage: statseg")                                               \
+  _ (unset, "usage: unset <variable-name>")
 
 #define _(N,n)                                  \
     static void vl_api_##n##_t_handler_uni      \
@@ -3270,13 +2736,12 @@ foreach_standalone_reply_msg;
 void
 vat_api_hookup (vat_main_t * vam)
 {
-#define _(N,n)                                                  \
-    vl_msg_api_set_handlers(VL_API_##N, #n,                     \
-                           vl_api_##n##_t_handler_uni,          \
-                           vl_noop_handler,                     \
-                           vl_api_##n##_t_endian,               \
-                           vl_api_##n##_t_print,                \
-                           sizeof(vl_api_##n##_t), 1);
+#define _(N, n)                                                               \
+  vl_msg_api_set_handlers (VL_API_##N + 1, #n, vl_api_##n##_t_handler_uni,    \
+			   vl_noop_handler, vl_api_##n##_t_endian,            \
+			   vl_api_##n##_t_print, sizeof (vl_api_##n##_t), 1,  \
+			   vl_api_##n##_t_print_json, vl_api_##n##_t_tojson,  \
+			   vl_api_##n##_t_fromjson);
   foreach_vpe_api_reply_msg;
 #if VPP_API_TEST_BUILTIN == 0
   foreach_standalone_reply_msg;
@@ -3284,7 +2749,7 @@ vat_api_hookup (vat_main_t * vam)
 #undef _
 
 #if (VPP_API_TEST_BUILTIN==0)
-  vl_msg_api_set_first_available_msg_id (VL_MSG_FIRST_AVAILABLE);
+  vl_msg_api_set_first_available_msg_id (VL_MSG_MEMCLNT_LAST + 1);
 
   vam->sw_if_index_by_interface_name = hash_create_string (0, sizeof (uword));
 

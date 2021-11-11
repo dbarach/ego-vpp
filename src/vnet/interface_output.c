@@ -49,6 +49,7 @@
 #include <vnet/interface_output.h>
 #include <vppinfra/vector/mask_compare.h>
 #include <vppinfra/vector/compress.h>
+#include <vppinfra/vector/count_equal.h>
 
 typedef struct
 {
@@ -175,8 +176,7 @@ static_always_inline uword
 vnet_interface_output_node_inline (vlib_main_t *vm, u32 sw_if_index,
 				   vlib_combined_counter_main_t *ccm,
 				   vlib_buffer_t **b, u32 config_index, u8 arc,
-				   u32 n_left, int do_tx_offloads,
-				   int arc_or_subif)
+				   u32 n_left, int processing_level)
 {
   u32 n_bytes = 0;
   u32 n_bytes0, n_bytes1, n_bytes2, n_bytes3;
@@ -192,7 +192,7 @@ vnet_interface_output_node_inline (vlib_main_t *vm, u32 sw_if_index,
       vlib_prefetch_buffer_header (b[6], LOAD);
       vlib_prefetch_buffer_header (b[7], LOAD);
 
-      if (do_tx_offloads)
+      if (processing_level >= 1)
 	or_flags = b[0]->flags | b[1]->flags | b[2]->flags | b[3]->flags;
 
       /* Be grumpy about zero length buffers for benefit of
@@ -207,7 +207,7 @@ vnet_interface_output_node_inline (vlib_main_t *vm, u32 sw_if_index,
       n_bytes += n_bytes2 = vlib_buffer_length_in_chain (vm, b[2]);
       n_bytes += n_bytes3 = vlib_buffer_length_in_chain (vm, b[3]);
 
-      if (arc_or_subif)
+      if (processing_level >= 2)
 	{
 	  u32 tx_swif0, tx_swif1, tx_swif2, tx_swif3;
 	  tx_swif0 = vnet_buffer (b[0])->sw_if_index[VLIB_TX];
@@ -241,7 +241,7 @@ vnet_interface_output_node_inline (vlib_main_t *vm, u32 sw_if_index,
 	    }
 	}
 
-      if (do_tx_offloads && (or_flags & VNET_BUFFER_F_OFFLOAD))
+      if (processing_level >= 1 && (or_flags & VNET_BUFFER_F_OFFLOAD))
 	{
 	  vnet_interface_output_handle_offload (vm, b[0]);
 	  vnet_interface_output_handle_offload (vm, b[1]);
@@ -261,7 +261,7 @@ vnet_interface_output_node_inline (vlib_main_t *vm, u32 sw_if_index,
 
       n_bytes += n_bytes0 = vlib_buffer_length_in_chain (vm, b[0]);
 
-      if (arc_or_subif)
+      if (processing_level >= 2)
 	{
 	  u32 tx_swif0 = vnet_buffer (b[0])->sw_if_index[VLIB_TX];
 
@@ -275,7 +275,7 @@ vnet_interface_output_node_inline (vlib_main_t *vm, u32 sw_if_index,
 	    vlib_increment_combined_counter (ccm, ti, tx_swif0, 1, n_bytes0);
 	}
 
-      if (do_tx_offloads)
+      if (processing_level >= 1)
 	vnet_interface_output_handle_offload (vm, b[0]);
 
       n_left -= 1;
@@ -285,25 +285,33 @@ vnet_interface_output_node_inline (vlib_main_t *vm, u32 sw_if_index,
   return n_bytes;
 }
 
-static_always_inline void vnet_interface_pcap_tx_trace
-  (vlib_main_t * vm, vlib_node_runtime_t * node, vlib_frame_t * frame,
-   int sw_if_index_from_buffer)
+static_always_inline void
+vnet_interface_pcap_tx_trace (vlib_main_t *vm, vlib_node_runtime_t *node,
+			      vlib_frame_t *frame, int in_interface_ouput)
 {
   vnet_main_t *vnm = vnet_get_main ();
   u32 n_left_from, *from;
-  u32 sw_if_index;
+  u32 sw_if_index = ~0, hw_if_index = ~0;
   vnet_pcap_t *pp = &vnm->pcap;
 
   if (PREDICT_TRUE (pp->pcap_tx_enable == 0))
     return;
 
-  if (sw_if_index_from_buffer == 0)
+  if (in_interface_ouput)
+    {
+      /* interface-output is called right before interface-output-template.
+       * We only want to capture packets here if there is a per-interface
+       * filter, in case it matches the sub-interface sw_if_index.
+       * If there is no per-interface filter configured, let the
+       * interface-output-template node deal with it */
+      if (pp->pcap_sw_if_index == 0)
+	return;
+    }
+  else
     {
       vnet_interface_output_runtime_t *rt = (void *) node->runtime_data;
       sw_if_index = rt->sw_if_index;
     }
-  else
-    sw_if_index = ~0;
 
   n_left_from = frame->n_vectors;
   from = vlib_frame_vector_args (frame);
@@ -315,8 +323,19 @@ static_always_inline void vnet_interface_pcap_tx_trace
       from++;
       n_left_from--;
 
-      if (sw_if_index_from_buffer)
-	sw_if_index = vnet_buffer (b0)->sw_if_index[VLIB_TX];
+      if (in_interface_ouput)
+	{
+	  const u32 sii = vnet_buffer (b0)->sw_if_index[VLIB_TX];
+	  if (PREDICT_FALSE (sii != sw_if_index))
+	    {
+	      const vnet_hw_interface_t *hi =
+		vnet_get_sup_hw_interface (vnm, sii);
+	      hw_if_index = hi->sw_if_index;
+	      sw_if_index = sii;
+	    }
+	  if (hw_if_index == sw_if_index)
+	    continue; /* defer to interface-output-template */
+	}
 
       if (vnet_is_packet_pcaped (pp, b0, sw_if_index))
 	pcap_add_buffer (&pp->pcap_main, vm, bi0, pp->max_bytes_per_pkt);
@@ -420,8 +439,7 @@ VLIB_NODE_FN (vnet_interface_output_node)
       /* buffer stride */ 1, n_buffers, VNET_INTERFACE_OUTPUT_NEXT_DROP,
       node->node_index, VNET_INTERFACE_OUTPUT_ERROR_INTERFACE_DELETED);
 
-  vnet_interface_pcap_tx_trace (vm, node, frame,
-				0 /* sw_if_index_from_buffer */ );
+  vnet_interface_pcap_tx_trace (vm, node, frame, 0 /* in_interface_ouput */);
 
   vlib_get_buffers (vm, from, bufs, n_buffers);
 
@@ -457,21 +475,21 @@ VLIB_NODE_FN (vnet_interface_output_node)
 
   ccm = im->combined_sw_if_counters + VNET_INTERFACE_COUNTER_TX;
 
-  if ((hi->caps & VNET_HW_INTERFACE_CAP_SUPPORTS_TX_CKSUM) == 0)
+  /* if not all three flags IP4_,TCP_,UDP_CKSUM set, do compute them
+   * here before sending to the interface */
+  if ((hi->caps & VNET_HW_INTERFACE_CAP_SUPPORTS_TX_CKSUM) !=
+      VNET_HW_INTERFACE_CAP_SUPPORTS_TX_CKSUM)
     do_tx_offloads = 1;
 
   if (do_tx_offloads == 0 && arc_or_subif == 0)
     n_bytes = vnet_interface_output_node_inline (
-      vm, sw_if_index, ccm, bufs, config_index, arc, n_buffers, 0, 0);
-  else if (do_tx_offloads == 0 && arc_or_subif == 1)
-    n_bytes = vnet_interface_output_node_inline (
-      vm, sw_if_index, ccm, bufs, config_index, arc, n_buffers, 0, 1);
+      vm, sw_if_index, ccm, bufs, config_index, arc, n_buffers, 0);
   else if (do_tx_offloads == 1 && arc_or_subif == 0)
     n_bytes = vnet_interface_output_node_inline (
-      vm, sw_if_index, ccm, bufs, config_index, arc, n_buffers, 1, 0);
+      vm, sw_if_index, ccm, bufs, config_index, arc, n_buffers, 1);
   else
     n_bytes = vnet_interface_output_node_inline (
-      vm, sw_if_index, ccm, bufs, config_index, arc, n_buffers, 1, 1);
+      vm, sw_if_index, ccm, bufs, config_index, arc, n_buffers, 2);
 
   from = vlib_frame_vector_args (frame);
   if (PREDICT_TRUE (next_index == VNET_INTERFACE_OUTPUT_NEXT_TX))
@@ -504,8 +522,7 @@ VLIB_NODE_FN (vnet_per_buffer_interface_output_node) (vlib_main_t * vm,
   u32 n_left_to_next, *from, *to_next;
   u32 n_left_from, next_index;
 
-  vnet_interface_pcap_tx_trace (vm, node, frame,
-				1 /* sw_if_index_from_buffer */ );
+  vnet_interface_pcap_tx_trace (vm, node, frame, 1 /* in_interface_ouput */);
 
   n_left_from = frame->n_vectors;
 

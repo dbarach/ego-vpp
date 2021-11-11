@@ -34,7 +34,7 @@ extern timer_expiration_handler tcp_timer_retransmit_syn_handler;
 
 typedef enum _tcp_error
 {
-#define tcp_error(n,s) TCP_ERROR_##n,
+#define tcp_error(f, n, s, d) TCP_ERROR_##f,
 #include <vnet/tcp/tcp_error.def>
 #undef tcp_error
   TCP_N_ERROR,
@@ -327,6 +327,7 @@ void tcp_connection_tx_pacer_reset (tcp_connection_t * tc, u32 window,
 void tcp_program_cleanup (tcp_worker_ctx_t * wrk, tcp_connection_t * tc);
 void tcp_check_gso (tcp_connection_t *tc);
 
+int tcp_buffer_make_reset (vlib_main_t *vm, vlib_buffer_t *b, u8 is_ip4);
 void tcp_punt_unknown (vlib_main_t * vm, u8 is_ip4, u8 is_add);
 int tcp_configure_v4_source_address_range (vlib_main_t * vm,
 					   ip4_address_t * start,

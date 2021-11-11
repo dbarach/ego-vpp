@@ -461,9 +461,9 @@ vl_api_sw_interface_set_table_t_handler (vl_api_sw_interface_set_table_t * mp)
   VALIDATE_SW_IF_INDEX (mp);
 
   if (mp->is_ipv6)
-    rv = ip_table_bind (FIB_PROTOCOL_IP6, sw_if_index, table_id, 1);
+    rv = ip_table_bind (FIB_PROTOCOL_IP6, sw_if_index, table_id);
   else
-    rv = ip_table_bind (FIB_PROTOCOL_IP4, sw_if_index, table_id, 1);
+    rv = ip_table_bind (FIB_PROTOCOL_IP4, sw_if_index, table_id);
 
   BAD_SW_IF_INDEX_LABEL;
 
@@ -471,24 +471,10 @@ vl_api_sw_interface_set_table_t_handler (vl_api_sw_interface_set_table_t * mp)
 }
 
 int
-ip_table_bind (fib_protocol_t fproto,
-	       u32 sw_if_index, u32 table_id, u8 is_api)
+ip_table_bind (fib_protocol_t fproto, u32 sw_if_index, u32 table_id)
 {
   CLIB_UNUSED (ip_interface_address_t * ia);
   u32 fib_index, mfib_index;
-  fib_source_t src;
-  mfib_source_t msrc;
-
-  if (is_api)
-    {
-      src = FIB_SOURCE_API;
-      msrc = MFIB_SOURCE_API;
-    }
-  else
-    {
-      src = FIB_SOURCE_CLI;
-      msrc = MFIB_SOURCE_CLI;
-    }
 
   /*
    * This if table does not exist = error is what we want in the end.
@@ -518,9 +504,6 @@ ip_table_bind (fib_protocol_t fproto,
       }));
       /* *INDENT-ON* */
 
-      vec_validate (ip6_main.fib_index_by_sw_if_index, sw_if_index);
-      vec_validate (ip6_main.mfib_index_by_sw_if_index, sw_if_index);
-
       /*
        * tell those that are interested that the binding is changing.
        */
@@ -534,16 +517,17 @@ ip_table_bind (fib_protocol_t fproto,
       /* unlock currently assigned tables */
       if (0 != ip6_main.fib_index_by_sw_if_index[sw_if_index])
 	fib_table_unlock (ip6_main.fib_index_by_sw_if_index[sw_if_index],
-			  FIB_PROTOCOL_IP6, src);
+			  FIB_PROTOCOL_IP6, FIB_SOURCE_INTERFACE);
       if (0 != ip6_main.mfib_index_by_sw_if_index[sw_if_index])
 	mfib_table_unlock (ip6_main.mfib_index_by_sw_if_index[sw_if_index],
-			   FIB_PROTOCOL_IP6, msrc);
+			   FIB_PROTOCOL_IP6, MFIB_SOURCE_INTERFACE);
 
       if (0 != table_id)
 	{
 	  /* we need to lock the table now it's inuse */
-	  fib_table_lock (fib_index, FIB_PROTOCOL_IP6, src);
-	  mfib_table_lock (mfib_index, FIB_PROTOCOL_IP6, msrc);
+	  fib_table_lock (fib_index, FIB_PROTOCOL_IP6, FIB_SOURCE_INTERFACE);
+	  mfib_table_lock (mfib_index, FIB_PROTOCOL_IP6,
+			   MFIB_SOURCE_INTERFACE);
 	}
 
       ip6_main.fib_index_by_sw_if_index[sw_if_index] = fib_index;
@@ -566,9 +550,6 @@ ip_table_bind (fib_protocol_t fproto,
       }));
       /* *INDENT-ON* */
 
-      vec_validate (ip4_main.fib_index_by_sw_if_index, sw_if_index);
-      vec_validate (ip4_main.mfib_index_by_sw_if_index, sw_if_index);
-
       /*
        * tell those that are interested that the binding is changing.
        */
@@ -582,19 +563,19 @@ ip_table_bind (fib_protocol_t fproto,
       /* unlock currently assigned tables */
       if (0 != ip4_main.fib_index_by_sw_if_index[sw_if_index])
 	fib_table_unlock (ip4_main.fib_index_by_sw_if_index[sw_if_index],
-			  FIB_PROTOCOL_IP4, src);
+			  FIB_PROTOCOL_IP4, FIB_SOURCE_INTERFACE);
       if (0 != ip4_main.mfib_index_by_sw_if_index[sw_if_index])
 	mfib_table_unlock (ip4_main.mfib_index_by_sw_if_index[sw_if_index],
-			   FIB_PROTOCOL_IP4, msrc);
+			   FIB_PROTOCOL_IP4, MFIB_SOURCE_INTERFACE);
 
       if (0 != table_id)
 	{
 	  /* we need to lock the table now it's inuse */
-	  fib_index = fib_table_find_or_create_and_lock (FIB_PROTOCOL_IP4,
-							 table_id, src);
+	  fib_index = fib_table_find_or_create_and_lock (
+	    FIB_PROTOCOL_IP4, table_id, FIB_SOURCE_INTERFACE);
 
-	  mfib_index = mfib_table_find_or_create_and_lock (FIB_PROTOCOL_IP4,
-							   table_id, msrc);
+	  mfib_index = mfib_table_find_or_create_and_lock (
+	    FIB_PROTOCOL_IP4, table_id, MFIB_SOURCE_INTERFACE);
 	}
 
       ip4_main.fib_index_by_sw_if_index[sw_if_index] = fib_index;
@@ -1016,6 +997,39 @@ static void vl_api_sw_interface_get_mac_address_t_handler
   vl_api_send_msg (reg, (u8 *) rmp);
 }
 
+static void
+vl_api_sw_interface_set_interface_name_t_handler (
+  vl_api_sw_interface_set_interface_name_t *mp)
+{
+  vl_api_sw_interface_set_interface_name_reply_t *rmp;
+  vnet_main_t *vnm = vnet_get_main ();
+  u32 sw_if_index = ntohl (mp->sw_if_index);
+  vnet_sw_interface_t *si = vnet_get_sw_interface (vnm, sw_if_index);
+  clib_error_t *error;
+  int rv = 0;
+
+  if (mp->name[0] == 0)
+    {
+      rv = VNET_API_ERROR_INVALID_VALUE;
+      goto out;
+    }
+  if (si == 0)
+    {
+      rv = VNET_API_ERROR_INVALID_SW_IF_INDEX;
+      goto out;
+    }
+
+  error = vnet_rename_interface (vnm, si->hw_if_index, (char *) mp->name);
+  if (error)
+    {
+      clib_error_free (error);
+      rv = VNET_API_ERROR_INVALID_SW_IF_INDEX;
+    }
+
+out:
+  REPLY_MACRO (VL_API_SW_INTERFACE_SET_INTERFACE_NAME_REPLY);
+}
+
 static void vl_api_sw_interface_set_rx_mode_t_handler
   (vl_api_sw_interface_set_rx_mode_t * mp)
 {
@@ -1430,6 +1444,7 @@ interface_api_hookup (vlib_main_t * vm)
   am->is_mp_safe[VL_API_SW_INTERFACE_DUMP] = 1;
   am->is_mp_safe[VL_API_SW_INTERFACE_DETAILS] = 1;
   am->is_mp_safe[VL_API_SW_INTERFACE_TAG_ADD_DEL] = 1;
+  am->is_mp_safe[VL_API_SW_INTERFACE_SET_INTERFACE_NAME] = 1;
 
   /* Do not replay VL_API_SW_INTERFACE_DUMP messages */
   am->api_trace_cfg[VL_API_SW_INTERFACE_DUMP].replay_enable = 0;

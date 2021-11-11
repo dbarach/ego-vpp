@@ -795,21 +795,21 @@ format_session_queue_trace (u8 * s, va_list * args)
   return s;
 }
 
-#define foreach_session_queue_error		\
-_(TX, "Packets transmitted")                  	\
-_(TIMER, "Timer events")			\
-_(NO_BUFFER, "Out of buffers")
+#define foreach_session_queue_error                                           \
+  _ (TX, tx, INFO, "Packets transmitted")                                     \
+  _ (TIMER, timer, INFO, "Timer events")                                      \
+  _ (NO_BUFFER, no_buffer, ERROR, "Out of buffers")
 
 typedef enum
 {
-#define _(sym,str) SESSION_QUEUE_ERROR_##sym,
+#define _(f, n, s, d) SESSION_QUEUE_ERROR_##f,
   foreach_session_queue_error
 #undef _
     SESSION_QUEUE_N_ERROR,
 } session_queue_error_t;
 
-static char *session_queue_error_strings[] = {
-#define _(sym,string) string,
+static vlib_error_desc_t session_error_counters[] = {
+#define _(f, n, s, d) { #n, d, VL_COUNTER_SEVERITY_##s },
   foreach_session_queue_error
 #undef _
 };
@@ -973,7 +973,7 @@ session_tx_fill_buffer (vlib_main_t * vm, session_tx_context_t * ctx,
 	  n_bytes_read = svm_fifo_peek (f, offset, deq_now, data0);
 	  ASSERT (n_bytes_read > 0);
 
-	  if (ctx->s->session_state == SESSION_STATE_LISTENING)
+	  if (transport_connection_is_cless (ctx->tc))
 	    {
 	      ip_copy (&ctx->tc->rmt_ip, &hdr->rmt_ip, ctx->tc->is_ip4);
 	      ctx->tc->rmt_port = hdr->rmt_port;
@@ -1018,7 +1018,15 @@ session_tx_not_ready (session_t * s, u8 peek_data)
       /* Can retransmit for closed sessions but can't send new data if
        * session is not ready or closed */
       else if (s->session_state < SESSION_STATE_READY)
-	return 1;
+	{
+	  /* Allow accepting session to send custom packets.
+	   * For instance, tcp want to send acks in established, but
+	   * the app has not called accept() yet */
+	  if (s->session_state == SESSION_STATE_ACCEPTING &&
+	      (s->flags & SESSION_F_CUSTOM_TX))
+	    return 0;
+	  return 1;
+	}
       else if (s->session_state >= SESSION_STATE_TRANSPORT_CLOSED)
 	{
 	  /* Allow closed transports to still send custom packets.
@@ -1572,7 +1580,7 @@ session_event_dispatch_io (session_worker_t * wrk, vlib_node_runtime_t * node,
       s = session_event_get_session (wrk, e);
       if (PREDICT_FALSE (!s))
 	break;
-      CLIB_PREFETCH (s->tx_fifo, 2 * CLIB_CACHE_LINE_BYTES, LOAD);
+      CLIB_PREFETCH (s->tx_fifo, sizeof (*(s->tx_fifo)), LOAD);
       wrk->ctx.s = s;
       /* Spray packets in per session type frames, since they go to
        * different nodes */
@@ -1652,9 +1660,9 @@ static void
 session_flush_pending_tx_buffers (session_worker_t * wrk,
 				  vlib_node_runtime_t * node)
 {
-  vlib_buffer_enqueue_to_next (wrk->vm, node, wrk->pending_tx_buffers,
-			       wrk->pending_tx_nexts,
-			       vec_len (wrk->pending_tx_nexts));
+  vlib_buffer_enqueue_to_next_vec (wrk->vm, node, &wrk->pending_tx_buffers,
+				   &wrk->pending_tx_nexts,
+				   vec_len (wrk->pending_tx_nexts));
   vec_reset_length (wrk->pending_tx_buffers);
   vec_reset_length (wrk->pending_tx_nexts);
 }
@@ -1824,15 +1832,14 @@ session_queue_node_fn (vlib_main_t * vm, vlib_node_runtime_t * node,
 }
 
 /* *INDENT-OFF* */
-VLIB_REGISTER_NODE (session_queue_node) =
-{
+VLIB_REGISTER_NODE (session_queue_node) = {
   .function = session_queue_node_fn,
   .flags = VLIB_NODE_FLAG_TRACE_SUPPORTED,
   .name = "session-queue",
   .format_trace = format_session_queue_trace,
   .type = VLIB_NODE_TYPE_INPUT,
-  .n_errors = ARRAY_LEN (session_queue_error_strings),
-  .error_strings = session_queue_error_strings,
+  .n_errors = SESSION_QUEUE_N_ERROR,
+  .error_counters = session_error_counters,
   .state = VLIB_NODE_STATE_DISABLED,
 };
 /* *INDENT-ON* */

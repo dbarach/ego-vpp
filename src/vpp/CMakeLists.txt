@@ -38,6 +38,12 @@ configure_file(
   ${CMAKE_CURRENT_BINARY_DIR}/vnet/config.h
 )
 
+install(
+  FILES ${CMAKE_CURRENT_BINARY_DIR}/vnet/config.h
+  DESTINATION ${CMAKE_INSTALL_INCLUDEDIR}/vpp/vnet
+  COMPONENT vpp-dev
+)
+
 set(VPP_API_FILES
   api/vpe_types.api
   api/vpe.api
@@ -51,7 +57,7 @@ foreach(file ${VPP_API_FILES})
     FILES ${CMAKE_CURRENT_BINARY_DIR}/${file}.h
     ${CMAKE_CURRENT_BINARY_DIR}/${file}_enum.h
     ${CMAKE_CURRENT_BINARY_DIR}/${file}_types.h
-    DESTINATION include/vpp/${dir}
+    DESTINATION ${CMAKE_INSTALL_INCLUDEDIR}/vpp/${dir}
     COMPONENT vpp-dev
   )
 endforeach()
@@ -73,8 +79,6 @@ if(VPP_API_TEST_BUILTIN)
     api/api_main.c
     api/plugin.c
     api/types.c
-    ../vnet/arp/arp_test.c
-    ../vnet/ip/ip_test.c
   )
   add_definitions(-DVPP_API_TEST_BUILTIN=1)
 endif()
@@ -87,8 +91,6 @@ add_vpp_executable(vpp
 )
 
 add_vpp_headers(vpp
-  api/vpe_msg_enum.h
-  api/vpe_all_api_h.h
   stats/stat_segment.h
   stats/stat_segment_shared.h
 )
@@ -133,14 +135,18 @@ add_vpp_library(vppmem_preload
   LINK_LIBRARIES vppinfra
 )
 
-install(FILES conf/startup.conf DESTINATION etc/vpp COMPONENT vpp)
-install(FILES conf/80-vpp.conf DESTINATION etc/sysctl.d COMPONENT vpp)
+install(FILES conf/startup.conf DESTINATION ${CMAKE_INSTALL_SYSCONFDIR}/vpp COMPONENT vpp)
+install(FILES conf/80-vpp.conf DESTINATION ${CMAKE_INSTALL_SYSCONFDIR}/sysctl.d COMPONENT vpp)
 
 ##############################################################################
 # VAT2 plugins
 ##############################################################################
 add_vpp_test_library(vpp
   ${VPP_API_FILES}
+)
+
+add_vat_test_library(vpp
+  api/api_test.c
 )
 
 ##############################################################################

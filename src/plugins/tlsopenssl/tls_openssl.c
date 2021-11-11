@@ -749,29 +749,59 @@ openssl_start_listen (tls_ctx_t * lctx)
       return -1;
     }
 
+  /* use the default OpenSSL built-in DH parameters */
+  rv = SSL_CTX_set_dh_auto (ssl_ctx, 1);
+  if (rv != 1)
+    {
+      TLS_DBG (1, "Couldn't set temp DH parameters");
+      return -1;
+    }
+
   /*
    * Set the key and cert
    */
   cert_bio = BIO_new (BIO_s_mem ());
+  if (!cert_bio)
+    {
+      clib_warning ("unable to allocate memory");
+      return -1;
+    }
   BIO_write (cert_bio, ckpair->cert, vec_len (ckpair->cert));
   srvcert = PEM_read_bio_X509 (cert_bio, NULL, NULL, NULL);
   if (!srvcert)
     {
       clib_warning ("unable to parse certificate");
-      return -1;
+      goto err;
     }
-  SSL_CTX_use_certificate (ssl_ctx, srvcert);
+  rv = SSL_CTX_use_certificate (ssl_ctx, srvcert);
+  if (rv != 1)
+    {
+      clib_warning ("unable to use SSL certificate");
+      goto err;
+    }
+
   BIO_free (cert_bio);
 
   cert_bio = BIO_new (BIO_s_mem ());
+  if (!cert_bio)
+    {
+      clib_warning ("unable to allocate memory");
+      return -1;
+    }
   BIO_write (cert_bio, ckpair->key, vec_len (ckpair->key));
   pkey = PEM_read_bio_PrivateKey (cert_bio, NULL, NULL, NULL);
   if (!pkey)
     {
       clib_warning ("unable to parse pkey");
-      return -1;
+      goto err;
     }
-  SSL_CTX_use_PrivateKey (ssl_ctx, pkey);
+  rv = SSL_CTX_use_PrivateKey (ssl_ctx, pkey);
+  if (rv != 1)
+    {
+      clib_warning ("unable to use SSL PrivateKey");
+      goto err;
+    }
+
   BIO_free (cert_bio);
 
   olc_index = openssl_listen_ctx_alloc ();
@@ -785,6 +815,10 @@ openssl_start_listen (tls_ctx_t * lctx)
 
   return 0;
 
+err:
+  if (cert_bio)
+    BIO_free (cert_bio);
+  return -1;
 }
 
 static int
@@ -896,6 +930,8 @@ openssl_app_close (tls_ctx_t * ctx)
 {
   openssl_ctx_t *oc = (openssl_ctx_t *) ctx;
   session_t *app_session;
+
+  SSL_shutdown (oc->ssl);
 
   /* Wait for all data to be written to tcp */
   app_session = session_get_from_handle (ctx->app_session_handle);

@@ -185,7 +185,6 @@ typedef struct vppcom_cfg_t_
   u32 rx_fifo_size;
   u32 tx_fifo_size;
   u32 event_queue_size;
-  u32 listen_queue_size;
   u8 app_proxy_transport_tcp;
   u8 app_proxy_transport_udp;
   u8 app_scope_local;
@@ -195,8 +194,6 @@ typedef struct vppcom_cfg_t_
   u8 use_mq_eventfd;
   f64 app_timeout;
   f64 session_timeout;
-  f64 accept_timeout;
-  u32 event_ring_size;
   char *event_log_path;
   u8 *vpp_app_socket_api;	/**< app socket api socket file name */
   u8 *vpp_bapi_socket_name;	/**< bapi socket transport socket name */
@@ -753,6 +750,8 @@ int vcl_sapi_app_worker_add (void);
 void vcl_sapi_app_worker_del (vcl_worker_t * wrk);
 void vcl_sapi_detach (vcl_worker_t * wrk);
 int vcl_sapi_recv_fds (vcl_worker_t * wrk, int *fds, int n_fds);
+int vcl_sapi_add_cert_key_pair (vppcom_cert_key_pair_t *ckpair);
+int vcl_sapi_del_cert_key_pair (u32 ckpair_index);
 
 #endif /* SRC_VCL_VCL_PRIVATE_H_ */
 

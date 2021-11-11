@@ -52,6 +52,7 @@
 #include <vnet/mfib/ip4_mfib.h>
 #include <vnet/dpo/load_balance.h>
 #include <vnet/dpo/load_balance_map.h>
+#include <vnet/dpo/receive_dpo.h>
 #include <vnet/dpo/classify_dpo.h>
 #include <vnet/mfib/mfib_table.h>	/* for mFIB table and entry creation */
 #include <vnet/adj/adj_dp.h>
@@ -653,14 +654,13 @@ ip4_add_del_interface_address_internal (vlib_main_t * vm,
   u32 if_address_index;
   ip4_address_fib_t ip4_af, *addr_fib = 0;
 
-  /* local0 interface doesn't support IP addressing  */
-  if (sw_if_index == 0)
+  error = vnet_sw_interface_supports_addressing (vnm, sw_if_index);
+  if (error)
     {
-      return
-       clib_error_create ("local0 interface doesn't support IP addressing");
+      vnm->api_errno = VNET_API_ERROR_UNSUPPORTED;
+      return error;
     }
 
-  vec_validate (im->fib_index_by_sw_if_index, sw_if_index);
   ip4_addr_fib_init (&ip4_af, address,
 		     vec_elt (im->fib_index_by_sw_if_index, sw_if_index));
   vec_add1 (addr_fib, ip4_af);
@@ -888,9 +888,6 @@ ip4_sw_interface_admin_up_down (vnet_main_t * vnm, u32 sw_if_index, u32 flags)
   ip4_address_t *a;
   u32 is_admin_up, fib_index;
 
-  /* Fill in lookup tables with default table (0). */
-  vec_validate (im->fib_index_by_sw_if_index, sw_if_index);
-
   vec_validate_init_empty (im->
 			   lookup_main.if_address_pool_index_by_sw_if_index,
 			   sw_if_index, ~0);
@@ -1067,11 +1064,16 @@ ip4_sw_interface_add_del (vnet_main_t * vnm, u32 sw_if_index, u32 is_add)
 {
   ip4_main_t *im = &ip4_main;
 
-  /* Fill in lookup tables with default table (0). */
-  vec_validate (im->fib_index_by_sw_if_index, sw_if_index);
-  vec_validate (im->mfib_index_by_sw_if_index, sw_if_index);
+  vec_validate_init_empty (im->fib_index_by_sw_if_index, sw_if_index, ~0);
+  vec_validate_init_empty (im->mfib_index_by_sw_if_index, sw_if_index, ~0);
 
-  if (!is_add)
+  if (is_add)
+    {
+      /* Fill in lookup tables with default table (0). */
+      im->fib_index_by_sw_if_index[sw_if_index] = 0;
+      im->mfib_index_by_sw_if_index[sw_if_index] = 0;
+    }
+  else
     {
       ip4_main_t *im4 = &ip4_main;
       ip_lookup_main_t *lm4 = &im4->lookup_main;
@@ -1386,10 +1388,9 @@ ip4_tcp_udp_validate_checksum (vlib_main_t * vm, vlib_buffer_t * p0)
 #endif
 
 /* *INDENT-OFF* */
-VNET_FEATURE_ARC_INIT (ip4_local) =
-{
-  .arc_name  = "ip4-local",
-  .start_nodes = VNET_FEATURES ("ip4-local"),
+VNET_FEATURE_ARC_INIT (ip4_local) = {
+  .arc_name = "ip4-local",
+  .start_nodes = VNET_FEATURES ("ip4-local", "ip4-receive"),
   .last_in_arc = "ip4-local-end-of-arc",
 };
 /* *INDENT-ON* */
@@ -1514,11 +1515,10 @@ typedef struct
 } ip4_local_last_check_t;
 
 static inline void
-ip4_local_check_src (vlib_buffer_t * b, ip4_header_t * ip0,
-		     ip4_local_last_check_t * last_check, u8 * error0)
+ip4_local_check_src (vlib_buffer_t *b, ip4_header_t *ip0,
+		     ip4_local_last_check_t *last_check, u8 *error0,
+		     int is_receive_dpo)
 {
-  ip4_fib_mtrie_leaf_t leaf0;
-  ip4_fib_mtrie_t *mtrie0;
   const dpo_id_t *dpo0;
   load_balance_t *lb0;
   u32 lbi0;
@@ -1526,6 +1526,15 @@ ip4_local_check_src (vlib_buffer_t * b, ip4_header_t * ip0,
   vnet_buffer (b)->ip.fib_index =
     vnet_buffer (b)->sw_if_index[VLIB_TX] != ~0 ?
     vnet_buffer (b)->sw_if_index[VLIB_TX] : vnet_buffer (b)->ip.fib_index;
+
+  if (is_receive_dpo)
+    {
+      receive_dpo_t *rd;
+      rd = receive_dpo_get (vnet_buffer (b)->ip.adj_index[VLIB_TX]);
+      vnet_buffer (b)->ip.rx_sw_if_index = rd->rd_sw_if_index;
+    }
+  else
+    vnet_buffer (b)->ip.rx_sw_if_index = vnet_buffer (b)->sw_if_index[VLIB_RX];
 
   /*
    * vnet_buffer()->ip.adj_index[VLIB_RX] will be set to the index of the
@@ -1536,11 +1545,8 @@ ip4_local_check_src (vlib_buffer_t * b, ip4_header_t * ip0,
   if (PREDICT_TRUE (last_check->src.as_u32 != ip0->src_address.as_u32) ||
       last_check->first)
     {
-      mtrie0 = &ip4_fib_get (vnet_buffer (b)->ip.fib_index)->mtrie;
-      leaf0 = ip4_fib_mtrie_lookup_step_one (mtrie0, &ip0->src_address);
-      leaf0 = ip4_fib_mtrie_lookup_step (mtrie0, leaf0, &ip0->src_address, 2);
-      leaf0 = ip4_fib_mtrie_lookup_step (mtrie0, leaf0, &ip0->src_address, 3);
-      lbi0 = ip4_fib_mtrie_leaf_get_adj_index (leaf0);
+      lbi0 = ip4_fib_forwarding_lookup (vnet_buffer (b)->ip.fib_index,
+					&ip0->src_address);
 
       vnet_buffer (b)->ip.adj_index[VLIB_RX] =
 	vnet_buffer (b)->ip.adj_index[VLIB_TX];
@@ -1583,11 +1589,10 @@ ip4_local_check_src (vlib_buffer_t * b, ip4_header_t * ip0,
 }
 
 static inline void
-ip4_local_check_src_x2 (vlib_buffer_t ** b, ip4_header_t ** ip,
-			ip4_local_last_check_t * last_check, u8 * error)
+ip4_local_check_src_x2 (vlib_buffer_t **b, ip4_header_t **ip,
+			ip4_local_last_check_t *last_check, u8 *error,
+			int is_receive_dpo)
 {
-  ip4_fib_mtrie_leaf_t leaf[2];
-  ip4_fib_mtrie_t *mtrie[2];
   const dpo_id_t *dpo[2];
   load_balance_t *lb[2];
   u32 not_last_hit;
@@ -1607,6 +1612,22 @@ ip4_local_check_src_x2 (vlib_buffer_t ** b, ip4_header_t ** ip,
     vnet_buffer (b[1])->sw_if_index[VLIB_TX] :
     vnet_buffer (b[1])->ip.fib_index;
 
+  if (is_receive_dpo)
+    {
+      const receive_dpo_t *rd0, *rd1;
+      rd0 = receive_dpo_get (vnet_buffer (b[0])->ip.adj_index[VLIB_TX]);
+      rd1 = receive_dpo_get (vnet_buffer (b[1])->ip.adj_index[VLIB_TX]);
+      vnet_buffer (b[0])->ip.rx_sw_if_index = rd0->rd_sw_if_index;
+      vnet_buffer (b[1])->ip.rx_sw_if_index = rd1->rd_sw_if_index;
+    }
+  else
+    {
+      vnet_buffer (b[0])->ip.rx_sw_if_index =
+	vnet_buffer (b[0])->sw_if_index[VLIB_RX];
+      vnet_buffer (b[1])->ip.rx_sw_if_index =
+	vnet_buffer (b[1])->sw_if_index[VLIB_RX];
+    }
+
   /*
    * vnet_buffer()->ip.adj_index[VLIB_RX] will be set to the index of the
    *  adjacency for the destination address (the local interface address).
@@ -1615,24 +1636,9 @@ ip4_local_check_src_x2 (vlib_buffer_t ** b, ip4_header_t ** ip,
    */
   if (PREDICT_TRUE (not_last_hit))
     {
-      mtrie[0] = &ip4_fib_get (vnet_buffer (b[0])->ip.fib_index)->mtrie;
-      mtrie[1] = &ip4_fib_get (vnet_buffer (b[1])->ip.fib_index)->mtrie;
-
-      leaf[0] = ip4_fib_mtrie_lookup_step_one (mtrie[0], &ip[0]->src_address);
-      leaf[1] = ip4_fib_mtrie_lookup_step_one (mtrie[1], &ip[1]->src_address);
-
-      leaf[0] = ip4_fib_mtrie_lookup_step (mtrie[0], leaf[0],
-					   &ip[0]->src_address, 2);
-      leaf[1] = ip4_fib_mtrie_lookup_step (mtrie[1], leaf[1],
-					   &ip[1]->src_address, 2);
-
-      leaf[0] = ip4_fib_mtrie_lookup_step (mtrie[0], leaf[0],
-					   &ip[0]->src_address, 3);
-      leaf[1] = ip4_fib_mtrie_lookup_step (mtrie[1], leaf[1],
-					   &ip[1]->src_address, 3);
-
-      lbi[0] = ip4_fib_mtrie_leaf_get_adj_index (leaf[0]);
-      lbi[1] = ip4_fib_mtrie_leaf_get_adj_index (leaf[1]);
+      ip4_fib_forwarding_lookup_x2 (
+	vnet_buffer (b[0])->ip.fib_index, vnet_buffer (b[1])->ip.fib_index,
+	&ip[0]->src_address, &ip[1]->src_address, &lbi[0], &lbi[1]);
 
       vnet_buffer (b[0])->ip.adj_index[VLIB_RX] =
 	vnet_buffer (b[0])->ip.adj_index[VLIB_TX];
@@ -1718,9 +1724,9 @@ ip4_local_classify (vlib_buffer_t * b, ip4_header_t * ip, u16 * next)
 }
 
 static inline uword
-ip4_local_inline (vlib_main_t * vm,
-		  vlib_node_runtime_t * node,
-		  vlib_frame_t * frame, int head_of_feature_arc)
+ip4_local_inline (vlib_main_t *vm, vlib_node_runtime_t *node,
+		  vlib_frame_t *frame, int head_of_feature_arc,
+		  int is_receive_dpo)
 {
   u32 *from, n_left_from;
   vlib_node_runtime_t *error_node =
@@ -1785,19 +1791,21 @@ ip4_local_inline (vlib_main_t * vm,
       if (PREDICT_TRUE (not_batch == 0))
 	{
 	  ip4_local_check_l4_csum_x2 (vm, b, ip, error);
-	  ip4_local_check_src_x2 (b, ip, &last_check, error);
+	  ip4_local_check_src_x2 (b, ip, &last_check, error, is_receive_dpo);
 	}
       else
 	{
 	  if (!pt[0])
 	    {
 	      ip4_local_check_l4_csum (vm, b[0], ip[0], &error[0]);
-	      ip4_local_check_src (b[0], ip[0], &last_check, &error[0]);
+	      ip4_local_check_src (b[0], ip[0], &last_check, &error[0],
+				   is_receive_dpo);
 	    }
 	  if (!pt[1])
 	    {
 	      ip4_local_check_l4_csum (vm, b[1], ip[1], &error[1]);
-	      ip4_local_check_src (b[1], ip[1], &last_check, &error[1]);
+	      ip4_local_check_src (b[1], ip[1], &last_check, &error[1],
+				   is_receive_dpo);
 	    }
 	}
 
@@ -1825,7 +1833,8 @@ ip4_local_inline (vlib_main_t * vm,
 	goto skip_check;
 
       ip4_local_check_l4_csum (vm, b[0], ip[0], &error[0]);
-      ip4_local_check_src (b[0], ip[0], &last_check, &error[0]);
+      ip4_local_check_src (b[0], ip[0], &last_check, &error[0],
+			   is_receive_dpo);
 
     skip_check:
 
@@ -1844,10 +1853,10 @@ ip4_local_inline (vlib_main_t * vm,
 VLIB_NODE_FN (ip4_local_node) (vlib_main_t * vm, vlib_node_runtime_t * node,
 			       vlib_frame_t * frame)
 {
-  return ip4_local_inline (vm, node, frame, 1 /* head of feature arc */ );
+  return ip4_local_inline (vm, node, frame, 1 /* head of feature arc */,
+			   0 /* is_receive_dpo */);
 }
 
-/* *INDENT-OFF* */
 VLIB_REGISTER_NODE (ip4_local_node) =
 {
   .name = "ip4-local",
@@ -1865,17 +1874,29 @@ VLIB_REGISTER_NODE (ip4_local_node) =
     [IP_LOCAL_NEXT_REASSEMBLY] = "ip4-full-reassembly",
   },
 };
-/* *INDENT-ON* */
 
+VLIB_NODE_FN (ip4_receive_local_node)
+(vlib_main_t *vm, vlib_node_runtime_t *node, vlib_frame_t *frame)
+{
+  return ip4_local_inline (vm, node, frame, 1 /* head of feature arc */,
+			   1 /* is_receive_dpo */);
+}
+
+VLIB_REGISTER_NODE (ip4_receive_local_node) = {
+  .name = "ip4-receive",
+  .vector_size = sizeof (u32),
+  .format_trace = format_ip4_forward_next_trace,
+  .sibling_of = "ip4-local"
+};
 
 VLIB_NODE_FN (ip4_local_end_of_arc_node) (vlib_main_t * vm,
 					  vlib_node_runtime_t * node,
 					  vlib_frame_t * frame)
 {
-  return ip4_local_inline (vm, node, frame, 0 /* head of feature arc */ );
+  return ip4_local_inline (vm, node, frame, 0 /* head of feature arc */,
+			   0 /* is_receive_dpo */);
 }
 
-/* *INDENT-OFF* */
 VLIB_REGISTER_NODE (ip4_local_end_of_arc_node) = {
   .name = "ip4-local-end-of-arc",
   .vector_size = sizeof (u32),
@@ -1889,7 +1910,6 @@ VNET_FEATURE_INIT (ip4_local_end_of_arc, static) = {
   .node_name = "ip4-local-end-of-arc",
   .runs_before = 0, /* not before any other features */
 };
-/* *INDENT-ON* */
 
 #ifndef CLIB_MARCH_VARIANT
 void
@@ -2068,7 +2088,8 @@ ip4_ttl_and_checksum_check (vlib_buffer_t * b, ip4_header_t * ip, u16 * next,
 
   /* Verify checksum. */
   ASSERT (ip4_header_checksum_is_valid (ip) ||
-	  (vnet_buffer (b)->oflags & VNET_BUFFER_OFFLOAD_F_IP_CKSUM));
+	  (vnet_buffer (b)->oflags & VNET_BUFFER_OFFLOAD_F_IP_CKSUM) ||
+	  (vnet_buffer (b)->oflags & VNET_BUFFER_OFFLOAD_F_OUTER_IP_CKSUM));
 }
 
 always_inline uword
@@ -2662,103 +2683,6 @@ VLIB_REGISTER_NODE (ip4_midchain_node) = {
   .sibling_of = "ip4-rewrite",
 };
 /* *INDENT-ON */
-
-static int
-ip4_lookup_validate (ip4_address_t * a, u32 fib_index0)
-{
-  ip4_fib_mtrie_t *mtrie0;
-  ip4_fib_mtrie_leaf_t leaf0;
-  u32 lbi0;
-
-  mtrie0 = &ip4_fib_get (fib_index0)->mtrie;
-
-  leaf0 = ip4_fib_mtrie_lookup_step_one (mtrie0, a);
-  leaf0 = ip4_fib_mtrie_lookup_step (mtrie0, leaf0, a, 2);
-  leaf0 = ip4_fib_mtrie_lookup_step (mtrie0, leaf0, a, 3);
-
-  lbi0 = ip4_fib_mtrie_leaf_get_adj_index (leaf0);
-
-  return lbi0 == ip4_fib_table_lookup_lb (ip4_fib_get (fib_index0), a);
-}
-
-static clib_error_t *
-test_lookup_command_fn (vlib_main_t * vm,
-			unformat_input_t * input, vlib_cli_command_t * cmd)
-{
-  ip4_fib_t *fib;
-  u32 table_id = 0;
-  f64 count = 1;
-  u32 n;
-  int i;
-  ip4_address_t ip4_base_address;
-  u64 errors = 0;
-
-  while (unformat_check_input (input) != UNFORMAT_END_OF_INPUT)
-    {
-      if (unformat (input, "table %d", &table_id))
-	{
-	  /* Make sure the entry exists. */
-	  fib = ip4_fib_get (table_id);
-	  if ((fib) && (fib->index != table_id))
-	    return clib_error_return (0, "<fib-index> %d does not exist",
-				      table_id);
-	}
-      else if (unformat (input, "count %f", &count))
-	;
-
-      else if (unformat (input, "%U",
-			 unformat_ip4_address, &ip4_base_address))
-	;
-      else
-	return clib_error_return (0, "unknown input `%U'",
-				  format_unformat_error, input);
-    }
-
-  n = count;
-
-  for (i = 0; i < n; i++)
-    {
-      if (!ip4_lookup_validate (&ip4_base_address, table_id))
-	errors++;
-
-      ip4_base_address.as_u32 =
-	clib_host_to_net_u32 (1 +
-			      clib_net_to_host_u32 (ip4_base_address.as_u32));
-    }
-
-  if (errors)
-    vlib_cli_output (vm, "%llu errors out of %d lookups\n", errors, n);
-  else
-    vlib_cli_output (vm, "No errors in %d lookups\n", n);
-
-  return 0;
-}
-
-/*?
- * Perform a lookup of an IPv4 Address (or range of addresses) in the
- * given FIB table to determine if there is a conflict with the
- * adjacency table. The fib-id can be determined by using the
- * '<em>show ip fib</em>' command. If fib-id is not entered, default value
- * of 0 is used.
- *
- * @todo This command uses fib-id, other commands use table-id (not
- * just a name, they are different indexes). Would like to change this
- * to table-id for consistency.
- *
- * @cliexpar
- * Example of how to run the test lookup command:
- * @cliexstart{test lookup 172.16.1.1 table 1 count 2}
- * No errors in 2 lookups
- * @cliexend
-?*/
-/* *INDENT-OFF* */
-VLIB_CLI_COMMAND (lookup_test_command, static) =
-{
-  .path = "test lookup",
-  .short_help = "test lookup <ipv4-addr> [table <fib-id>] [count <nn>]",
-  .function = test_lookup_command_fn,
-};
-/* *INDENT-ON* */
 
 static clib_error_t *
 set_ip_flow_hash_command_fn (vlib_main_t * vm,

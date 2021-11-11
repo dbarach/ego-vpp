@@ -106,6 +106,7 @@ tap_free (vlib_main_t * vm, virtio_if_t * vif)
 error:
   vec_foreach_index (i, vif->tap_fds) close (vif->tap_fds[i]);
 
+  vec_free (vif->tap_fds);
   vec_free (vif->vhost_fds);
   vec_free (vif->rxq_vrings);
   vec_free (vif->txq_vrings);
@@ -195,36 +196,40 @@ tap_create_if (vlib_main_t * vm, tap_create_if_args_t * args)
 
   if (args->tap_flags & TAP_FLAG_ATTACH)
     {
-      if (args->host_if_name != NULL)
-	{
-	  host_if_name = (char *) args->host_if_name;
-	  clib_memcpy (ifr.ifr_name, host_if_name,
-		       clib_min (IFNAMSIZ, vec_len (host_if_name)));
-	}
-      else
+      if (args->host_if_name == NULL)
 	{
 	  args->rv = VNET_API_ERROR_NO_MATCHING_INTERFACE;
 	  err = clib_error_return (0, "host_if_name is not provided");
 	  goto error;
 	}
-      if (args->host_namespace)
+    }
+
+  /* if namespace is specified, all further netlink messages should be executed
+   * after we change our net namespace */
+  if (args->host_namespace)
+    {
+      old_netns_fd = clib_netns_open (NULL /* self */);
+      if ((nfd = clib_netns_open (args->host_namespace)) == -1)
 	{
-	  old_netns_fd = clib_netns_open (NULL /* self */);
-	  if ((nfd = clib_netns_open (args->host_namespace)) == -1)
-	    {
-	      args->rv = VNET_API_ERROR_SYSCALL_ERROR_2;
-	      args->error = clib_error_return_unix (0, "clib_netns_open '%s'",
-						    args->host_namespace);
-	      goto error;
-	    }
-	  if (clib_setns (nfd) == -1)
-	    {
-	      args->rv = VNET_API_ERROR_SYSCALL_ERROR_3;
-	      args->error = clib_error_return_unix (0, "setns '%s'",
-						    args->host_namespace);
-	      goto error;
-	    }
+	  args->rv = VNET_API_ERROR_SYSCALL_ERROR_2;
+	  args->error = clib_error_return_unix (0, "clib_netns_open '%s'",
+						args->host_namespace);
+	  goto error;
 	}
+      if (clib_setns (nfd) == -1)
+	{
+	  args->rv = VNET_API_ERROR_SYSCALL_ERROR_3;
+	  args->error =
+	    clib_error_return_unix (0, "setns '%s'", args->host_namespace);
+	  goto error;
+	}
+    }
+
+  if (args->host_if_name != NULL)
+    {
+      host_if_name = (char *) args->host_if_name;
+      clib_memcpy (ifr.ifr_name, host_if_name,
+		   clib_min (IFNAMSIZ, vec_len (host_if_name)));
     }
 
   if ((tfd = open ("/dev/net/tun", O_RDWR | O_NONBLOCK)) < 0)
@@ -398,54 +403,6 @@ tap_create_if (vlib_main_t * vm, tap_create_if_args_t * args)
   vif->features |= VIRTIO_FEATURE (VIRTIO_RING_F_INDIRECT_DESC);
 
   virtio_set_net_hdr_size (vif);
-
-  if (!(args->tap_flags & TAP_FLAG_ATTACH))
-    {
-      /* if namespace is specified, all further netlink messages should be executed
-         after we change our net namespace */
-      if (args->host_namespace)
-	{
-	  old_netns_fd = clib_netns_open (NULL /* self */);
-	  if ((nfd = clib_netns_open (args->host_namespace)) == -1)
-	    {
-	      args->rv = VNET_API_ERROR_SYSCALL_ERROR_2;
-	      args->error = clib_error_return_unix (0, "clib_netns_open '%s'",
-						    args->host_namespace);
-	      goto error;
-	    }
-	  args->error = vnet_netlink_set_link_netns (vif->ifindex, nfd,
-						     host_if_name);
-	  if (args->error)
-	    {
-	      args->rv = VNET_API_ERROR_NETLINK_ERROR;
-	      goto error;
-	    }
-	  if (clib_setns (nfd) == -1)
-	    {
-	      args->rv = VNET_API_ERROR_SYSCALL_ERROR_3;
-	      args->error = clib_error_return_unix (0, "setns '%s'",
-						    args->host_namespace);
-	      goto error;
-	    }
-	  if ((vif->ifindex = if_nametoindex (host_if_name)) == 0)
-	    {
-	      args->rv = VNET_API_ERROR_SYSCALL_ERROR_3;
-	      args->error = clib_error_return_unix (0, "if_nametoindex '%s'",
-						    host_if_name);
-	      goto error;
-	    }
-	}
-      else if (host_if_name)
-	{
-	  args->error =
-	    vnet_netlink_set_link_name (vif->ifindex, host_if_name);
-	  if (args->error)
-	    {
-	      args->rv = VNET_API_ERROR_NETLINK_ERROR;
-	      goto error;
-	    }
-	}
-    }
 
   if (vif->type == VIRTIO_IF_TYPE_TAP)
     {
@@ -668,10 +625,12 @@ tap_create_if (vlib_main_t * vm, tap_create_if_args_t * args)
 	ethernet_mac_address_generate (args->mac_addr.bytes);
 
       clib_memcpy (vif->mac_addr, args->mac_addr.bytes, 6);
-      vif->host_bridge = format (0, "%s%c", args->host_bridge, 0);
+      if (args->host_bridge)
+	vif->host_bridge = format (0, "%s%c", args->host_bridge, 0);
     }
   vif->host_if_name = format (0, "%s%c", host_if_name, 0);
-  vif->net_ns = format (0, "%s%c", args->host_namespace, 0);
+  if (args->host_namespace)
+    vif->net_ns = format (0, "%s%c", args->host_namespace, 0);
   vif->host_mtu_size = args->host_mtu_size;
   vif->tap_flags = args->tap_flags;
   clib_memcpy (vif->host_mac_addr, args->host_mac_addr.bytes, 6);
@@ -749,7 +708,6 @@ tap_create_if (vlib_main_t * vm, tap_create_if_args_t * args)
    * TUNSETCARRIER ioctl(). See tap_set_carrier().
    */
   vif->host_carrier_up = 1;
-  vif->cxq_vring = NULL;
 
   goto done;
 
@@ -767,7 +725,11 @@ done:
   if (vhost_mem)
     clib_mem_free (vhost_mem);
   if (old_netns_fd != -1)
-    close (old_netns_fd);
+    {
+      /* in case we errored with a switched netns */
+      clib_setns (old_netns_fd);
+      close (old_netns_fd);
+    }
   if (nfd != -1)
     close (nfd);
 }

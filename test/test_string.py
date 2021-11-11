@@ -27,19 +27,19 @@ class TestString(VppTestCase):
         """ String unit tests """
         names = ["memcpy_s",
                  "clib_memcmp", "clib_memcpy", "clib_memset",
-                 "clib_strcat", "clib_strcmp", "clib_strcpy",
-                 "clib_strncat", "clib_strncmp", "clib_strncpy",
-                 "clib_strnlen", "clib_strstr", "clib_strtok",
+                 "clib_strcmp", "clib_strncmp", "clib_strncpy",
+                 "clib_strnlen", "clib_strtok",
                  "memcmp_s", "memcpy_s", "memset_s ",
                  "strcat_s", "strcmp_s", "strcpy_s",
                  "strncat_s", "strncmp_s", "strncpy_s",
-                 "strnlen_s", "strstr_s", "strtok_s", "clib_count_equal"]
+                 "strnlen_s", "strstr_s", "strtok_s"]
 
         for name in names:
             error = self.vapi.cli("test string " + name)
             if error.find("failed") != -1:
                 self.logger.critical("FAILURE in the " + name + " test")
                 self.assertNotIn("failed", error)
+
 
 if __name__ == '__main__':
     unittest.main(testRunner=VppTestRunner)

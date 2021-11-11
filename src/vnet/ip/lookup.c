@@ -304,20 +304,17 @@ vnet_ip_route_cmd (vlib_main_t * vm,
 	}
       else if (0 < vec_len (rpaths))
 	{
-	  u32 k, n, incr;
-	  ip46_address_t dst = prefixs[i].fp_addr;
+	  u32 k, n;
 	  f64 t[2];
 	  n = count;
 	  t[0] = vlib_time_now (vm);
-	  incr = 1 << ((FIB_PROTOCOL_IP4 == prefixs[0].fp_proto ? 32 : 128) -
-		       prefixs[i].fp_len);
 
 	  for (k = 0; k < n; k++)
 	    {
 	      fib_prefix_t rpfx = {
 		.fp_len = prefixs[i].fp_len,
 		.fp_proto = prefixs[i].fp_proto,
-		.fp_addr = dst,
+		.fp_addr = prefixs[i].fp_addr,
 	      };
 
 	      if (is_del)
@@ -329,21 +326,7 @@ vnet_ip_route_cmd (vlib_main_t * vm,
 					   FIB_SOURCE_CLI,
 					   FIB_ENTRY_FLAG_NONE, rpaths);
 
-	      if (FIB_PROTOCOL_IP4 == prefixs[0].fp_proto)
-		{
-		  dst.ip4.as_u32 =
-		    clib_host_to_net_u32 (incr +
-					  clib_net_to_host_u32 (dst.
-								ip4.as_u32));
-		}
-	      else
-		{
-		  int bucket = (incr < 64 ? 0 : 1);
-		  dst.ip6.as_u64[bucket] =
-		    clib_host_to_net_u64 (incr +
-					  clib_net_to_host_u64 (dst.ip6.as_u64
-								[bucket]));
-		}
+	      fib_prefix_increment (&prefixs[i]);
 	    }
 
 	  t[1] = vlib_time_now (vm);
@@ -399,27 +382,32 @@ vnet_ip_table_cmd (vlib_main_t * vm,
 	}
     }
 
-  if (~0 == table_id)
-    {
-      error = clib_error_return (0, "No table id");
-      goto done;
-    }
-  else if (0 == table_id)
+  if (0 == table_id)
     {
       error = clib_error_return (0, "Can't change the default table");
       goto done;
     }
   else
-    {
-      if (is_add)
 	{
-	  ip_table_create (fproto, table_id, 0, name);
+	  if (is_add)
+	    {
+	      if (~0 == table_id)
+		{
+		  table_id = ip_table_get_unused_id (fproto);
+		  vlib_cli_output (vm, "%u\n", table_id);
+		}
+	      ip_table_create (fproto, table_id, 0, name);
+	    }
+	  else
+	    {
+	      if (~0 == table_id)
+		{
+		  error = clib_error_return (0, "No table id");
+		  goto done;
+		}
+	      ip_table_delete (fproto, table_id, 0);
+	    }
 	}
-      else
-	{
-	  ip_table_delete (fproto, table_id, 0);
-	}
-    }
 
 done:
   unformat_free (line_input);
@@ -438,6 +426,71 @@ vnet_ip6_table_cmd (vlib_main_t * vm,
 		    unformat_input_t * main_input, vlib_cli_command_t * cmd)
 {
   return (vnet_ip_table_cmd (vm, main_input, cmd, FIB_PROTOCOL_IP6));
+}
+
+clib_error_t *
+vnet_show_ip_table_cmd (vlib_main_t *vm, unformat_input_t *main_input,
+			vlib_cli_command_t *cmd, fib_protocol_t fproto)
+{
+  unformat_input_t _line_input, *line_input = &_line_input;
+  fib_table_t *fib, *fibs;
+  clib_error_t *error = NULL;
+  u32 table_id = ~0, fib_index;
+  /* Get a line of input. */
+  if (unformat_user (main_input, unformat_line_input, line_input))
+    {
+      while (unformat_check_input (line_input) != UNFORMAT_END_OF_INPUT)
+	{
+	  if (unformat (line_input, "%d", &table_id))
+	    ;
+	  else
+	    {
+	      error = unformat_parse_error (line_input);
+	      goto done;
+	    }
+	}
+      unformat_free (line_input);
+    }
+
+  fibs = (fproto == FIB_PROTOCOL_IP4) ? ip4_main.fibs : ip6_main.fibs;
+
+  if (table_id != (u32) ~0)
+    {
+      fib_index = fib_table_find (fproto, table_id);
+      if (fib_index == (u32) ~0)
+	{
+	  error = clib_error_return (0, "Couldn't find table with table_id %u",
+				     table_id);
+	  goto done;
+	}
+
+      fib = fib_table_get (fib_index, fproto);
+      vlib_cli_output (vm, "[%3u] table_id:%3u %v", fib->ft_index,
+		       fib->ft_table_id, fib->ft_desc);
+    }
+  else
+    {
+      pool_foreach (fib, fibs)
+	vlib_cli_output (vm, "[%3u] table_id:%3u %v", fib->ft_index,
+			 fib->ft_table_id, fib->ft_desc);
+    }
+
+done:
+  return error;
+}
+
+clib_error_t *
+vnet_show_ip4_table_cmd (vlib_main_t *vm, unformat_input_t *main_input,
+			 vlib_cli_command_t *cmd)
+{
+  return (vnet_show_ip_table_cmd (vm, main_input, cmd, FIB_PROTOCOL_IP4));
+}
+
+clib_error_t *
+vnet_show_ip6_table_cmd (vlib_main_t *vm, unformat_input_t *main_input,
+			 vlib_cli_command_t *cmd)
+{
+  return (vnet_show_ip_table_cmd (vm, main_input, cmd, FIB_PROTOCOL_IP6));
 }
 
 /* *INDENT-OFF* */
@@ -532,6 +585,18 @@ VLIB_CLI_COMMAND (ip6_table_command, static) = {
   .function = vnet_ip6_table_cmd,
 };
 
+VLIB_CLI_COMMAND (show_ip4_table_command, static) = {
+  .path = "show ip table",
+  .short_help = "show ip table <table-id>",
+  .function = vnet_show_ip4_table_cmd,
+};
+
+VLIB_CLI_COMMAND (show_ip6_table_command, static) = {
+  .path = "show ip6 table",
+  .short_help = "show ip6 table <table-id>",
+  .function = vnet_show_ip6_table_cmd,
+};
+
 static clib_error_t *
 ip_table_bind_cmd (vlib_main_t * vm,
                    unformat_input_t * input,
@@ -561,7 +626,7 @@ ip_table_bind_cmd (vlib_main_t * vm,
       goto done;
     }
 
-  rv = ip_table_bind (fproto, sw_if_index, table_id, 0);
+  rv = ip_table_bind (fproto, sw_if_index, table_id);
 
   if (VNET_API_ERROR_ADDRESS_FOUND_FOR_INTERFACE == rv)
     {
@@ -817,8 +882,8 @@ vnet_ip_mroute_cmd (vlib_main_t * vm,
 		mfib_table_entry_path_remove (fib_index,
 					      &pfx, MFIB_SOURCE_CLI, rpaths);
 	      else
-		mfib_table_entry_path_update (fib_index,
-					      &pfx, MFIB_SOURCE_CLI, rpaths);
+		mfib_table_entry_path_update (fib_index, &pfx, MFIB_SOURCE_CLI,
+					      MFIB_ENTRY_FLAG_NONE, rpaths);
 	    }
 
 	  if (FIB_PROTOCOL_IP4 == pfx.fp_proto)

@@ -48,6 +48,7 @@
 #include <vnet/fib/ip6_fib.h>
 #include <vnet/mfib/ip6_mfib.h>
 #include <vnet/dpo/load_balance_map.h>
+#include <vnet/dpo/receive_dpo.h>
 #include <vnet/dpo/classify_dpo.h>
 #include <vnet/classify/vnet_classify.h>
 #include <vnet/pg/pg.h>
@@ -308,11 +309,11 @@ ip6_add_del_interface_address (vlib_main_t * vm,
   ip6_address_fib_t ip6_af, *addr_fib = 0;
   const ip6_address_t *ll_addr;
 
-  /* local0 interface doesn't support IP addressing */
-  if (sw_if_index == 0)
+  error = vnet_sw_interface_supports_addressing (vnm, sw_if_index);
+  if (error)
     {
-      return
-	clib_error_create ("local0 interface doesn't support IP addressing");
+      vnm->api_errno = VNET_API_ERROR_UNSUPPORTED;
+      return error;
     }
 
   if (ip6_address_is_link_local_unicast (address))
@@ -353,9 +354,6 @@ ip6_add_del_interface_address (vlib_main_t * vm,
 
       return (NULL);
     }
-
-  vec_validate (im->fib_index_by_sw_if_index, sw_if_index);
-  vec_validate (im->mfib_index_by_sw_if_index, sw_if_index);
 
   ip6_addr_fib_init (&ip6_af, address,
 		     vec_elt (im->fib_index_by_sw_if_index, sw_if_index));
@@ -531,9 +529,6 @@ ip6_sw_interface_admin_up_down (vnet_main_t * vnm, u32 sw_if_index, u32 flags)
   ip6_address_t *a;
   u32 is_admin_up, fib_index;
 
-  /* Fill in lookup tables with default table (0). */
-  vec_validate (im->fib_index_by_sw_if_index, sw_if_index);
-
   vec_validate_init_empty (im->
 			   lookup_main.if_address_pool_index_by_sw_if_index,
 			   sw_if_index, ~0);
@@ -695,10 +690,16 @@ ip6_sw_interface_add_del (vnet_main_t * vnm, u32 sw_if_index, u32 is_add)
 {
   ip6_main_t *im = &ip6_main;
 
-  vec_validate (im->fib_index_by_sw_if_index, sw_if_index);
-  vec_validate (im->mfib_index_by_sw_if_index, sw_if_index);
+  vec_validate_init_empty (im->fib_index_by_sw_if_index, sw_if_index, ~0);
+  vec_validate_init_empty (im->mfib_index_by_sw_if_index, sw_if_index, ~0);
 
-  if (!is_add)
+  if (is_add)
+    {
+      /* Fill in lookup tables with default table (0). */
+      im->fib_index_by_sw_if_index[sw_if_index] = 0;
+      im->mfib_index_by_sw_if_index[sw_if_index] = 0;
+    }
+  else
     {
       /* Ensure that IPv6 is disabled */
       ip6_main_t *im6 = &ip6_main;
@@ -1228,10 +1229,9 @@ ip6_next_proto_is_tcp_udp (vlib_buffer_t * p0, ip6_header_t * ip0,
 }
 
 /* *INDENT-OFF* */
-VNET_FEATURE_ARC_INIT (ip6_local) =
-{
-  .arc_name  = "ip6-local",
-  .start_nodes = VNET_FEATURES ("ip6-local"),
+VNET_FEATURE_ARC_INIT (ip6_local) = {
+  .arc_name = "ip6-local",
+  .start_nodes = VNET_FEATURES ("ip6-local", "ip6-receive"),
 };
 /* *INDENT-ON* */
 
@@ -1278,10 +1278,10 @@ ip6_tcp_udp_icmp_bad_length (vlib_main_t * vm, vlib_buffer_t * p0)
     return 1;
 }
 
-
 always_inline uword
-ip6_local_inline (vlib_main_t * vm, vlib_node_runtime_t * node,
-		  vlib_frame_t * frame, int head_of_feature_arc)
+ip6_local_inline (vlib_main_t *vm, vlib_node_runtime_t *node,
+		  vlib_frame_t *frame, int head_of_feature_arc,
+		  int is_receive_dpo)
 {
   ip6_main_t *im = &ip6_main;
   ip_lookup_main_t *lm = &im->lookup_main;
@@ -1469,6 +1469,23 @@ ip6_local_inline (vlib_main_t * vm, vlib_node_runtime_t * node,
 	    vnet_buffer (b[1])->sw_if_index[VLIB_TX] != ~0 ?
 	    vnet_buffer (b[1])->sw_if_index[VLIB_TX] :
 	    vnet_buffer (b[1])->ip.fib_index;
+	  if (is_receive_dpo)
+	    {
+	      const receive_dpo_t *rd0, *rd1;
+	      rd0 =
+		receive_dpo_get (vnet_buffer (b[0])->ip.adj_index[VLIB_TX]);
+	      rd1 =
+		receive_dpo_get (vnet_buffer (b[1])->ip.adj_index[VLIB_TX]);
+	      vnet_buffer (b[0])->ip.rx_sw_if_index = rd0->rd_sw_if_index;
+	      vnet_buffer (b[1])->ip.rx_sw_if_index = rd1->rd_sw_if_index;
+	    }
+	  else
+	    {
+	      vnet_buffer (b[0])->ip.rx_sw_if_index =
+		vnet_buffer (b[0])->ip.adj_index[VLIB_RX];
+	      vnet_buffer (b[1])->ip.rx_sw_if_index =
+		vnet_buffer (b[1])->ip.adj_index[VLIB_RX];
+	    }
 	}			/* head_of_feature_arc */
 
       next[0] = lm->local_next_by_ip_protocol[ip[0]->protocol];
@@ -1596,6 +1613,15 @@ ip6_local_inline (vlib_main_t * vm, vlib_node_runtime_t * node,
 	    vnet_buffer (b[0])->sw_if_index[VLIB_TX] != ~0 ?
 	    vnet_buffer (b[0])->sw_if_index[VLIB_TX] :
 	    vnet_buffer (b[0])->ip.fib_index;
+	  if (is_receive_dpo)
+	    {
+	      receive_dpo_t *rd;
+	      rd = receive_dpo_get (vnet_buffer (b[0])->ip.adj_index[VLIB_TX]);
+	      vnet_buffer (b[0])->ip.rx_sw_if_index = rd->rd_sw_if_index;
+	    }
+	  else
+	    vnet_buffer (b[0])->ip.rx_sw_if_index =
+	      vnet_buffer (b[0])->ip.adj_index[VLIB_RX];
 	}			/* head_of_feature_arc */
 
       next[0] = lm->local_next_by_ip_protocol[ip->protocol];
@@ -1629,10 +1655,10 @@ ip6_local_inline (vlib_main_t * vm, vlib_node_runtime_t * node,
 VLIB_NODE_FN (ip6_local_node) (vlib_main_t * vm, vlib_node_runtime_t * node,
 			       vlib_frame_t * frame)
 {
-  return ip6_local_inline (vm, node, frame, 1 /* head of feature arc */ );
+  return ip6_local_inline (vm, node, frame, 1 /* head of feature arc */,
+			   0 /* ip6_local_inline */);
 }
 
-/* *INDENT-OFF* */
 VLIB_REGISTER_NODE (ip6_local_node) =
 {
   .name = "ip6-local",
@@ -1648,16 +1674,29 @@ VLIB_REGISTER_NODE (ip6_local_node) =
     [IP_LOCAL_NEXT_REASSEMBLY] = "ip6-full-reassembly",
   },
 };
-/* *INDENT-ON* */
+
+VLIB_NODE_FN (ip6_receive_local_node)
+(vlib_main_t *vm, vlib_node_runtime_t *node, vlib_frame_t *frame)
+{
+  return ip6_local_inline (vm, node, frame, 1 /* head of feature arc */,
+			   1 /* is_receive_dpo */);
+}
+
+VLIB_REGISTER_NODE (ip6_receive_local_node) = {
+  .name = "ip6-receive",
+  .vector_size = sizeof (u32),
+  .format_trace = format_ip6_forward_next_trace,
+  .sibling_of = "ip6-local"
+};
 
 VLIB_NODE_FN (ip6_local_end_of_arc_node) (vlib_main_t * vm,
 					  vlib_node_runtime_t * node,
 					  vlib_frame_t * frame)
 {
-  return ip6_local_inline (vm, node, frame, 0 /* head of feature arc */ );
+  return ip6_local_inline (vm, node, frame, 0 /* head of feature arc */,
+			   0 /* ip6_local_inline */);
 }
 
-/* *INDENT-OFF* */
 VLIB_REGISTER_NODE (ip6_local_end_of_arc_node) = {
   .name = "ip6-local-end-of-arc",
   .vector_size = sizeof (u32),
@@ -1671,7 +1710,6 @@ VNET_FEATURE_INIT (ip6_local_end_of_arc, static) = {
   .node_name = "ip6-local-end-of-arc",
   .runs_before = 0, /* not before any other features */
 };
-/* *INDENT-ON* */
 
 #ifdef CLIB_MARCH_VARIANT
 extern vlib_node_registration_t ip6_local_node;

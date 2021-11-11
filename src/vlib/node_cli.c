@@ -310,7 +310,7 @@ show_node_graphviz (vlib_main_t * vm,
 /*?
  * Dump dot files data to draw a graph of all the nodes.
  * If the argument 'filter' is provided, only the active nodes (since the last
- * "clear run" comand) are selected and they are scaled and colored according
+ * "clear run" command) are selected and they are scaled and colored according
  * to their utilization. You can choose to filter nodes that are called,
  * nodes that receive vectors or both (default).
  * The 'file' option allows to save data in a temp file.
@@ -498,7 +498,6 @@ show_node_runtime (vlib_main_t * vm,
       uword i, j;
       f64 dt;
       u64 n_input, n_output, n_drop, n_punt;
-      u64 n_internal_vectors, n_internal_calls;
       u64 n_clocks, l, v, c, d;
       int brief = 1;
       int summary = 0;
@@ -557,7 +556,6 @@ show_node_runtime (vlib_main_t * vm,
 	  vec_sort_with_function (nodes, node_cmp);
 
 	  n_input = n_output = n_drop = n_punt = n_clocks = 0;
-	  n_internal_vectors = n_internal_calls = 0;
 	  for (i = 0; i < vec_len (nodes); i++)
 	    {
 	      n = nodes[i];
@@ -577,11 +575,6 @@ show_node_runtime (vlib_main_t * vm,
 		  n_output += (n->flags & VLIB_NODE_FLAG_IS_OUTPUT) ? v : 0;
 		  n_drop += (n->flags & VLIB_NODE_FLAG_IS_DROP) ? v : 0;
 		  n_punt += (n->flags & VLIB_NODE_FLAG_IS_PUNT) ? v : 0;
-		  if (!(n->flags & VLIB_NODE_FLAG_IS_OUTPUT))
-		    {
-		      n_internal_vectors += v;
-		      n_internal_calls += c;
-		    }
 		  if (n->flags & VLIB_NODE_FLAG_IS_HANDOFF)
 		    n_input += v;
 		  break;

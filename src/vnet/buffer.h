@@ -190,8 +190,17 @@ typedef struct
 	  /* Rewrite length */
 	  u8 save_rewrite_length;
 
-	  /* MFIB RPF ID */
-	  u32 rpf_id;
+	  union
+	  {
+	    /* sw_if_index of the local interface the buffer was received on
+	     * - if hitting a DPO_RECEIVE - it is set in ip[46]-receive.
+	     * This is ~0 if the dpo is not a receive dpo, or if the
+	     * interface is not specified (e.g. route add via local) */
+	    u32 rx_sw_if_index;
+
+	    /* MFIB RPF ID */
+	    u32 rpf_id;
+	  };
 	};
 
 	/* ICMP */
@@ -235,7 +244,8 @@ typedef struct
 		u8 save_rewrite_length;
 		u8 ip_proto;	/* protocol in ip header */
 		u8 icmp_type_or_tcp_flags;
-		u8 is_non_first_fragment;
+		u8 is_non_first_fragment : 1;
+		u8 l4_layer_truncated : 7;
 		u32 tcp_seq_number;
 	      };
 	      /* full reassembly output variables */
@@ -408,7 +418,9 @@ typedef struct
   };
 } vnet_buffer_opaque_t;
 
-#define VNET_REWRITE_TOTAL_BYTES (VLIB_BUFFER_PRE_DATA_SIZE)
+#define VNET_REWRITE_TOTAL_BYTES 128
+STATIC_ASSERT (VNET_REWRITE_TOTAL_BYTES <= VLIB_BUFFER_PRE_DATA_SIZE,
+	       "VNET_REWRITE_TOTAL_BYTES too big");
 
 STATIC_ASSERT (STRUCT_SIZE_OF (vnet_buffer_opaque_t, ip.save_rewrite_length)
 	       == STRUCT_SIZE_OF (vnet_buffer_opaque_t,
@@ -517,7 +529,7 @@ STATIC_ASSERT (sizeof (vnet_buffer_opaque2_t) <=
                        vnet_buffer(b)->l4_hdr_offset - \
                        vnet_buffer (b)->l3_hdr_offset)
 
-
+format_function_t format_vnet_buffer_no_chain;
 format_function_t format_vnet_buffer;
 format_function_t format_vnet_buffer_offload;
 format_function_t format_vnet_buffer_flags;

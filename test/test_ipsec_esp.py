@@ -259,30 +259,35 @@ class TemplateIpsecEsp(ConfigIpsecESP):
     Basic test for ipsec esp sanity - tunnel and transport modes.
 
     Below 4 cases are covered as part of this test
-    1) ipsec esp v4 transport basic test  - IPv4 Transport mode
+
+    #. ipsec esp v4 transport basic test  - IPv4 Transport mode
         scenario using HMAC-SHA1-96 integrity algo
-    2) ipsec esp v4 transport burst test
-        Above test for 257 pkts
-    3) ipsec esp 4o4 tunnel basic test    - IPv4 Tunnel mode
-        scenario using HMAC-SHA1-96 integrity algo
-    4) ipsec esp 4o4 tunnel burst test
+
+    #. ipsec esp v4 transport burst test
         Above test for 257 pkts
 
-    TRANSPORT MODE:
+    #. ipsec esp 4o4 tunnel basic test    - IPv4 Tunnel mode
+        scenario using HMAC-SHA1-96 integrity algo
 
-     ---   encrypt   ---
-    |pg2| <-------> |VPP|
-     ---   decrypt   ---
+    #. ipsec esp 4o4 tunnel burst test
+        Above test for 257 pkts
 
-    TUNNEL MODE:
+    TRANSPORT MODE::
 
-     ---   encrypt   ---   plain   ---
-    |pg0| <-------  |VPP| <------ |pg1|
-     ---             ---           ---
+         ---   encrypt   ---
+        |pg2| <-------> |VPP|
+         ---   decrypt   ---
 
-     ---   decrypt   ---   plain   ---
-    |pg0| ------->  |VPP| ------> |pg1|
-     ---             ---           ---
+    TUNNEL MODE::
+
+         ---   encrypt   ---   plain   ---
+        |pg0| <-------  |VPP| <------ |pg1|
+         ---             ---           ---
+
+         ---   decrypt   ---   plain   ---
+        |pg0| ------->  |VPP| ------> |pg1|
+         ---             ---           ---
+
     """
 
     @classmethod
@@ -943,7 +948,7 @@ class RunTestIpsecEspAll(ConfigIpsecESP,
             1970,  # results in 2 chained buffers entering decrypt node
                    # but leaving as simple buffer due to ICV removal (tra4)
             2004,  # footer+ICV will be added to 2nd buffer (tun4)
-            4010,  # ICV ends up splitted accross 2 buffers in esp_decrypt
+            4010,  # ICV ends up splitted across 2 buffers in esp_decrypt
                    # for transport4; transport6 takes normal path
             4020,  # same as above but tra4 and tra6 are switched
         ]
@@ -969,6 +974,9 @@ class RunTestIpsecEspAll(ConfigIpsecESP,
         self.unconfig_network()
         self.config_network(self.params.values())
         self.verify_hi_seq_num()
+        self.unconfig_network()
+        self.config_network(self.params.values())
+        self.verify_tra_lost()
 
         #
         # swap the handlers while SAs are up

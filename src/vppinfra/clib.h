@@ -124,10 +124,17 @@
 #define PREDICT_FALSE(x) __builtin_expect((x),0)
 #define PREDICT_TRUE(x) __builtin_expect((x),1)
 #define COMPILE_TIME_CONST(x) __builtin_constant_p (x)
+#define CLIB_ASSUME(x)                                                        \
+  do                                                                          \
+    {                                                                         \
+      if (!(x))                                                               \
+	__builtin_unreachable ();                                             \
+    }                                                                         \
+  while (0)
 
 /*
  * Compiler barrier
- *   prevent compiler to reorder memory access accross this boundary
+ *   prevent compiler to reorder memory access across this boundary
  *   prevent compiler to cache values in register (force reload)
  * Not to be confused with CPU memory barrier below
  */
@@ -251,6 +258,9 @@ min_log2_u64 (u64 x)
 always_inline uword
 pow2_mask (uword x)
 {
+#ifdef __BMI2__
+  return _bzhi_u64 (-1ULL, x);
+#endif
   return ((uword) 1 << x) - (uword) 1;
 }
 

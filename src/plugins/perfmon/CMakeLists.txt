@@ -21,9 +21,9 @@ add_vpp_plugin(perfmon
   dispatch_wrapper.c
   linux.c
   perfmon.c
-  table.c
   intel/core.c
   intel/uncore.c
+  intel/bundle/membw_bound.c
   intel/bundle/inst_and_clock.c
   intel/bundle/load_blocks.c
   intel/bundle/mem_bw.c
@@ -31,4 +31,9 @@ add_vpp_plugin(perfmon
   intel/bundle/branch_mispred.c
   intel/bundle/power_license.c
   intel/bundle/topdown_metrics.c
+  intel/bundle/topdown_tremont.c
+  intel/bundle/iio_bw.c
+
+  COMPONENT
+  vpp-plugin-devtools
 )

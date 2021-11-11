@@ -518,6 +518,7 @@ chacha20poly1305_calc (vlib_main_t * vm,
     {
       op->tag = src + src_len - NOISE_AUTHTAG_LEN;
       src_len -= NOISE_AUTHTAG_LEN;
+      op->flags |= VNET_CRYPTO_OP_FLAG_HMAC_CHECK;
     }
   else
     op->tag = tag_;
@@ -548,7 +549,6 @@ noise_remote_encrypt (vlib_main_t * vm, noise_remote_t * r, uint32_t * r_idx,
   noise_keypair_t *kp;
   enum noise_state_crypt ret = SC_FAILED;
 
-  clib_rwlock_reader_lock (&r->r_keypair_lock);
   if ((kp = r->r_current) == NULL)
     goto error;
 
@@ -588,7 +588,6 @@ noise_remote_encrypt (vlib_main_t * vm, noise_remote_t * r, uint32_t * r_idx,
 
   ret = SC_OK;
 error:
-  clib_rwlock_reader_unlock (&r->r_keypair_lock);
   return ret;
 }
 
@@ -599,7 +598,6 @@ noise_remote_decrypt (vlib_main_t * vm, noise_remote_t * r, uint32_t r_idx,
 {
   noise_keypair_t *kp;
   enum noise_state_crypt ret = SC_FAILED;
-  clib_rwlock_reader_lock (&r->r_keypair_lock);
 
   if (r->r_current != NULL && r->r_current->kp_local_index == r_idx)
     {
@@ -643,7 +641,6 @@ noise_remote_decrypt (vlib_main_t * vm, noise_remote_t * r, uint32_t r_idx,
    * data packet can't confirm a session that we are an INITIATOR of. */
   if (kp == r->r_next)
     {
-      clib_rwlock_reader_unlock (&r->r_keypair_lock);
       clib_rwlock_writer_lock (&r->r_keypair_lock);
       if (kp == r->r_next && kp->kp_local_index == r_idx)
 	{
@@ -654,11 +651,9 @@ noise_remote_decrypt (vlib_main_t * vm, noise_remote_t * r, uint32_t r_idx,
 
 	  ret = SC_CONN_RESET;
 	  clib_rwlock_writer_unlock (&r->r_keypair_lock);
-	  clib_rwlock_reader_lock (&r->r_keypair_lock);
 	  goto error;
 	}
       clib_rwlock_writer_unlock (&r->r_keypair_lock);
-      clib_rwlock_reader_lock (&r->r_keypair_lock);
     }
 
   /* Similar to when we encrypt, we want to notify the caller when we
@@ -675,7 +670,6 @@ noise_remote_decrypt (vlib_main_t * vm, noise_remote_t * r, uint32_t r_idx,
 
   ret = SC_OK;
 error:
-  clib_rwlock_reader_unlock (&r->r_keypair_lock);
   return ret;
 }
 

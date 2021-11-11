@@ -571,17 +571,16 @@ int vnet_vxlan_gbp_tunnel_add_del
 	       *  - the forwarding interface is for-us
 	       *  - the accepting interface is that from the API
 	       */
-	      mfib_table_entry_path_update (t->encap_fib_index,
-					    &mpfx,
-					    MFIB_SOURCE_VXLAN_GBP, &path);
+	      mfib_table_entry_path_update (t->encap_fib_index, &mpfx,
+					    MFIB_SOURCE_VXLAN_GBP,
+					    MFIB_ENTRY_FLAG_NONE, &path);
 
 	      path.frp_sw_if_index = a->mcast_sw_if_index;
 	      path.frp_flags = FIB_ROUTE_PATH_FLAG_NONE;
 	      path.frp_mitf_flags = MFIB_ITF_FLAG_ACCEPT;
-	      mfei = mfib_table_entry_path_update (t->encap_fib_index,
-						   &mpfx,
-						   MFIB_SOURCE_VXLAN_GBP,
-						   &path);
+	      mfei = mfib_table_entry_path_update (
+		t->encap_fib_index, &mpfx, MFIB_SOURCE_VXLAN_GBP,
+		MFIB_ENTRY_FLAG_NONE, &path);
 
 	      /*
 	       * Create the mcast adjacency to send traffic to the group
@@ -1031,11 +1030,12 @@ set_ip4_vxlan_gbp_bypass (vlib_main_t * vm,
 }
 
 /*?
- * This command adds the 'ip4-vxlan-gbp-bypass' graph node for a given interface.
- * By adding the IPv4 vxlan_gbp-bypass graph node to an interface, the node checks
- *  for and validate input vxlan_gbp packet and bypass ip4-lookup, ip4-local,
- * ip4-udp-lookup nodes to speedup vxlan_gbp packet forwarding. This node will
- * cause extra overhead to for non-vxlan_gbp packets which is kept at a minimum.
+ * This command adds the 'ip4-vxlan-gbp-bypass' graph node for a given
+ * interface. By adding the IPv4 vxlan_gbp-bypass graph node to an interface,
+ * the node checks for and validate input vxlan_gbp packet and bypass
+ * ip4-lookup, ip4-local, ip4-udp-lookup nodes to speedup vxlan_gbp packet
+ * forwarding. This node will cause extra overhead to for non-vxlan_gbp packets
+ * which is kept at a minimum.
  *
  * @cliexpar
  * @parblock
@@ -1052,10 +1052,10 @@ set_ip4_vxlan_gbp_bypass (vlib_main_t * vm,
  *
  * Example of graph node after ip4-vxlan-gbp-bypass is enabled:
  * @cliexstart{show vlib graph ip4-vxlan-gbp-bypass}
- *            Name                      Next                    Previous
- * ip4-vxlan-gbp-bypass              error-drop [0]               ip4-input
- *                                vxlan4-gbp-input [1]        ip4-input-no-checksum
- *                                   ip4-lookup [2]
+ *            Name             Next                      Previous
+ * ip4-vxlan-gbp-bypass     error-drop [0]               ip4-input
+ *                       vxlan4-gbp-input [1]       ip4-input-no-checksum
+ *                          ip4-lookup [2]
  * @cliexend
  *
  * Example of how to display the feature enabled on an interface:
@@ -1088,11 +1088,12 @@ set_ip6_vxlan_gbp_bypass (vlib_main_t * vm,
 }
 
 /*?
- * This command adds the 'ip6-vxlan-gbp-bypass' graph node for a given interface.
- * By adding the IPv6 vxlan-gbp-bypass graph node to an interface, the node checks
- *  for and validate input vxlan_gbp packet and bypass ip6-lookup, ip6-local,
- * ip6-udp-lookup nodes to speedup vxlan_gbp packet forwarding. This node will
- * cause extra overhead to for non-vxlan packets which is kept at a minimum.
+ * This command adds the 'ip6-vxlan-gbp-bypass' graph node for a given
+ * interface. By adding the IPv6 vxlan-gbp-bypass graph node to an interface,
+ * the node checks for and validate input vxlan_gbp packet and bypass
+ * ip6-lookup, ip6-local, ip6-udp-lookup nodes to speedup vxlan_gbp packet
+ * forwarding. This node will cause extra overhead to for non-vxlan packets
+ * which is kept at a minimum.
  *
  * @cliexpar
  * @parblock
@@ -1109,10 +1110,10 @@ set_ip6_vxlan_gbp_bypass (vlib_main_t * vm,
  *
  * Example of graph node after ip6-vxlan-gbp-bypass is enabled:
  * @cliexstart{show vlib graph ip6-vxlan-gbp-bypass}
- *            Name                      Next                    Previous
- * ip6-vxlan-gbp-bypass              error-drop [0]               ip6-input
- *                                vxlan6-gbp-input [1]        ip4-input-no-checksum
- *                                   ip6-lookup [2]
+ *            Name             Next                    Previous
+ * ip6-vxlan-gbp-bypass     error-drop [0]             ip6-input
+ *                       vxlan6-gbp-input [1]      ip4-input-no-checksum
+ *                          ip6-lookup [2]
  * @cliexend
  *
  * Example of how to display the feature enabled on an interface:

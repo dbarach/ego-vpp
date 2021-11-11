@@ -65,10 +65,8 @@ static void
 fib_api_next_hop_decode (const vl_api_fib_path_t *in,
                          ip46_address_t *out)
 {
-    if (in->proto == FIB_API_PATH_NH_PROTO_IP4)
-        clib_memcpy (&out->ip4, &in->nh.address.ip4, sizeof (out->ip4));
-    else if (in->proto == FIB_API_PATH_NH_PROTO_IP6)
-        clib_memcpy (&out->ip6, &in->nh.address.ip6, sizeof (out->ip6));
+    ASSERT (FIB_API_PATH_NH_PROTO_IP4 == in->proto || FIB_API_PATH_NH_PROTO_IP6 == in->proto);
+    *out = to_ip46 (FIB_API_PATH_NH_PROTO_IP6 == in->proto, (void *)&in->nh.address);
 }
 
 static vl_api_fib_path_nh_proto_t
@@ -296,22 +294,17 @@ fib_api_path_decode (vl_api_fib_path_t *in,
 
             if (!(out->frp_flags & FIB_ROUTE_PATH_BIER_IMP))
             {
-                fib_api_next_hop_decode(in, &out->frp_addr);
+                index_t bdti;
 
-                if (ip46_address_is_zero(&out->frp_addr))
+                bdti = bier_disp_table_find(ntohl(in->table_id));
+
+                if (INDEX_INVALID != bdti)
                 {
-                    index_t bdti;
-
-                    bdti = bier_disp_table_find(ntohl(in->table_id));
-
-                    if (INDEX_INVALID != bdti)
-                    {
-                        out->frp_fib_index = bdti;
-                    }
-                    else
-                    {
-                        return (VNET_API_ERROR_NO_SUCH_FIB);
-                    }
+                    out->frp_fib_index = bdti;
+                }
+                else
+                {
+                    return (VNET_API_ERROR_NO_SUCH_FIB);
                 }
             }
             break;

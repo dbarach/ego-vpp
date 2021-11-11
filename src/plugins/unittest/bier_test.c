@@ -134,8 +134,6 @@ bier_test_mk_intf (u32 ninterfaces)
 
         tm->hw[i] = vnet_get_hw_interface(vnet_get_main(),
                                           tm->hw_if_indicies[i]);
-        vec_validate (ip4_main.fib_index_by_sw_if_index, tm->hw[i]->sw_if_index);
-        vec_validate (ip6_main.fib_index_by_sw_if_index, tm->hw[i]->sw_if_index);
         ip4_main.fib_index_by_sw_if_index[tm->hw[i]->sw_if_index] = 0;
         ip6_main.fib_index_by_sw_if_index[tm->hw[i]->sw_if_index] = 0;
         error = vnet_sw_interface_set_flags(vnet_get_main(),
@@ -770,10 +768,9 @@ bier_test_mpls_imp (void)
         .frp_flags = FIB_ROUTE_PATH_BIER_IMP,
         .frp_mitf_flags = MFIB_ITF_FLAG_FORWARD,
     };
-    mfib_table_entry_path_update(0, // default table
-                                 &pfx_1_1_1_1_c_239_1_1_1 ,
-                                 MFIB_SOURCE_API,
-                                 &path_via_bier_imp_1);
+    mfib_table_entry_path_update (0, // default table
+				  &pfx_1_1_1_1_c_239_1_1_1, MFIB_SOURCE_API,
+				  MFIB_ENTRY_FLAG_NONE, &path_via_bier_imp_1);
     mfib_table_entry_delete(0,
                             &pfx_1_1_1_1_c_239_1_1_1 ,
                             MFIB_SOURCE_API);

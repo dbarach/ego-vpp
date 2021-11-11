@@ -251,11 +251,12 @@ typedef struct
 #define DPDK_LINK_POLL_INTERVAL       (3.0)
 #define DPDK_MIN_LINK_POLL_INTERVAL   (0.001)	/* 1msec */
 
-#define foreach_dpdk_device_config_item \
-  _ (num_rx_queues) \
-  _ (num_tx_queues) \
-  _ (num_rx_desc) \
-  _ (num_tx_desc) \
+#define foreach_dpdk_device_config_item                                       \
+  _ (num_rx_queues)                                                           \
+  _ (num_tx_queues)                                                           \
+  _ (num_rx_desc)                                                             \
+  _ (num_tx_desc)                                                             \
+  _ (max_lro_pkt_size)                                                        \
   _ (rss_fn)
 
 typedef enum
@@ -301,7 +302,9 @@ typedef struct
   u8 *eal_init_args_str;
   u8 *uio_driver_name;
   u8 no_multi_seg;
+  u8 enable_lro;
   u8 enable_tcp_udp_checksum;
+  u8 enable_outer_checksum_offload;
   u8 no_tx_checksum_offload;
   u8 enable_telemetry;
   u16 max_simd_bitwidth;
@@ -347,7 +350,7 @@ typedef struct
   u32 buffers[DPDK_RX_BURST_SZ];
   u16 next[DPDK_RX_BURST_SZ];
   u16 etype[DPDK_RX_BURST_SZ];
-  u16 flags[DPDK_RX_BURST_SZ];
+  u32 flags[DPDK_RX_BURST_SZ];
   vlib_buffer_t buffer_template;
 } dpdk_per_thread_data_t;
 
@@ -443,32 +446,33 @@ typedef enum
 
 void dpdk_update_link_state (dpdk_device_t * xd, f64 now);
 
-#define foreach_dpdk_rss_hf                    \
-  _(0, ETH_RSS_FRAG_IPV4,           "ipv4-frag")    \
-  _(1, ETH_RSS_NONFRAG_IPV4_TCP,    "ipv4-tcp")     \
-  _(2, ETH_RSS_NONFRAG_IPV4_UDP,    "ipv4-udp")     \
-  _(3, ETH_RSS_NONFRAG_IPV4_SCTP,   "ipv4-sctp")    \
-  _(4, ETH_RSS_NONFRAG_IPV4_OTHER,  "ipv4-other")   \
-  _(5, ETH_RSS_IPV4,                "ipv4")         \
-  _(6, ETH_RSS_IPV6_TCP_EX,         "ipv6-tcp-ex")  \
-  _(7, ETH_RSS_IPV6_UDP_EX,         "ipv6-udp-ex")  \
-  _(8, ETH_RSS_FRAG_IPV6,           "ipv6-frag")    \
-  _(9, ETH_RSS_NONFRAG_IPV6_TCP,    "ipv6-tcp")     \
-  _(10, ETH_RSS_NONFRAG_IPV6_UDP,   "ipv6-udp")     \
-  _(11, ETH_RSS_NONFRAG_IPV6_SCTP,  "ipv6-sctp")    \
-  _(12, ETH_RSS_NONFRAG_IPV6_OTHER, "ipv6-other")   \
-  _(13, ETH_RSS_IPV6_EX,            "ipv6-ex")      \
-  _(14, ETH_RSS_IPV6,               "ipv6")         \
-  _(15, ETH_RSS_L2_PAYLOAD,         "l2-payload")   \
-  _(16, ETH_RSS_PORT,               "port")         \
-  _(17, ETH_RSS_VXLAN,              "vxlan")        \
-  _(18, ETH_RSS_GENEVE,             "geneve")       \
-  _(19, ETH_RSS_NVGRE,              "nvgre")        \
-  _(20, ETH_RSS_GTPU,               "gtpu")         \
-  _(60, ETH_RSS_L4_DST_ONLY,        "l4-dst-only")  \
-  _(61, ETH_RSS_L4_SRC_ONLY,        "l4-src-only")  \
-  _(62, ETH_RSS_L3_DST_ONLY,        "l3-dst-only")  \
-  _(63, ETH_RSS_L3_SRC_ONLY,        "l3-src-only")
+#define foreach_dpdk_rss_hf                                                   \
+  _ (0, ETH_RSS_FRAG_IPV4, "ipv4-frag")                                       \
+  _ (1, ETH_RSS_NONFRAG_IPV4_TCP, "ipv4-tcp")                                 \
+  _ (2, ETH_RSS_NONFRAG_IPV4_UDP, "ipv4-udp")                                 \
+  _ (3, ETH_RSS_NONFRAG_IPV4_SCTP, "ipv4-sctp")                               \
+  _ (4, ETH_RSS_NONFRAG_IPV4_OTHER, "ipv4-other")                             \
+  _ (5, ETH_RSS_IPV4, "ipv4")                                                 \
+  _ (6, ETH_RSS_IPV6_TCP_EX, "ipv6-tcp-ex")                                   \
+  _ (7, ETH_RSS_IPV6_UDP_EX, "ipv6-udp-ex")                                   \
+  _ (8, ETH_RSS_FRAG_IPV6, "ipv6-frag")                                       \
+  _ (9, ETH_RSS_NONFRAG_IPV6_TCP, "ipv6-tcp")                                 \
+  _ (10, ETH_RSS_NONFRAG_IPV6_UDP, "ipv6-udp")                                \
+  _ (11, ETH_RSS_NONFRAG_IPV6_SCTP, "ipv6-sctp")                              \
+  _ (12, ETH_RSS_NONFRAG_IPV6_OTHER, "ipv6-other")                            \
+  _ (13, ETH_RSS_IPV6_EX, "ipv6-ex")                                          \
+  _ (14, ETH_RSS_IPV6, "ipv6")                                                \
+  _ (15, ETH_RSS_L2_PAYLOAD, "l2-payload")                                    \
+  _ (16, ETH_RSS_PORT, "port")                                                \
+  _ (17, ETH_RSS_VXLAN, "vxlan")                                              \
+  _ (18, ETH_RSS_GENEVE, "geneve")                                            \
+  _ (19, ETH_RSS_NVGRE, "nvgre")                                              \
+  _ (20, ETH_RSS_GTPU, "gtpu")                                                \
+  _ (21, ETH_RSS_ESP, "esp")                                                  \
+  _ (60, ETH_RSS_L4_DST_ONLY, "l4-dst-only")                                  \
+  _ (61, ETH_RSS_L4_SRC_ONLY, "l4-src-only")                                  \
+  _ (62, ETH_RSS_L3_DST_ONLY, "l3-dst-only")                                  \
+  _ (63, ETH_RSS_L3_SRC_ONLY, "l3-src-only")
 
 format_function_t format_dpdk_device_name;
 format_function_t format_dpdk_device;

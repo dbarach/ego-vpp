@@ -37,6 +37,7 @@
 #include <vnet/ethernet/ethernet.h>
 #include <vnet/devices/devices.h>
 #include <vnet/feature/feature.h>
+#include <vnet/ip/ip_psh_cksum.h>
 
 #include <vnet/devices/virtio/vhost_user.h>
 #include <vnet/devices/virtio/vhost_user_inline.h>
@@ -116,24 +117,6 @@ vhost_user_name_renumber (vnet_hw_interface_t * hi, u32 new_dev_instance)
 		hi->dev_instance, new_dev_instance);
 
   return 0;
-}
-
-/**
- * @brief Spin until the vring is successfully locked
- */
-static_always_inline void
-vhost_user_vring_lock (vhost_user_intf_t * vui, u32 qid)
-{
-  clib_spinlock_lock_if_init (&vui->vrings[qid].vring_lock);
-}
-
-/**
- * @brief Unlock the vring lock
- */
-static_always_inline void
-vhost_user_vring_unlock (vhost_user_intf_t * vui, u32 qid)
-{
-  clib_spinlock_unlock_if_init (&vui->vrings[qid].vring_lock);
 }
 
 static_always_inline void
@@ -226,27 +209,40 @@ vhost_user_handle_tx_offload (vhost_user_intf_t * vui, vlib_buffer_t * b,
   int is_ip4 = b->flags & VNET_BUFFER_F_IS_IP4;
   int is_ip6 = b->flags & VNET_BUFFER_F_IS_IP6;
   vnet_buffer_oflags_t oflags = vnet_buffer (b)->oflags;
+  u16 psh_cksum = 0;
+  ip4_header_t *ip4 = 0;
+  ip6_header_t *ip6 = 0;
 
   ASSERT (!(is_ip4 && is_ip6));
   vnet_generic_header_offset_parser (b, &gho, 1 /* l2 */ , is_ip4, is_ip6);
   if (oflags & VNET_BUFFER_OFFLOAD_F_IP_CKSUM)
     {
-      ip4_header_t *ip4;
-
       ip4 =
 	(ip4_header_t *) (vlib_buffer_get_current (b) + gho.l3_hdr_offset);
       ip4->checksum = ip4_header_checksum (ip4);
+      psh_cksum = ip4_pseudo_header_cksum (ip4);
+    }
+  else
+    {
+      ip6 = (ip6_header_t *) (vlib_buffer_get_current (b) + gho.l3_hdr_offset);
+      psh_cksum = ip6_pseudo_header_cksum (ip6);
     }
 
   /* checksum offload */
   if (oflags & VNET_BUFFER_OFFLOAD_F_UDP_CKSUM)
     {
+      udp_header_t *udp =
+	(udp_header_t *) (vlib_buffer_get_current (b) + gho.l4_hdr_offset);
+      udp->checksum = psh_cksum;
       hdr->flags = VIRTIO_NET_HDR_F_NEEDS_CSUM;
       hdr->csum_start = gho.l4_hdr_offset;
       hdr->csum_offset = offsetof (udp_header_t, checksum);
     }
   else if (oflags & VNET_BUFFER_OFFLOAD_F_TCP_CKSUM)
     {
+      tcp_header_t *tcp =
+	(tcp_header_t *) (vlib_buffer_get_current (b) + gho.l4_hdr_offset);
+      tcp->checksum = psh_cksum;
       hdr->flags = VIRTIO_NET_HDR_F_NEEDS_CSUM;
       hdr->csum_start = gho.l4_hdr_offset;
       hdr->csum_offset = offsetof (tcp_header_t, checksum);
@@ -377,17 +373,14 @@ vhost_user_tx_trace_packed (vhost_trace_t * t, vhost_user_intf_t * vui,
 }
 
 static_always_inline uword
-vhost_user_device_class_packed (vlib_main_t * vm, vlib_node_runtime_t * node,
-				vlib_frame_t * frame)
+vhost_user_device_class_packed (vlib_main_t *vm, vlib_node_runtime_t *node,
+				vlib_frame_t *frame, vhost_user_intf_t *vui,
+				vhost_user_vring_t *rxvq)
 {
   u32 *buffers = vlib_frame_vector_args (frame);
   u32 n_left = frame->n_vectors;
   vhost_user_main_t *vum = &vhost_user_main;
-  vnet_interface_output_runtime_t *rd = (void *) node->runtime_data;
-  vhost_user_intf_t *vui =
-    pool_elt_at_index (vum->vhost_user_interfaces, rd->dev_instance);
-  u32 qid;
-  vhost_user_vring_t *rxvq;
+  u32 qid = rxvq->qid;
   u8 error;
   u32 thread_index = vm->thread_index;
   vhost_cpu_t *cpu = &vum->cpus[thread_index];
@@ -400,10 +393,6 @@ vhost_user_device_class_packed (vlib_main_t * vm, vlib_node_runtime_t * node,
   u16 desc_head, desc_index, desc_len;
   u16 n_descs_processed;
   u8 indirect, chained;
-
-  qid = VHOST_VRING_IDX_RX (*vec_elt_at_index (vui->per_cpu_tx_qid,
-					       thread_index));
-  rxvq = &vui->vrings[qid];
 
 retry:
   error = VHOST_USER_TX_FUNC_ERROR_NONE;
@@ -682,7 +671,7 @@ done:
       goto retry;
     }
 
-  vhost_user_vring_unlock (vui, qid);
+  clib_spinlock_unlock (&rxvq->vring_lock);
 
   if (PREDICT_FALSE (n_left && error != VHOST_USER_TX_FUNC_ERROR_NONE))
     {
@@ -706,7 +695,7 @@ VNET_DEVICE_CLASS_TX_FN (vhost_user_device_class) (vlib_main_t * vm,
   vnet_interface_output_runtime_t *rd = (void *) node->runtime_data;
   vhost_user_intf_t *vui =
     pool_elt_at_index (vum->vhost_user_interfaces, rd->dev_instance);
-  u32 qid = ~0;
+  u32 qid;
   vhost_user_vring_t *rxvq;
   u8 error;
   u32 thread_index = vm->thread_index;
@@ -716,6 +705,7 @@ VNET_DEVICE_CLASS_TX_FN (vhost_user_device_class) (vlib_main_t * vm,
   u16 copy_len;
   u16 tx_headers_len;
   u32 or_flags;
+  vnet_hw_if_tx_frame_t *tf = vlib_frame_scalar_args (frame);
 
   if (PREDICT_FALSE (!vui->admin_up))
     {
@@ -729,20 +719,20 @@ VNET_DEVICE_CLASS_TX_FN (vhost_user_device_class) (vlib_main_t * vm,
       goto done3;
     }
 
-  qid = VHOST_VRING_IDX_RX (*vec_elt_at_index (vui->per_cpu_tx_qid,
-					       thread_index));
+  qid = VHOST_VRING_IDX_RX (tf->queue_id);
   rxvq = &vui->vrings[qid];
+  ASSERT (tf->queue_id == rxvq->qid);
+
   if (PREDICT_FALSE (rxvq->avail == 0))
     {
       error = VHOST_USER_TX_FUNC_ERROR_MMAP_FAIL;
       goto done3;
     }
-
-  if (PREDICT_FALSE (vui->use_tx_spinlock))
-    vhost_user_vring_lock (vui, qid);
+  if (tf->shared_queue)
+    clib_spinlock_lock (&rxvq->vring_lock);
 
   if (vhost_user_is_packed_ring_supported (vui))
-    return (vhost_user_device_class_packed (vm, node, frame));
+    return (vhost_user_device_class_packed (vm, node, frame, vui, rxvq));
 
 retry:
   error = VHOST_USER_TX_FUNC_ERROR_NONE;
@@ -1020,7 +1010,7 @@ done:
 	vhost_user_send_call (vm, vui, rxvq);
     }
 
-  vhost_user_vring_unlock (vui, qid);
+  clib_spinlock_unlock (&rxvq->vring_lock);
 
 done3:
   if (PREDICT_FALSE (n_left && error != VHOST_USER_TX_FUNC_ERROR_NONE))
@@ -1046,7 +1036,24 @@ vhost_user_interface_rx_mode_change (vnet_main_t * vnm, u32 hw_if_index,
   vhost_user_intf_t *vui =
     pool_elt_at_index (vum->vhost_user_interfaces, hif->dev_instance);
   vhost_user_vring_t *txvq = &vui->vrings[VHOST_VRING_IDX_TX (qid)];
+  vhost_cpu_t *cpu;
 
+  if (mode == txvq->mode)
+    return 0;
+
+  if ((mode != VNET_HW_IF_RX_MODE_POLLING) &&
+      (mode != VNET_HW_IF_RX_MODE_ADAPTIVE) &&
+      (mode != VNET_HW_IF_RX_MODE_INTERRUPT))
+    {
+      vu_log_err (vui, "unhandled mode %d changed for if %d queue %d", mode,
+		  hw_if_index, qid);
+      return clib_error_return (0, "unsupported");
+    }
+
+  if (txvq->thread_index == ~0)
+    return clib_error_return (0, "Queue initialization is not finished yet");
+
+  cpu = vec_elt_at_index (vum->cpus, txvq->thread_index);
   if ((mode == VNET_HW_IF_RX_MODE_INTERRUPT) ||
       (mode == VNET_HW_IF_RX_MODE_ADAPTIVE))
     {
@@ -1057,11 +1064,14 @@ vhost_user_interface_rx_mode_change (vnet_main_t * vnm, u32 hw_if_index,
 	}
       if (txvq->mode == VNET_HW_IF_RX_MODE_POLLING)
 	{
+	  ASSERT (cpu->polling_q_count != 0);
+	  if (cpu->polling_q_count)
+	    cpu->polling_q_count--;
 	  vum->ifq_count++;
 	  // Start the timer if this is the first encounter on interrupt
 	  // interface/queue
 	  if ((vum->ifq_count == 1) &&
-	      (vum->coalesce_time > 0.0) && (vum->coalesce_frames > 0))
+	      ((vum->coalesce_time > 0.0) || (vum->coalesce_frames > 0)))
 	    vlib_process_signal_event (vm,
 				       vhost_user_send_interrupt_node.index,
 				       VHOST_USER_EVENT_START_TIMER, 0);
@@ -1072,10 +1082,10 @@ vhost_user_interface_rx_mode_change (vnet_main_t * vnm, u32 hw_if_index,
       if (((txvq->mode == VNET_HW_IF_RX_MODE_INTERRUPT) ||
 	   (txvq->mode == VNET_HW_IF_RX_MODE_ADAPTIVE)) && vum->ifq_count)
 	{
+	  cpu->polling_q_count++;
 	  vum->ifq_count--;
 	  // Stop the timer if there is no more interrupt interface/queue
-	  if ((vum->ifq_count == 0) &&
-	      (vum->coalesce_time > 0.0) && (vum->coalesce_frames > 0))
+	  if (vum->ifq_count == 0)
 	    vlib_process_signal_event (vm,
 				       vhost_user_send_interrupt_node.index,
 				       VHOST_USER_EVENT_STOP_TIMER, 0);
@@ -1083,17 +1093,7 @@ vhost_user_interface_rx_mode_change (vnet_main_t * vnm, u32 hw_if_index,
     }
 
   txvq->mode = mode;
-  if (mode == VNET_HW_IF_RX_MODE_POLLING)
-    txvq->used->flags = VRING_USED_F_NO_NOTIFY;
-  else if ((mode == VNET_HW_IF_RX_MODE_ADAPTIVE) ||
-	   (mode == VNET_HW_IF_RX_MODE_INTERRUPT))
-    txvq->used->flags = 0;
-  else
-    {
-      vu_log_err (vui, "unhandled mode %d changed for if %d queue %d", mode,
-		  hw_if_index, qid);
-      return clib_error_return (0, "unsupported");
-    }
+  vhost_user_set_operation_mode (vui, txvq);
 
   return 0;
 }

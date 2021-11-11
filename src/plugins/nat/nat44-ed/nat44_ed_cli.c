@@ -162,8 +162,8 @@ done:
 }
 
 static clib_error_t *
-nat_show_workers_commnad_fn (vlib_main_t * vm, unformat_input_t * input,
-			     vlib_cli_command_t * cmd)
+nat_show_workers_command_fn (vlib_main_t *vm, unformat_input_t *input,
+			     vlib_cli_command_t *cmd)
 {
   snat_main_t *sm = &snat_main;
   u32 *worker;
@@ -283,12 +283,7 @@ nat44_show_hash_command_fn (vlib_main_t * vm, unformat_input_t * input,
   else if (unformat (input, "verbose"))
     verbose = 2;
 
-  vlib_cli_output (vm, "%U", format_bihash_8_8, &sm->static_mapping_by_local,
-		   verbose);
-  vlib_cli_output (vm, "%U",
-		   format_bihash_8_8, &sm->static_mapping_by_external,
-		   verbose);
-      vlib_cli_output (vm, "%U", format_bihash_16_8, &sm->flow_hash, verbose);
+  vlib_cli_output (vm, "%U", format_bihash_16_8, &sm->flow_hash, verbose);
   vec_foreach_index (i, sm->per_thread_data)
   {
     vlib_cli_output (vm, "-------- thread %d %s --------\n",
@@ -296,8 +291,7 @@ nat44_show_hash_command_fn (vlib_main_t * vm, unformat_input_t * input,
     vlib_cli_output (vm, "%U", format_bihash_16_8, &sm->flow_hash, verbose);
   }
 
-      vlib_cli_output (vm, "%U", format_bihash_16_8, &nam->affinity_hash,
-		       verbose);
+  vlib_cli_output (vm, "%U", format_bihash_16_8, &nam->affinity_hash, verbose);
 
   vlib_cli_output (vm, "-------- hash table parameters --------\n");
   vlib_cli_output (vm, "translation buckets: %u", sm->translation_buckets);
@@ -419,9 +413,13 @@ add_address_command_fn (vlib_main_t * vm,
   for (i = 0; i < count; i++)
     {
       if (is_add)
-	rv = snat_add_address (sm, &this_addr, vrf_id, twice_nat);
+	{
+	  rv = nat44_ed_add_address (&this_addr, vrf_id, twice_nat);
+	}
       else
-	rv = snat_del_address (sm, this_addr, 0, twice_nat);
+	{
+	  rv = nat44_ed_del_address (this_addr, 0, twice_nat);
+	}
 
       switch (rv)
 	{
@@ -498,6 +496,7 @@ nat44_show_summary_command_fn (vlib_main_t * vm, unformat_input_t * input,
   u32 udp_sessions = 0;
   u32 tcp_sessions = 0;
   u32 icmp_sessions = 0;
+  u32 other_sessions = 0;
 
   u32 timed_out = 0;
   u32 transitory = 0;
@@ -522,40 +521,42 @@ nat44_show_summary_command_fn (vlib_main_t * vm, unformat_input_t * input,
             if (now >= sess_timeout_time)
               timed_out++;
 
-            switch (s->nat_proto)
-              {
-              case NAT_PROTOCOL_ICMP:
-                icmp_sessions++;
-                break;
-              case NAT_PROTOCOL_TCP:
-                tcp_sessions++;
-                if (s->state)
-                  {
-                    if (s->tcp_closed_timestamp)
-                      {
-                        if (now >= s->tcp_closed_timestamp)
-                          {
-                            ++transitory_closed;
-                          }
-                        else
-                          {
-                            ++transitory_wait_closed;
-                          }
-                      }
-                    transitory++;
-                  }
-                else
-                  established++;
-                break;
-              case NAT_PROTOCOL_UDP:
-              default:
-                udp_sessions++;
-                break;
-              }
-          }
-          nat44_show_lru_summary (vm, tsm, now, sess_timeout_time);
-          count += pool_elts (tsm->sessions);
-        }
+	    switch (s->proto)
+	      {
+	      case IP_PROTOCOL_ICMP:
+		icmp_sessions++;
+		break;
+	      case IP_PROTOCOL_TCP:
+		tcp_sessions++;
+		if (s->state)
+		  {
+		    if (s->tcp_closed_timestamp)
+		      {
+			if (now >= s->tcp_closed_timestamp)
+			  {
+			    ++transitory_closed;
+			  }
+			else
+			  {
+			    ++transitory_wait_closed;
+			  }
+		      }
+		    transitory++;
+		  }
+		else
+		  established++;
+		break;
+	      case IP_PROTOCOL_UDP:
+		udp_sessions++;
+		break;
+	      default:
+		++other_sessions;
+		break;
+	      }
+	   }
+	  nat44_show_lru_summary (vm, tsm, now, sess_timeout_time);
+	  count += pool_elts (tsm->sessions);
+	}
     }
   else
     {
@@ -567,36 +568,38 @@ nat44_show_summary_command_fn (vlib_main_t * vm, unformat_input_t * input,
         if (now >= sess_timeout_time)
           timed_out++;
 
-        switch (s->nat_proto)
-          {
-          case NAT_PROTOCOL_ICMP:
-            icmp_sessions++;
-            break;
-          case NAT_PROTOCOL_TCP:
-            tcp_sessions++;
-            if (s->state)
-              {
-                if (s->tcp_closed_timestamp)
-                  {
-                    if (now >= s->tcp_closed_timestamp)
-                      {
-                        ++transitory_closed;
-                      }
-                    else
-                      {
-                        ++transitory_wait_closed;
-                      }
-                  }
-                transitory++;
-              }
-            else
-              established++;
-            break;
-          case NAT_PROTOCOL_UDP:
-          default:
-            udp_sessions++;
-            break;
-          }
+	switch (s->proto)
+	  {
+	  case IP_PROTOCOL_ICMP:
+	    icmp_sessions++;
+	    break;
+	  case IP_PROTOCOL_TCP:
+	    tcp_sessions++;
+	    if (s->state)
+	      {
+		if (s->tcp_closed_timestamp)
+		  {
+		    if (now >= s->tcp_closed_timestamp)
+		      {
+			++transitory_closed;
+		      }
+		    else
+		      {
+			++transitory_wait_closed;
+		      }
+		  }
+		transitory++;
+	      }
+	    else
+	      established++;
+	    break;
+	  case IP_PROTOCOL_UDP:
+	    udp_sessions++;
+	    break;
+	  default:
+	    ++other_sessions;
+	    break;
+	  }
       }
       nat44_show_lru_summary (vm, tsm, now, sess_timeout_time);
       count = pool_elts (tsm->sessions);
@@ -613,6 +616,7 @@ nat44_show_summary_command_fn (vlib_main_t * vm, unformat_input_t * input,
 		   transitory_closed);
   vlib_cli_output (vm, "total udp sessions: %u", udp_sessions);
   vlib_cli_output (vm, "total icmp sessions: %u", icmp_sessions);
+  vlib_cli_output (vm, "total other sessions: %u", other_sessions);
   return 0;
 }
 
@@ -632,10 +636,6 @@ nat44_show_addresses_command_fn (vlib_main_t * vm, unformat_input_t * input,
             fib_table_get(ap->fib_index, FIB_PROTOCOL_IP4)->ft_table_id);
       else
         vlib_cli_output (vm, "  tenant VRF independent");
-    #define _(N, i, n, s) \
-      vlib_cli_output (vm, "  %d busy %s ports", ap->busy_##n##_ports, s);
-      foreach_nat_protocol
-    #undef _
     }
   vlib_cli_output (vm, "NAT44 twice-nat pool addresses:");
   vec_foreach (ap, sm->twice_nat_addresses)
@@ -646,10 +646,6 @@ nat44_show_addresses_command_fn (vlib_main_t * vm, unformat_input_t * input,
             fib_table_get(ap->fib_index, FIB_PROTOCOL_IP4)->ft_table_id);
       else
         vlib_cli_output (vm, "  tenant VRF independent");
-    #define _(N, i, n, s) \
-      vlib_cli_output (vm, "  %d busy %s ports", ap->busy_##n##_ports, s);
-      foreach_nat_protocol
-    #undef _
     }
   return 0;
 }
@@ -804,21 +800,22 @@ nat44_show_interfaces_command_fn (vlib_main_t * vm, unformat_input_t * input,
   vlib_cli_output (vm, "NAT44 interfaces:");
   pool_foreach (i, sm->interfaces)
    {
-    vlib_cli_output (vm, " %U %s", format_vnet_sw_if_index_name, vnm,
-                     i->sw_if_index,
-                     (nat_interface_is_inside(i) &&
-                      nat_interface_is_outside(i)) ? "in out" :
-                     (nat_interface_is_inside(i) ? "in" : "out"));
+     vlib_cli_output (vm, " %U %s", format_vnet_sw_if_index_name, vnm,
+		      i->sw_if_index,
+		      (nat44_ed_is_interface_inside (i) &&
+		       nat44_ed_is_interface_outside (i)) ?
+			"in out" :
+			(nat44_ed_is_interface_inside (i) ? "in" : "out"));
   }
 
   pool_foreach (i, sm->output_feature_interfaces)
    {
-    vlib_cli_output (vm, " %U output-feature %s",
-                     format_vnet_sw_if_index_name, vnm,
-                     i->sw_if_index,
-                     (nat_interface_is_inside(i) &&
-                      nat_interface_is_outside(i)) ? "in out" :
-                     (nat_interface_is_inside(i) ? "in" : "out"));
+     vlib_cli_output (vm, " %U output-feature %s",
+		      format_vnet_sw_if_index_name, vnm, i->sw_if_index,
+		      (nat44_ed_is_interface_inside (i) &&
+		       nat44_ed_is_interface_outside (i)) ?
+			"in out" :
+			(nat44_ed_is_interface_inside (i) ? "in" : "out"));
   }
 
   return 0;
@@ -832,14 +829,13 @@ add_static_mapping_command_fn (vlib_main_t * vm,
   unformat_input_t _line_input, *line_input = &_line_input;
   vnet_main_t *vnm = vnet_get_main ();
   clib_error_t *error = 0;
-  int rv;
-
-  nat_protocol_t proto = NAT_PROTOCOL_OTHER;
   ip4_address_t l_addr, e_addr, pool_addr;
   u32 l_port = 0, e_port = 0, vrf_id = ~0;
   u8 l_port_set = 0, e_port_set = 0;
-  u32 sw_if_index, flags = 0;
-  int is_add = 1;
+  int is_add = 1, rv;
+  u32 flags = 0;
+  u32 sw_if_index = ~0;
+  ip_protocol_t proto = 0;
 
   if (!unformat_user (input, unformat_line_input, line_input))
     return clib_error_return (0, NAT44_ED_EXPECTED_ARGUMENT);
@@ -881,7 +877,7 @@ add_static_mapping_command_fn (vlib_main_t * vm,
 	}
       else if (unformat (line_input, "vrf %u", &vrf_id))
 	;
-      else if (unformat (line_input, "%U", unformat_nat_protocol, &proto))
+      else if (unformat (line_input, "%U", unformat_ip_protocol, &proto))
 	;
       else if (unformat (line_input, "self-twice-nat"))
 	{
@@ -978,7 +974,7 @@ add_identity_mapping_command_fn (vlib_main_t * vm,
 
   int rv, is_add = 1, port_set = 0;
   u32 sw_if_index, port, flags, vrf_id = ~0;
-  nat_protocol_t proto;
+  ip_protocol_t proto = 0;
   ip4_address_t addr;
 
   flags = NAT_SM_FLAG_IDENTITY_NAT;
@@ -998,7 +994,7 @@ add_identity_mapping_command_fn (vlib_main_t * vm,
 	}
       else if (unformat (line_input, "vrf %u", &vrf_id))
 	;
-      else if (unformat (line_input, "%U %u", unformat_nat_protocol, &proto,
+      else if (unformat (line_input, "%U %u", unformat_ip_protocol, &proto,
 			 &port))
 	{
 	  port_set = 1;
@@ -1075,7 +1071,7 @@ add_lb_static_mapping_command_fn (vlib_main_t * vm,
   ip4_address_t l_addr, e_addr;
   u32 l_port = 0, e_port = 0, vrf_id = 0, probability = 0, affinity = 0;
   u8 proto_set = 0;
-  nat_protocol_t proto;
+  ip_protocol_t proto;
   nat44_lb_addr_port_t *locals = 0, local;
   int rv, is_add = 1;
   u32 flags = 0;
@@ -1109,7 +1105,7 @@ add_lb_static_mapping_command_fn (vlib_main_t * vm,
       else if (unformat (line_input, "external %U:%u", unformat_ip4_address,
 			 &e_addr, &e_port))
 	;
-      else if (unformat (line_input, "protocol %U", unformat_nat_protocol,
+      else if (unformat (line_input, "protocol %U", unformat_ip_protocol,
 			 &proto))
 	{
 	  proto_set = 1;
@@ -1197,7 +1193,7 @@ add_lb_backend_command_fn (vlib_main_t * vm,
   u32 l_port = 0, e_port = 0, vrf_id = 0, probability = 0;
   int is_add = 1;
   int rv;
-  nat_protocol_t proto;
+  ip_protocol_t proto;
   u8 proto_set = 0;
 
   /* Get a line of input. */
@@ -1216,7 +1212,7 @@ add_lb_backend_command_fn (vlib_main_t * vm,
       else if (unformat (line_input, "external %U:%u", unformat_ip4_address,
 			 &e_addr, &e_port))
 	;
-      else if (unformat (line_input, "protocol %U", unformat_nat_protocol,
+      else if (unformat (line_input, "protocol %U", unformat_ip_protocol,
 			 &proto))
 	proto_set = 1;
       else if (unformat (line_input, "del"))
@@ -1294,15 +1290,13 @@ snat_add_interface_address_command_fn (vlib_main_t * vm,
 				       unformat_input_t * input,
 				       vlib_cli_command_t * cmd)
 {
-  snat_main_t *sm = &snat_main;
   unformat_input_t _line_input, *line_input = &_line_input;
-  u32 sw_if_index;
-  int rv;
-  int is_del = 0;
+  snat_main_t *sm = &snat_main;
   clib_error_t *error = 0;
+  int rv, is_del = 0;
   u8 twice_nat = 0;
+  u32 sw_if_index;
 
-  /* Get a line of input. */
   if (!unformat_user (input, unformat_line_input, line_input))
     return clib_error_return (0, NAT44_ED_EXPECTED_ARGUMENT);
 
@@ -1312,9 +1306,13 @@ snat_add_interface_address_command_fn (vlib_main_t * vm,
 		    sm->vnet_main, &sw_if_index))
 	;
       else if (unformat (line_input, "twice-nat"))
-	twice_nat = 1;
+	{
+	  twice_nat = 1;
+	}
       else if (unformat (line_input, "del"))
-	is_del = 1;
+	{
+	  is_del = 1;
+	}
       else
 	{
 	  error = clib_error_return (0, "unknown input '%U'",
@@ -1323,17 +1321,21 @@ snat_add_interface_address_command_fn (vlib_main_t * vm,
 	}
     }
 
-  rv = snat_add_interface_address (sm, sw_if_index, is_del, twice_nat);
-
-  switch (rv)
+  if (!is_del)
     {
-    case 0:
-      break;
-
-    default:
-      error = clib_error_return (0, "snat_add_interface_address returned %d",
-				 rv);
-      goto done;
+      rv = nat44_ed_add_interface_address (sw_if_index, twice_nat);
+      if (rv)
+	{
+	  error = clib_error_return (0, "add address returned %d", rv);
+	}
+    }
+  else
+    {
+      rv = nat44_ed_del_interface_address (sw_if_index, twice_nat);
+      if (rv)
+	{
+	  error = clib_error_return (0, "del address returned %d", rv);
+	}
     }
 
 done:
@@ -1375,22 +1377,61 @@ nat44_show_sessions_command_fn (vlib_main_t * vm, unformat_input_t * input,
   clib_error_t *error = 0;
   snat_main_per_thread_data_t *tsm;
   snat_main_t *sm = &snat_main;
-
-  int i = 0;
+  ip4_address_t i2o_sa, i2o_da, o2i_sa, o2i_da;
+  u8 filter_i2o_sa = 0, filter_i2o_da = 0;
+  u8 filter_o2i_sa = 0, filter_o2i_da = 0;
+  u16 i2o_sp, i2o_dp, o2i_sp, o2i_dp;
+  u8 filter_i2o_sp = 0, filter_i2o_dp = 0;
+  u8 filter_o2i_sp = 0, filter_o2i_dp = 0;
+  ip_protocol_t proto;
+  u8 filter_proto = 0;
+  u8 had_input = 1, filtering = 0;
+  int i = 0, showed_sessions;
 
   if (!unformat_user (input, unformat_line_input, line_input))
-    goto print;
+    {
+      had_input = 0;
+      goto print;
+    }
 
   while (unformat_check_input (line_input) != UNFORMAT_END_OF_INPUT)
     {
-      error = clib_error_return (0, "unknown input '%U'",
-				 format_unformat_error, line_input);
-      break;
+      if (unformat (line_input, "filter i2o saddr %U", unformat_ip4_address,
+		    &i2o_sa))
+	filter_i2o_sa = filtering = 1;
+      else if (unformat (line_input, "filter i2o daddr %U",
+			 unformat_ip4_address, &i2o_da))
+	filter_i2o_da = filtering = 1;
+      else if (unformat (line_input, "filter o2i saddr %U",
+			 unformat_ip4_address, &o2i_sa))
+	filter_o2i_sa = filtering = 1;
+      else if (unformat (line_input, "filter o2i daddr %U",
+			 unformat_ip4_address, &o2i_da))
+	filter_o2i_da = filtering = 1;
+      else if (unformat (line_input, "filter i2o sport %u", &i2o_sp))
+	filter_i2o_sp = filtering = 1;
+      else if (unformat (line_input, "filter i2o dport %u", &i2o_dp))
+	filter_i2o_dp = filtering = 1;
+      else if (unformat (line_input, "filter o2i sport %u", &o2i_sp))
+	filter_o2i_sp = filtering = 1;
+      else if (unformat (line_input, "filter o2i dport %u", &o2i_dp))
+	filter_o2i_dp = filtering = 1;
+      else if (unformat (line_input, "filter i2o proto %U",
+			 unformat_ip_protocol, &proto))
+	filter_proto = filtering = 1;
+      else if (unformat (line_input, "filter o2i proto %U",
+			 unformat_ip_protocol, &proto))
+	filter_proto = filtering = 1;
+      else
+	{
+	  error = clib_error_return (0, "unknown input '%U'",
+				     format_unformat_error, line_input);
+	  goto done;
+	}
     }
-  unformat_free (line_input);
 
 print:
-    vlib_cli_output (vm, "NAT44 ED sessions:");
+  vlib_cli_output (vm, "NAT44 ED sessions:");
 
   vec_foreach_index (i, sm->per_thread_data)
     {
@@ -1400,12 +1441,52 @@ print:
                        i, vlib_worker_threads[i].name,
                        pool_elts (tsm->sessions));
 
-          snat_session_t *s;
-          pool_foreach (s, tsm->sessions)
-           {
-            vlib_cli_output (vm, "  %U\n", format_snat_session, tsm, s);
-          }
+      showed_sessions = 0;
+      snat_session_t *s;
+      pool_foreach (s, tsm->sessions)
+	{
+	  if (filtering)
+	    {
+	      if (filter_i2o_sa && i2o_sa.as_u32 != s->i2o.match.saddr.as_u32)
+		continue;
+	      if (filter_i2o_da && i2o_da.as_u32 != s->i2o.match.daddr.as_u32)
+		continue;
+	      if (filter_o2i_sa && o2i_sa.as_u32 != s->o2i.match.saddr.as_u32)
+		continue;
+	      if (filter_o2i_da && o2i_da.as_u32 != s->o2i.match.daddr.as_u32)
+		continue;
+	      if (filter_i2o_sp &&
+		  i2o_sp != clib_net_to_host_u16 (s->i2o.match.sport))
+		continue;
+	      if (filter_i2o_dp &&
+		  i2o_dp != clib_net_to_host_u16 (s->i2o.match.dport))
+		continue;
+	      if (filter_o2i_sp &&
+		  o2i_sp != clib_net_to_host_u16 (s->o2i.match.sport))
+		continue;
+	      if (filter_o2i_dp &&
+		  o2i_dp != clib_net_to_host_u16 (s->o2i.match.dport))
+		continue;
+	      if (filter_proto && proto != s->proto)
+		continue;
+	      showed_sessions++;
+	    }
+	  vlib_cli_output (vm, "  %U\n", format_snat_session, tsm, s);
+	}
+      if (filtering)
+	{
+	  vlib_cli_output (vm,
+			   "Showed: %d, Filtered: %d of total %d "
+			   "sessions of thread %d\n\n",
+			   showed_sessions,
+			   pool_elts (tsm->sessions) - showed_sessions,
+			   pool_elts (tsm->sessions), i);
+	}
     }
+
+done:
+  if (had_input)
+    unformat_free (line_input);
   return error;
 }
 
@@ -1457,7 +1538,7 @@ nat44_del_session_command_fn (vlib_main_t * vm,
   u32 port = 0, eh_port = 0, vrf_id = sm->outside_vrf_id;
   clib_error_t *error = 0;
   ip4_address_t addr, eh_addr;
-  nat_protocol_t proto;
+  ip_protocol_t proto;
   int is_in = 0;
   int rv;
 
@@ -1466,9 +1547,8 @@ nat44_del_session_command_fn (vlib_main_t * vm,
 
   while (unformat_check_input (line_input) != UNFORMAT_END_OF_INPUT)
     {
-      if (unformat
-	  (line_input, "%U:%u %U", unformat_ip4_address, &addr, &port,
-	   unformat_nat_protocol, &proto))
+      if (unformat (line_input, "%U:%u %U", unformat_ip4_address, &addr, &port,
+		    unformat_ip_protocol, &proto))
 	;
       else if (unformat (line_input, "in"))
 	{
@@ -1494,8 +1574,8 @@ nat44_del_session_command_fn (vlib_main_t * vm,
     }
 
   rv = nat44_ed_del_session (sm, &addr, clib_host_to_net_u16 (port), &eh_addr,
-			     clib_host_to_net_u16 (eh_port),
-			     nat_proto_to_ip_proto (proto), vrf_id, is_in);
+			     clib_host_to_net_u16 (eh_port), proto, vrf_id,
+			     is_in);
 
   switch (rv)
     {
@@ -1690,7 +1770,7 @@ VLIB_CLI_COMMAND (set_workers_command, static) = {
 VLIB_CLI_COMMAND (nat_show_workers_command, static) = {
   .path = "show nat workers",
   .short_help = "show nat workers",
-  .function = nat_show_workers_commnad_fn,
+  .function = nat_show_workers_command_fn,
 };
 
 /*?
@@ -2048,7 +2128,9 @@ VLIB_CLI_COMMAND (nat44_show_interface_address_command, static) = {
 ?*/
 VLIB_CLI_COMMAND (nat44_show_sessions_command, static) = {
   .path = "show nat44 sessions",
-  .short_help = "show nat44 sessions",
+  .short_help = "show nat44 sessions [filter {i2o | o2i} {saddr <ip4-addr> "
+		"| sport <n> | daddr <ip4-addr> | dport <n> | proto <proto>} "
+		"[filter .. [..]]]",
   .function = nat44_show_sessions_command_fn,
 };
 

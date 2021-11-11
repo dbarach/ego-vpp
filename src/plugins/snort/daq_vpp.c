@@ -113,6 +113,7 @@ typedef struct _vpp_context
 
   daq_vpp_input_mode_t input_mode;
   const char *socket_name;
+  volatile bool interrupted;
 } VPP_Context_t;
 
 static VPP_Context_t *global_vpp_ctx = 0;
@@ -480,6 +481,16 @@ vpp_daq_start (void *handle)
 }
 
 static int
+vpp_daq_interrupt (void *handle)
+{
+  VPP_Context_t *vc = (VPP_Context_t *) handle;
+
+  vc->interrupted = true;
+
+  return DAQ_SUCCESS;
+}
+
+static int
 vpp_daq_get_stats (void *handle, DAQ_Stats_t *stats)
 {
   memset (stats, 0, sizeof (DAQ_Stats_t));
@@ -532,6 +543,7 @@ vpp_daq_msg_receive_one (VPP_Context_t *vc, VPPQueuePair *qp,
       dd->pkthdr.pktlen = d->length;
       dd->pkthdr.address_space_id = d->address_space_id;
       dd->msg.data = vc->bpools[d->buffer_pool].base + d->offset;
+      dd->msg.data_len = d->length;
       next = next + 1;
 
       msgs[0] = &dd->msg;
@@ -550,7 +562,16 @@ vpp_daq_msg_receive (void *handle, const unsigned max_recv,
 {
   VPP_Context_t *vc = (VPP_Context_t *) handle;
   uint32_t n_qpairs_left = vc->num_qpairs;
-  uint32_t n, n_events, n_recv = 0;
+  uint32_t n, n_recv = 0;
+  int32_t n_events;
+
+  /* If the receive has been interrupted, break out of loop and return. */
+  if (vc->interrupted)
+    {
+      vc->interrupted = false;
+      *rstat = DAQ_RSTAT_INTERRUPTED;
+      return 0;
+    }
 
   /* first, we visit all qpairs. If we find any work there then we can give
    * it back immediatelly. To avoid bias towards qpair 0 we remeber what
@@ -586,9 +607,14 @@ vpp_daq_msg_receive (void *handle, const unsigned max_recv,
 
   n_events = epoll_wait (vc->epoll_fd, vc->epoll_events, vc->num_qpairs, 1000);
 
-  if (n_events < 1)
+  if (n_events == 0)
     {
-      *rstat = n_events == -1 ? DAQ_RSTAT_ERROR : DAQ_RSTAT_TIMEOUT;
+      *rstat = DAQ_RSTAT_TIMEOUT;
+      return 0;
+    }
+  if (n_events < 0)
+    {
+      *rstat = errno == EINTR ? DAQ_RSTAT_TIMEOUT : DAQ_RSTAT_ERROR;
       return 0;
     }
 
@@ -602,8 +628,7 @@ vpp_daq_msg_receive (void *handle, const unsigned max_recv,
 	  msgs += n;
 	  n_recv += n;
 	}
-
-      (void) read (qp->enq_fd, &ctr, sizeof (ctr));
+      ssize_t __clib_unused size = read (qp->enq_fd, &ctr, sizeof (ctr));
     }
 
   *rstat = DAQ_RSTAT_OK;
@@ -676,7 +701,7 @@ const DAQ_ModuleAPI_t DAQ_MODULE_DATA = {
   /* .start = */ vpp_daq_start,
   /* .inject = */ NULL,
   /* .inject_relative = */ NULL,
-  /* .interrupt = */ NULL,
+  /* .interrupt = */ vpp_daq_interrupt,
   /* .stop = */ NULL,
   /* .ioctl = */ NULL,
   /* .get_stats = */ vpp_daq_get_stats,

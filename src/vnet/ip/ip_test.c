@@ -30,6 +30,7 @@
 #include <vnet/format_fns.h>
 #include <vnet/ip/ip.api_enum.h>
 #include <vnet/ip/ip.api_types.h>
+#include <vlibmemory/vlib.api_types.h>
 
 #define vl_endianfun /* define message structures */
 #include <vnet/ip/ip.api.h>
@@ -39,7 +40,6 @@ typedef struct
 {
   /* API message ID base */
   u16 msg_id_base;
-  u32 ping_id;
   vat_main_t *vat_main;
 } ip_test_main_t;
 
@@ -99,7 +99,7 @@ increment_address (vl_api_address_t *a)
 static uword
 unformat_fib_path (unformat_input_t *input, va_list *args)
 {
-  vnet_main_t *vnm = va_arg (*args, vnet_main_t *);
+  vat_main_t *vam = va_arg (*args, vat_main_t *);
   vl_api_fib_path_t *path = va_arg (*args, vl_api_fib_path_t *);
   u32 weight, preference;
   mpls_label_t out_label;
@@ -113,14 +113,14 @@ unformat_fib_path (unformat_input_t *input, va_list *args)
   while (unformat_check_input (input) != UNFORMAT_END_OF_INPUT)
     {
       if (unformat (input, "%U %U", unformat_vl_api_ip4_address,
-		    &path->nh.address.ip4, unformat_vnet_sw_interface, vnm,
+		    &path->nh.address.ip4, api_unformat_sw_if_index, vam,
 		    &path->sw_if_index))
 	{
 	  path->proto = FIB_API_PATH_NH_PROTO_IP4;
 	}
       else if (unformat (input, "%U %U", unformat_vl_api_ip6_address,
-			 &path->nh.address.ip6, unformat_vnet_sw_interface,
-			 vnm, &path->sw_if_index))
+			 &path->nh.address.ip6, api_unformat_sw_if_index, vam,
+			 &path->sw_if_index))
 	{
 	  path->proto = FIB_API_PATH_NH_PROTO_IP6;
 	}
@@ -237,7 +237,6 @@ unformat_fib_path (unformat_input_t *input, va_list *args)
 static int
 api_ip_route_add_del (vat_main_t *vam)
 {
-  vnet_main_t *vnm = vnet_get_main ();
   unformat_input_t *i = vam->input;
   vl_api_ip_route_add_del_t *mp;
   u32 vrf_id = 0;
@@ -273,7 +272,7 @@ api_ip_route_add_del (vat_main_t *vam)
 	is_multipath = 1;
       else if (unformat (i, "seed %d", &random_seed))
 	;
-      else if (unformat (i, "via %U", unformat_fib_path, vnm,
+      else if (unformat (i, "via %U", unformat_fib_path, vam,
 			 &paths[path_count]))
 	{
 	  path_count++;
@@ -524,6 +523,17 @@ api_ip_table_flush (vat_main_t *vam)
   return ret;
 }
 
+static int
+api_ip_table_allocate (vat_main_t *vam)
+{
+  return -1;
+}
+
+static void
+vl_api_ip_table_allocate_reply_t_handler (vl_api_ip_table_allocate_reply_t *mp)
+{
+}
+
 static void
 vl_api_ip_route_add_del_v2_reply_t_handler (
   vl_api_ip_route_add_del_v2_reply_t *mp)
@@ -658,6 +668,12 @@ api_ip_punt_redirect (vat_main_t *vat)
 }
 
 static int
+api_add_del_ip_punt_redirect_v2 (vat_main_t *vat)
+{
+  return -1;
+}
+
+static int
 api_ip_punt_redirect_dump (vat_main_t *vat)
 {
   return -1;
@@ -667,12 +683,25 @@ static void
 vl_api_ip_punt_redirect_details_t_handler (
   vl_api_ip_punt_redirect_details_t *mp)
 {
+  /**/
+}
+
+static int
+api_ip_punt_redirect_v2_dump (vat_main_t *vat)
+{
+  return -1;
+}
+
+static void
+vl_api_ip_punt_redirect_v2_details_t_handler (
+  vl_api_ip_punt_redirect_v2_details_t *mp)
+{
+  /**/
 }
 
 static int
 api_ip_address_dump (vat_main_t *vam)
 {
-  vnet_main_t *vnm = vnet_get_main ();
   unformat_input_t *i = vam->input;
   vl_api_ip_address_dump_t *mp;
   vl_api_control_ping_t *mp_ping;
@@ -686,8 +715,7 @@ api_ip_address_dump (vat_main_t *vam)
     {
       if (unformat (i, "sw_if_index %d", &sw_if_index))
 	sw_if_index_set = 1;
-      else if (unformat (i, "%U", unformat_vnet_sw_interface, vnm,
-			 &sw_if_index))
+      else if (unformat (i, "%U", api_unformat_sw_if_index, vam, &sw_if_index))
 	sw_if_index_set = 1;
       else if (unformat (i, "ipv4"))
 	ipv4_set = 1;
@@ -990,7 +1018,6 @@ vl_api_ip_reassembly_get_reply_t_handler (vl_api_ip_reassembly_get_reply_t *mp)
 int
 api_ip_source_and_port_range_check_interface_add_del (vat_main_t *vam)
 {
-  vnet_main_t *vnm = vnet_get_main ();
   unformat_input_t *input = vam->input;
   vl_api_ip_source_and_port_range_check_interface_add_del_t *mp;
   u32 sw_if_index = ~0;
@@ -1002,8 +1029,7 @@ api_ip_source_and_port_range_check_interface_add_del (vat_main_t *vam)
 
   while (unformat_check_input (input) != UNFORMAT_END_OF_INPUT)
     {
-      if (unformat (input, "%U", unformat_vnet_sw_interface, vnm,
-		    &sw_if_index))
+      if (unformat (input, "%U", api_unformat_sw_if_index, vam, &sw_if_index))
 	;
       else if (unformat (input, "sw_if_index %d", &sw_if_index))
 	;
@@ -1182,7 +1208,6 @@ api_ip_mroute_dump (vat_main_t *vam)
 static int
 api_sw_interface_ip6_enable_disable (vat_main_t *vam)
 {
-  vnet_main_t *vnm = vnet_get_main ();
   unformat_input_t *i = vam->input;
   vl_api_sw_interface_ip6_enable_disable_t *mp;
   u32 sw_if_index;
@@ -1192,7 +1217,7 @@ api_sw_interface_ip6_enable_disable (vat_main_t *vam)
 
   while (unformat_check_input (i) != UNFORMAT_END_OF_INPUT)
     {
-      if (unformat (i, "%U", unformat_vnet_sw_interface, vnm, &sw_if_index))
+      if (unformat (i, "%U", api_unformat_sw_if_index, vam, &sw_if_index))
 	sw_if_index_set = 1;
       else if (unformat (i, "sw_if_index %d", &sw_if_index))
 	sw_if_index_set = 1;
@@ -1515,8 +1540,6 @@ vl_api_ip_details_t_handler (vl_api_ip_details_t *mp)
 }
 
 #include <vnet/ip/ip.api_test.c>
-
-VAT_REGISTER_FEATURE_FUNCTION (vat_ip_plugin_register);
 
 /*
  * fd.io coding-style-patch-verification: ON

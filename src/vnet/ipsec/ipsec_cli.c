@@ -427,6 +427,11 @@ ipsec_spd_show_all (vlib_main_t * vm, ipsec_main_t * im)
   pool_foreach_index (spdi, im->spds)  {
     vlib_cli_output(vm, "%U", format_ipsec_spd, spdi);
   }
+
+  if (im->flow_cache_flag)
+    {
+      vlib_cli_output (vm, "%U", format_ipsec_spd_flow_cache);
+    }
   /* *INDENT-ON* */
 }
 
@@ -759,6 +764,7 @@ clear_ipsec_counters_command_fn (vlib_main_t * vm,
 {
   vlib_clear_combined_counters (&ipsec_spd_policy_counters);
   vlib_clear_combined_counters (&ipsec_sa_counters);
+  vlib_clear_simple_counters (&ipsec_sa_lost_counters);
 
   return (NULL);
 }

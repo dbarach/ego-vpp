@@ -216,8 +216,8 @@ VNET_DEVICE_CLASS_TX_FN (af_xdp_device_class) (vlib_main_t * vm,
   vnet_interface_output_runtime_t *ord = (void *) node->runtime_data;
   af_xdp_device_t *ad = pool_elt_at_index (rm->devices, ord->dev_instance);
   u32 thread_index = vm->thread_index;
-  af_xdp_txq_t *txq =
-    vec_elt_at_index (ad->txqs, (thread_index - 1) % ad->txq_num);
+  af_xdp_txq_t *txq = vec_elt_at_index (
+    ad->txqs, (thread_index - 1 + ad->txq_num) % ad->txq_num);
   u32 *from;
   u32 n, n_tx;
   int i;
@@ -231,9 +231,9 @@ VNET_DEVICE_CLASS_TX_FN (af_xdp_device_class) (vlib_main_t * vm,
     {
       u32 n_enq;
       af_xdp_device_output_free (vm, node, txq);
-      n_enq = af_xdp_device_output_tx_try (vm, node, ad, txq, n_tx - n, from);
+      n_enq =
+	af_xdp_device_output_tx_try (vm, node, ad, txq, n_tx - n, from + n);
       n += n_enq;
-      from += n_enq;
     }
 
   af_xdp_device_output_tx_db (vm, node, ad, txq, n);

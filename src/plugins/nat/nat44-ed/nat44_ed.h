@@ -39,6 +39,11 @@
 /* default number of worker handoff frame queue elements */
 #define NAT_FQ_NELTS_DEFAULT 64
 
+/* number of attempts to get a port for ED overloading algorithm, if rolling
+ * a dice this many times doesn't produce a free port, it's treated
+ * as if there were no free ports available to conserve resources */
+#define ED_PORT_ALLOC_ATTEMPTS (10)
+
 /* NAT buffer flags */
 #define SNAT_FLAG_HAIRPINNING (1 << 0)
 
@@ -172,7 +177,6 @@ typedef enum
 
 /* Session flags */
 #define SNAT_SESSION_FLAG_STATIC_MAPPING     (1 << 0)
-#define SNAT_SESSION_FLAG_UNKNOWN_PROTO	     (1 << 1)
 #define SNAT_SESSION_FLAG_LOAD_BALANCING     (1 << 2)
 #define SNAT_SESSION_FLAG_TWICE_NAT	     (1 << 3)
 #define SNAT_SESSION_FLAG_ENDPOINT_DEPENDENT (1 << 4)
@@ -308,7 +312,7 @@ typedef CLIB_PACKED(struct
     u16 port;
   } in2out;
 
-  nat_protocol_t nat_proto;
+  ip_protocol_t proto;
 
   nat_6t_flow_t i2o;
   nat_6t_flow_t o2i;
@@ -356,12 +360,6 @@ typedef struct
 {
   ip4_address_t addr;
   u32 fib_index;
-#define _(N, i, n, s) \
-  u32 busy_##n##_ports; \
-  u32 * busy_##n##_ports_per_thread; \
-  u32 busy_##n##_port_refcounts[65535];
-  foreach_nat_protocol
-#undef _
 } snat_address_t;
 
 typedef struct
@@ -412,7 +410,7 @@ typedef enum
 
 typedef struct
 {
-  /* prefered pool address */
+  /* preferred pool address */
   ip4_address_t pool_addr;
   /* local IP address */
   ip4_address_t local_addr;
@@ -426,7 +424,7 @@ typedef struct
   u32 vrf_id;
   u32 fib_index;
   /* protocol */
-  nat_protocol_t proto;
+  ip_protocol_t proto;
   /* 0 = disabled, otherwise client IP affinity sticky time in seconds */
   u32 affinity;
   /* worker threads used by backends/local host */
@@ -455,13 +453,8 @@ typedef struct
   u16 e_port;
   u32 sw_if_index;
   u32 vrf_id;
-  nat_protocol_t proto;
+  ip_protocol_t proto;
   u32 flags;
-  int addr_only;
-  int twice_nat;
-  int out2in_only;
-  int identity_nat;
-  int exact;
   u8 *tag;
 } snat_static_map_resolve_t;
 
@@ -500,15 +493,10 @@ u32 nat44_ed_get_out2in_worker_index (vlib_buffer_t *b, ip4_header_t *ip,
 
 /* Return worker thread index for given packet */
 /* NAT address and port allocation function */
-typedef int (nat_alloc_out_addr_and_port_function_t) (snat_address_t *
-						      addresses,
-						      u32 fib_index,
-						      u32 thread_index,
-						      nat_protocol_t proto,
-						      ip4_address_t * addr,
-						      u16 * port,
-						      u16 port_per_thread,
-						      u32 snat_thread_index);
+typedef int (nat_alloc_out_addr_and_port_function_t) (
+  snat_address_t *addresses, u32 fib_index, u32 thread_index,
+  ip_protocol_t proto, ip4_address_t *addr, u16 *port, u16 port_per_thread,
+  u32 snat_thread_index);
 
 typedef struct snat_main_s
 {
@@ -520,12 +508,6 @@ typedef struct snat_main_s
 
   /* Per thread data */
   snat_main_per_thread_data_t *per_thread_data;
-
-  /* Find a static mapping by local */
-  clib_bihash_8_8_t static_mapping_by_local;
-
-  /* Find a static mapping by external */
-  clib_bihash_8_8_t static_mapping_by_external;
 
   /* Static mapping pool */
   snat_static_mapping_t *static_mappings;
@@ -540,9 +522,18 @@ typedef struct snat_main_s
   /* Interface pool */
   snat_interface_t *interfaces;
   snat_interface_t *output_feature_interfaces;
+  // broken api backward compatibility
+  snat_interface_t *output_feature_dummy_interfaces;
 
   /* Vector of outside addresses */
   snat_address_t *addresses;
+  /* Vector of twice NAT addresses for external hosts */
+  snat_address_t *twice_nat_addresses;
+
+  /* sw_if_indices whose intfc addresses should be auto-added */
+  u32 *auto_add_sw_if_indices;
+  u32 *auto_add_sw_if_indices_twice_nat;
+
   /* Address and port allocation function */
   nat_alloc_out_addr_and_port_function_t *alloc_addr_and_port;
   /* Address and port allocation type */
@@ -560,13 +551,6 @@ typedef struct snat_main_s
 
   /* vector of outside fibs */
   nat_outside_fib_t *outside_fibs;
-
-  /* Vector of twice NAT addresses for external hosts */
-  snat_address_t *twice_nat_addresses;
-
-  /* sw_if_indices whose intfc addresses should be auto-added */
-  u32 *auto_add_sw_if_indices;
-  u32 *auto_add_sw_if_indices_twice_nat;
 
   /* vector of interface address static mappings to resolve. */
   snat_static_map_resolve_t *to_resolve;
@@ -713,82 +697,102 @@ extern fib_source_t nat_fib_src_low;
 format_function_t format_snat_static_mapping;
 format_function_t format_snat_static_map_to_resolve;
 format_function_t format_snat_session;
-format_function_t format_snat_key;
 format_function_t format_static_mapping_key;
-format_function_t format_nat_protocol;
 format_function_t format_nat_addr_and_port_alloc_alg;
-/* unformat functions */
-unformat_function_t unformat_nat_protocol;
 
 /** \brief Check if SNAT session is created from static mapping.
     @param s SNAT session
-    @return 1 if SNAT session is created from static mapping otherwise 0
+    @return true if SNAT session is created from static mapping otherwise 0
 */
-#define snat_is_session_static(s) (s->flags & SNAT_SESSION_FLAG_STATIC_MAPPING)
-
-/** \brief Check if SNAT session for unknown protocol.
-    @param s SNAT session
-    @return 1 if SNAT session for unknown protocol otherwise 0
-*/
-#define snat_is_unk_proto_session(s) (s->flags & SNAT_SESSION_FLAG_UNKNOWN_PROTO)
+always_inline bool
+nat44_ed_is_session_static (snat_session_t *s)
+{
+  return s->flags & SNAT_SESSION_FLAG_STATIC_MAPPING;
+}
 
 /** \brief Check if NAT session is twice NAT.
     @param s NAT session
-    @return 1 if NAT session is twice NAT
+    @return true if NAT session is twice NAT
 */
-#define is_twice_nat_session(s) (s->flags & SNAT_SESSION_FLAG_TWICE_NAT)
+always_inline bool
+nat44_ed_is_twice_nat_session (snat_session_t *s)
+{
+  return s->flags & SNAT_SESSION_FLAG_TWICE_NAT;
+}
 
 /** \brief Check if NAT session is load-balancing.
     @param s NAT session
-    @return 1 if NAT session is load-balancing
+    @return true if NAT session is load-balancing
 */
-#define is_lb_session(s) (s->flags & SNAT_SESSION_FLAG_LOAD_BALANCING)
+always_inline bool
+nat44_ed_is_lb_session (snat_session_t *s)
+{
+  return s->flags & SNAT_SESSION_FLAG_LOAD_BALANCING;
+}
 
 /** \brief Check if NAT session is forwarding bypass.
     @param s NAT session
-    @return 1 if NAT session is load-balancing
+    @return true if NAT session is load-balancing
 */
-#define is_fwd_bypass_session(s) (s->flags & SNAT_SESSION_FLAG_FWD_BYPASS)
-
-/** \brief Check if NAT session is endpoint dependent.
-    @param s NAT session
-    @return 1 if NAT session is endpoint dependent
-*/
-#define is_ed_session(s) (s->flags & SNAT_SESSION_FLAG_ENDPOINT_DEPENDENT)
+always_inline bool
+na44_ed_is_fwd_bypass_session (snat_session_t *s)
+{
+  return s->flags & SNAT_SESSION_FLAG_FWD_BYPASS;
+}
 
 /** \brief Check if NAT session has affinity record.
     @param s NAT session
-    @return 1 if NAT session has affinity record
+    @return true if NAT session has affinity record
 */
-#define is_affinity_sessions(s) (s->flags & SNAT_SESSION_FLAG_AFFINITY)
+always_inline bool
+nat44_ed_is_affinity_session (snat_session_t *s)
+{
+  return s->flags & SNAT_SESSION_FLAG_AFFINITY;
+}
 
 /** \brief Check if exact pool address should be used.
     @param s SNAT session
-    @return 1 if exact pool address or 0
+    @return true if exact pool address
 */
-#define is_exact_address_session(s) (s->flags & SNAT_SESSION_FLAG_EXACT_ADDRESS)
+always_inline bool
+nat44_ed_is_exact_address_session (snat_session_t *s)
+{
+  return s->flags & SNAT_SESSION_FLAG_EXACT_ADDRESS;
+}
 
 /** \brief Check if NAT interface is inside.
     @param i NAT interface
-    @return 1 if inside interface
+    @return true if inside interface
 */
-#define nat_interface_is_inside(i) i->flags & NAT_INTERFACE_FLAG_IS_INSIDE
+always_inline bool
+nat44_ed_is_interface_inside (snat_interface_t *i)
+{
+  return i->flags & NAT_INTERFACE_FLAG_IS_INSIDE;
+}
 
 /** \brief Check if NAT interface is outside.
     @param i NAT interface
-    @return 1 if outside interface
+    @return true if outside interface
 */
-#define nat_interface_is_outside(i) i->flags & NAT_INTERFACE_FLAG_IS_OUTSIDE
+always_inline bool
+nat44_ed_is_interface_outside (snat_interface_t *i)
+{
+  return i->flags & NAT_INTERFACE_FLAG_IS_OUTSIDE;
+}
 
 /** \brief Check if NAT44 endpoint-dependent TCP session is closed.
     @param s NAT session
-    @return 1 if session is closed
+    @return true if session is closed
 */
-#define nat44_is_ses_closed(s) s->state == 0xf
+always_inline bool
+nat44_is_ses_closed (snat_session_t *s)
+{
+  return s->state == 0xf;
+}
 
 /** \brief Check if client initiating TCP connection (received SYN from client)
     @param t TCP header
-    @return 1 if client initiating TCP connection
+    @return true if client initiating TCP connection
 */
 always_inline bool
 tcp_flags_is_init (u8 f)
@@ -856,97 +860,44 @@ is_sm_switch_address (u32 f)
 #define nat_log_debug(...)\
   vlib_log(VLIB_LOG_LEVEL_DEBUG, snat_main.log_class, __VA_ARGS__)
 
-int nat44_ed_add_static_mapping (ip4_address_t l_addr, ip4_address_t e_addr,
-				 u16 l_port, u16 e_port, nat_protocol_t proto,
-				 u32 vrf_id, u32 sw_if_index, u32 flags,
-				 ip4_address_t pool_addr, u8 *tag);
+clib_error_t *nat44_api_hookup (vlib_main_t *vm);
 
-int nat44_ed_del_static_mapping (ip4_address_t l_addr, ip4_address_t e_addr,
-				 u16 l_port, u16 e_port, nat_protocol_t proto,
-				 u32 vrf_id, u32 sw_if_index, u32 flags);
+int snat_set_workers (uword *bitmap);
 
-int nat44_ed_add_lb_static_mapping (ip4_address_t e_addr, u16 e_port,
-				    nat_protocol_t proto,
-				    nat44_lb_addr_port_t *locals, u32 flags,
-				    u8 *tag, u32 affinity);
-
-int nat44_ed_del_lb_static_mapping (ip4_address_t e_addr, u16 e_port,
-				    nat_protocol_t proto, u32 flags);
-
-int nat44_ed_add_del_lb_static_mapping_local (ip4_address_t e_addr, u16 e_port,
-					      ip4_address_t l_addr, u16 l_port,
-					      nat_protocol_t proto, u32 vrf_id,
-					      u8 probability, u8 is_add);
-
-/**
- * @brief Enable NAT44 plugin
- *
- * @param c         nat44_config_t
- *
- * @return 0 on success, non-zero value otherwise
- */
 int nat44_plugin_enable (nat44_config_t c);
-
-/**
- * @brief Disable NAT44 plugin
- *
- * @return 0 on success, non-zero value otherwise
- */
 int nat44_plugin_disable ();
-
-/**
- * @brief Add external address to NAT44 pool
- *
- * @param sm        snat global configuration data
- * @param addr      IPv4 address
- * @param vrf_id    VRF id of tenant, ~0 means independent of VRF
- * @param twice_nat 1 if twice NAT address
- *
- * @return 0 on success, non-zero value otherwise
- */
-int snat_add_address (snat_main_t * sm, ip4_address_t * addr, u32 vrf_id,
-		      u8 twice_nat);
-
-/**
- * @brief Delete external address from NAT44 pool
- *
- * @param sm        snat global configuration data
- * @param addr      IPv4 address
- * @param delete_sm 1 if delete static mapping using address
- * @param twice_nat 1 if twice NAT address
- *
- * @return 0 on success, non-zero value otherwise
- */
-int snat_del_address (snat_main_t * sm, ip4_address_t addr, u8 delete_sm,
-		      u8 twice_nat);
-
-clib_error_t *nat44_api_hookup (vlib_main_t * vm);
-
-/**
- * @brief Set NAT plugin workers
- *
- * @param bitmap NAT workers bitmap
- *
- * @return 0 on success, non-zero value otherwise
- */
-int snat_set_workers (uword * bitmap);
 
 int nat44_ed_add_interface (u32 sw_if_index, u8 is_inside);
 int nat44_ed_del_interface (u32 sw_if_index, u8 is_inside);
 int nat44_ed_add_output_interface (u32 sw_if_index);
 int nat44_ed_del_output_interface (u32 sw_if_index);
 
-/**
- * @brief Add/delete NAT44 pool address from specific interface
- *
- * @param sw_if_index software index of the interface
- * @param is_del      1 = delete, 0 = add
- * @param twice_nat   1 = twice NAT address for external hosts
- *
- * @return 0 on success, non-zero value otherwise
- */
-int snat_add_interface_address (snat_main_t * sm, u32 sw_if_index, int is_del,
-				u8 twice_nat);
+int nat44_ed_add_address (ip4_address_t *addr, u32 vrf_id, u8 twice_nat);
+int nat44_ed_del_address (ip4_address_t addr, u8 delete_sm, u8 twice_nat);
+int nat44_ed_add_interface_address (u32 sw_if_index, u8 twice_nat);
+int nat44_ed_del_interface_address (u32 sw_if_index, u8 twice_nat);
+
+int nat44_ed_add_static_mapping (ip4_address_t l_addr, ip4_address_t e_addr,
+				 u16 l_port, u16 e_port, ip_protocol_t proto,
+				 u32 vrf_id, u32 sw_if_index, u32 flags,
+				 ip4_address_t pool_addr, u8 *tag);
+
+int nat44_ed_del_static_mapping (ip4_address_t l_addr, ip4_address_t e_addr,
+				 u16 l_port, u16 e_port, ip_protocol_t proto,
+				 u32 vrf_id, u32 sw_if_index, u32 flags);
+
+int nat44_ed_add_lb_static_mapping (ip4_address_t e_addr, u16 e_port,
+				    ip_protocol_t proto,
+				    nat44_lb_addr_port_t *locals, u32 flags,
+				    u8 *tag, u32 affinity);
+
+int nat44_ed_del_lb_static_mapping (ip4_address_t e_addr, u16 e_port,
+				    ip_protocol_t proto, u32 flags);
+
+int nat44_ed_add_del_lb_static_mapping_local (ip4_address_t e_addr, u16 e_port,
+					      ip4_address_t l_addr, u16 l_port,
+					      ip_protocol_t proto, u32 vrf_id,
+					      u8 probability, u8 is_add);
 
 /**
  * @brief Delete NAT44 endpoint-dependent session
@@ -964,16 +915,8 @@ int nat44_ed_del_session (snat_main_t *sm, ip4_address_t *addr, u16 port,
 			  ip4_address_t *eh_addr, u16 eh_port, u8 proto,
 			  u32 vrf_id, int is_in);
 
-/**
- * @brief Free NAT44 session data (lookup keys, external address port)
- *
- * @param sm           snat global configuration data
- * @param s            NAT session
- * @param thread_index thread index
- * @param is_ha        is HA event
- */
-void nat_free_session_data (snat_main_t * sm, snat_session_t * s,
-			    u32 thread_index, u8 is_ha);
+void nat44_ed_free_session_data (snat_main_t *sm, snat_session_t *s,
+				 u32 thread_index, u8 is_ha);
 
 /**
  * @brief Set NAT44 session limit (session limit, vrf id)
@@ -992,19 +935,6 @@ int nat44_set_session_limit (u32 session_limit, u32 vrf_id);
  * @return 0 on success, non-zero value otherwise
  */
 int nat44_update_session_limit (u32 session_limit, u32 vrf_id);
-
-/**
- * @brief Free outside address and port pair
- *
- * @param addresses    vector of outside addresses
- * @param thread_index thread index
- * @param key          address, port and protocol
- */
-void
-snat_free_outside_address_and_port (snat_address_t * addresses,
-				    u32 thread_index,
-				    ip4_address_t * addr,
-				    u16 port, nat_protocol_t protocol);
 
 void expire_per_vrf_sessions (u32 fib_index);
 
@@ -1028,26 +958,11 @@ void expire_per_vrf_sessions (u32 fib_index);
  */
 int snat_static_mapping_match (
   vlib_main_t *vm, snat_main_t *sm, ip4_address_t match_addr, u16 match_port,
-  u32 match_fib_index, nat_protocol_t match_protocol,
+  u32 match_fib_index, ip_protocol_t match_protocol,
   ip4_address_t *mapping_addr, u16 *mapping_port, u32 *mapping_fib_index,
-  u8 by_external, u8 *is_addr_only, twice_nat_type_t *twice_nat,
+  int by_external, u8 *is_addr_only, twice_nat_type_t *twice_nat,
   lb_nat_type_t *lb, ip4_address_t *ext_host_addr, u8 *is_identity_nat,
   snat_static_mapping_t **out);
-
-/**
- * @brief Add/del NAT address to FIB.
- *
- * Add the external NAT address to the FIB as receive entries. This ensures
- * that VPP will reply to ARP for this address and we don't need to enable
- * proxy ARP on the outside interface.
- *
- * @param addr        IPv4 address
- * @param plen        address prefix length
- * @param sw_if_index software index of the outside interface
- * @param is_add      0 = delete, 1 = add.
- */
-void snat_add_del_addr_to_fib (ip4_address_t * addr,
-			       u8 p_len, u32 sw_if_index, int is_add);
 
 /*
  * Why is this here? Because we don't need to touch this layer to
@@ -1092,17 +1007,37 @@ typedef enum
 
 nat_translation_error_e nat_6t_flow_buf_translate_i2o (
   vlib_main_t *vm, snat_main_t *sm, vlib_buffer_t *b, ip4_header_t *ip,
-  nat_6t_flow_t *f, nat_protocol_t proto, int is_output_feature);
+  nat_6t_flow_t *f, ip_protocol_t proto, int is_output_feature);
 
 nat_translation_error_e nat_6t_flow_buf_translate_o2i (
   vlib_main_t *vm, snat_main_t *sm, vlib_buffer_t *b, ip4_header_t *ip,
-  nat_6t_flow_t *f, nat_protocol_t proto, int is_output_feature);
+  nat_6t_flow_t *f, ip_protocol_t proto, int is_output_feature);
 
 void nat_6t_l3_l4_csum_calc (nat_6t_flow_t *f);
 
 format_function_t format_nat_ed_translation_error;
 format_function_t format_nat_6t_flow;
 format_function_t format_ed_session_kvp;
+
+snat_static_mapping_t *nat44_ed_sm_i2o_lookup (snat_main_t *sm,
+					       ip4_address_t addr, u16 port,
+					       u32 fib_index, u8 proto);
+
+snat_static_mapping_t *nat44_ed_sm_o2i_lookup (snat_main_t *sm,
+					       ip4_address_t addr, u16 port,
+					       u32 fib_index, u8 proto);
+
+void nat_syslog_nat44_sadd (u32 ssubix, u32 sfibix, ip4_address_t *isaddr,
+			    u16 isport, ip4_address_t *idaddr, u16 idport,
+			    ip4_address_t *xsaddr, u16 xsport,
+			    ip4_address_t *xdaddr, u16 xdport, u8 proto,
+			    u8 is_twicenat);
+
+void nat_syslog_nat44_sdel (u32 ssubix, u32 sfibix, ip4_address_t *isaddr,
+			    u16 isport, ip4_address_t *idaddr, u16 idport,
+			    ip4_address_t *xsaddr, u16 xsport,
+			    ip4_address_t *xdaddr, u16 xdport, u8 proto,
+			    u8 is_twicenat);
 
 #endif /* __included_nat44_ed_h__ */
 /*

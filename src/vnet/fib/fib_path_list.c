@@ -1297,15 +1297,8 @@ fib_path_list_child_add (fib_node_index_t path_list_index,
 			 fib_node_type_t child_type,
 			 fib_node_index_t child_index)
 {
-    u32 sibling;
-
-    sibling = fib_node_child_add(FIB_NODE_TYPE_PATH_LIST,
-                                 path_list_index,
-                                 child_type,
-                                 child_index);
-
-    if (FIB_PATH_LIST_POPULAR == fib_node_get_n_children(FIB_NODE_TYPE_PATH_LIST,
-                                                         path_list_index))
+    if (FIB_PATH_LIST_POPULAR - 1 == fib_node_get_n_children(FIB_NODE_TYPE_PATH_LIST,
+                                                             path_list_index))
     {
         /*
          * Set the popular flag on the path-list once we pass the magic
@@ -1328,7 +1321,10 @@ fib_path_list_child_add (fib_node_index_t path_list_index,
 	fib_walk_sync(FIB_NODE_TYPE_PATH_LIST, path_list_index, &ctx);
     }
 
-    return (sibling);
+    return (fib_node_child_add(FIB_NODE_TYPE_PATH_LIST,
+                                 path_list_index,
+                                 child_type,
+                                 child_index));
 }
 
 void

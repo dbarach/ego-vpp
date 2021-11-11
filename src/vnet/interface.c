@@ -462,9 +462,6 @@ vnet_sw_interface_set_flags_helper (vnet_main_t * vnm, u32 sw_if_index,
 	      goto done;
 	    }
 
-	  /* save the si admin up flag */
-	  old_flags = si->flags;
-
 	  /* update si admin up flag in advance if we are going admin down */
 	  if (!(flags & VNET_SW_INTERFACE_FLAG_ADMIN_UP))
 	    si->flags &= ~VNET_SW_INTERFACE_FLAG_ADMIN_UP;
@@ -1113,8 +1110,7 @@ vnet_delete_hw_interface (vnet_main_t * vnm, u32 hw_if_index)
   hash_unset_mem (im->hw_interface_by_name, hw->name);
   vec_free (hw->name);
   vec_free (hw->hw_address);
-  vec_free (hw->input_node_thread_index_by_queue);
-  vec_free (hw->rx_queue_indices);
+  vec_free (hw->output_node_thread_runtimes);
   pool_put (im->hw_interfaces, hw);
 }
 
@@ -1332,6 +1328,29 @@ vnet_sw_interface_is_nbma (vnet_main_t * vnm, u32 sw_if_index)
     vnet_get_hw_interface_class (vnm, hw->hw_class_index);
 
   return (hc->flags & VNET_HW_INTERFACE_CLASS_FLAG_NBMA);
+}
+
+clib_error_t *
+vnet_sw_interface_supports_addressing (vnet_main_t *vnm, u32 sw_if_index)
+{
+  if (sw_if_index == 0)
+    {
+      return clib_error_create (
+	"local0 interface doesn't support IP addressing");
+    }
+
+  if (vnet_sw_interface_is_sub (vnm, sw_if_index))
+    {
+      vnet_sw_interface_t *si;
+      si = vnet_get_sw_interface_or_null (vnm, sw_if_index);
+      if (si && si->type == VNET_SW_INTERFACE_TYPE_SUB &&
+	  si->sub.eth.flags.exact_match == 0)
+	{
+	  return clib_error_create (
+	    "sub-interface without exact-match doesn't support IP addressing");
+	}
+    }
+  return NULL;
 }
 
 clib_error_t *
@@ -1614,16 +1633,6 @@ static int
 vnet_sw_interface_check_table_same (u32 unnumbered_sw_if_index,
 				    u32 ip_sw_if_index)
 {
-  vec_validate (ip4_main.fib_index_by_sw_if_index, unnumbered_sw_if_index);
-  vec_validate (ip4_main.mfib_index_by_sw_if_index, unnumbered_sw_if_index);
-  vec_validate (ip6_main.fib_index_by_sw_if_index, unnumbered_sw_if_index);
-  vec_validate (ip6_main.mfib_index_by_sw_if_index, unnumbered_sw_if_index);
-
-  vec_validate (ip4_main.fib_index_by_sw_if_index, ip_sw_if_index);
-  vec_validate (ip4_main.mfib_index_by_sw_if_index, ip_sw_if_index);
-  vec_validate (ip6_main.fib_index_by_sw_if_index, ip_sw_if_index);
-  vec_validate (ip6_main.mfib_index_by_sw_if_index, ip_sw_if_index);
-
   if (ip4_main.fib_index_by_sw_if_index[unnumbered_sw_if_index] !=
       ip4_main.fib_index_by_sw_if_index[ip_sw_if_index])
     return VNET_API_ERROR_UNEXPECTED_INTF_STATE;

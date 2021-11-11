@@ -22,11 +22,11 @@
 #include <wireguard/wireguard_send.h>
 
 static int
-ip46_enqueue_packet (vlib_main_t * vm, u32 bi0, int is_ip6)
+ip46_enqueue_packet (vlib_main_t *vm, u32 bi0, int is_ip4)
 {
   vlib_frame_t *f = 0;
   u32 lookup_node_index =
-    is_ip6 ? ip6_lookup_node.index : ip4_lookup_node.index;
+    is_ip4 ? ip4_lookup_node.index : ip6_lookup_node.index;
 
   f = vlib_get_frame_to_node (vm, lookup_node_index);
   /* f can not be NULL here - frame allocation failure causes panic */
@@ -41,25 +41,45 @@ ip46_enqueue_packet (vlib_main_t * vm, u32 bi0, int is_ip6)
 }
 
 static void
-wg_buffer_prepend_rewrite (vlib_buffer_t * b0, const wg_peer_t * peer)
+wg_buffer_prepend_rewrite (vlib_buffer_t *b0, const wg_peer_t *peer, u8 is_ip4)
 {
-  ip4_udp_header_t *hdr;
+  if (is_ip4)
+    {
+      ip4_udp_header_t *hdr4;
 
-  vlib_buffer_advance (b0, -sizeof (*hdr));
+      vlib_buffer_advance (b0, -sizeof (*hdr4));
 
-  hdr = vlib_buffer_get_current (b0);
-  clib_memcpy (hdr, peer->rewrite, vec_len (peer->rewrite));
+      hdr4 = vlib_buffer_get_current (b0);
 
-  hdr->udp.length =
-    clib_host_to_net_u16 (b0->current_length - sizeof (ip4_header_t));
-  ip4_header_set_len_w_chksum (&hdr->ip4,
-			       clib_host_to_net_u16 (b0->current_length));
+      /* copy only ip4 and udp header; wireguard header not needed */
+      clib_memcpy (hdr4, peer->rewrite, sizeof (ip4_udp_header_t));
+
+      hdr4->udp.length =
+	clib_host_to_net_u16 (b0->current_length - sizeof (ip4_header_t));
+      ip4_header_set_len_w_chksum (&hdr4->ip4,
+				   clib_host_to_net_u16 (b0->current_length));
+    }
+  else
+    {
+      ip6_udp_header_t *hdr6;
+
+      vlib_buffer_advance (b0, -sizeof (*hdr6));
+
+      hdr6 = vlib_buffer_get_current (b0);
+
+      /* copy only ip6 and udp header; wireguard header not needed */
+      clib_memcpy (hdr6, peer->rewrite, sizeof (ip6_udp_header_t));
+
+      hdr6->udp.length =
+	clib_host_to_net_u16 (b0->current_length - sizeof (ip6_header_t));
+
+      hdr6->ip6.payload_length = clib_host_to_net_u16 (b0->current_length);
+    }
 }
 
 static bool
-wg_create_buffer (vlib_main_t * vm,
-		  const wg_peer_t * peer,
-		  const u8 * packet, u32 packet_len, u32 * bi)
+wg_create_buffer (vlib_main_t *vm, const wg_peer_t *peer, const u8 *packet,
+		  u32 packet_len, u32 *bi, u8 is_ip4)
 {
   u32 n_buf0 = 0;
   vlib_buffer_t *b0;
@@ -75,7 +95,7 @@ wg_create_buffer (vlib_main_t * vm,
 
   b0->current_length = packet_len;
 
-  wg_buffer_prepend_rewrite (b0, peer);
+  wg_buffer_prepend_rewrite (b0, peer, is_ip4);
 
   return true;
 }
@@ -90,8 +110,8 @@ wg_send_handshake (vlib_main_t * vm, wg_peer_t * peer, bool is_retry)
   if (!is_retry)
     peer->timer_handshake_attempts = 0;
 
-  if (!wg_birthdate_has_expired (peer->last_sent_handshake,
-				 REKEY_TIMEOUT) || peer->is_dead)
+  if (!wg_birthdate_has_expired (peer->last_sent_handshake, REKEY_TIMEOUT) ||
+      wg_peer_is_dead (peer))
     return true;
 
   if (noise_create_initiation (vm,
@@ -113,11 +133,13 @@ wg_send_handshake (vlib_main_t * vm, wg_peer_t * peer, bool is_retry)
   else
     return false;
 
+  u8 is_ip4 = ip46_address_is_ip4 (&peer->dst.addr);
   u32 bi0 = 0;
-  if (!wg_create_buffer (vm, peer, (u8 *) & packet, sizeof (packet), &bi0))
+  if (!wg_create_buffer (vm, peer, (u8 *) &packet, sizeof (packet), &bi0,
+			 is_ip4))
     return false;
 
-  ip46_enqueue_packet (vm, bi0, false);
+  ip46_enqueue_packet (vm, bi0, is_ip4);
   return true;
 }
 
@@ -181,19 +203,22 @@ wg_send_keepalive (vlib_main_t * vm, wg_peer_t * peer)
     }
   else if (PREDICT_FALSE (state == SC_FAILED))
     {
+      wg_peer_update_flags (peer - wg_peer_pool, WG_PEER_ESTABLISHED, false);
       ret = false;
       goto out;
     }
 
+  u8 is_ip4 = ip46_address_is_ip4 (&peer->dst.addr);
   packet->header.type = MESSAGE_DATA;
 
-  if (!wg_create_buffer (vm, peer, (u8 *) packet, size_of_packet, &bi0))
+  if (!wg_create_buffer (vm, peer, (u8 *) packet, size_of_packet, &bi0,
+			 is_ip4))
     {
       ret = false;
       goto out;
     }
 
-  ip46_enqueue_packet (vm, bi0, false);
+  ip46_enqueue_packet (vm, bi0, is_ip4);
 
   wg_timers_any_authenticated_packet_sent (peer);
   wg_timers_any_authenticated_packet_traversal (peer);
@@ -226,18 +251,17 @@ wg_send_handshake_response (vlib_main_t * vm, wg_peer_t * peer)
 	  peer->last_sent_handshake = vlib_time_now (vm);
 
 	  u32 bi0 = 0;
-	  if (!wg_create_buffer (vm, peer, (u8 *) & packet,
-				 sizeof (packet), &bi0))
+	  u8 is_ip4 = ip46_address_is_ip4 (&peer->dst.addr);
+	  if (!wg_create_buffer (vm, peer, (u8 *) &packet, sizeof (packet),
+				 &bi0, is_ip4))
 	    return false;
 
-	  ip46_enqueue_packet (vm, bi0, false);
+	  ip46_enqueue_packet (vm, bi0, is_ip4);
+	  return true;
 	}
-      else
-	return false;
+      return false;
     }
-  else
-    return false;
-  return true;
+  return false;
 }
 
 /*

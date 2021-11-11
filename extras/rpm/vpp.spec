@@ -276,15 +276,15 @@ mkdir -p -m755 %{buildroot}%{_localstatedir}/log/vpp
 #
 mkdir -p -m755 %{buildroot}/usr/lib/vpp_plugins
 mkdir -p -m755 %{buildroot}/usr/lib/vpp_api_test_plugins
-for file in $(cd %{_mu_build_dir}/%{_vpp_install_dir}/vpp/lib/vpp_plugins && find -type f -print)
+for file in $(cd %{_mu_build_dir}/%{_vpp_install_dir}/vpp/%{_lib}/vpp_plugins && find -type f -print)
 do
-        install -p -m 755 %{_mu_build_dir}/%{_vpp_install_dir}/vpp/lib/vpp_plugins/$file \
+        install -p -m 755 %{_mu_build_dir}/%{_vpp_install_dir}/vpp/%{_lib}/vpp_plugins/$file \
            %{buildroot}/usr/lib/vpp_plugins/$file
 done
 
-for file in $(cd %{_mu_build_dir}/%{_vpp_install_dir}/vpp/lib/vpp_api_test_plugins && find -type f -print)
+for file in $(cd %{_mu_build_dir}/%{_vpp_install_dir}/vpp/%{_lib}/vpp_api_test_plugins && find -type f -print)
 do
-        install -p -m 755 %{_mu_build_dir}/%{_vpp_install_dir}/vpp/lib/vpp_api_test_plugins/$file \
+        install -p -m 755 %{_mu_build_dir}/%{_vpp_install_dir}/vpp/%{_lib}/vpp_api_test_plugins/$file \
            %{buildroot}/usr/lib/vpp_api_test_plugins/$file
 done
 
@@ -353,6 +353,7 @@ fi
 %files
 %defattr(-,bin,bin)
 %{_unitdir}/vpp.service
+/usr/bin/vat2
 /usr/bin/vpp*
 /usr/bin/svm*
 %config(noreplace) /etc/sysctl.d/80-vpp.conf

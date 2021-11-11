@@ -2451,6 +2451,45 @@ static void
 }
 
 static void
+vl_api_acl_plugin_use_hash_lookup_set_t_handler (
+  vl_api_acl_plugin_use_hash_lookup_set_t *mp)
+{
+  acl_main_t *am = &acl_main;
+  vl_api_acl_plugin_use_hash_lookup_set_reply_t *rmp;
+  vl_api_registration_t *reg;
+  int rv = 0;
+
+  reg = vl_api_client_index_to_registration (mp->client_index);
+  if (!reg)
+    return;
+
+  am->use_hash_acl_matching = mp->enable;
+  REPLY_MACRO (VL_API_ACL_PLUGIN_USE_HASH_LOOKUP_SET_REPLY);
+}
+
+static void
+vl_api_acl_plugin_use_hash_lookup_get_t_handler (
+  vl_api_acl_plugin_use_hash_lookup_get_t *mp)
+{
+  acl_main_t *am = &acl_main;
+  vl_api_acl_plugin_use_hash_lookup_get_reply_t *rmp;
+  int msg_size = sizeof (*rmp);
+  vl_api_registration_t *reg;
+
+  reg = vl_api_client_index_to_registration (mp->client_index);
+  if (!reg)
+    return;
+
+  rmp = vl_msg_api_alloc (msg_size);
+  clib_memset (rmp, 0, msg_size);
+  rmp->_vl_msg_id =
+    ntohs (VL_API_ACL_PLUGIN_USE_HASH_LOOKUP_GET_REPLY + am->msg_id_base);
+  rmp->context = mp->context;
+  rmp->enable = am->use_hash_acl_matching;
+  vl_api_send_msg (reg, (u8 *) rmp);
+}
+
+static void
 acl_set_timeout_sec (int timeout_type, u32 value)
 {
   acl_main_t *am = &acl_main;
@@ -3432,6 +3471,8 @@ acl_show_aclplugin_tables_fn (vlib_main_t * vm,
     }
   vlib_cli_output (vm, "Stats counters enabled for interface ACLs: %d",
 		   acl_main.interface_acl_counters_enabled);
+  vlib_cli_output (vm, "Use hash-based lookup for ACLs: %d",
+		   acl_main.use_hash_acl_matching);
   if (show_mask_type)
     acl_plugin_show_tables_mask_type ();
   if (show_acl_hash_info)
@@ -3548,16 +3589,15 @@ VLIB_CLI_COMMAND (aclplugin_set_interface_command, static) = {
  *  an ACL is composed of more than one Access control element (ACE). Multiple
  *  ACEs can be specified with this command using a comma separated list.
  *
- * Each ACE describes a tuple of src+dst IP prefix, ip protocol, src+dst port ranges.
- * (the ACL plugin also support ICMP types/codes instead of UDP/TCP ports, but
- *  this CLI does not).
+ * Each ACE describes a tuple of src+dst IP prefix, ip protocol, src+dst port
+ * ranges. (the ACL plugin also support ICMP types/codes instead of UDP/TCP
+ * ports, but this CLI does not).
  *
- * An ACL can optionally be assigned a 'tag' - which is an identifier understood
- * by the client. VPP does not examine it in any way.
+ * An ACL can optionally be assigned a 'tag' - which is an identifier
+ * understood by the client. VPP does not examine it in any way.
  *
- * @cliexpar
- * <b><em> set acl-plugin acl <permit|deny> src <PREFIX> dst <PREFIX> proto <TCP|UDP> sport <X-Y> dport <X-Y> [tag FOO] </b></em>
- * @cliexend
+ * @cliexcmd{set acl-plugin acl <permit|deny> src <PREFIX> dst <PREFIX> proto
+ * <TCP|UDP> sport <X-Y> dport <X-Y> [tag FOO]}
  ?*/
 VLIB_CLI_COMMAND (aclplugin_set_acl_command, static) = {
     .path = "set acl-plugin acl",

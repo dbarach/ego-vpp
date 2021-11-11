@@ -32,8 +32,11 @@ add_vpp_plugin(unittest
   crypto/sha.c
   crypto_test.c
   fib_test.c
+  gso_test.c
+  hash_test.c
   interface_test.c
   ipsec_test.c
+  ip_psh_cksum_test.c
   llist_test.c
   mactime_test.c
   mem_bulk_test.c
@@ -54,4 +57,7 @@ add_vpp_plugin(unittest
   util_test.c
   vlib_test.c
   counter_test.c
+
+  COMPONENT
+  vpp-plugin-devtools
 )

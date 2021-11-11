@@ -25,7 +25,7 @@
 /* define message IDs */
 #include <ip6-nd/ip6_nd.api_enum.h>
 #include <ip6-nd/ip6_nd.api_types.h>
-#include <vpp/api/vpe.api_types.h>
+#include <vlibmemory/vlib.api_types.h>
 
 typedef struct
 {
@@ -317,6 +317,12 @@ api_sw_interface_ip6nd_ra_config (vat_main_t * vam)
   /* Wait for a reply, return good/bad news  */
   W (ret);
   return ret;
+}
+static int
+api_ip6nd_proxy_enable_disable (vat_main_t *vam)
+{
+  // not yet implemented
+  return -1;
 }
 
 #include <ip6-nd/ip6_nd.api_test.c>

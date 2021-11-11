@@ -581,15 +581,16 @@ int vnet_vxlan_add_del_tunnel
 	       *  - the forwarding interface is for-us
 	       *  - the accepting interface is that from the API
 	       */
-	      mfib_table_entry_path_update (t->encap_fib_index,
-					    &mpfx, MFIB_SOURCE_VXLAN, &path);
+	      mfib_table_entry_path_update (t->encap_fib_index, &mpfx,
+					    MFIB_SOURCE_VXLAN,
+					    MFIB_ENTRY_FLAG_NONE, &path);
 
 	      path.frp_sw_if_index = a->mcast_sw_if_index;
 	      path.frp_flags = FIB_ROUTE_PATH_FLAG_NONE;
 	      path.frp_mitf_flags = MFIB_ITF_FLAG_ACCEPT;
-	      mfei = mfib_table_entry_path_update (t->encap_fib_index,
-						   &mpfx,
-						   MFIB_SOURCE_VXLAN, &path);
+	      mfei = mfib_table_entry_path_update (
+		t->encap_fib_index, &mpfx, MFIB_SOURCE_VXLAN,
+		MFIB_ENTRY_FLAG_NONE, &path);
 
 	      /*
 	       * Create the mcast adjacency to send traffic to the group
@@ -1073,7 +1074,7 @@ set_ip4_vxlan_bypass (vlib_main_t * vm,
 /*?
  * This command adds the 'ip4-vxlan-bypass' graph node for a given interface.
  * By adding the IPv4 vxlan-bypass graph node to an interface, the node checks
- *  for and validate input vxlan packet and bypass ip4-lookup, ip4-local,
+ * for and validate input vxlan packet and bypass ip4-lookup, ip4-local,
  * ip4-udp-lookup nodes to speedup vxlan packet forwarding. This node will
  * cause extra overhead to for non-vxlan packets which is kept at a minimum.
  *
@@ -1130,7 +1131,7 @@ set_ip6_vxlan_bypass (vlib_main_t * vm,
 /*?
  * This command adds the 'ip6-vxlan-bypass' graph node for a given interface.
  * By adding the IPv6 vxlan-bypass graph node to an interface, the node checks
- *  for and validate input vxlan packet and bypass ip6-lookup, ip6-local,
+ * for and validate input vxlan packet and bypass ip6-lookup, ip6-local,
  * ip6-udp-lookup nodes to speedup vxlan packet forwarding. This node will
  * cause extra overhead to for non-vxlan packets which is kept at a minimum.
  *

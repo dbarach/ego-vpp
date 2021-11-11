@@ -508,10 +508,20 @@ vcl_session_connected_handler (vcl_worker_t * wrk,
 
   session_index = mp->context;
   session = vcl_session_get (wrk, session_index);
-  if (!session)
+  if (PREDICT_FALSE (!session))
     {
       VDBG (0, "ERROR: vpp handle 0x%llx has no session index (%u)!",
 	    mp->handle, session_index);
+      /* Should not happen but if it does, force vpp session cleanup */
+      vcl_session_t tmp_session = {
+	.vpp_handle = mp->handle,
+	.vpp_evt_q = 0,
+      };
+      vcl_segment_attach_session (
+	mp->segment_handle, mp->server_rx_fifo, mp->server_tx_fifo,
+	mp->vpp_event_queue_address, mp->mq_index, 0, session);
+      if (tmp_session.vpp_evt_q)
+	vcl_send_session_disconnect (wrk, &tmp_session);
       return VCL_INVALID_SESSION_INDEX;
     }
   if (mp->retval)
@@ -1368,8 +1378,8 @@ vppcom_app_create (const char *app_name)
   vcm->main_cpu = pthread_self ();
   vcm->main_pid = getpid ();
   vcm->app_name = format (0, "%s", app_name);
-  fifo_segment_main_init (&vcm->segment_main, vcl_cfg->segment_baseva,
-			  20 /* timeout in secs */ );
+  fifo_segment_main_init (&vcm->segment_main, (uword) ~0,
+			  20 /* timeout in secs */);
   pool_alloc (vcm->workers, vcl_cfg->max_workers);
   clib_spinlock_init (&vcm->workers_lock);
   clib_rwlock_init (&vcm->segment_table_lock);
@@ -1644,9 +1654,6 @@ vppcom_session_listen (uint32_t listen_sh, uint32_t q_len)
   listen_session = vcl_session_get_w_handle (wrk, listen_sh);
   if (!listen_session || (listen_session->flags & VCL_SESSION_F_IS_VEP))
     return VPPCOM_EBADFD;
-
-  if (q_len == 0 || q_len == ~0)
-    q_len = vcm->cfg.listen_queue_size;
 
   listen_vpp_handle = listen_session->vpp_handle;
   if (listen_session->session_state == VCL_STATE_LISTEN)
@@ -2196,7 +2203,7 @@ vppcom_session_free_segments (uint32_t session_handle, uint32_t n_bytes)
   is_ct = vcl_session_is_ct (s);
   svm_fifo_dequeue_drop (is_ct ? s->ct_rx_fifo : s->rx_fifo, n_bytes);
 
-  ASSERT (s->rx_bytes_pending < n_bytes);
+  ASSERT (s->rx_bytes_pending >= n_bytes);
   s->rx_bytes_pending -= n_bytes;
 }
 
@@ -3016,8 +3023,9 @@ vcl_epoll_wait_handle_mq_event (vcl_worker_t * wrk, session_event_t * e,
 	break;
       vcl_fifo_rx_evt_valid_or_break (s);
       session_events = s->vep.ev.events;
-      if (!(EPOLLIN & s->vep.ev.events)
-	  || (s->flags & VCL_SESSION_F_HAS_RX_EVT))
+      if (!(EPOLLIN & s->vep.ev.events) ||
+	  (s->flags & VCL_SESSION_F_HAS_RX_EVT) ||
+	  (s->vep.lt_next != VCL_INVALID_SESSION_INDEX))
 	break;
       add_event = 1;
       events[*num_ev].events = EPOLLIN;
@@ -3047,7 +3055,8 @@ vcl_epoll_wait_handle_mq_event (vcl_worker_t * wrk, session_event_t * e,
 	break;
       session_events = s->vep.ev.events;
       sid = s->session_index;
-      if (!(EPOLLIN & session_events))
+      if (!(EPOLLIN & session_events) ||
+	  (s->vep.lt_next != VCL_INVALID_SESSION_INDEX))
 	break;
       add_event = 1;
       events[*num_ev].events = EPOLLIN;
@@ -3090,8 +3099,22 @@ vcl_epoll_wait_handle_mq_event (vcl_worker_t * wrk, session_event_t * e,
       sid = s->session_index;
       session_events = s->vep.ev.events;
       add_event = 1;
-      events[*num_ev].events = EPOLLHUP | EPOLLRDHUP;
+      if (EPOLLRDHUP & session_events)
+	{
+	  /* If app can distinguish between RDHUP and HUP,
+	   * we make finer control */
+	  events[*num_ev].events = EPOLLRDHUP;
+	  if (s->flags & VCL_SESSION_F_WR_SHUTDOWN)
+	    {
+	      events[*num_ev].events |= EPOLLHUP;
+	    }
+	}
+      else
+	{
+	  events[*num_ev].events = EPOLLHUP;
+	}
       session_evt_data = s->vep.ev.data.u64;
+
       break;
     case SESSION_CTRL_EVT_RESET:
       if (!e->postponed)
@@ -3363,6 +3386,10 @@ vppcom_epoll_wait (uint32_t vep_handle, struct epoll_event *events,
 	}
       vec_reset_length (wrk->unhandled_evts_vector);
     }
+
+  if (PREDICT_FALSE (wrk->ep_lt_current != VCL_INVALID_SESSION_INDEX))
+    vcl_epoll_wait_handle_lt (wrk, events, maxevents, &n_evts);
+
   /* Request to only drain unhandled */
   if ((int) wait_for_time == -2)
     return n_evts;
@@ -3374,9 +3401,6 @@ vppcom_epoll_wait (uint32_t vep_handle, struct epoll_event *events,
   else
     n_evts = vppcom_epoll_wait_condvar (wrk, events, maxevents, n_evts,
 					wait_for_time);
-
-  if (PREDICT_FALSE (wrk->ep_lt_current != VCL_INVALID_SESSION_INDEX))
-    vcl_epoll_wait_handle_lt (wrk, events, maxevents, &n_evts);
 
   return n_evts;
 }
@@ -4388,22 +4412,18 @@ int
 vppcom_add_cert_key_pair (vppcom_cert_key_pair_t *ckpair)
 {
   if (vcm->cfg.vpp_app_socket_api)
-    {
-      clib_warning ("not supported");
-      return VPPCOM_EINVAL;
-    }
-  return vcl_bapi_add_cert_key_pair (ckpair);
+    return vcl_sapi_add_cert_key_pair (ckpair);
+  else
+    return vcl_bapi_add_cert_key_pair (ckpair);
 }
 
 int
 vppcom_del_cert_key_pair (uint32_t ckpair_index)
 {
   if (vcm->cfg.vpp_app_socket_api)
-    {
-      clib_warning ("not supported");
-      return VPPCOM_EINVAL;
-    }
-  return vcl_bapi_del_cert_key_pair (ckpair_index);
+    return vcl_sapi_del_cert_key_pair (ckpair_index);
+  else
+    return vcl_bapi_del_cert_key_pair (ckpair_index);
 }
 
 /*

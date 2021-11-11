@@ -60,6 +60,7 @@
   _ (PKT_RX_L4_CKSUM_GOOD, "L4 cksum of RX pkt. is valid")                    \
   _ (PKT_RX_IEEE1588_PTP, "RX IEEE1588 L2 Ethernet PT Packet")                \
   _ (PKT_RX_IEEE1588_TMST, "RX IEEE1588 L2/L4 timestamped packet")            \
+  _ (PKT_RX_LRO, "LRO packet")                                                \
   _ (PKT_RX_QINQ_STRIPPED, "RX packet QinQ tags stripped")
 
 #define foreach_dpdk_pkt_type                                           \
@@ -761,9 +762,8 @@ format_dpdk_tx_trace (u8 * s, va_list * va)
   s = format (s, "%U tx queue %d",
 	      format_vnet_sw_interface_name, vnm, sw, t->queue_index);
 
-  s = format (s, "\n%Ubuffer 0x%x: %U",
-	      format_white_space, indent,
-	      t->buffer_index, format_vnet_buffer, &t->buffer);
+  s = format (s, "\n%Ubuffer 0x%x: %U", format_white_space, indent,
+	      t->buffer_index, format_vnet_buffer_no_chain, &t->buffer);
 
   s = format (s, "\n%U%U",
 	      format_white_space, indent,
@@ -792,9 +792,8 @@ format_dpdk_rx_trace (u8 * s, va_list * va)
   s = format (s, "%U rx queue %d",
 	      format_vnet_sw_interface_name, vnm, sw, t->queue_index);
 
-  s = format (s, "\n%Ubuffer 0x%x: %U",
-	      format_white_space, indent,
-	      t->buffer_index, format_vnet_buffer, &t->buffer);
+  s = format (s, "\n%Ubuffer 0x%x: %U", format_white_space, indent,
+	      t->buffer_index, format_vnet_buffer_no_chain, &t->buffer);
 
   s = format (s, "\n%U%U",
 	      format_white_space, indent,

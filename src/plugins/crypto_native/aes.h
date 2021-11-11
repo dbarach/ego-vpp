@@ -119,7 +119,7 @@ aes_load_partial (u8x16u * p, int n_bytes)
   __m128i zero = { };
   return (u8x16) _mm_mask_loadu_epi8 (zero, (1 << n_bytes) - 1, p);
 #else
-  return aes_byte_mask (CLIB_MEM_OVERFLOW_LOAD (*, p), n_bytes);
+  return aes_byte_mask (CLIB_MEM_OVERFLOW_LOAD (p), n_bytes);
 #endif
 }
 
@@ -178,7 +178,7 @@ aes128_key_assist (u8x16 * rk, u8x16 r)
 }
 
 static_always_inline void
-aes128_key_expand (u8x16 * rk, u8x16 const *k)
+aes128_key_expand (u8x16 *rk, u8x16u const *k)
 {
   rk[0] = k[0];
   aes128_key_assist (rk + 1, aes_keygen_assist (rk[0], 0x01));
