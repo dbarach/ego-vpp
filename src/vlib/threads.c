@@ -626,8 +626,9 @@ start_workers (vlib_main_t * vm)
 
 	      vm_clone->thread_index = worker_thread_index;
 	      vm_clone->heap_base = w->thread_mheap;
-	      vm_clone->heap_aligned_base = (void *)
-		(((uword) w->thread_mheap) & ~(VLIB_FRAME_ALIGN - 1));
+	      vm_clone->heap_aligned_base =
+		(void *) (((uword) w->thread_mheap) &
+			  ~(CLIB_CACHE_LINE_BYTES - 1));
 	      vm_clone->pending_rpc_requests = 0;
 	      vec_validate (vm_clone->pending_rpc_requests, 0);
 	      _vec_len (vm_clone->pending_rpc_requests) = 0;
@@ -730,10 +731,7 @@ start_workers (vlib_main_t * vm)
 						     CLIB_CACHE_LINE_BYTES);
 
 	      /* Create per-thread frame freelist */
-	      nm_clone->frame_sizes = vec_new (vlib_frame_size_t, 1);
-#ifdef VLIB_SUPPORTS_ARBITRARY_SCALAR_SIZES
-	      nm_clone->frame_size_hash = hash_create (0, sizeof (uword));
-#endif
+	      nm_clone->frame_sizes = 0;
 	      nm_clone->node_by_error = nm->node_by_error;
 
 	      /* Packet trace buffers are guaranteed to be empty, nothing to do here */
@@ -1637,7 +1635,6 @@ static clib_error_t *
 show_clock_command_fn (vlib_main_t * vm,
 		       unformat_input_t * input, vlib_cli_command_t * cmd)
 {
-  int i;
   int verbose = 0;
   clib_timebase_t _tb, *tb = &_tb;
 
@@ -1650,24 +1647,19 @@ show_clock_command_fn (vlib_main_t * vm,
 		   verbose, format_clib_timebase_time,
 		   clib_timebase_now (tb));
 
-  if (vlib_get_n_threads () == 1)
-    return 0;
-
   vlib_cli_output (vm, "Time last barrier release %.9f",
 		   vm->time_last_barrier_release);
 
-  for (i = 1; i < vlib_get_n_threads (); i++)
+  foreach_vlib_main ()
     {
-      vlib_main_t *ovm = vlib_get_main_by_index (i);
-      if (ovm == 0)
-	continue;
+      vlib_cli_output (vm, "%d: %U", this_vlib_main->thread_index,
+		       format_clib_time, &this_vlib_main->clib_time, verbose);
 
-      vlib_cli_output (vm, "%d: %U", i, format_clib_time, &ovm->clib_time,
-		       verbose);
-
-      vlib_cli_output (
-	vm, "Thread %d offset %.9f error %.9f", i, ovm->time_offset,
-	vm->time_last_barrier_release - ovm->time_last_barrier_release);
+      vlib_cli_output (vm, "Thread %d offset %.9f error %.9f",
+		       this_vlib_main->thread_index,
+		       this_vlib_main->time_offset,
+		       vm->time_last_barrier_release -
+			 this_vlib_main->time_last_barrier_release);
     }
   return 0;
 }

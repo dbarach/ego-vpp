@@ -22,6 +22,7 @@
 
 #include <vnet/interface.h>
 #include <vnet/interface/rx_queue_funcs.h>
+#include <vnet/interface/tx_queue_funcs.h>
 #include <vnet/api_errno.h>
 #include <vnet/ethernet/ethernet.h>
 #include <vnet/ip/ip.h>
@@ -56,7 +57,9 @@ vpe_api_main_t vpe_api_main;
   _ (SW_INTERFACE_ADD_DEL_ADDRESS, sw_interface_add_del_address)              \
   _ (SW_INTERFACE_SET_RX_MODE, sw_interface_set_rx_mode)                      \
   _ (SW_INTERFACE_RX_PLACEMENT_DUMP, sw_interface_rx_placement_dump)          \
+  _ (SW_INTERFACE_TX_PLACEMENT_GET, sw_interface_tx_placement_get)            \
   _ (SW_INTERFACE_SET_RX_PLACEMENT, sw_interface_set_rx_placement)            \
+  _ (SW_INTERFACE_SET_TX_PLACEMENT, sw_interface_set_tx_placement)            \
   _ (SW_INTERFACE_SET_TABLE, sw_interface_set_table)                          \
   _ (SW_INTERFACE_GET_TABLE, sw_interface_get_table)                          \
   _ (SW_INTERFACE_SET_UNNUMBERED, sw_interface_set_unnumbered)                \
@@ -470,6 +473,107 @@ vl_api_sw_interface_set_table_t_handler (vl_api_sw_interface_set_table_t * mp)
   REPLY_MACRO (VL_API_SW_INTERFACE_SET_TABLE_REPLY);
 }
 
+void
+fib_table_bind (fib_protocol_t fproto, u32 sw_if_index, u32 fib_index)
+{
+  u32 table_id;
+
+  table_id = fib_table_get_table_id (fib_index, fproto);
+  ASSERT (table_id != ~0);
+
+  if (FIB_PROTOCOL_IP6 == fproto)
+    {
+      /*
+       * tell those that are interested that the binding is changing.
+       */
+      ip6_table_bind_callback_t *cb;
+      vec_foreach (cb, ip6_main.table_bind_callbacks)
+	cb->function (&ip6_main, cb->function_opaque,
+		      sw_if_index,
+		      fib_index,
+		      ip6_main.fib_index_by_sw_if_index[sw_if_index]);
+
+      /* unlock currently assigned tables */
+      if (0 != ip6_main.fib_index_by_sw_if_index[sw_if_index])
+	fib_table_unlock (ip6_main.fib_index_by_sw_if_index[sw_if_index],
+			  FIB_PROTOCOL_IP6, FIB_SOURCE_INTERFACE);
+
+      if (0 != table_id)
+	{
+	  /* we need to lock the table now it's inuse */
+	  fib_table_lock (fib_index, FIB_PROTOCOL_IP6, FIB_SOURCE_INTERFACE);
+	}
+
+      ip6_main.fib_index_by_sw_if_index[sw_if_index] = fib_index;
+    }
+  else
+    {
+      /*
+       * tell those that are interested that the binding is changing.
+       */
+      ip4_table_bind_callback_t *cb;
+      vec_foreach (cb, ip4_main.table_bind_callbacks)
+	cb->function (&ip4_main, cb->function_opaque,
+		      sw_if_index,
+		      fib_index,
+		      ip4_main.fib_index_by_sw_if_index[sw_if_index]);
+
+      /* unlock currently assigned tables */
+      if (0 != ip4_main.fib_index_by_sw_if_index[sw_if_index])
+	fib_table_unlock (ip4_main.fib_index_by_sw_if_index[sw_if_index],
+			  FIB_PROTOCOL_IP4, FIB_SOURCE_INTERFACE);
+
+      if (0 != table_id)
+	{
+	  /* we need to lock the table now it's inuse */
+	  fib_index = fib_table_find_or_create_and_lock (
+	    FIB_PROTOCOL_IP4, table_id, FIB_SOURCE_INTERFACE);
+	}
+
+      ip4_main.fib_index_by_sw_if_index[sw_if_index] = fib_index;
+    }
+}
+
+void
+mfib_table_bind (fib_protocol_t fproto, u32 sw_if_index, u32 mfib_index)
+{
+  u32 table_id;
+
+  table_id = mfib_table_get_table_id (mfib_index, fproto);
+  ASSERT (table_id != ~0);
+
+  if (FIB_PROTOCOL_IP6 == fproto)
+    {
+      if (0 != ip6_main.mfib_index_by_sw_if_index[sw_if_index])
+	mfib_table_unlock (ip6_main.mfib_index_by_sw_if_index[sw_if_index],
+			   FIB_PROTOCOL_IP6, MFIB_SOURCE_INTERFACE);
+
+      if (0 != table_id)
+	{
+	  /* we need to lock the table now it's inuse */
+	  mfib_table_lock (mfib_index, FIB_PROTOCOL_IP6,
+			   MFIB_SOURCE_INTERFACE);
+	}
+
+      ip6_main.mfib_index_by_sw_if_index[sw_if_index] = mfib_index;
+    }
+  else
+    {
+      if (0 != ip4_main.mfib_index_by_sw_if_index[sw_if_index])
+	mfib_table_unlock (ip4_main.mfib_index_by_sw_if_index[sw_if_index],
+			   FIB_PROTOCOL_IP4, MFIB_SOURCE_INTERFACE);
+
+      if (0 != table_id)
+	{
+	  /* we need to lock the table now it's inuse */
+	  mfib_index = mfib_table_find_or_create_and_lock (
+	    FIB_PROTOCOL_IP4, table_id, MFIB_SOURCE_INTERFACE);
+	}
+
+      ip4_main.mfib_index_by_sw_if_index[sw_if_index] = mfib_index;
+    }
+}
+
 int
 ip_table_bind (fib_protocol_t fproto, u32 sw_if_index, u32 table_id)
 {
@@ -487,100 +591,24 @@ ip_table_bind (fib_protocol_t fproto, u32 sw_if_index, u32 table_id)
       return (VNET_API_ERROR_NO_SUCH_FIB);
     }
 
-  if (FIB_PROTOCOL_IP6 == fproto)
-    {
-      /*
-       * If the interface already has in IP address, then a change int
-       * VRF is not allowed. The IP address applied must first be removed.
-       * We do not do that automatically here, since VPP has no knowledge
-       * of whether those subnets are valid in the destination VRF.
-       */
-      /* *INDENT-OFF* */
-      foreach_ip_interface_address (&ip6_main.lookup_main,
-				    ia, sw_if_index,
-				    1 /* honor unnumbered */ ,
-      ({
-        return (VNET_API_ERROR_ADDRESS_FOUND_FOR_INTERFACE);
-      }));
-      /* *INDENT-ON* */
+  /*
+   * If the interface already has in IP address, then a change int
+   * VRF is not allowed. The IP address applied must first be removed.
+   * We do not do that automatically here, since VPP has no knowledge
+   * of whether those subnets are valid in the destination VRF.
+   */
+  /* clang-format off */
+  foreach_ip_interface_address (FIB_PROTOCOL_IP6 == fproto ?
+				&ip6_main.lookup_main : &ip4_main.lookup_main,
+				ia, sw_if_index,
+				1 /* honor unnumbered */ ,
+  ({
+    return (VNET_API_ERROR_ADDRESS_FOUND_FOR_INTERFACE);
+  }));
+  /* clang-format on */
 
-      /*
-       * tell those that are interested that the binding is changing.
-       */
-      ip6_table_bind_callback_t *cb;
-      vec_foreach (cb, ip6_main.table_bind_callbacks)
-	cb->function (&ip6_main, cb->function_opaque,
-		      sw_if_index,
-		      fib_index,
-		      ip6_main.fib_index_by_sw_if_index[sw_if_index]);
-
-      /* unlock currently assigned tables */
-      if (0 != ip6_main.fib_index_by_sw_if_index[sw_if_index])
-	fib_table_unlock (ip6_main.fib_index_by_sw_if_index[sw_if_index],
-			  FIB_PROTOCOL_IP6, FIB_SOURCE_INTERFACE);
-      if (0 != ip6_main.mfib_index_by_sw_if_index[sw_if_index])
-	mfib_table_unlock (ip6_main.mfib_index_by_sw_if_index[sw_if_index],
-			   FIB_PROTOCOL_IP6, MFIB_SOURCE_INTERFACE);
-
-      if (0 != table_id)
-	{
-	  /* we need to lock the table now it's inuse */
-	  fib_table_lock (fib_index, FIB_PROTOCOL_IP6, FIB_SOURCE_INTERFACE);
-	  mfib_table_lock (mfib_index, FIB_PROTOCOL_IP6,
-			   MFIB_SOURCE_INTERFACE);
-	}
-
-      ip6_main.fib_index_by_sw_if_index[sw_if_index] = fib_index;
-      ip6_main.mfib_index_by_sw_if_index[sw_if_index] = mfib_index;
-    }
-  else
-    {
-      /*
-       * If the interface already has in IP address, then a change int
-       * VRF is not allowed. The IP address applied must first be removed.
-       * We do not do that automatically here, since VPP has no knowledge
-       * of whether those subnets are valid in the destination VRF.
-       */
-      /* *INDENT-OFF* */
-      foreach_ip_interface_address (&ip4_main.lookup_main,
-				    ia, sw_if_index,
-				    1 /* honor unnumbered */ ,
-      ({
-        return (VNET_API_ERROR_ADDRESS_FOUND_FOR_INTERFACE);
-      }));
-      /* *INDENT-ON* */
-
-      /*
-       * tell those that are interested that the binding is changing.
-       */
-      ip4_table_bind_callback_t *cb;
-      vec_foreach (cb, ip4_main.table_bind_callbacks)
-	cb->function (&ip4_main, cb->function_opaque,
-		      sw_if_index,
-		      fib_index,
-		      ip4_main.fib_index_by_sw_if_index[sw_if_index]);
-
-      /* unlock currently assigned tables */
-      if (0 != ip4_main.fib_index_by_sw_if_index[sw_if_index])
-	fib_table_unlock (ip4_main.fib_index_by_sw_if_index[sw_if_index],
-			  FIB_PROTOCOL_IP4, FIB_SOURCE_INTERFACE);
-      if (0 != ip4_main.mfib_index_by_sw_if_index[sw_if_index])
-	mfib_table_unlock (ip4_main.mfib_index_by_sw_if_index[sw_if_index],
-			   FIB_PROTOCOL_IP4, MFIB_SOURCE_INTERFACE);
-
-      if (0 != table_id)
-	{
-	  /* we need to lock the table now it's inuse */
-	  fib_index = fib_table_find_or_create_and_lock (
-	    FIB_PROTOCOL_IP4, table_id, FIB_SOURCE_INTERFACE);
-
-	  mfib_index = mfib_table_find_or_create_and_lock (
-	    FIB_PROTOCOL_IP4, table_id, MFIB_SOURCE_INTERFACE);
-	}
-
-      ip4_main.fib_index_by_sw_if_index[sw_if_index] = fib_index;
-      ip4_main.mfib_index_by_sw_if_index[sw_if_index] = mfib_index;
-    }
+  fib_table_bind (fproto, sw_if_index, fib_index);
+  mfib_table_bind (fproto, sw_if_index, mfib_index);
 
   return (0);
 }
@@ -1191,6 +1219,168 @@ out:
 }
 
 static void
+send_interface_tx_placement_details (vnet_hw_if_tx_queue_t **all_queues,
+				     u32 index, vl_api_registration_t *rp,
+				     u32 context)
+{
+  vnet_main_t *vnm = vnet_get_main ();
+  vl_api_sw_interface_tx_placement_details_t *rmp;
+  u32 n_bits = 0, v = ~0;
+  vnet_hw_if_tx_queue_t **q = vec_elt_at_index (all_queues, index);
+  uword *bitmap = q[0]->threads;
+  u32 hw_if_index = q[0]->hw_if_index;
+  vnet_hw_interface_t *hw_if = vnet_get_hw_interface (vnm, hw_if_index);
+
+  n_bits = clib_bitmap_count_set_bits (bitmap);
+  u32 n = n_bits * sizeof (u32);
+
+  /*
+   * FIXME: Use the REPLY_MACRO_DETAILS5_END once endian handler is registered
+   * and available.
+   */
+  REPLY_MACRO_DETAILS5 (
+    VL_API_SW_INTERFACE_TX_PLACEMENT_DETAILS, n, rp, context, ({
+      rmp->sw_if_index = clib_host_to_net_u32 (hw_if->sw_if_index);
+      rmp->queue_id = clib_host_to_net_u32 (q[0]->queue_id);
+      rmp->shared = q[0]->shared_queue;
+      rmp->array_size = clib_host_to_net_u32 (n_bits);
+
+      v = clib_bitmap_first_set (bitmap);
+      for (u32 i = 0; i < n_bits; i++)
+	{
+	  rmp->threads[i] = clib_host_to_net_u32 (v);
+	  v = clib_bitmap_next_set (bitmap, v + 1);
+	}
+    }));
+}
+
+static void
+vl_api_sw_interface_tx_placement_get_t_handler (
+  vl_api_sw_interface_tx_placement_get_t *mp)
+{
+  vnet_main_t *vnm = vnet_get_main ();
+  vl_api_sw_interface_tx_placement_get_reply_t *rmp = 0;
+  vnet_hw_if_tx_queue_t **all_queues = 0;
+  vnet_hw_if_tx_queue_t *q;
+  u32 sw_if_index = mp->sw_if_index;
+  i32 rv = 0;
+
+  if (pool_elts (vnm->interface_main.hw_if_tx_queues) == 0)
+    {
+      rv = VNET_API_ERROR_NO_SUCH_ENTRY;
+      goto err;
+    }
+
+  if (sw_if_index == ~0)
+    {
+      pool_foreach (q, vnm->interface_main.hw_if_tx_queues)
+	vec_add1 (all_queues, q);
+      vec_sort_with_function (all_queues, vnet_hw_if_txq_cmp_cli_api);
+    }
+  else
+    {
+      u32 qi = ~0;
+      vnet_sw_interface_t *si;
+
+      if (!vnet_sw_if_index_is_api_valid (sw_if_index))
+	{
+	  clib_warning ("sw_if_index %u does not exist", sw_if_index);
+	  rv = VNET_API_ERROR_INVALID_SW_IF_INDEX;
+	  goto err;
+	}
+
+      si = vnet_get_sw_interface (vnm, sw_if_index);
+      if (si->type != VNET_SW_INTERFACE_TYPE_HARDWARE)
+	{
+	  clib_warning ("interface type is not HARDWARE! P2P, PIPE and SUB"
+			" interfaces are not supported");
+	  rv = VNET_API_ERROR_INVALID_INTERFACE;
+	  goto err;
+	}
+
+      vnet_hw_interface_t *hw = vnet_get_hw_interface (vnm, si->hw_if_index);
+      for (qi = 0; qi < vec_len (hw->tx_queue_indices); qi++)
+	{
+	  q = vnet_hw_if_get_tx_queue (vnm, hw->tx_queue_indices[qi]);
+	  vec_add1 (all_queues, q);
+	}
+    }
+
+  REPLY_AND_DETAILS_VEC_MACRO_END (VL_API_SW_INTERFACE_TX_PLACEMENT_GET_REPLY,
+				   all_queues, mp, rmp, rv, ({
+				     send_interface_tx_placement_details (
+				       all_queues, cursor, rp, mp->context);
+				   }));
+
+  vec_free (all_queues);
+  return;
+
+err:
+  REPLY_MACRO_END (VL_API_SW_INTERFACE_TX_PLACEMENT_GET_REPLY);
+}
+
+static void
+vl_api_sw_interface_set_tx_placement_t_handler (
+  vl_api_sw_interface_set_tx_placement_t *mp)
+{
+  vl_api_sw_interface_set_tx_placement_reply_t *rmp;
+  vnet_main_t *vnm = vnet_get_main ();
+  u32 sw_if_index = mp->sw_if_index;
+  vnet_sw_interface_t *si;
+  uword *bitmap = 0;
+  u32 queue_id = ~0;
+  u32 size = 0;
+  clib_error_t *error = 0;
+  int rv = 0;
+
+  VALIDATE_SW_IF_INDEX_END (mp);
+
+  si = vnet_get_sw_interface (vnm, sw_if_index);
+  if (si->type != VNET_SW_INTERFACE_TYPE_HARDWARE)
+    {
+      rv = VNET_API_ERROR_INVALID_VALUE;
+      goto bad_sw_if_index;
+    }
+
+  size = mp->array_size;
+  for (u32 i = 0; i < size; i++)
+    {
+      u32 thread_index = mp->threads[i];
+      bitmap = clib_bitmap_set (bitmap, thread_index, 1);
+    }
+
+  queue_id = mp->queue_id;
+  rv = set_hw_interface_tx_queue (si->hw_if_index, queue_id, bitmap);
+
+  switch (rv)
+    {
+    case VNET_API_ERROR_INVALID_VALUE:
+      error = clib_error_return (
+	0, "please specify valid thread(s) - last thread index %u",
+	clib_bitmap_last_set (bitmap));
+      break;
+    case VNET_API_ERROR_INVALID_QUEUE:
+      error = clib_error_return (
+	0, "unknown queue %u on interface %s", queue_id,
+	vnet_get_hw_interface (vnet_get_main (), si->hw_if_index)->name);
+      break;
+    default:
+      break;
+    }
+
+  if (error)
+    {
+      clib_error_report (error);
+      goto out;
+    }
+
+  BAD_SW_IF_INDEX_LABEL;
+out:
+  REPLY_MACRO_END (VL_API_SW_INTERFACE_SET_TX_PLACEMENT_REPLY);
+  clib_bitmap_free (bitmap);
+}
+
+static void
 vl_api_create_vlan_subif_t_handler (vl_api_create_vlan_subif_t * mp)
 {
   vl_api_create_vlan_subif_reply_t *rmp;
@@ -1448,6 +1638,10 @@ interface_api_hookup (vlib_main_t * vm)
 
   /* Do not replay VL_API_SW_INTERFACE_DUMP messages */
   am->api_trace_cfg[VL_API_SW_INTERFACE_DUMP].replay_enable = 0;
+
+  /* Mark these APIs as autoendian */
+  am->is_autoendian[VL_API_SW_INTERFACE_SET_TX_PLACEMENT] = 1;
+  am->is_autoendian[VL_API_SW_INTERFACE_TX_PLACEMENT_GET] = 1;
 
   /*
    * Set up the (msg_name, crc, message-id) table

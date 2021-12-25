@@ -27,7 +27,6 @@
 #include <vlib/unix/unix.h>
 #include <vnet/ethernet/ethernet.h>
 #include <vnet/feature/feature.h>
-#include <vnet/gso/gro_func.h>
 #include <vnet/interface/rx_queue_funcs.h>
 #include <vnet/ip/ip4_packet.h>
 #include <vnet/ip/ip6_packet.h>
@@ -371,7 +370,7 @@ virtio_device_input_gso_inline (vlib_main_t * vm, vlib_node_runtime_t * node,
 	      tr->next_index = next0;
 	      tr->hw_if_index = vif->hw_if_index;
 	      tr->len = len;
-	      clib_memcpy_fast (&tr->hdr, hdr, hdr_sz);
+	      clib_memcpy_fast (&tr->hdr, hdr, (hdr_sz == 12) ? 12 : 10);
 	    }
 
 	  /* enqueue buffer */
@@ -410,20 +409,7 @@ virtio_device_input_inline (vlib_main_t * vm, vlib_node_runtime_t * node,
 {
   virtio_vring_t *vring = vec_elt_at_index (vif->rxq_vrings, qid);
   const int hdr_sz = vif->virtio_net_hdr_sz;
-  u16 txq_id = vm->thread_index % vif->num_txqs;
-  virtio_vring_t *txq_vring = vec_elt_at_index (vif->txq_vrings, txq_id);
   uword rv;
-
-  if (clib_spinlock_trylock_if_init (&txq_vring->lockp))
-    {
-      if (vif->packet_coalesce)
-	vnet_gro_flow_table_schedule_node_on_dispatcher
-	  (vm, txq_vring->flow_table);
-      else if (vif->packet_buffering)
-	virtio_vring_buffering_schedule_node_on_dispatcher
-	  (vm, txq_vring->buffering);
-      clib_spinlock_unlock_if_init (&txq_vring->lockp);
-    }
 
   if (vif->is_packed)
     {

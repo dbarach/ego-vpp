@@ -44,6 +44,7 @@
 #include <vppinfra/pcap.h>
 #include <vnet/l3_types.h>
 #include <vppinfra/lock.h>
+#include <vnet/hash/hash.h>
 
 struct vnet_main_t;
 struct vnet_hw_interface_t;
@@ -410,6 +411,9 @@ typedef struct _vnet_hw_interface_class
   /* Flags */
   vnet_hw_interface_class_flags_t flags;
 
+  /* tx hash type for interfaces of this hw class */
+  vnet_hash_fn_type_t tx_hash_fn_type;
+
   /* Function to call when hardware interface is added/deleted. */
   vnet_interface_function_t *interface_add_del_function;
 
@@ -561,6 +565,14 @@ typedef enum vnet_hw_interface_capabilities_t_
    VNET_HW_INTERFACE_CAP_SUPPORTS_TX_TCP_CKSUM |                              \
    VNET_HW_INTERFACE_CAP_SUPPORTS_TX_UDP_CKSUM)
 
+#define VNET_HW_INTERFACE_CAP_SUPPORTS_TX_OUTER_CKSUM                         \
+  (VNET_HW_INTERFACE_CAP_SUPPORTS_TX_IP4_OUTER_CKSUM |                        \
+   VNET_HW_INTERFACE_CAP_SUPPORTS_TX_UDP_OUTER_CKSUM)
+
+#define VNET_HW_INTERFACE_CAP_SUPPORTS_TX_CKSUM_MASK                          \
+  (VNET_HW_INTERFACE_CAP_SUPPORTS_TX_CKSUM |                                  \
+   VNET_HW_INTERFACE_CAP_SUPPORTS_TX_OUTER_CKSUM)
+
 #define VNET_HW_INTERFACE_CAP_SUPPORTS_L4_RX_CKSUM                            \
   (VNET_HW_INTERFACE_CAP_SUPPORTS_RX_TCP_CKSUM |                              \
    VNET_HW_INTERFACE_CAP_SUPPORTS_RX_UDP_CKSUM)
@@ -569,6 +581,10 @@ typedef enum vnet_hw_interface_capabilities_t_
   (VNET_HW_INTERFACE_CAP_SUPPORTS_RX_IP4_CKSUM |                              \
    VNET_HW_INTERFACE_CAP_SUPPORTS_RX_TCP_CKSUM |                              \
    VNET_HW_INTERFACE_CAP_SUPPORTS_RX_UDP_CKSUM)
+
+#define VNET_HW_INTERFACE_CAP_SUPPORTS_TNL_GSO_MASK                           \
+  VNET_HW_INTERFACE_CAP_SUPPORTS_VXLAN_TNL_GSO |                              \
+    VNET_HW_INTERFACE_CAP_SUPPORTS_IPIP_TNL_GSO
 
 #define VNET_HW_INTERFACE_FLAG_DUPLEX_SHIFT 1
 #define VNET_HW_INTERFACE_FLAG_SPEED_SHIFT  3
@@ -629,8 +645,9 @@ typedef struct
 typedef struct
 {
   CLIB_CACHE_LINE_ALIGN_MARK (cacheline0);
-  vnet_hw_if_tx_frame_t frame;
-  u32 n_threads;
+  vnet_hw_if_tx_frame_t *frame;
+  u32 *lookup_table;
+  u32 n_queues;
 } vnet_hw_if_output_node_runtime_t;
 
 /* Hardware-interface.  This corresponds to a physical wire
@@ -683,6 +700,9 @@ typedef struct vnet_hw_interface_t
   /* Next index in interface-output node for this interface
      used by node function vnet_per_buffer_interface_output() */
   u32 output_node_next_index;
+
+  /* called when hw interface is using transmit side packet steering */
+  vnet_hash_fn_t hf;
 
   /* Maximum transmit rate for this interface in bits/sec. */
   f64 max_rate_bits_per_sec;

@@ -717,6 +717,15 @@ ip6_sw_interface_add_del (vnet_main_t * vnm, u32 sw_if_index, u32 is_add)
       }));
       /* *INDENT-ON* */
       ip6_mfib_interface_enable_disable (sw_if_index, 0);
+
+      if (0 != im6->fib_index_by_sw_if_index[sw_if_index])
+	fib_table_bind (FIB_PROTOCOL_IP6, sw_if_index, 0);
+      if (0 != im6->mfib_index_by_sw_if_index[sw_if_index])
+	mfib_table_bind (FIB_PROTOCOL_IP6, sw_if_index, 0);
+
+      /* Erase the lookup tables just in case */
+      im6->fib_index_by_sw_if_index[sw_if_index] = ~0;
+      im6->mfib_index_by_sw_if_index[sw_if_index] = ~0;
     }
 
   vnet_feature_enable_disable ("ip6-unicast", "ip6-not-enabled", sw_if_index,
@@ -1218,14 +1227,11 @@ always_inline u8
 ip6_next_proto_is_tcp_udp (vlib_buffer_t * p0, ip6_header_t * ip0,
 			   u32 * udp_offset0)
 {
-  u32 proto0;
-  proto0 = ip6_locate_header (p0, ip0, IP_PROTOCOL_UDP, udp_offset0);
-  if (proto0 != IP_PROTOCOL_UDP)
-    {
-      proto0 = ip6_locate_header (p0, ip0, IP_PROTOCOL_TCP, udp_offset0);
-      proto0 = (proto0 == IP_PROTOCOL_TCP) ? proto0 : 0;
-    }
-  return proto0;
+  int nh = ip6_locate_header (p0, ip0, -1, udp_offset0);
+  if (nh > 0)
+    if (nh == IP_PROTOCOL_UDP || nh == IP_PROTOCOL_TCP)
+      return nh;
+  return 0;
 }
 
 /* *INDENT-OFF* */

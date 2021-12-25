@@ -26,6 +26,7 @@
 #include <vnet/ip/ip6_to_ip4.h>
 #include <vppinfra/bihash_48_8.h>
 #include <vnet/ip/reass/ip6_sv_reass.h>
+#include <vnet/ip/ip6_inlines.h>
 
 #define MSEC_PER_SEC 1000
 #define IP6_SV_REASS_TIMEOUT_DEFAULT_MS 100
@@ -40,6 +41,7 @@ typedef enum
   IP6_SV_REASS_RC_TOO_MANY_FRAGMENTS,
   IP6_SV_REASS_RC_INTERNAL_ERROR,
   IP6_SV_REASS_RC_UNSUPP_IP_PROTO,
+  IP6_SV_REASS_RC_INVALID_FRAG_LEN,
 } ip6_sv_reass_rc_t;
 
 typedef struct
@@ -214,7 +216,7 @@ format_ip6_sv_reass_trace (u8 * s, va_list * args)
 		clib_net_to_host_u16 (t->l4_dst_port));
       break;
     case REASS_PASSTHROUGH:
-      s = format (s, "[not-fragmented]");
+      s = format (s, "[not fragmented or atomic fragment]");
       break;
     }
   return s;
@@ -309,6 +311,8 @@ ip6_sv_reass_find_or_create (vlib_main_t *vm, ip6_sv_reass_main_t *rm,
   ip6_sv_reass_t *reass = NULL;
   f64 now = vlib_time_now (vm);
 
+again:
+
   if (!clib_bihash_search_48_8 (&rm->hash, &kv->kv, &kv->kv))
     {
       if (vm->thread_index != kv->v.thread_index)
@@ -368,10 +372,14 @@ ip6_sv_reass_find_or_create (vlib_main_t *vm, ip6_sv_reass_main_t *rm,
   kv->v.thread_index = vm->thread_index;
   reass->last_heard = now;
 
-  if (clib_bihash_add_del_48_8 (&rm->hash, &kv->kv, 1))
+  int rv = clib_bihash_add_del_48_8 (&rm->hash, &kv->kv, 2);
+  if (rv)
     {
       ip6_sv_reass_free (vm, rm, rt, reass);
       reass = NULL;
+      // if other worker created a context already work with the other copy
+      if (-2 == rv)
+	goto again;
     }
 
   return reass;
@@ -399,6 +407,10 @@ ip6_sv_reass_update (vlib_main_t *vm, vlib_node_runtime_t *node,
   u32 fragment_length =
     vlib_buffer_length_in_chain (vm, fb) -
     (fvnb->ip.reass.ip6_frag_hdr_offset + sizeof (*frag_hdr));
+  if (0 == fragment_length)
+    {
+      return IP6_SV_REASS_RC_INVALID_FRAG_LEN;
+    }
   u32 fragment_last = fvnb->ip.reass.fragment_last =
     fragment_first + fragment_length - 1;
   fvnb->ip.reass.range_first = fragment_first;
@@ -440,22 +452,18 @@ ip6_sv_reass_update (vlib_main_t *vm, vlib_node_runtime_t *node,
 }
 
 always_inline bool
-ip6_sv_reass_verify_upper_layer_present (vlib_node_runtime_t * node,
-					 vlib_buffer_t * b,
-					 ip6_frag_hdr_t * frag_hdr)
+ip6_sv_reass_verify_upper_layer_present (vlib_node_runtime_t *node,
+					 vlib_buffer_t *b,
+					 ip6_ext_hdr_chain_t *hc)
 {
-  ip6_ext_header_t *tmp = (ip6_ext_header_t *) frag_hdr;
-  while (ip6_ext_hdr (tmp->next_hdr))
+  int nh = hc->eh[hc->length - 1].protocol;
+  /* Checking to see if it's a terminating header */
+  if (ip6_ext_hdr (nh))
     {
-      tmp = ip6_ext_next_header (tmp);
-    }
-  if (IP_PROTOCOL_IP6_NONXT == tmp->next_hdr)
-    {
-      icmp6_error_set_vnet_buffer (b, ICMP6_parameter_problem,
-				   ICMP6_parameter_problem_first_fragment_has_incomplete_header_chain,
-				   0);
+      icmp6_error_set_vnet_buffer (
+	b, ICMP6_parameter_problem,
+	ICMP6_parameter_problem_first_fragment_has_incomplete_header_chain, 0);
       b->error = node->errors[IP6_ERROR_REASS_MISSING_UPPER];
-
       return false;
     }
   return true;
@@ -533,18 +541,26 @@ ip6_sv_reassembly_inline (vlib_main_t * vm,
 	  b0 = vlib_get_buffer (vm, bi0);
 
 	  ip6_header_t *ip0 = vlib_buffer_get_current (b0);
-	  ip6_frag_hdr_t *frag_hdr = NULL;
-	  ip6_ext_header_t *prev_hdr;
-	  if (ip6_ext_hdr (ip0->protocol))
+	  ip6_frag_hdr_t *frag_hdr;
+	  ip6_ext_hdr_chain_t hdr_chain;
+	  bool is_atomic_fragment = false;
+
+	  int res = ip6_ext_header_walk (
+	    b0, ip0, IP_PROTOCOL_IPV6_FRAGMENTATION, &hdr_chain);
+	  if (res >= 0 &&
+	      hdr_chain.eh[res].protocol == IP_PROTOCOL_IPV6_FRAGMENTATION)
 	    {
 	      frag_hdr =
-		ip6_ext_header_find (vm, b0, ip0,
-				     IP_PROTOCOL_IPV6_FRAGMENTATION,
-				     &prev_hdr);
+		ip6_ext_next_header_offset (ip0, hdr_chain.eh[res].offset);
+	      is_atomic_fragment = (0 == ip6_frag_hdr_offset (frag_hdr) &&
+				    !ip6_frag_hdr_more (frag_hdr));
 	    }
-	  if (!frag_hdr)
+
+	  if (res < 0 ||
+	      hdr_chain.eh[res].protocol != IP_PROTOCOL_IPV6_FRAGMENTATION ||
+	      is_atomic_fragment)
 	    {
-	      // this is a regular packet - no fragmentation
+	      // this is a regular unfragmented packet or an atomic fragment
 	      if (!ip6_get_port
 		  (vm, b0, ip0, b0->current_length,
 		   &(vnet_buffer (b0)->ip.reass.ip_proto),
@@ -571,13 +587,15 @@ ip6_sv_reassembly_inline (vlib_main_t * vm,
 		}
 	      goto packet_enqueue;
 	    }
+
 	  vnet_buffer (b0)->ip.reass.ip6_frag_hdr_offset =
-	    (u8 *) frag_hdr - (u8 *) ip0;
+	    hdr_chain.eh[res].offset;
+
 	  if (0 == ip6_frag_hdr_offset (frag_hdr))
 	    {
 	      // first fragment - verify upper-layer is present
-	      if (!ip6_sv_reass_verify_upper_layer_present
-		  (node, b0, frag_hdr))
+	      if (!ip6_sv_reass_verify_upper_layer_present (node, b0,
+							    &hdr_chain))
 		{
 		  next0 = IP6_SV_REASSEMBLY_NEXT_ICMP_ERROR;
 		  goto packet_enqueue;
@@ -659,6 +677,9 @@ ip6_sv_reassembly_inline (vlib_main_t * vm,
 	      break;
 	    case IP6_SV_REASS_RC_INTERNAL_ERROR:
 	      counter = IP6_ERROR_REASS_INTERNAL_ERROR;
+	      break;
+	    case IP6_SV_REASS_RC_INVALID_FRAG_LEN:
+	      counter = IP6_ERROR_REASS_INVALID_FRAG_LEN;
 	      break;
 	    }
 	  if (~0 != counter)

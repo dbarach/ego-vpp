@@ -56,7 +56,7 @@ endif
 
 ifeq ($(filter ubuntu debian,$(OS_ID)),$(OS_ID))
 PKG=deb
-else ifeq ($(filter rhel centos fedora,$(OS_ID)),$(OS_ID))
+else ifeq ($(filter rhel centos fedora opensuse-leap,$(OS_ID)),$(OS_ID))
 PKG=rpm
 endif
 
@@ -73,14 +73,13 @@ DEB_DEPENDS += python3-venv  # ensurepip
 DEB_DEPENDS += python3-dev   # needed for python3 -m pip install psutil
 DEB_DEPENDS += libnl-3-dev libnl-route-3-dev
 DEB_DEPENDS += enchant  # for docs
+DEB_DEPENDS += python3-virtualenv
+DEB_DEPENDS += libssl-dev
+DEB_DEPENDS += libelf-dev # for libbpf (af_xdp)
 
 LIBFFI=libffi6 # works on all but 20.04 and debian-testing
 
-ifeq ($(OS_VERSION_ID),18.04)
-	DEB_DEPENDS += python-dev python-all python-pip python-virtualenv
-	DEB_DEPENDS += libssl-dev
-	DEB_DEPENDS += clang-9 clang-format-10
-else ifeq ($(OS_VERSION_ID),20.04)
+ifeq ($(OS_VERSION_ID),20.04)
 	DEB_DEPENDS += python3-virtualenv
 	DEB_DEPENDS += libssl-dev
 	DEB_DEPENDS += libelf-dev # for libbpf (af_xdp)
@@ -88,22 +87,20 @@ else ifeq ($(OS_VERSION_ID),20.04)
 	#       when clang-format-10 is removed
 	DEB_DEPENDS += clang-11 clang-format-11 clang-format-10
 	LIBFFI=libffi7
+	DEB_DEPENDS += enchant-2  # for docs
 else ifeq ($(OS_VERSION_ID),20.10)
-	DEB_DEPENDS += python3-virtualenv
-	DEB_DEPENDS += libssl-dev
-	DEB_DEPENDS += libelf-dev # for libbpf (af_xdp)
 	# TODO: change CLANG_FORMAT_VER default in extras/scripts/checkstyle.sh
 	#       when clang-format-10 is removed
 	DEB_DEPENDS += clang-11 clang-format-11 clang-format-10
 	LIBFFI=libffi8ubuntu1
 else ifeq ($(OS_ID)-$(OS_VERSION_ID),debian-10)
-	DEB_DEPENDS += python3-virtualenv virtualenv
-	DEB_DEPENDS += libssl-dev
-	DEB_DEPENDS += libelf-dev # for libbpf (af_xdp)
+	DEB_DEPENDS += virtualenv
 else
-	DEB_DEPENDS += libssl-dev
-	DEB_DEPENDS += libelf-dev # for libbpf (af_xdp)
+	# TODO: change CLANG_FORMAT_VER default in extras/scripts/checkstyle.sh
+	#       when clang-format-10 is removed
+	DEB_DEPENDS += clang-11 clang-format-11 clang-format-10
 	LIBFFI=libffi7
+	DEB_DEPENDS += enchant-2  # for docs
 endif
 
 DEB_DEPENDS += $(LIBFFI)
@@ -120,7 +117,6 @@ RPM_DEPENDS += ccache
 RPM_DEPENDS += xmlto
 RPM_DEPENDS += elfutils-libelf-devel
 RPM_DEPENDS += libnl3-devel
-RPM_DEPENDS += enchant # for docs
 
 ifeq ($(OS_ID),fedora)
 	RPM_DEPENDS += dnf-utils
@@ -157,6 +153,32 @@ RPM_DEPENDS_DEBUG  = glibc-debuginfo e2fsprogs-debuginfo
 RPM_DEPENDS_DEBUG += krb5-debuginfo openssl-debuginfo
 RPM_DEPENDS_DEBUG += zlib-debuginfo nss-softokn-debuginfo
 RPM_DEPENDS_DEBUG += yum-plugin-auto-update-debug-info
+
+RPM_SUSE_BUILDTOOLS_DEPS = autoconf automake ccache check-devel chrpath
+RPM_SUSE_BUILDTOOLS_DEPS += clang cmake indent libtool make ninja python3-ply
+
+RPM_SUSE_DEVEL_DEPS = glibc-devel-static libnuma-devel libelf-devel
+RPM_SUSE_DEVEL_DEPS += libopenssl-devel openssl-devel mbedtls-devel libuuid-devel
+
+RPM_SUSE_PYTHON_DEPS = python-devel python3-devel python-pip python3-pip
+RPM_SUSE_PYTHON_DEPS += python-rpm-macros python3-rpm-macros
+
+RPM_SUSE_PLATFORM_DEPS = distribution-release shadow rpm-build
+
+ifeq ($(OS_ID),opensuse-leap)
+ifeq ($(OS_VERSION_ID),15.3)
+	RPM_SUSE_DEVEL_DEPS += curl libstdc++-devel bison gcc-c++ zlib-devel xmlto
+	RPM_SUSE_DEVEL_DEPS += lsb-release
+	RPM_SUSE_DEVEL_DEPS += asciidoc git
+	RPM_SUSE_PYTHON_DEPS += python3 python2-ply
+endif
+ifeq ($(OS_VERSION_ID),15.0)
+	RPM_SUSE_DEVEL_DEPS += gcc git curl
+	RPM_SUSE_PYTHON_DEPS += python3-ply python2-virtualenv
+endif
+endif
+
+RPM_SUSE_DEPENDS += $(RPM_SUSE_BUILDTOOLS_DEPS) $(RPM_SUSE_DEVEL_DEPS) $(RPM_SUSE_PYTHON_DEPS) $(RPM_SUSE_PLATFORM_DEPS)
 
 ifneq ($(wildcard $(STARTUP_DIR)/startup.conf),)
         STARTUP_CONF ?= $(STARTUP_DIR)/startup.conf
@@ -311,8 +333,11 @@ else ifeq ($(OS_ID),fedora)
 	@sudo -E dnf install $(CONFIRM) $(RPM_DEPENDS)
 	@sudo -E debuginfo-install $(CONFIRM) glibc openssl-libs mbedtls-devel zlib
 endif
+else ifeq ($(filter opensuse-leap,$(OS_ID)),$(OS_ID))
+	@sudo -E zypper refresh
+	@sudo -E zypper install  -y $(RPM_SUSE_DEPENDS)
 else
-	$(error "This option currently works only on Ubuntu, Debian, RHEL, or CentOS systems")
+	$(error "This option currently works only on Ubuntu, Debian, RHEL, CentOS or openSUSE-leap systems")
 endif
 	git config commit.template .git_commit_template.txt
 
@@ -708,7 +733,7 @@ pkg-verify: install-dep $(BR)/.deps.ok install-ext-deps
 	$(call banner,"Building $(PKG) packages")
 	@make pkg-$(PKG)
 
-MAKE_VERIFY_GATE_OS ?= ubuntu-18.04
+MAKE_VERIFY_GATE_OS ?= ubuntu-20.04
 .PHONY: verify
 verify: pkg-verify
 ifeq ($(OS_ID)-$(OS_VERSION_ID),$(MAKE_VERIFY_GATE_OS))

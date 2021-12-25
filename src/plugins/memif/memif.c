@@ -231,12 +231,15 @@ memif_int_fd_read_ready (clib_file_t * uf)
 clib_error_t *
 memif_connect (memif_if_t * mif)
 {
+  memif_main_t *mm = &memif_main;
   vlib_main_t *vm = vlib_get_main ();
   vnet_main_t *vnm = vnet_get_main ();
   clib_file_t template = { 0 };
   memif_region_t *mr;
-  int i;
+  int i, j;
+  u32 n_txqs = 0, n_threads = vlib_get_n_threads ();
   clib_error_t *err = NULL;
+  u8 max_log2_ring_sz = 0;
 
   memif_log_debug (mif, "connect %u", mif->dev_instance);
 
@@ -268,10 +271,10 @@ memif_connect (memif_if_t * mif)
   template.write_function = memif_int_fd_write_ready;
 
   /* *INDENT-OFF* */
-  u32 n_threads = vlib_get_n_threads ();
   vec_foreach_index (i, mif->tx_queues)
     {
       memif_queue_t *mq = vec_elt_at_index (mif->tx_queues, i);
+      max_log2_ring_sz = clib_max (max_log2_ring_sz, mq->log2_ring_size);
 
       mq->ring = mif->regions[mq->region].shm + mq->offset;
       if (mq->ring->cookie != MEMIF_COOKIE)
@@ -281,8 +284,17 @@ memif_connect (memif_if_t * mif)
 	}
       mq->queue_index =
 	vnet_hw_if_register_tx_queue (vnm, mif->hw_if_index, i);
-      vnet_hw_if_tx_queue_assign_thread (vnm, mq->queue_index, i % n_threads);
       clib_spinlock_init (&mq->lockp);
+    }
+
+  if (vec_len (mif->tx_queues) > 0)
+    {
+      n_txqs = vec_len (mif->tx_queues);
+      for (j = 0; j < n_threads; j++)
+	{
+	  u32 qi = mif->tx_queues[j % n_txqs].queue_index;
+	  vnet_hw_if_tx_queue_assign_thread (vnm, qi, j);
+	}
     }
 
   vec_foreach_index (i, mif->rx_queues)
@@ -291,6 +303,8 @@ memif_connect (memif_if_t * mif)
       u32 ti;
       u32 qi;
       int rv;
+
+      max_log2_ring_sz = clib_max (max_log2_ring_sz, mq->log2_ring_size);
 
       mq->ring = mif->regions[mq->region].shm + mq->offset;
       if (mq->ring->cookie != MEMIF_COOKIE)
@@ -333,6 +347,30 @@ memif_connect (memif_if_t * mif)
 	}
     }
   /* *INDENT-ON* */
+
+  if (1 << max_log2_ring_sz > vec_len (mm->per_thread_data[0].desc_data))
+    {
+      memif_per_thread_data_t *ptd;
+      int with_barrier = 1;
+
+      if (vlib_worker_thread_barrier_held ())
+	with_barrier = 0;
+
+      if (with_barrier)
+	vlib_worker_thread_barrier_sync (vm);
+
+      vec_foreach (ptd, mm->per_thread_data)
+	{
+	  vec_validate_aligned (ptd->desc_data, pow2_mask (max_log2_ring_sz),
+				CLIB_CACHE_LINE_BYTES);
+	  vec_validate_aligned (ptd->desc_len, pow2_mask (max_log2_ring_sz),
+				CLIB_CACHE_LINE_BYTES);
+	  vec_validate_aligned (ptd->desc_status, pow2_mask (max_log2_ring_sz),
+				CLIB_CACHE_LINE_BYTES);
+	}
+      if (with_barrier)
+	vlib_worker_thread_barrier_release (vm);
+    }
 
   mif->flags &= ~MEMIF_IF_FLAG_CONNECTING;
   mif->flags |= MEMIF_IF_FLAG_CONNECTED;
@@ -846,10 +884,10 @@ memif_delete_if (vlib_main_t * vm, memif_if_t * mif)
 }
 
 /* *INDENT-OFF* */
-VNET_HW_INTERFACE_CLASS (memif_ip_hw_if_class, static) =
-{
+VNET_HW_INTERFACE_CLASS (memif_ip_hw_if_class, static) = {
   .name = "memif-ip",
   .flags = VNET_HW_INTERFACE_CLASS_FLAG_P2P,
+  .tx_hash_fn_type = VNET_HASH_FN_TYPE_IP,
 };
 /* *INDENT-ON* */
 

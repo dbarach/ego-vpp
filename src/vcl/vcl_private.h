@@ -139,6 +139,8 @@ typedef enum vcl_session_flags_
   VCL_SESSION_F_HAS_RX_EVT = 1 << 3,
   VCL_SESSION_F_RD_SHUTDOWN = 1 << 4,
   VCL_SESSION_F_WR_SHUTDOWN = 1 << 5,
+  VCL_SESSION_F_PENDING_DISCONNECT = 1 << 6,
+  VCL_SESSION_F_PENDING_FREE = 1 << 7,
 } __clib_packed vcl_session_flags_t;
 
 typedef struct vcl_session_
@@ -168,6 +170,7 @@ typedef struct vcl_session_
   u32 rcvbuf_size;		// VPP-TBD: Hack until support setsockopt(SO_RCVBUF)
 
   transport_endpt_ext_cfg_t *ext_config;
+  u8 dscp;
 
 #if VCL_ELOG
   elog_track_t elog_track;
@@ -540,8 +543,6 @@ vcl_session_table_lookup_listener (vcl_worker_t * wrk, u64 handle)
   return s;
 }
 
-const char *vppcom_session_state_str (vcl_session_state_t state);
-
 static inline u8
 vcl_session_is_ct (vcl_session_t * s)
 {
@@ -752,6 +753,14 @@ void vcl_sapi_detach (vcl_worker_t * wrk);
 int vcl_sapi_recv_fds (vcl_worker_t * wrk, int *fds, int n_fds);
 int vcl_sapi_add_cert_key_pair (vppcom_cert_key_pair_t *ckpair);
 int vcl_sapi_del_cert_key_pair (u32 ckpair_index);
+
+/*
+ * Utility functions
+ */
+const char *vcl_session_state_str (vcl_session_state_t state);
+u8 *vcl_format_ip4_address (u8 *s, va_list *args);
+u8 *vcl_format_ip6_address (u8 *s, va_list *args);
+u8 *vcl_format_ip46_address (u8 *s, va_list *args);
 
 #endif /* SRC_VCL_VCL_PRIVATE_H_ */
 

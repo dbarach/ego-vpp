@@ -38,6 +38,7 @@ list(APPEND VNET_SOURCES
   interface/rx_queue.c
   interface/tx_queue.c
   interface/runtime.c
+  interface/monitor.c
   interface_stats.c
   misc.c
 )
@@ -779,30 +780,6 @@ list(APPEND VNET_HEADERS
 list(APPEND VNET_API_FILES mpls/mpls.api)
 
 ##############################################################################
-# Tunnel protocol: vxlan-gbp
-##############################################################################
-list(APPEND VNET_SOURCES
-  vxlan-gbp/decap.c
-  vxlan-gbp/encap.c
-  vxlan-gbp/vxlan_gbp_api.c
-  vxlan-gbp/vxlan_gbp.c
-  vxlan-gbp/vxlan_gbp_packet.c
-)
-
-list (APPEND VNET_MULTIARCH_SOURCES
-  vxlan-gbp/decap.c
-  vxlan-gbp/encap.c
-)
-
-list(APPEND VNET_HEADERS
-  vxlan-gbp/vxlan_gbp.h
-  vxlan-gbp/vxlan_gbp_packet.h
-  vxlan-gbp/vxlan_gbp_error.def
-)
-
-list(APPEND VNET_API_FILES vxlan-gbp/vxlan_gbp.api)
-
-##############################################################################
 # Tunnel protocol: vxlan-gpe
 ##############################################################################
 
@@ -1004,7 +981,7 @@ list(APPEND VNET_SOURCES
   devices/virtio/virtio_api.c
   devices/virtio/virtio_pci_legacy.c
   devices/virtio/virtio_pci_modern.c
-  devices/virtio/virtio_process.c
+  devices/virtio/virtio_pre_input.c
   devices/virtio/virtio_types_api.c
 )
 

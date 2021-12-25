@@ -195,9 +195,18 @@ snort_deq_ready (clib_file_t *uf)
   snort_per_thread_data_t *ptd =
     vec_elt_at_index (sm->per_thread_data, vm->thread_index);
   u64 counter;
+  ssize_t bytes_read;
 
-  if (read (uf->file_descriptor, &counter, sizeof (counter)) < 0)
-    return clib_error_return (0, "client closed socket");
+  bytes_read = read (uf->file_descriptor, &counter, sizeof (counter));
+  if (bytes_read < 0)
+    {
+      return clib_error_return (0, "client closed socket");
+    }
+
+  if (bytes_read < sizeof (counter))
+    {
+      return clib_error_return (0, "unexpected truncated read");
+    }
 
   clib_interrupt_set (ptd->interrupts, uf->private_data);
   vlib_node_set_interrupt_pending (vm, snort_deq_node.index);
@@ -298,8 +307,8 @@ snort_instance_create (vlib_main_t *vm, char *name, u8 log2_queue_sz,
   /* enq and deq head pointer */
   qpair_mem_sz += 2 * round_pow2 (sizeof (u32), align);
 
-  size =
-    round_pow2 (tm->n_vlib_mains * qpair_mem_sz, clib_mem_get_page_size ());
+  size = round_pow2 ((uword) tm->n_vlib_mains * qpair_mem_sz,
+		     clib_mem_get_page_size ());
   fd = clib_mem_vm_create_fd (CLIB_MEM_PAGE_SZ_DEFAULT, "snort instance %s",
 			      name);
 

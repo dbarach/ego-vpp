@@ -231,6 +231,10 @@ u32 vnet_register_interface (vnet_main_t * vnm,
 void vnet_set_interface_output_node (vnet_main_t * vnm,
 				     u32 hw_if_index, u32 node_index);
 
+void vnet_set_interface_l3_output_node (vlib_main_t *vm, u32 sw_if_index,
+					u8 *output_node);
+void vnet_reset_interface_l3_output_node (vlib_main_t *vm, u32 sw_if_index);
+
 /* Creates a software interface given template. */
 clib_error_t *vnet_create_sw_interface (vnet_main_t * vnm,
 					vnet_sw_interface_t * template,
@@ -423,6 +427,8 @@ clib_error_t *set_hw_interface_change_rx_mode (vnet_main_t * vnm,
 /* Set rx-placement on the interface */
 clib_error_t *set_hw_interface_rx_placement (u32 hw_if_index, u32 queue_id,
 					     u32 thread_index, u8 is_main);
+/* Set tx-queue placement on the interface */
+int set_hw_interface_tx_queue (u32 hw_if_index, u32 queue_id, uword *bitmap);
 
 /* Set the MTU on the HW interface */
 void vnet_hw_interface_set_mtu (vnet_main_t * vnm, u32 hw_if_index, u32 mtu);
@@ -505,6 +511,7 @@ typedef enum
 {
   VNET_INTERFACE_OUTPUT_ERROR_INTERFACE_DOWN,
   VNET_INTERFACE_OUTPUT_ERROR_INTERFACE_DELETED,
+  VNET_INTERFACE_OUTPUT_ERROR_NO_TX_QUEUE,
 } vnet_interface_output_error_t;
 
 /* Format for interface output traces. */

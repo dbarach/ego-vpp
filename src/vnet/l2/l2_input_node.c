@@ -141,9 +141,8 @@ classify_and_dispatch (l2input_main_t * msm, vlib_buffer_t * b0, u16 * next0)
       u8 protocol = ((ip6_header_t *) l3h0)->protocol;
 
       /* Disable bridge forwarding (flooding will execute instead if not xconnect) */
-      feat_mask &= ~(L2INPUT_FEAT_FWD |
-		     L2INPUT_FEAT_UU_FLOOD |
-		     L2INPUT_FEAT_UU_FWD | L2INPUT_FEAT_GBP_FWD);
+      feat_mask &=
+	~(L2INPUT_FEAT_FWD | L2INPUT_FEAT_UU_FLOOD | L2INPUT_FEAT_UU_FWD);
 
       if (ethertype != ETHERNET_TYPE_ARP)
 	feat_mask &= ~(L2INPUT_FEAT_ARP_UFWD);
@@ -253,10 +252,10 @@ l2input_node_inline (vlib_main_t * vm,
 	  /* Prefetch next iteration. */
 	  {
 	    /* Prefetch the buffer header and packet for the N+2 loop iteration */
-	    vlib_prefetch_buffer_header (b[4], LOAD);
-	    vlib_prefetch_buffer_header (b[5], LOAD);
-	    vlib_prefetch_buffer_header (b[6], LOAD);
-	    vlib_prefetch_buffer_header (b[7], LOAD);
+	    clib_prefetch_store (b + 4);
+	    clib_prefetch_store (b + 5);
+	    clib_prefetch_store (b + 6);
+	    clib_prefetch_store (b + 7);
 
 	    clib_prefetch_store (b[4]->data);
 	    clib_prefetch_store (b[5]->data);

@@ -134,7 +134,8 @@ typedef struct
   u32 dev_instance;		/* Real device instance in tunnel vector */
   u32 user_instance;		/* Instance name being shown to user */
 
-    VNET_DECLARE_REWRITE;
+  VNET_DECLARE_REWRITE;
+  u8 is_l3;
 } vxlan_tunnel_t;
 
 #define foreach_vxlan_input_next        \
@@ -191,9 +192,7 @@ typedef struct
   u32 flow_id_start;
 
   /* cache for last 8 vxlan tunnel */
-#ifdef CLIB_HAVE_VEC512
   vtep4_cache_t vtep4_u512;
-#endif
 
 } vxlan_main_t;
 

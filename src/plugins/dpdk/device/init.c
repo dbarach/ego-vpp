@@ -476,6 +476,7 @@ dpdk_lib_init (dpdk_main_t * dm)
 	      /* Drivers with valid speed_capa set */
 	    case VNET_DPDK_PMD_I40E:
 	      xd->flags |= DPDK_DEVICE_FLAG_INT_UNMASKABLE;
+	      /* fall through */
 	    case VNET_DPDK_PMD_E1000EM:
 	    case VNET_DPDK_PMD_IGB:
 	    case VNET_DPDK_PMD_IGC:
@@ -519,6 +520,7 @@ dpdk_lib_init (dpdk_main_t * dm)
 	      /* SR-IOV VFs */
 	    case VNET_DPDK_PMD_I40EVF:
 	      xd->flags |= DPDK_DEVICE_FLAG_INT_UNMASKABLE;
+	      /* fall through */
 	    case VNET_DPDK_PMD_IGBVF:
 	    case VNET_DPDK_PMD_IXGBEVF:
 	      xd->port_type = VNET_DPDK_PORT_TYPE_ETH_VF;
@@ -620,6 +622,15 @@ dpdk_lib_init (dpdk_main_t * dm)
 	    case VNET_DPDK_PMD_VMXNET3:
 	      xd->port_type = VNET_DPDK_PORT_TYPE_ETH_1G;
 	      xd->port_conf.txmode.offloads |= DEV_TX_OFFLOAD_MULTI_SEGS;
+	      /* TCP csum offload not working although udp might work. Left
+	       * disabled for now */
+	      if (0 && (dm->conf->no_tx_checksum_offload == 0))
+		{
+		  xd->port_conf.txmode.offloads |= DEV_TX_OFFLOAD_IPV4_CKSUM;
+		  xd->port_conf.txmode.offloads |= DEV_TX_OFFLOAD_TCP_CKSUM;
+		  xd->port_conf.txmode.offloads |= DEV_TX_OFFLOAD_UDP_CKSUM;
+		  xd->flags |= DPDK_DEVICE_FLAG_TX_OFFLOAD;
+		}
 	      break;
 
 	    case VNET_DPDK_PMD_AF_PACKET:

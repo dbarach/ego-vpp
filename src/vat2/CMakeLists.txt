@@ -27,7 +27,7 @@ add_vpp_executable(vat2 ENABLE_EXPORTS
   vppinfra
   vppapiclient
   Threads::Threads
-  rt m dl crypto
+  dl
 )
 
 #
@@ -49,11 +49,10 @@ add_vpp_executable(test_vat2 ENABLE_EXPORTS NO_INSTALL
   vppinfra
   vppapiclient
   Threads::Threads
-  rt m dl crypto
+  dl
 )
 #target_link_options(test_vat2 PUBLIC "LINKER:-fsanitize=address")
-
-if("${CMAKE_VERSION}" VERSION_GREATER_EQUAL "3.13" AND "${CMAKE_C_COMPILER_ID}" MATCHES "(Apple)?[Cc]lang")
+if(VPP_BUILD_TESTS_WITH_COVERAGE)
   set(TARGET_NAME test_vat2)
 
   message("Building with llvm Code Coverage Tools ${TARGET_NAME}")

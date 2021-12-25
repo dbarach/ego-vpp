@@ -1284,12 +1284,17 @@ class VppTestCase(CPUInterface, unittest.TestCase):
             "Finished sleep (%s) - slept %es (wanted %es)",
             remark, after - before, timeout)
 
+    def virtual_sleep(self, timeout, remark=None):
+        self.logger.debug("Moving VPP time by %s (%s)", timeout, remark)
+        self.vapi.cli("set clock adjust %s" % timeout)
+
     def pg_send(self, intf, pkts, worker=None, trace=True):
         intf.add_stream(pkts, worker=worker)
         self.pg_enable_capture(self.pg_interfaces)
         self.pg_start(trace=trace)
 
-    def send_and_assert_no_replies(self, intf, pkts, remark="", timeout=None):
+    def send_and_assert_no_replies(self, intf, pkts, remark="", timeout=None,
+                                   trace=True):
         self.pg_send(intf, pkts)
         if not timeout:
             timeout = 1
@@ -1297,6 +1302,8 @@ class VppTestCase(CPUInterface, unittest.TestCase):
             i.get_capture(0, timeout=timeout)
             i.assert_nothing_captured(remark=remark)
             timeout = 0.1
+        if trace:
+            self.logger.debug(self.vapi.cli("show trace"))
 
     def send_and_expect(self, intf, pkts, output, n_rx=None, worker=None,
                         trace=True):

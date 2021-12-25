@@ -936,15 +936,40 @@ session_stream_connect_notify (transport_connection_t * tc,
   return 0;
 }
 
+typedef union session_switch_pool_reply_args_
+{
+  struct
+  {
+    u32 session_index;
+    u16 thread_index;
+    u8 is_closed;
+  };
+  u64 as_u64;
+} session_switch_pool_reply_args_t;
+
+STATIC_ASSERT (sizeof (session_switch_pool_reply_args_t) <= sizeof (uword),
+	       "switch pool reply args size");
+
 static void
 session_switch_pool_reply (void *arg)
 {
-  u32 session_index = pointer_to_uword (arg);
+  session_switch_pool_reply_args_t rargs;
   session_t *s;
 
-  s = session_get_if_valid (session_index, vlib_get_thread_index ());
+  rargs.as_u64 = pointer_to_uword (arg);
+  s = session_get_if_valid (rargs.session_index, rargs.thread_index);
   if (!s)
     return;
+
+  /* Session closed during migration. Clean everything up */
+  if (rargs.is_closed)
+    {
+      transport_cleanup (session_get_transport_proto (s), s->connection_index,
+			 s->thread_index);
+      segment_manager_dealloc_fifos (s->rx_fifo, s->tx_fifo);
+      session_free (s);
+      return;
+    }
 
   /* Notify app that it has data on the new session */
   session_enqueue_notify (s);
@@ -965,20 +990,20 @@ static void
 session_switch_pool (void *cb_args)
 {
   session_switch_pool_args_t *args = (session_switch_pool_args_t *) cb_args;
+  session_switch_pool_reply_args_t rargs;
   session_handle_t new_sh;
   segment_manager_t *sm;
   app_worker_t *app_wrk;
   session_t *s;
-  void *rargs;
 
   ASSERT (args->thread_index == vlib_get_thread_index ());
   s = session_get (args->session_index, args->thread_index);
 
+  /* Check if session closed during migration */
+  rargs.is_closed = s->session_state >= SESSION_STATE_TRANSPORT_CLOSING;
+
   transport_cleanup (session_get_transport_proto (s), s->connection_index,
 		     s->thread_index);
-
-  new_sh = session_make_handle (args->new_session_index,
-				args->new_thread_index);
 
   app_wrk = app_worker_get_if_valid (s->app_wrk_index);
   if (app_wrk)
@@ -989,13 +1014,20 @@ session_switch_pool (void *cb_args)
       segment_manager_detach_fifo (sm, &s->tx_fifo);
 
       /* Notify app, using old session, about the migration event */
-      app_worker_migrate_notify (app_wrk, s, new_sh);
+      if (!rargs.is_closed)
+	{
+	  new_sh = session_make_handle (args->new_session_index,
+					args->new_thread_index);
+	  app_worker_migrate_notify (app_wrk, s, new_sh);
+	}
     }
 
   /* Trigger app read and fifo updates on the new thread */
-  rargs = uword_to_pointer (args->new_session_index, void *);
+  rargs.session_index = args->new_session_index;
+  rargs.thread_index = args->new_thread_index;
   session_send_rpc_evt_to_thread (args->new_thread_index,
-				  session_switch_pool_reply, rargs);
+				  session_switch_pool_reply,
+				  uword_to_pointer (rargs.as_u64, void *));
 
   session_free (s);
   clib_mem_free (cb_args);
@@ -1067,6 +1099,15 @@ session_transport_closing_notify (transport_connection_t * tc)
   s = session_get (tc->s_index, tc->thread_index);
   if (s->session_state >= SESSION_STATE_TRANSPORT_CLOSING)
     return;
+
+  /* Wait for reply from app before sending notification as the
+   * accept might be rejected */
+  if (s->session_state == SESSION_STATE_ACCEPTING)
+    {
+      s->session_state = SESSION_STATE_TRANSPORT_CLOSING;
+      return;
+    }
+
   s->session_state = SESSION_STATE_TRANSPORT_CLOSING;
   app_wrk = app_worker_get (s->app_wrk_index);
   app_worker_close_notify (app_wrk, s);
@@ -1193,6 +1234,11 @@ session_transport_reset_notify (transport_connection_t * tc)
   svm_fifo_dequeue_drop_all (s->tx_fifo);
   if (s->session_state >= SESSION_STATE_TRANSPORT_CLOSING)
     return;
+  if (s->session_state == SESSION_STATE_ACCEPTING)
+    {
+      s->session_state = SESSION_STATE_TRANSPORT_CLOSING;
+      return;
+    }
   s->session_state = SESSION_STATE_TRANSPORT_CLOSING;
   app_wrk = app_worker_get (s->app_wrk_index);
   app_worker_reset_notify (app_wrk, s);
@@ -1506,6 +1552,8 @@ session_close (session_t * s)
       return;
     }
 
+  /* App closed so stop propagating dequeue notifications */
+  svm_fifo_clear_deq_ntf (s->tx_fifo);
   s->session_state = SESSION_STATE_CLOSING;
   session_program_transport_ctrl_evt (s, SESSION_CTRL_EVT_CLOSE);
 }
@@ -1616,64 +1664,63 @@ session_transport_cleanup (session_t * s)
 }
 
 /**
- * Allocate event queues in the shared-memory segment
+ * Allocate worker mqs in share-able segment
  *
- * That can only be a newly created memfd segment, that must be
- * mapped by all apps/stack users.
+ * That can only be a newly created memfd segment, that must be mapped
+ * by all apps/stack users unless private rx mqs are enabled.
  */
 void
-session_vpp_event_queues_allocate (session_main_t * smm)
+session_vpp_wrk_mqs_alloc (session_main_t *smm)
 {
-  u32 evt_q_length = 2048, evt_size = sizeof (session_event_t);
-  fifo_segment_t *eqs = &smm->evt_qs_segment;
-  uword eqs_size = 64 << 20;
-  pid_t vpp_pid = getpid ();
+  u32 mq_q_length = 2048, evt_size = sizeof (session_event_t);
+  fifo_segment_t *mqs_seg = &smm->wrk_mqs_segment;
+  svm_msg_q_cfg_t _cfg, *cfg = &_cfg;
+  uword mqs_seg_size;
   int i;
 
-  if (smm->configured_event_queue_length)
-    evt_q_length = smm->configured_event_queue_length;
+  mq_q_length = clib_max (mq_q_length, smm->configured_wrk_mq_length);
 
-  if (smm->evt_qs_segment_size)
-    eqs_size = smm->evt_qs_segment_size;
+  svm_msg_q_ring_cfg_t rc[SESSION_MQ_N_RINGS] = {
+    { mq_q_length, evt_size, 0 }, { mq_q_length >> 1, 256, 0 }
+  };
+  cfg->consumer_pid = 0;
+  cfg->n_rings = 2;
+  cfg->q_nitems = mq_q_length;
+  cfg->ring_cfgs = rc;
 
-  eqs->ssvm.ssvm_size = eqs_size;
-  eqs->ssvm.my_pid = vpp_pid;
-  eqs->ssvm.name = format (0, "%s%c", "session: evt-qs-segment", 0);
-  /* clib_mem_vm_map_shared consumes first page before requested_va */
-  eqs->ssvm.requested_va = smm->session_baseva + clib_mem_get_page_size ();
+  /*
+   * Compute mqs segment size based on rings config and leave space
+   * for passing extended configuration messages, i.e., data allocated
+   * outside of the rings. If provided with a config value, accept it
+   * if larger than minimum size.
+   */
+  mqs_seg_size = svm_msg_q_size_to_alloc (cfg) * vec_len (smm->wrk);
+  mqs_seg_size = mqs_seg_size + (32 << 10);
+  mqs_seg_size = clib_max (mqs_seg_size, smm->wrk_mqs_segment_size);
 
-  if (ssvm_server_init (&eqs->ssvm, SSVM_SEGMENT_MEMFD))
+  mqs_seg->ssvm.ssvm_size = mqs_seg_size;
+  mqs_seg->ssvm.my_pid = getpid ();
+  mqs_seg->ssvm.name = format (0, "%s%c", "session: wrk-mqs-segment", 0);
+
+  if (ssvm_server_init (&mqs_seg->ssvm, SSVM_SEGMENT_MEMFD))
     {
       clib_warning ("failed to initialize queue segment");
       return;
     }
 
-  fifo_segment_init (eqs);
+  fifo_segment_init (mqs_seg);
 
   /* Special fifo segment that's filled only with mqs */
-  eqs->h->n_mqs = vec_len (smm->wrk);
+  mqs_seg->h->n_mqs = vec_len (smm->wrk);
 
   for (i = 0; i < vec_len (smm->wrk); i++)
-    {
-      svm_msg_q_cfg_t _cfg, *cfg = &_cfg;
-      svm_msg_q_ring_cfg_t rc[SESSION_MQ_N_RINGS] = {
-	{evt_q_length, evt_size, 0}
-	,
-	{evt_q_length >> 1, 256, 0}
-      };
-      cfg->consumer_pid = 0;
-      cfg->n_rings = 2;
-      cfg->q_nitems = evt_q_length;
-      cfg->ring_cfgs = rc;
-
-      smm->wrk[i].vpp_event_queue = fifo_segment_msg_q_alloc (eqs, i, cfg);
-    }
+    smm->wrk[i].vpp_event_queue = fifo_segment_msg_q_alloc (mqs_seg, i, cfg);
 }
 
 fifo_segment_t *
-session_main_get_evt_q_segment (void)
+session_main_get_wrk_mqs_segment (void)
 {
-  return &session_main.evt_qs_segment;
+  return &session_main.wrk_mqs_segment;
 }
 
 u64
@@ -1830,7 +1877,7 @@ session_manager_main_enable (vlib_main_t * vm)
     }
 
   /* Allocate vpp event queues segment and queue */
-  session_vpp_event_queues_allocate (smm);
+  session_vpp_wrk_mqs_alloc (smm);
 
   /* Initialize segment manager properties */
   segment_manager_main_init ();
@@ -1953,16 +2000,6 @@ session_main_init (vlib_main_t * vm)
   smm->poll_main = 0;
   smm->use_private_rx_mqs = 0;
   smm->no_adaptive = 0;
-  smm->session_baseva = HIGH_SEGMENT_BASEVA;
-
-#if (HIGH_SEGMENT_BASEVA > (4ULL << 30))
-  smm->session_va_space_size = 128ULL << 30;
-  smm->evt_qs_segment_size = 64 << 20;
-#else
-  smm->session_va_space_size = 128 << 20;
-  smm->evt_qs_segment_size = 1 << 20;
-#endif
-
   smm->last_transport_proto_type = TRANSPORT_PROTO_SRTP;
 
   return 0;
@@ -1993,10 +2030,10 @@ session_config_fn (vlib_main_t * vm, unformat_input_t * input)
 
   while (unformat_check_input (input) != UNFORMAT_END_OF_INPUT)
     {
-      if (unformat (input, "event-queue-length %d", &nitems))
+      if (unformat (input, "wrk-mq-length %d", &nitems))
 	{
 	  if (nitems >= 2048)
-	    smm->configured_event_queue_length = nitems;
+	    smm->configured_wrk_mq_length = nitems;
 	  else
 	    clib_warning ("event queue length %d too small, ignored", nitems);
 	}
@@ -2058,16 +2095,8 @@ session_config_fn (vlib_main_t * vm, unformat_input_t * input)
       else if (unformat (input, "local-endpoints-table-buckets %d",
 			 &smm->local_endpoints_table_buckets))
 	;
-      /* Deprecated but maintained for compatibility */
-      else if (unformat (input, "evt_qs_memfd_seg"))
-	;
-      else if (unformat (input, "evt_qs_seg_size %U", unformat_memory_size,
-			 &smm->evt_qs_segment_size))
-	;
       else if (unformat (input, "enable"))
 	smm->session_enable_asap = 1;
-      else if (unformat (input, "segment-baseva 0x%lx", &smm->session_baseva))
-	;
       else if (unformat (input, "use-app-socket-api"))
 	(void) appns_sapi_enable_disable (1 /* is_enable */);
       else if (unformat (input, "poll-main"))
@@ -2076,6 +2105,23 @@ session_config_fn (vlib_main_t * vm, unformat_input_t * input)
 	smm->use_private_rx_mqs = 1;
       else if (unformat (input, "no-adaptive"))
 	smm->no_adaptive = 1;
+      /*
+       * Deprecated but maintained for compatibility
+       */
+      else if (unformat (input, "evt_qs_memfd_seg"))
+	;
+      else if (unformat (input, "segment-baseva 0x%lx", &tmp))
+	;
+      else if (unformat (input, "evt_qs_seg_size %U", unformat_memory_size,
+			 &tmp))
+	;
+      else if (unformat (input, "event-queue-length %d", &nitems))
+	{
+	  if (nitems >= 2048)
+	    smm->configured_wrk_mq_length = nitems;
+	  else
+	    clib_warning ("event queue length %d too small, ignored", nitems);
+	}
       else
 	return clib_error_return (0, "unknown input `%U'",
 				  format_unformat_error, input);

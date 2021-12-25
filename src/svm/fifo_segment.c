@@ -295,7 +295,7 @@ fss_fl_chunk_bytes_sub (fifo_segment_slice_t * fss, uword size)
 int
 fifo_segment_init (fifo_segment_t * fs)
 {
-  u32 align = 8, offset = 2 * 4096, slices_sz, i;
+  u32 align = 8, offset = FIFO_SEGMENT_ALLOC_OVERHEAD, slices_sz, i;
   uword max_fifo, seg_start, seg_sz;
   fifo_segment_header_t *fsh;
   ssvm_shared_header_t *sh;
@@ -387,6 +387,8 @@ fifo_segment_attach (fifo_segment_main_t * sm, fifo_segment_create_args_t * a)
 
   pool_get_zero (sm->segments, fs);
 
+  fs->fs_index = fs - sm->segments;
+  fs->sm_index = ~0;
   fs->ssvm.ssvm_size = a->segment_size;
   fs->ssvm.my_pid = getpid ();
   fs->ssvm.name = format (0, "%s%c", a->segment_name, 0);
@@ -867,6 +869,9 @@ fifo_segment_alloc_fifo_w_slice (fifo_segment_t * fs, u32 slice_index,
   f->shr = sf;
 
   svm_fifo_init (f, data_bytes);
+
+  f->segment_manager = fs->sm_index;
+  f->segment_index = fs->fs_index;
 
   fss = fsh_slice_get (fsh, slice_index);
   pfss = fs_slice_private_get (fs, slice_index);
@@ -1536,22 +1541,15 @@ format_fifo_segment (u8 * s, va_list * args)
   f64 usage;
   fifo_segment_mem_status_t mem_st;
 
-  indent = format_get_indent (s) + 2;
-
-  if (fs == 0)
-    {
-      s = format (s, "%-20s%10s%15s%15s%15s%15s", "Name", "Type",
-		  "HeapSize (M)", "ActiveFifos", "FreeFifos", "Address");
-      return s;
-    }
+  indent = format_get_indent (s);
 
   fifo_segment_info (fs, &address, &size);
   active_fifos = fifo_segment_num_fifos (fs);
   free_fifos = fifo_segment_num_free_fifos (fs);
 
-  s = format (s, "%-20v%10U%15llu%15u%15u%15llx", ssvm_name (&fs->ssvm),
-	      format_fifo_segment_type, fs, size >> 20ULL, active_fifos,
-	      free_fifos, address);
+  s = format (s, "%U%v type: %U size: %U active fifos: %u", format_white_space,
+	      2, ssvm_name (&fs->ssvm), format_fifo_segment_type, fs,
+	      format_memory_size, size, active_fifos);
 
   if (!verbose)
     return s;
@@ -1560,9 +1558,8 @@ format_fifo_segment (u8 * s, va_list * args)
 
   free_chunks = fifo_segment_num_free_chunks (fs, ~0);
   if (free_chunks)
-    s =
-      format (s, "\n\n%UFree/Allocated chunks by size:\n", format_white_space,
-	      indent + 2);
+    s = format (s, "\n\n%UFree/Allocated chunks by size:\n",
+		format_white_space, indent + 2);
   else
     s = format (s, "\n");
 
