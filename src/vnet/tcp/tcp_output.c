@@ -321,7 +321,6 @@ tcp_update_burst_snd_vars (tcp_connection_t * tc)
   if (tc->snd_una == tc->snd_nxt)
     {
       tcp_cc_event (tc, TCP_CC_EVT_START_TX);
-      tcp_connection_tx_pacer_reset (tc, tc->cwnd, TRANSPORT_PACER_MIN_BURST);
     }
 
   if (tc->flags & TCP_CONN_PSH_PENDING)
@@ -788,7 +787,7 @@ tcp_send_syn (tcp_connection_t * tc)
    * such that we can return if we've ran out.
    */
   tcp_timer_update (&wrk->timer_wheel, tc, TCP_TIMER_RETRANSMIT_SYN,
-		    tc->rto * TCP_TO_TIMER_TICK);
+		    (u32) tc->rto * TCP_TO_TIMER_TICK);
 
   if (PREDICT_FALSE (!vlib_buffer_alloc (vm, &bi, 1)))
     {
@@ -964,11 +963,9 @@ tcp_buffer_len (vlib_buffer_t * b)
   return data_len;
 }
 
-u32
-tcp_session_push_header (transport_connection_t * tconn, vlib_buffer_t * b)
+always_inline u32
+tcp_push_one_header (tcp_connection_t *tc, vlib_buffer_t *b)
 {
-  tcp_connection_t *tc = (tcp_connection_t *) tconn;
-
   if (tc->cfg_flags & TCP_CFG_F_RATE_SAMPLE)
     tcp_bt_track_tx (tc, tcp_buffer_len (b));
 
@@ -976,6 +973,37 @@ tcp_session_push_header (transport_connection_t * tconn, vlib_buffer_t * b)
 		  /* update_snd_nxt */ 1);
 
   tcp_validate_txf_size (tc, tc->snd_nxt - tc->snd_una);
+  return 0;
+}
+
+u32
+tcp_session_push_header (transport_connection_t *tconn, vlib_buffer_t **bs,
+			 u32 n_bufs)
+{
+  tcp_connection_t *tc = (tcp_connection_t *) tconn;
+
+  while (n_bufs >= 4)
+    {
+      vlib_prefetch_buffer_header (bs[2], STORE);
+      vlib_prefetch_buffer_header (bs[3], STORE);
+
+      tcp_push_one_header (tc, bs[0]);
+      tcp_push_one_header (tc, bs[1]);
+
+      n_bufs -= 2;
+      bs += 2;
+    }
+  while (n_bufs)
+    {
+      if (n_bufs > 1)
+	vlib_prefetch_buffer_header (bs[1], STORE);
+
+      tcp_push_one_header (tc, bs[0]);
+
+      n_bufs -= 1;
+      bs += 1;
+    }
+
   /* If not tracking an ACK, start tracking */
   if (tc->rtt_ts == 0 && !tcp_in_cong_recovery (tc))
     {
@@ -1337,7 +1365,10 @@ tcp_timer_retransmit_handler (tcp_connection_t * tc)
 	}
 
       if (tcp_opts_sack_permitted (&tc->rcv_opts))
-	tcp_check_sack_reneging (tc);
+	{
+	  tcp_check_sack_reneging (tc);
+	  scoreboard_rxt_mark_lost (&tc->sack_sb, tc->snd_una, tc->snd_nxt);
+	}
 
       /* Update send congestion to make sure that rxt has data to send */
       tc->snd_congestion = tc->snd_nxt;
@@ -1478,7 +1509,7 @@ tcp_timer_retransmit_syn_handler (tcp_connection_t * tc)
   tcp_enqueue_half_open (wrk, tc, b, bi);
 
   tcp_timer_update (&wrk->timer_wheel, tc, TCP_TIMER_RETRANSMIT_SYN,
-		    tc->rto * TCP_TO_TIMER_TICK);
+		    (u32) tc->rto * TCP_TO_TIMER_TICK);
 }
 
 /**

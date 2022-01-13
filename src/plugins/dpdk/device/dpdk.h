@@ -22,27 +22,12 @@
 
 #include <rte_config.h>
 
-#include <rte_common.h>
-#include <rte_dev.h>
-#include <rte_memory.h>
 #include <rte_eal.h>
-#include <rte_per_lcore.h>
-#include <rte_cycles.h>
-#include <rte_lcore.h>
-#include <rte_per_lcore.h>
-#include <rte_interrupts.h>
-#include <rte_pci.h>
-#include <rte_bus_vmbus.h>
-#include <rte_ether.h>
-#include <rte_ethdev.h>
-#include <rte_ring.h>
-#include <rte_mempool.h>
-#include <rte_mbuf.h>
-#include <rte_version.h>
-#include <rte_sched.h>
-#include <rte_net.h>
 #include <rte_bus_pci.h>
-#include <rte_flow.h>
+#include <rte_bus_vmbus.h>
+#include <rte_ethdev.h>
+#include <rte_version.h>
+#include <rte_net.h>
 
 #include <vnet/devices/devices.h>
 
@@ -105,26 +90,32 @@ typedef enum
     VNET_DPDK_PMD_UNKNOWN,	/* must be last */
 } dpdk_pmd_t;
 
+#define forach_dpdk_port_type                                                 \
+  _ (ETH_1G, "GigabitEthernet")                                               \
+  _ (ETH_2_5G, "Two_FiveGigabitEthernet")                                     \
+  _ (ETH_5G, "FiveGigabitEthernet")                                           \
+  _ (ETH_10G, "TenGigabitEthernet")                                           \
+  _ (ETH_20G, "TwentyGigabitEthernet")                                        \
+  _ (ETH_25G, "TwentyFiveGigabitEthernet")                                    \
+  _ (ETH_40G, "FortyGigabitEthernet")                                         \
+  _ (ETH_50G, "FiftyGigabitEthernet")                                         \
+  _ (ETH_56G, "FiftySixGigabitEthernet")                                      \
+  _ (ETH_100G, "HundredGigabitEthernet")                                      \
+  _ (ETH_200G, "TwoHundredGigabitEthernet")                                   \
+  _ (ETH_SWITCH, "EthernetSwitch")                                            \
+  _ (ETH_VF, "VirtualFunctionEthernet")                                       \
+  _ (AF_PACKET, "af_packet")                                                  \
+  _ (VIRTIO_USER, "VirtioUser")                                               \
+  _ (VHOST_ETHER, "VhostEthernet")                                            \
+  _ (FAILSAFE, "FailsafeEthernet")                                            \
+  _ (NETVSC, "NetVSC")
+
 typedef enum
 {
-  VNET_DPDK_PORT_TYPE_ETH_1G,
-  VNET_DPDK_PORT_TYPE_ETH_2_5G,
-  VNET_DPDK_PORT_TYPE_ETH_5G,
-  VNET_DPDK_PORT_TYPE_ETH_10G,
-  VNET_DPDK_PORT_TYPE_ETH_20G,
-  VNET_DPDK_PORT_TYPE_ETH_25G,
-  VNET_DPDK_PORT_TYPE_ETH_40G,
-  VNET_DPDK_PORT_TYPE_ETH_50G,
-  VNET_DPDK_PORT_TYPE_ETH_56G,
-  VNET_DPDK_PORT_TYPE_ETH_100G,
-  VNET_DPDK_PORT_TYPE_ETH_SWITCH,
-  VNET_DPDK_PORT_TYPE_AF_PACKET,
-  VNET_DPDK_PORT_TYPE_ETH_VF,
-  VNET_DPDK_PORT_TYPE_VIRTIO_USER,
-  VNET_DPDK_PORT_TYPE_VHOST_ETHER,
-  VNET_DPDK_PORT_TYPE_FAILSAFE,
-  VNET_DPDK_PORT_TYPE_NETVSC,
-  VNET_DPDK_PORT_TYPE_UNKNOWN,
+  VNET_DPDK_PORT_TYPE_UNKNOWN = 0,
+#define _(n, s) VNET_DPDK_PORT_TYPE_##n,
+  forach_dpdk_port_type
+#undef _
 } dpdk_port_type_t;
 
 typedef uint16_t dpdk_portid_t;
@@ -132,7 +123,6 @@ typedef uint16_t dpdk_portid_t;
 #define foreach_dpdk_device_flags                                             \
   _ (0, ADMIN_UP, "admin-up")                                                 \
   _ (1, PROMISC, "promisc")                                                   \
-  _ (2, PMD, "pmd")                                                           \
   _ (3, PMD_INIT_FAIL, "pmd-init-fail")                                       \
   _ (4, MAYBE_MULTISEG, "maybe-multiseg")                                     \
   _ (5, HAVE_SUBIF, "subif")                                                  \
@@ -179,6 +169,32 @@ typedef struct
   clib_spinlock_t lock;
 } dpdk_tx_queue_t;
 
+typedef union
+{
+  struct
+  {
+    u16 disable_multi_seg : 1;
+    u16 enable_lro : 1;
+    u16 enable_tso : 1;
+    u16 enable_tcp_udp_checksum : 1;
+    u16 enable_outer_checksum_offload : 1;
+    u16 enable_lsc_int : 1;
+    u16 enable_rxq_int : 1;
+    u16 disable_tx_checksum_offload : 1;
+    u16 disable_rss : 1;
+    u16 disable_rx_scatter : 1;
+    u16 n_rx_queues;
+    u16 n_tx_queues;
+    u16 n_rx_desc;
+    u16 n_tx_desc;
+    u32 max_lro_pkt_size;
+    u64 rss_hf;
+  };
+  u64 as_u64[3];
+} dpdk_port_conf_t;
+
+STATIC_ASSERT_SIZEOF (dpdk_port_conf_t, 24);
+
 typedef struct
 {
   CLIB_CACHE_LINE_ALIGN_MARK (cacheline0);
@@ -191,12 +207,11 @@ typedef struct
 
   u32 hw_if_index;
   u32 sw_if_index;
+  u32 buffer_flags;
 
   /* next node index if we decide to steal the rx graph arc */
   u32 per_interface_next_index;
 
-  u16 rx_q_used;
-  u16 tx_q_used;
   u16 flags;
 
   /* DPDK device port number */
@@ -204,19 +219,15 @@ typedef struct
   dpdk_pmd_t pmd:8;
   i8 cpu_socket;
 
-    CLIB_CACHE_LINE_ALIGN_MARK (cacheline1);
-  u16 nb_tx_desc;
-  u16 nb_rx_desc;
+  CLIB_CACHE_LINE_ALIGN_MARK (cacheline1);
 
+  u64 enabled_tx_off;
+  u64 enabled_rx_off;
   u8 *name;
   u8 *interface_name_suffix;
 
   /* number of sub-interfaces */
   u16 num_subifs;
-
-  /* PMD related */
-  struct rte_eth_conf port_conf;
-  struct rte_eth_txconf tx_conf;
 
   /* flow related */
   u32 supported_flow_actions;
@@ -225,9 +236,6 @@ typedef struct
   u32 *parked_lookup_indexes;	/* vector */
   u32 parked_loop_count;
   struct rte_flow_error last_flow_error;
-
-  /* af_packet instance number */
-  u16 af_packet_instance_num;
 
   struct rte_eth_link link;
   f64 time_last_link_update;
@@ -243,6 +251,7 @@ typedef struct
 
   /* error string */
   clib_error_t *errors;
+  dpdk_port_conf_t conf;
 } dpdk_device_t;
 
 #define DPDK_STATS_POLL_INTERVAL      (10.0)
@@ -276,10 +285,6 @@ typedef struct
   dpdk_device_addr_type_t dev_addr_type;
   u8 *name;
   u8 is_blacklisted;
-  u8 vlan_strip_offload;
-#define DPDK_DEVICE_VLAN_STRIP_DEFAULT 0
-#define DPDK_DEVICE_VLAN_STRIP_OFF 1
-#define DPDK_DEVICE_VLAN_STRIP_ON  2
 
 #define _(x) uword x;
     foreach_dpdk_device_config_item
@@ -301,24 +306,12 @@ typedef struct
   u8 **eal_init_args;
   u8 *eal_init_args_str;
   u8 *uio_driver_name;
-  u8 no_multi_seg;
-  u8 enable_lro;
-  u8 enable_tcp_udp_checksum;
-  u8 enable_outer_checksum_offload;
-  u8 no_tx_checksum_offload;
   u8 enable_telemetry;
   u16 max_simd_bitwidth;
 
 #define DPDK_MAX_SIMD_BITWIDTH_DEFAULT 0
 #define DPDK_MAX_SIMD_BITWIDTH_256     256
 #define DPDK_MAX_SIMD_BITWIDTH_512     512
-
-  /* Required config parameters */
-  u8 coremask_set_manually;
-  u8 nchannels_set_manually;
-  u32 coremask;
-  u32 nchannels;
-  u32 num_crypto_mbufs;
 
   /*
    * format interface names ala xxxEthernet%d/%d/%d instead of
@@ -356,13 +349,9 @@ typedef struct
 
 typedef struct
 {
-
   /* Devices */
   dpdk_device_t *devices;
   dpdk_per_thread_data_t *per_thread_data;
-
-  /* buffer flags template, configurable to enable/disable tcp / udp cksum */
-  u32 buffer_flags_template;
 
   /*
    * flag indicating that a posted admin up/down
@@ -374,10 +363,8 @@ typedef struct
   f64 link_state_poll_interval;
   f64 stat_poll_interval;
 
-  /* convenience */
-  vlib_main_t *vlib_main;
-  vnet_main_t *vnet_main;
   dpdk_config_main_t *conf;
+  dpdk_port_conf_t default_port_conf;
 
   /* API message ID base */
   u16 msg_id_base;
@@ -385,7 +372,6 @@ typedef struct
   /* logging */
   vlib_log_class_t log_default;
   vlib_log_class_t log_cryptodev;
-  vlib_log_class_t log_ipsec;
 } dpdk_main_t;
 
 extern dpdk_main_t dpdk_main;
@@ -443,6 +429,8 @@ typedef enum
   vlib_log(VLIB_LOG_LEVEL_NOTICE, dpdk_main.log_default, __VA_ARGS__)
 #define dpdk_log_info(...) \
   vlib_log(VLIB_LOG_LEVEL_INFO, dpdk_main.log_default, __VA_ARGS__)
+#define dpdk_log_debug(...)                                                   \
+  vlib_log (VLIB_LOG_LEVEL_DEBUG, dpdk_main.log_default, __VA_ARGS__)
 
 void dpdk_update_link_state (dpdk_device_t * xd, f64 now);
 
@@ -485,6 +473,8 @@ format_function_t format_dpdk_flow;
 format_function_t format_dpdk_rss_hf_name;
 format_function_t format_dpdk_rx_offload_caps;
 format_function_t format_dpdk_tx_offload_caps;
+format_function_t format_dpdk_burst_fn;
+format_function_t format_dpdk_rte_device;
 vnet_flow_dev_ops_function_t dpdk_flow_ops_fn;
 
 clib_error_t *unformat_rss_fn (unformat_input_t * input, uword * rss_fn);

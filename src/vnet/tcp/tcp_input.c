@@ -742,7 +742,7 @@ tcp_should_fastrecover (tcp_connection_t * tc, u8 has_sack)
 }
 
 static int
-tcp_cc_recover (tcp_connection_t * tc)
+tcp_cc_try_recover (tcp_connection_t *tc)
 {
   sack_scoreboard_hole_t *hole;
   u8 is_spurious = 0;
@@ -757,14 +757,14 @@ tcp_cc_recover (tcp_connection_t * tc)
 
   tcp_connection_tx_pacer_reset (tc, tc->cwnd, 0 /* start bucket */ );
   tc->rcv_dupacks = 0;
+  tcp_recovery_off (tc);
 
   /* Previous recovery left us congested. Continue sending as part
    * of the current recovery event with an updated snd_congestion */
-  if (tc->sack_sb.sacked_bytes)
+  if (tc->sack_sb.sacked_bytes && tcp_in_fastrecovery (tc))
     {
       tc->snd_congestion = tc->snd_nxt;
-      tcp_program_retransmit (tc);
-      return is_spurious;
+      return -1;
     }
 
   tc->rxt_delivered = 0;
@@ -778,19 +778,18 @@ tcp_cc_recover (tcp_connection_t * tc)
   if (hole && hole->start == tc->snd_una && hole->end == tc->snd_nxt)
     scoreboard_clear (&tc->sack_sb);
 
-  if (!tcp_in_recovery (tc) && !is_spurious)
+  if (tcp_in_fastrecovery (tc) && !is_spurious)
     tcp_cc_recovered (tc);
 
   tcp_fastrecovery_off (tc);
   tcp_fastrecovery_first_off (tc);
-  tcp_recovery_off (tc);
   TCP_EVT (TCP_EVT_CC_EVT, tc, 3);
 
   ASSERT (tc->rto_boff == 0);
   ASSERT (!tcp_in_cong_recovery (tc));
   ASSERT (tcp_scoreboard_is_sane_post_recovery (tc));
 
-  return is_spurious;
+  return 0;
 }
 
 static void
@@ -803,15 +802,6 @@ tcp_cc_update (tcp_connection_t * tc, tcp_rate_sample_t * rs)
 
   /* If a cumulative ack, make sure dupacks is 0 */
   tc->rcv_dupacks = 0;
-
-  /* When dupacks hits the threshold we only enter fast retransmit if
-   * cumulative ack covers more than snd_congestion. Should snd_una
-   * wrap this test may fail under otherwise valid circumstances.
-   * Therefore, proactively update snd_congestion when wrap detected. */
-  if (PREDICT_FALSE
-      (seq_leq (tc->snd_congestion, tc->snd_una - tc->bytes_acked)
-       && seq_gt (tc->snd_congestion, tc->snd_una)))
-    tc->snd_congestion = tc->snd_una - 1;
 }
 
 /**
@@ -857,6 +847,20 @@ tcp_cc_handle_event (tcp_connection_t * tc, tcp_rate_sample_t * rs,
    */
 
   /*
+   * See if we can exit and stop retransmitting
+   */
+  if (seq_geq (tc->snd_una, tc->snd_congestion))
+    {
+      /* If successfully recovered, treat ack as congestion avoidance ack
+       * and return. Otherwise, we're still congested so process feedback */
+      if (!tcp_cc_try_recover (tc))
+	{
+	  tcp_cc_rcv_ack (tc, rs);
+	  return;
+	}
+    }
+
+  /*
    * Process (re)transmit feedback. Output path uses this to decide how much
    * more data to release into the network
    */
@@ -866,8 +870,7 @@ tcp_cc_handle_event (tcp_connection_t * tc, tcp_rate_sample_t * rs,
 	tcp_fastrecovery_first_on (tc);
 
       tc->rxt_delivered += tc->sack_sb.rxt_sacked;
-      tc->prr_delivered += tc->bytes_acked + tc->sack_sb.last_sacked_bytes
-	- tc->sack_sb.last_bytes_delivered;
+      tc->prr_delivered += rs->delivered;
     }
   else
     {
@@ -889,23 +892,6 @@ tcp_cc_handle_event (tcp_connection_t * tc, tcp_rate_sample_t * rs,
       /* If partial ack, assume that the first un-acked segment was lost */
       if (tc->bytes_acked || tc->rcv_dupacks == TCP_DUPACK_THRESHOLD)
 	tcp_fastrecovery_first_on (tc);
-    }
-
-  /*
-   * See if we can exit and stop retransmitting
-   */
-  if (seq_geq (tc->snd_una, tc->snd_congestion))
-    {
-      /* If spurious return, we've already updated everything */
-      if (tcp_cc_recover (tc))
-	{
-	  tc->tsecr_last_ack = tc->rcv_opts.tsecr;
-	  return;
-	}
-
-      /* Treat as congestion avoidance ack */
-      tcp_cc_rcv_ack (tc, rs);
-      return;
     }
 
   tcp_program_retransmit (tc);
@@ -1042,6 +1028,9 @@ process_ack:
 
   if (tc->cfg_flags & TCP_CFG_F_RATE_SAMPLE)
     tcp_bt_sample_delivery_rate (tc, &rs);
+  else
+    rs.delivered = tc->bytes_acked + tc->sack_sb.last_sacked_bytes -
+		   tc->sack_sb.last_bytes_delivered;
 
   if (tc->bytes_acked + tc->sack_sb.last_sacked_bytes)
     {
@@ -1796,7 +1785,7 @@ tcp_check_tx_offload (tcp_connection_t * tc, int is_ipv4)
     return;
 
   hw_if = vnet_get_sup_hw_interface (vnm, sw_if_idx);
-  if (hw_if->caps & VNET_HW_INTERFACE_CAP_SUPPORTS_TCP_GSO)
+  if (hw_if->caps & VNET_HW_IF_CAP_TCP_GSO)
     tc->cfg_flags |= TCP_CFG_F_TSO;
 }
 

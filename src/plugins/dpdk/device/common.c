@@ -29,6 +29,21 @@
 #include <dpdk/device/dpdk_priv.h>
 #include <vppinfra/error.h>
 
+/* DPDK TX offload to vnet hw interface caps mapppings */
+static struct
+{
+  u64 offload;
+  vnet_hw_if_caps_t caps;
+} tx_off_caps_map[] = {
+  { DEV_TX_OFFLOAD_IPV4_CKSUM, VNET_HW_IF_CAP_TX_IP4_CKSUM },
+  { DEV_TX_OFFLOAD_TCP_CKSUM, VNET_HW_IF_CAP_TX_TCP_CKSUM },
+  { DEV_TX_OFFLOAD_UDP_CKSUM, VNET_HW_IF_CAP_TX_UDP_CKSUM },
+  { DEV_TX_OFFLOAD_OUTER_IPV4_CKSUM, VNET_HW_IF_CAP_TX_IP4_OUTER_CKSUM },
+  { DEV_TX_OFFLOAD_OUTER_UDP_CKSUM, VNET_HW_IF_CAP_TX_UDP_OUTER_CKSUM },
+  { DEV_TX_OFFLOAD_TCP_TSO, VNET_HW_IF_CAP_TCP_GSO },
+  { DEV_TX_OFFLOAD_VXLAN_TNL_TSO, VNET_HW_IF_CAP_VXLAN_TNL_GSO }
+};
+
 void
 dpdk_device_error (dpdk_device_t * xd, char *str, int rv)
 {
@@ -41,14 +56,16 @@ dpdk_device_error (dpdk_device_t * xd, char *str, int rv)
 void
 dpdk_device_setup (dpdk_device_t * xd)
 {
-  dpdk_main_t *dm = &dpdk_main;
   vlib_main_t *vm = vlib_get_main ();
   vnet_main_t *vnm = vnet_get_main ();
   vlib_thread_main_t *tm = vlib_get_thread_main ();
   vnet_sw_interface_t *sw = vnet_get_sw_interface (vnm, xd->sw_if_index);
   vnet_hw_interface_t *hi = vnet_get_hw_interface (vnm, xd->hw_if_index);
+  vnet_hw_if_caps_change_t caps = {};
   struct rte_eth_dev_info dev_info;
-  u64 bitmap;
+  struct rte_eth_conf conf = {};
+  u64 rxo, txo;
+  u16 mtu;
   int rv;
   int j;
 
@@ -59,39 +76,113 @@ dpdk_device_setup (dpdk_device_t * xd)
 
   if (xd->flags & DPDK_DEVICE_FLAG_ADMIN_UP)
     {
-      vnet_hw_interface_set_flags (dm->vnet_main, xd->hw_if_index, 0);
+      vnet_hw_interface_set_flags (vnm, xd->hw_if_index, 0);
       dpdk_device_stop (xd);
-    }
-
-  /* Enable flow director when flows exist */
-  if (xd->pmd == VNET_DPDK_PMD_I40E)
-    {
-      if ((xd->flags & DPDK_DEVICE_FLAG_RX_FLOW_OFFLOAD) != 0)
-	xd->port_conf.fdir_conf.mode = RTE_FDIR_MODE_PERFECT;
-      else
-	xd->port_conf.fdir_conf.mode = RTE_FDIR_MODE_NONE;
     }
 
   rte_eth_dev_info_get (xd->port_id, &dev_info);
 
-  bitmap = xd->port_conf.txmode.offloads & ~dev_info.tx_offload_capa;
-  if (bitmap)
+  dpdk_log_debug ("[%u] configuring device %U", xd->port_id,
+		  format_dpdk_rte_device, dev_info.device);
+
+  /* create rx and tx offload wishlist */
+  rxo = DEV_RX_OFFLOAD_IPV4_CKSUM;
+  txo = 0;
+
+  if (xd->conf.enable_tcp_udp_checksum)
+    rxo |= DEV_RX_OFFLOAD_UDP_CKSUM | DEV_RX_OFFLOAD_TCP_CKSUM;
+
+  if (xd->conf.disable_tx_checksum_offload == 0 &&
+      xd->conf.enable_outer_checksum_offload)
+    txo |= DEV_TX_OFFLOAD_OUTER_IPV4_CKSUM | DEV_TX_OFFLOAD_OUTER_UDP_CKSUM;
+
+  if (xd->conf.disable_tx_checksum_offload == 0)
+    txo |= DEV_TX_OFFLOAD_IPV4_CKSUM | DEV_TX_OFFLOAD_TCP_CKSUM |
+	   DEV_TX_OFFLOAD_UDP_CKSUM;
+
+  if (xd->conf.disable_multi_seg == 0)
     {
-      dpdk_log_warn ("unsupported tx offloads requested on port %u: %U",
-		     xd->port_id, format_dpdk_tx_offload_caps, bitmap);
-      xd->port_conf.txmode.offloads ^= bitmap;
+      txo |= DEV_TX_OFFLOAD_MULTI_SEGS;
+      rxo |= DEV_RX_OFFLOAD_SCATTER;
+#if RTE_VERSION < RTE_VERSION_NUM(21, 11, 0, 0)
+      rxo |= DEV_RX_OFFLOAD_JUMBO_FRAME;
+#endif
     }
 
-  bitmap = xd->port_conf.rxmode.offloads & ~dev_info.rx_offload_capa;
-  if (bitmap)
+  if (xd->conf.enable_lro)
+    rxo |= DEV_RX_OFFLOAD_TCP_LRO;
+
+  /* per-device offload config */
+  if (xd->conf.enable_tso)
+    txo |= DEV_TX_OFFLOAD_TCP_CKSUM | DEV_TX_OFFLOAD_TCP_TSO |
+	   DEV_TX_OFFLOAD_VXLAN_TNL_TSO;
+
+  if (xd->conf.disable_rx_scatter)
+    rxo &= ~DEV_RX_OFFLOAD_SCATTER;
+
+  /* mask unsupported offloads */
+  rxo &= dev_info.rx_offload_capa;
+  txo &= dev_info.tx_offload_capa;
+
+  dpdk_log_debug ("[%u] Supported RX offloads: %U", xd->port_id,
+		  format_dpdk_rx_offload_caps, dev_info.rx_offload_capa);
+  dpdk_log_debug ("[%u] Configured RX offloads: %U", xd->port_id,
+		  format_dpdk_rx_offload_caps, rxo);
+  dpdk_log_debug ("[%u] Supported TX offloads: %U", xd->port_id,
+		  format_dpdk_tx_offload_caps, dev_info.tx_offload_capa);
+  dpdk_log_debug ("[%u] Configured TX offloads: %U", xd->port_id,
+		  format_dpdk_tx_offload_caps, txo);
+
+  /* Enable flow director when flows exist */
+  if (xd->supported_flow_actions &&
+      (xd->flags & DPDK_DEVICE_FLAG_RX_FLOW_OFFLOAD) != 0)
+    conf.fdir_conf.mode = RTE_FDIR_MODE_PERFECT;
+
+  /* finalize configuration */
+  conf.rxmode.offloads = rxo;
+  conf.txmode.offloads = txo;
+  if (rxo & DEV_RX_OFFLOAD_TCP_LRO)
+    conf.rxmode.max_lro_pkt_size = xd->conf.max_lro_pkt_size;
+
+  if (xd->conf.enable_lsc_int)
+    conf.intr_conf.lsc = 1;
+  if (xd->conf.enable_rxq_int)
+    conf.intr_conf.rxq = 1;
+
+  conf.rxmode.mq_mode = ETH_MQ_RX_NONE;
+  if (xd->conf.n_rx_queues > 1)
     {
-      dpdk_log_warn ("unsupported rx offloads requested on port %u: %U",
-		     xd->port_id, format_dpdk_rx_offload_caps, bitmap);
-      xd->port_conf.rxmode.offloads ^= bitmap;
+      if (xd->conf.disable_rss == 0)
+	{
+	  conf.rxmode.mq_mode = ETH_MQ_RX_RSS;
+	  conf.rx_adv_conf.rss_conf.rss_hf = xd->conf.rss_hf;
+	}
     }
 
-  rv = rte_eth_dev_configure (xd->port_id, xd->rx_q_used,
-			      xd->tx_q_used, &xd->port_conf);
+#if RTE_VERSION < RTE_VERSION_NUM(21, 11, 0, 0)
+  if (rxo & DEV_RX_OFFLOAD_JUMBO_FRAME)
+    conf.rxmode.max_rx_pkt_len =
+      clib_min (ETHERNET_MAX_PACKET_BYTES, dev_info.max_rx_pktlen);
+#else
+  dpdk_log_debug ("[%u] min_mtu: %u, max_mtu: %u, min_rx_bufsize: %u, "
+		  "max_rx_pktlen: %u, max_lro_pkt_size: %u",
+		  xd->port_id, dev_info.min_mtu, dev_info.max_mtu,
+		  dev_info.min_rx_bufsize, dev_info.max_rx_pktlen,
+		  dev_info.max_lro_pkt_size);
+
+  mtu = xd->conf.disable_multi_seg ? 2000 : ETHERNET_MAX_PACKET_BYTES;
+  conf.rxmode.mtu = clib_min (mtu, dev_info.max_rx_pktlen);
+#endif
+
+retry:
+  rv = rte_eth_dev_configure (xd->port_id, xd->conf.n_rx_queues,
+			      xd->conf.n_tx_queues, &conf);
+
+  if (rv < 0 && conf.intr_conf.rxq)
+    {
+      conf.intr_conf.rxq = 0;
+      goto retry;
+    }
 
   if (rv < 0)
     {
@@ -99,30 +190,43 @@ dpdk_device_setup (dpdk_device_t * xd)
       goto error;
     }
 
-  vec_validate_aligned (xd->tx_queues, xd->tx_q_used - 1,
-			CLIB_CACHE_LINE_BYTES);
-  for (j = 0; j < xd->tx_q_used; j++)
+  rte_eth_dev_get_mtu (xd->port_id, &mtu);
+  dpdk_log_debug ("[%u] device default mtu %u", xd->port_id, mtu);
+
+  hi->max_supported_packet_bytes = mtu;
+  if (hi->max_packet_bytes > mtu)
     {
-      rv =
-	rte_eth_tx_queue_setup (xd->port_id, j, xd->nb_tx_desc,
-				xd->cpu_socket, &xd->tx_conf);
+      vnet_hw_interface_set_mtu (vnm, xd->hw_if_index, mtu);
+    }
+  else
+    {
+      rte_eth_dev_set_mtu (xd->port_id, hi->max_packet_bytes);
+      dpdk_log_debug ("[%u] port mtu set to %u", xd->port_id,
+		      hi->max_packet_bytes);
+    }
+
+  vec_validate_aligned (xd->tx_queues, xd->conf.n_tx_queues - 1,
+			CLIB_CACHE_LINE_BYTES);
+  for (j = 0; j < xd->conf.n_tx_queues; j++)
+    {
+      rv = rte_eth_tx_queue_setup (xd->port_id, j, xd->conf.n_tx_desc,
+				   xd->cpu_socket, 0);
 
       /* retry with any other CPU socket */
       if (rv < 0)
-	rv =
-	  rte_eth_tx_queue_setup (xd->port_id, j,
-				  xd->nb_tx_desc, SOCKET_ID_ANY,
-				  &xd->tx_conf);
+	rv = rte_eth_tx_queue_setup (xd->port_id, j, xd->conf.n_tx_desc,
+				     SOCKET_ID_ANY, 0);
       if (rv < 0)
 	dpdk_device_error (xd, "rte_eth_tx_queue_setup", rv);
 
-      if (xd->tx_q_used < tm->n_vlib_mains)
+      if (xd->conf.n_tx_queues < tm->n_vlib_mains)
 	clib_spinlock_init (&vec_elt (xd->tx_queues, j).lock);
     }
 
-  vec_validate_aligned (xd->rx_queues, xd->rx_q_used - 1,
+  vec_validate_aligned (xd->rx_queues, xd->conf.n_rx_queues - 1,
 			CLIB_CACHE_LINE_BYTES);
-  for (j = 0; j < xd->rx_q_used; j++)
+
+  for (j = 0; j < xd->conf.n_rx_queues; j++)
     {
       dpdk_rx_queue_t *rxq = vec_elt_at_index (xd->rx_queues, j);
       u8 bpidx = vlib_buffer_pool_get_default_for_numa (
@@ -130,12 +234,12 @@ dpdk_device_setup (dpdk_device_t * xd)
       vlib_buffer_pool_t *bp = vlib_get_buffer_pool (vm, bpidx);
       struct rte_mempool *mp = dpdk_mempool_by_buffer_pool_index[bpidx];
 
-      rv = rte_eth_rx_queue_setup (xd->port_id, j, xd->nb_rx_desc,
+      rv = rte_eth_rx_queue_setup (xd->port_id, j, xd->conf.n_rx_desc,
 				   xd->cpu_socket, 0, mp);
 
       /* retry with any other CPU socket */
       if (rv < 0)
-	rv = rte_eth_rx_queue_setup (xd->port_id, j, xd->nb_rx_desc,
+	rv = rte_eth_rx_queue_setup (xd->port_id, j, xd->conf.n_rx_desc,
 				     SOCKET_ID_ANY, 0, mp);
 
       rxq->buffer_pool_index = bp->index;
@@ -147,7 +251,40 @@ dpdk_device_setup (dpdk_device_t * xd)
   if (vec_len (xd->errors))
     goto error;
 
-  rte_eth_dev_set_mtu (xd->port_id, hi->max_packet_bytes);
+  xd->buffer_flags =
+    (VLIB_BUFFER_TOTAL_LENGTH_VALID | VLIB_BUFFER_EXT_HDR_VALID);
+
+  if ((rxo & (DEV_RX_OFFLOAD_TCP_CKSUM | DEV_RX_OFFLOAD_UDP_CKSUM)) ==
+      (DEV_RX_OFFLOAD_TCP_CKSUM | DEV_RX_OFFLOAD_UDP_CKSUM))
+    xd->buffer_flags |=
+      (VNET_BUFFER_F_L4_CHECKSUM_COMPUTED | VNET_BUFFER_F_L4_CHECKSUM_CORRECT);
+
+  dpdk_device_flag_set (xd, DPDK_DEVICE_FLAG_RX_IP4_CKSUM,
+			rxo & DEV_RX_OFFLOAD_IPV4_CKSUM);
+  dpdk_device_flag_set (xd, DPDK_DEVICE_FLAG_MAYBE_MULTISEG,
+			rxo & DEV_RX_OFFLOAD_SCATTER);
+  dpdk_device_flag_set (
+    xd, DPDK_DEVICE_FLAG_TX_OFFLOAD,
+    (txo & (DEV_TX_OFFLOAD_TCP_CKSUM | DEV_TX_OFFLOAD_UDP_CKSUM)) ==
+      (DEV_TX_OFFLOAD_TCP_CKSUM | DEV_TX_OFFLOAD_UDP_CKSUM));
+
+  /* unconditionally set mac filtering cap */
+  caps.val = caps.mask = VNET_HW_IF_CAP_MAC_FILTER;
+
+  ethernet_set_flags (vnm, xd->hw_if_index,
+		      ETHERNET_INTERFACE_FLAG_DEFAULT_L3);
+
+  for (int i = 0; i < ARRAY_LEN (tx_off_caps_map); i++)
+    {
+      __typeof__ (tx_off_caps_map[0]) *v = tx_off_caps_map + i;
+      caps.mask |= v->caps;
+      if ((v->offload & txo) == v->offload)
+	caps.val |= v->caps;
+    }
+
+  vnet_hw_if_change_caps (vnm, xd->hw_if_index, &caps);
+  xd->enabled_rx_off = rxo;
+  xd->enabled_tx_off = txo;
 
   if (xd->flags & DPDK_DEVICE_FLAG_ADMIN_UP)
     dpdk_device_start (xd);
@@ -187,10 +324,11 @@ dpdk_setup_interrupts (dpdk_device_t *xd)
 {
   vnet_main_t *vnm = vnet_get_main ();
   vnet_hw_interface_t *hi = vnet_get_hw_interface (vnm, xd->hw_if_index);
+  int int_mode = 0;
   if (!hi)
     return;
 
-  if (!xd->port_conf.intr_conf.rxq)
+  if (!xd->conf.enable_rxq_int)
     return;
 
   /* Probe for interrupt support */
@@ -210,8 +348,8 @@ dpdk_setup_interrupts (dpdk_device_t *xd)
 
   if (xd->flags & DPDK_DEVICE_FLAG_INT_SUPPORTED)
     {
-      hi->caps |= VNET_HW_INTERFACE_CAP_SUPPORTS_INT_MODE;
-      for (int q = 0; q < xd->rx_q_used; q++)
+      int_mode = 1;
+      for (int q = 0; q < xd->conf.n_rx_queues; q++)
 	{
 	  dpdk_rx_queue_t *rxq = vec_elt_at_index (xd->rx_queues, q);
 	  clib_file_t f = { 0 };
@@ -219,7 +357,7 @@ dpdk_setup_interrupts (dpdk_device_t *xd)
 	  if (rxq->efd < 0)
 	    {
 	      xd->flags &= ~DPDK_DEVICE_FLAG_INT_SUPPORTED;
-	      hi->caps &= ~VNET_HW_INTERFACE_CAP_SUPPORTS_INT_MODE;
+	      int_mode = 0;
 	      break;
 	    }
 	  f.read_function = dpdk_rx_read_ready;
@@ -240,6 +378,11 @@ dpdk_setup_interrupts (dpdk_device_t *xd)
 	    }
 	}
     }
+
+  if (int_mode)
+    vnet_hw_if_set_caps (vnm, hi->hw_if_index, VNET_HW_IF_CAP_INT_MODE);
+  else
+    vnet_hw_if_unset_caps (vnm, hi->hw_if_index, VNET_HW_IF_CAP_INT_MODE);
   vnet_hw_if_update_runtime_data (vnm, xd->hw_if_index);
 }
 
@@ -258,6 +401,11 @@ dpdk_device_start (dpdk_device_t * xd)
       dpdk_device_error (xd, "rte_eth_dev_start", rv);
       return;
     }
+
+  dpdk_log_debug ("[%u] RX burst function: %U", xd->port_id,
+		  format_dpdk_burst_fn, xd, VLIB_RX);
+  dpdk_log_debug ("[%u] TX burst function: %U", xd->port_id,
+		  format_dpdk_burst_fn, xd, VLIB_TX);
 
   dpdk_setup_interrupts (xd);
 

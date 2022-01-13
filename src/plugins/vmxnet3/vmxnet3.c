@@ -617,8 +617,11 @@ vmxnet3_create_if (vlib_main_t * vm, vmxnet3_create_if_args_t * args)
 {
   vnet_main_t *vnm = vnet_get_main ();
   vmxnet3_main_t *vmxm = &vmxnet3_main;
+  vnet_eth_interface_registration_t eir = {};
+
   vmxnet3_device_t *vd;
   vlib_pci_dev_handle_t h;
+  vnet_hw_if_caps_change_t cc = {};
   clib_error_t *error = 0;
   u16 qid;
   u32 num_intr;
@@ -802,29 +805,24 @@ vmxnet3_create_if (vlib_main_t * vm, vmxnet3_create_if_args_t * args)
     }
 
   /* create interface */
-  error = ethernet_register_interface (vnm, vmxnet3_device_class.index,
-				       vd->dev_instance, vd->mac_addr,
-				       &vd->hw_if_index, vmxnet3_flag_change);
-
-  if (error)
-    {
-      vmxnet3_log_error (vd,
-			 "error encountered on ethernet register interface");
-      goto error;
-    }
+  eir.dev_class_index = vmxnet3_device_class.index;
+  eir.dev_instance = vd->dev_instance;
+  eir.address = vd->mac_addr;
+  eir.cb.flag_change = vmxnet3_flag_change;
+  vd->hw_if_index = vnet_eth_register_interface (vnm, &eir);
 
   vnet_sw_interface_t *sw = vnet_get_hw_sw_interface (vnm, vd->hw_if_index);
   vd->sw_if_index = sw->sw_if_index;
   args->sw_if_index = sw->sw_if_index;
 
-  vnet_hw_interface_t *hw = vnet_get_hw_interface (vnm, vd->hw_if_index);
-  hw->caps |= VNET_HW_INTERFACE_CAP_SUPPORTS_INT_MODE;
+  cc.mask = VNET_HW_IF_CAP_INT_MODE | VNET_HW_IF_CAP_TCP_GSO |
+	    VNET_HW_IF_CAP_TX_TCP_CKSUM | VNET_HW_IF_CAP_TX_UDP_CKSUM;
   if (vd->gso_enable)
-    {
-      hw->caps |= (VNET_HW_INTERFACE_CAP_SUPPORTS_TCP_GSO |
-		   VNET_HW_INTERFACE_CAP_SUPPORTS_TX_TCP_CKSUM |
-		   VNET_HW_INTERFACE_CAP_SUPPORTS_TX_UDP_CKSUM);
-    }
+    cc.val = cc.mask;
+  else
+    cc.val = VNET_HW_IF_CAP_INT_MODE;
+
+  vnet_hw_if_change_caps (vnm, vd->hw_if_index, &cc);
 
   vnet_hw_if_set_input_node (vnm, vd->hw_if_index, vmxnet3_input_node.index);
   /* Disable interrupts */

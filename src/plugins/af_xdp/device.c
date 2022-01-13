@@ -505,10 +505,10 @@ af_xdp_create_if (vlib_main_t * vm, af_xdp_create_if_args_t * args)
 {
   vnet_main_t *vnm = vnet_get_main ();
   vlib_thread_main_t *tm = vlib_get_thread_main ();
+  vnet_eth_interface_registration_t eir = {};
   af_xdp_main_t *am = &af_xdp_main;
   af_xdp_device_t *ad;
   vnet_sw_interface_t *sw;
-  vnet_hw_interface_t *hw;
   int rxq_num, txq_num, q_num;
   int ns_fds[2];
   int i, ret;
@@ -647,20 +647,16 @@ af_xdp_create_if (vlib_main_t * vm, af_xdp_create_if_args_t * args)
   ethernet_mac_address_generate (ad->hwaddr);
 
   /* create interface */
-  if (ethernet_register_interface (vnm, af_xdp_device_class.index,
-				   ad->dev_instance, ad->hwaddr,
-				   &ad->hw_if_index, af_xdp_flag_change))
-    {
-      args->rv = VNET_API_ERROR_INVALID_INTERFACE;
-      args->error =
-	clib_error_return (0, "ethernet_register_interface() failed");
-      goto err2;
-    }
+  eir.dev_class_index = af_xdp_device_class.index;
+  eir.dev_instance = ad->dev_instance;
+  eir.address = ad->hwaddr;
+  eir.cb.flag_change = af_xdp_flag_change;
+  ad->hw_if_index = vnet_eth_register_interface (vnm, &eir);
 
   sw = vnet_get_hw_sw_interface (vnm, ad->hw_if_index);
-  hw = vnet_get_hw_interface (vnm, ad->hw_if_index);
   args->sw_if_index = ad->sw_if_index = sw->sw_if_index;
-  hw->caps |= VNET_HW_INTERFACE_CAP_SUPPORTS_INT_MODE;
+
+  vnet_hw_if_set_caps (vnm, ad->hw_if_index, VNET_HW_IF_CAP_INT_MODE);
 
   vnet_hw_if_set_input_node (vnm, ad->hw_if_index, af_xdp_input_node.index);
 

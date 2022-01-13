@@ -1589,6 +1589,7 @@ void
 avf_create_if (vlib_main_t * vm, avf_create_if_args_t * args)
 {
   vnet_main_t *vnm = vnet_get_main ();
+  vnet_eth_interface_registration_t eir = {};
   avf_main_t *am = &avf_main;
   avf_device_t *ad, **adp;
   vlib_pci_dev_handle_t h;
@@ -1722,28 +1723,24 @@ avf_create_if (vlib_main_t * vm, avf_create_if_args_t * args)
     goto error;
 
   /* create interface */
-  error = ethernet_register_interface (vnm, avf_device_class.index,
-				       ad->dev_instance, ad->hwaddr,
-				       &ad->hw_if_index, avf_flag_change);
+  eir.dev_class_index = avf_device_class.index;
+  eir.dev_instance = ad->dev_instance;
+  eir.address = ad->hwaddr;
+  eir.cb.flag_change = avf_flag_change;
+  ad->hw_if_index = vnet_eth_register_interface (vnm, &eir);
 
-  if (error)
-    goto error;
-
-  /* Indicate ability to support L3 DMAC filtering and
-   * initialize interface to L3 non-promisc mode */
-  vnet_hw_interface_t *hi = vnet_get_hw_interface (vnm, ad->hw_if_index);
-  hi->caps |= VNET_HW_INTERFACE_CAP_SUPPORTS_MAC_FILTER |
-	      VNET_HW_INTERFACE_CAP_SUPPORTS_L4_TX_CKSUM |
-	      VNET_HW_INTERFACE_CAP_SUPPORTS_TCP_GSO;
   ethernet_set_flags (vnm, ad->hw_if_index,
 		      ETHERNET_INTERFACE_FLAG_DEFAULT_L3);
 
   vnet_sw_interface_t *sw = vnet_get_hw_sw_interface (vnm, ad->hw_if_index);
   args->sw_if_index = ad->sw_if_index = sw->sw_if_index;
 
-  vnet_hw_interface_t *hw = vnet_get_hw_interface (vnm, ad->hw_if_index);
-  hw->caps |= VNET_HW_INTERFACE_CAP_SUPPORTS_INT_MODE;
   vnet_hw_if_set_input_node (vnm, ad->hw_if_index, avf_input_node.index);
+
+  /* set hw interface caps */
+  vnet_hw_if_set_caps (vnm, ad->hw_if_index,
+		       VNET_HW_IF_CAP_INT_MODE | VNET_HW_IF_CAP_MAC_FILTER |
+			 VNET_HW_IF_CAP_L4_TX_CKSUM | VNET_HW_IF_CAP_TCP_GSO);
 
   for (i = 0; i < ad->n_rx_queues; i++)
     {

@@ -34,7 +34,7 @@ typedef enum svm_fifo_deq_ntf_
   SVM_FIFO_NO_DEQ_NOTIF = 0,		/**< No notification requested */
   SVM_FIFO_WANT_DEQ_NOTIF = 1,		/**< Notify on dequeue */
   SVM_FIFO_WANT_DEQ_NOTIF_IF_FULL = 2,	/**< Notify on transition from full */
-  SVM_FIFO_WANT_DEQ_NOTIF_IF_EMPTY = 4,	/**< Notify on transition to empty */
+  SVM_FIFO_WANT_DEQ_NOTIF_IF_EMPTY = 4, /**< Notify on transition to empty */
 } svm_fifo_deq_ntf_t;
 
 typedef enum svm_fifo_flag_
@@ -829,7 +829,7 @@ svm_fifo_needs_deq_ntf (svm_fifo_t * f, u32 n_last_deq)
   if (PREDICT_TRUE (want_ntf == SVM_FIFO_NO_DEQ_NOTIF))
     return 0;
   else if (want_ntf & SVM_FIFO_WANT_DEQ_NOTIF)
-    return 1;
+    return (svm_fifo_max_enqueue (f) >= f->shr->deq_thresh);
   if (want_ntf & SVM_FIFO_WANT_DEQ_NOTIF_IF_FULL)
     {
       u32 max_deq = svm_fifo_max_dequeue_cons (f);
@@ -844,6 +844,18 @@ svm_fifo_needs_deq_ntf (svm_fifo_t * f, u32 n_last_deq)
 	return 1;
     }
   return 0;
+}
+
+/**
+ * Set the fifo dequeue threshold which will be used for notifications.
+ *
+ * Note: If not set, by default threshold is zero, equivalent to
+ * generating notification on each dequeue event.
+ */
+static inline void
+svm_fifo_set_deq_thresh (svm_fifo_t *f, u32 thresh)
+{
+  f->shr->deq_thresh = thresh;
 }
 
 #endif /* __included_ssvm_fifo_h__ */
