@@ -44,6 +44,7 @@
 #include <vppinfra/pcap.h>
 #include <vnet/l3_types.h>
 #include <vppinfra/lock.h>
+#include <vnet/hash/hash.h>
 
 struct vnet_main_t;
 struct vnet_hw_interface_t;
@@ -68,6 +69,10 @@ typedef clib_error_t *(vnet_interface_function_t)
 typedef clib_error_t *(vnet_subif_add_del_function_t)
   (struct vnet_main_t * vnm, u32 if_index,
    struct vnet_sw_interface_t * template, int is_add);
+
+/* Interface set mtu callback. */
+typedef clib_error_t *(vnet_interface_set_max_frame_size_function_t) (
+  struct vnet_main_t *vnm, struct vnet_hw_interface_t *hi, u32 mtu);
 
 /* Interface set mac address callback. */
 typedef clib_error_t *(vnet_interface_set_mac_address_function_t)
@@ -410,6 +415,9 @@ typedef struct _vnet_hw_interface_class
   /* Flags */
   vnet_hw_interface_class_flags_t flags;
 
+  /* tx hash type for interfaces of this hw class */
+  vnet_hash_fn_type_t tx_hash_fn_type;
+
   /* Function to call when hardware interface is added/deleted. */
   vnet_interface_function_t *interface_add_del_function;
 
@@ -424,6 +432,9 @@ typedef struct _vnet_hw_interface_class
 
   /* Function to add/delete additional MAC addresses */
   vnet_interface_add_del_mac_address_function_t *mac_addr_add_del_function;
+
+  /* Function to set max frame size. */
+  vnet_interface_set_max_frame_size_function_t *set_max_frame_size;
 
   /* Format function to display interface name. */
   format_function_t *format_interface_name;
@@ -515,60 +526,60 @@ typedef enum vnet_hw_interface_flags_t_
   VNET_HW_INTERFACE_FLAG_NBMA = (1 << 19),
 } vnet_hw_interface_flags_t;
 
-typedef enum vnet_hw_interface_capabilities_t_
+#define foreach_vnet_hw_if_caps                                               \
+  _ (0, TX_IP4_CKSUM, "ip4-csum-tx")                                          \
+  _ (1, TX_TCP_CKSUM, "tcp-csum-tx")                                          \
+  _ (2, TX_UDP_CKSUM, "udp-csum-tx")                                          \
+  _ (3, TX_IP4_OUTER_CKSUM, "outer-ip4-csum-tx")                              \
+  _ (4, TX_UDP_OUTER_CKSUM, "outer-udp-csum-tx")                              \
+  _ (5, RX_IP4_CKSUM, "ip4-csum-rx")                                          \
+  _ (6, RX_TCP_CKSUM, "tcp-csum-rx")                                          \
+  _ (7, RX_UDP_CKSUM, "udp-csum-rx")                                          \
+  _ (8, RX_IP4_OUTER_CKSUM, "outer-ip4-csum-rx")                              \
+  _ (9, RX_UDP_OUTER_CKSUM, "outer-udp-csum-rx")                              \
+  _ (10, TCP_GSO, "tcp-tso")                                                  \
+  _ (11, UDP_GSO, "udp-gso")                                                  \
+  _ (12, VXLAN_TNL_GSO, "vxlan-tnl-gso")                                      \
+  _ (13, IPIP_TNL_GSO, "ipip-tnl-gso")                                        \
+  _ (14, GENEVE_TNL_GSO, "geneve-tnl-gso")                                    \
+  _ (15, GRE_TNL_GSO, "gre-tnl-gso")                                          \
+  _ (16, UDP_TNL_GSO, "udp-tnl-gso")                                          \
+  _ (17, IP_TNL_GSO, "ip-tnl-gso")                                            \
+  _ (18, TCP_LRO, "tcp-lro")                                                  \
+  _ (30, INT_MODE, "int-mode")                                                \
+  _ (31, MAC_FILTER, "mac-filter")
+
+typedef enum vnet_hw_if_caps_t_
 {
   VNET_HW_INTERFACE_CAP_NONE,
+#define _(bit, sfx, str) VNET_HW_IF_CAP_##sfx = (1 << (bit)),
+  foreach_vnet_hw_if_caps
+#undef _
 
-  /* tx checksum offload */
-  VNET_HW_INTERFACE_CAP_SUPPORTS_TX_IP4_CKSUM = (1 << 0),
-  VNET_HW_INTERFACE_CAP_SUPPORTS_TX_TCP_CKSUM = (1 << 1),
-  VNET_HW_INTERFACE_CAP_SUPPORTS_TX_UDP_CKSUM = (1 << 2),
-  VNET_HW_INTERFACE_CAP_SUPPORTS_TX_IP4_OUTER_CKSUM = (1 << 3),
-  VNET_HW_INTERFACE_CAP_SUPPORTS_TX_UDP_OUTER_CKSUM = (1 << 4),
+} vnet_hw_if_caps_t;
 
-  /* rx checksum offload */
-  VNET_HW_INTERFACE_CAP_SUPPORTS_RX_IP4_CKSUM = (1 << 5),
-  VNET_HW_INTERFACE_CAP_SUPPORTS_RX_UDP_CKSUM = (1 << 6),
-  VNET_HW_INTERFACE_CAP_SUPPORTS_RX_TCP_CKSUM = (1 << 7),
-  VNET_HW_INTERFACE_CAP_SUPPORTS_RX_IP4_OUTER_CKSUM = (1 << 8),
-  VNET_HW_INTERFACE_CAP_SUPPORTS_RX_UDP_OUTER_CKSUM = (1 << 9),
+#define VNET_HW_IF_CAP_L4_TX_CKSUM                                            \
+  (VNET_HW_IF_CAP_TX_TCP_CKSUM | VNET_HW_IF_CAP_TX_UDP_CKSUM)
 
-  /* gso */
-  VNET_HW_INTERFACE_CAP_SUPPORTS_TCP_GSO = (1 << 10),
-  VNET_HW_INTERFACE_CAP_SUPPORTS_UDP_GSO = (1 << 11),
-  VNET_HW_INTERFACE_CAP_SUPPORTS_VXLAN_TNL_GSO = (1 << 12),
-  VNET_HW_INTERFACE_CAP_SUPPORTS_IPIP_TNL_GSO = (1 << 13),
-  VNET_HW_INTERFACE_CAP_SUPPORTS_GENEVE_TNL_GSO = (1 << 14),
-  VNET_HW_INTERFACE_CAP_SUPPORTS_GRE_TNL_GSO = (1 << 15),
-  VNET_HW_INTERFACE_CAP_SUPPORTS_UDP_TNL_GSO = (1 << 16),
-  VNET_HW_INTERFACE_CAP_SUPPORTS_IP_TNL_GSO = (1 << 17),
+#define VNET_HW_IF_CAP_TX_CKSUM                                               \
+  (VNET_HW_IF_CAP_TX_IP4_CKSUM | VNET_HW_IF_CAP_TX_TCP_CKSUM |                \
+   VNET_HW_IF_CAP_TX_UDP_CKSUM)
 
-  /* lro */
-  VNET_HW_INTERFACE_CAP_SUPPORTS_TCP_LRO = (1 << 18),
+#define VNET_HW_IF_CAP_TX_OUTER_CKSUM                                         \
+  (VNET_HW_IF_CAP_TX_IP4_OUTER_CKSUM | VNET_HW_IF_CAP_TX_UDP_OUTER_CKSUM)
 
-  /* rx mode */
-  VNET_HW_INTERFACE_CAP_SUPPORTS_INT_MODE = (1 << 30),
-  /* hw/driver can switch between l2-promisc and l3-dmac-filter modes */
-  VNET_HW_INTERFACE_CAP_SUPPORTS_MAC_FILTER = (1 << 31),
-} vnet_hw_interface_capabilities_t;
+#define VNET_HW_IF_CAP_TX_CKSUM_MASK                                          \
+  (VNET_HW_IF_CAP_TX_CKSUM | VNET_HW_IF_CAP_TX_OUTER_CKSUM)
 
-#define VNET_HW_INTERFACE_CAP_SUPPORTS_L4_TX_CKSUM                            \
-  (VNET_HW_INTERFACE_CAP_SUPPORTS_TX_TCP_CKSUM |                              \
-   VNET_HW_INTERFACE_CAP_SUPPORTS_TX_UDP_CKSUM)
+#define VNET_HW_IF_CAP_L4_RX_CKSUM                                            \
+  (VNET_HW_IF_CAP_RX_TCP_CKSUM | VNET_HW_IF_CAP_RX_UDP_CKSUM)
 
-#define VNET_HW_INTERFACE_CAP_SUPPORTS_TX_CKSUM                               \
-  (VNET_HW_INTERFACE_CAP_SUPPORTS_TX_IP4_CKSUM |                              \
-   VNET_HW_INTERFACE_CAP_SUPPORTS_TX_TCP_CKSUM |                              \
-   VNET_HW_INTERFACE_CAP_SUPPORTS_TX_UDP_CKSUM)
+#define VNET_HW_IF_CAP_RX_CKSUM                                               \
+  (VNET_HW_IF_CAP_RX_IP4_CKSUM | VNET_HW_IF_CAP_RX_TCP_CKSUM |                \
+   VNET_HW_IF_CAP_RX_UDP_CKSUM)
 
-#define VNET_HW_INTERFACE_CAP_SUPPORTS_L4_RX_CKSUM                            \
-  (VNET_HW_INTERFACE_CAP_SUPPORTS_RX_TCP_CKSUM |                              \
-   VNET_HW_INTERFACE_CAP_SUPPORTS_RX_UDP_CKSUM)
-
-#define VNET_HW_INTERFACE_CAP_SUPPORTS_RX_CKSUM                               \
-  (VNET_HW_INTERFACE_CAP_SUPPORTS_RX_IP4_CKSUM |                              \
-   VNET_HW_INTERFACE_CAP_SUPPORTS_RX_TCP_CKSUM |                              \
-   VNET_HW_INTERFACE_CAP_SUPPORTS_RX_UDP_CKSUM)
+#define VNET_HW_IF_CAP_TNL_GSO_MASK                                           \
+  VNET_HW_IF_CAP_VXLAN_TNL_GSO | VNET_HW_IF_CAP_IPIP_TNL_GSO
 
 #define VNET_HW_INTERFACE_FLAG_DUPLEX_SHIFT 1
 #define VNET_HW_INTERFACE_FLAG_SPEED_SHIFT  3
@@ -629,8 +640,9 @@ typedef struct
 typedef struct
 {
   CLIB_CACHE_LINE_ALIGN_MARK (cacheline0);
-  vnet_hw_if_tx_frame_t frame;
-  u32 n_threads;
+  vnet_hw_if_tx_frame_t *frame;
+  u32 *lookup_table;
+  u32 n_queues;
 } vnet_hw_if_output_node_runtime_t;
 
 /* Hardware-interface.  This corresponds to a physical wire
@@ -642,7 +654,7 @@ typedef struct vnet_hw_interface_t
   vnet_hw_interface_flags_t flags;
 
   /* capabilities flags */
-  vnet_hw_interface_capabilities_t caps;
+  vnet_hw_if_caps_t caps;
 
   /* Hardware address as vector.  Zero (e.g. zero-length vector) if no
      address for this class (e.g. PPP). */
@@ -684,20 +696,20 @@ typedef struct vnet_hw_interface_t
      used by node function vnet_per_buffer_interface_output() */
   u32 output_node_next_index;
 
+  /* called when hw interface is using transmit side packet steering */
+  vnet_hash_fn_t hf;
+
   /* Maximum transmit rate for this interface in bits/sec. */
   f64 max_rate_bits_per_sec;
 
-  /* Smallest packet size supported by this interface. */
-  u32 min_supported_packet_bytes;
-
-  /* Largest packet size supported by this interface. */
-  u32 max_supported_packet_bytes;
-
   /* Smallest packet size for this interface. */
-  u32 min_packet_bytes;
+  u32 min_frame_size;
 
-  /* Largest packet size for this interface. */
-  u32 max_packet_bytes;
+  /* Largest frame size for this interface. */
+  u32 max_frame_size;
+
+  /* Layer 2 overhead */
+  u16 frame_overhead;
 
   /* Hash table mapping sub interface id to sw_if_index. */
   uword *sub_interface_sw_if_index_by_id;
@@ -716,9 +728,6 @@ typedef struct vnet_hw_interface_t
 
   /* Input node */
   u32 input_node_index;
-
-  /* input node cpu index by queue */
-  u32 *input_node_thread_index_by_queue;
 
   vnet_hw_if_rx_mode default_rx_mode;
 
@@ -751,7 +760,8 @@ typedef struct
 
 typedef struct
 {
-  vnet_hw_if_rxq_poll_vector_t *rxq_poll_vector;
+  vnet_hw_if_rxq_poll_vector_t *rxq_vector_int;
+  vnet_hw_if_rxq_poll_vector_t *rxq_vector_poll;
   void *rxq_interrupts;
 } vnet_hw_if_rx_node_runtime_t;
 

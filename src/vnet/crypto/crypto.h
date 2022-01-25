@@ -82,15 +82,16 @@ typedef enum
 /** async crypto **/
 
 /* CRYPTO_ID, PRETTY_NAME, KEY_LENGTH_IN_BYTES, TAG_LEN, AAD_LEN */
-#define foreach_crypto_aead_async_alg \
-  _(AES_128_GCM, "aes-128-gcm-aad8", 16, 16, 8) \
-  _(AES_128_GCM, "aes-128-gcm-aad12", 16, 16, 12) \
-  _(AES_192_GCM, "aes-192-gcm-aad8", 24, 16, 8) \
-  _(AES_192_GCM, "aes-192-gcm-aad12", 24, 16, 12) \
-  _(AES_256_GCM, "aes-256-gcm-aad8", 32, 16, 8) \
-  _(AES_256_GCM, "aes-256-gcm-aad12", 32, 16, 12) \
-  _(CHACHA20_POLY1305, "chacha20-poly1305-aad8", 32, 16, 8) \
-  _(CHACHA20_POLY1305, "chacha20-poly1305-aad12", 32, 16, 12)
+#define foreach_crypto_aead_async_alg                                         \
+  _ (AES_128_GCM, "aes-128-gcm-aad8", 16, 16, 8)                              \
+  _ (AES_128_GCM, "aes-128-gcm-aad12", 16, 16, 12)                            \
+  _ (AES_192_GCM, "aes-192-gcm-aad8", 24, 16, 8)                              \
+  _ (AES_192_GCM, "aes-192-gcm-aad12", 24, 16, 12)                            \
+  _ (AES_256_GCM, "aes-256-gcm-aad8", 32, 16, 8)                              \
+  _ (AES_256_GCM, "aes-256-gcm-aad12", 32, 16, 12)                            \
+  _ (CHACHA20_POLY1305, "chacha20-poly1305-aad8", 32, 16, 8)                  \
+  _ (CHACHA20_POLY1305, "chacha20-poly1305-aad12", 32, 16, 12)                \
+  _ (CHACHA20_POLY1305, "chacha20-poly1305", 32, 16, 0)
 
 /* CRYPTO_ID, INTEG_ID, PRETTY_NAME, KEY_LENGTH_IN_BYTES, DIGEST_LEN */
 #define foreach_crypto_link_async_alg                                         \
@@ -422,12 +423,15 @@ void vnet_crypto_register_key_handler (vlib_main_t * vm, u32 engine_index,
 
 /** async crypto register functions */
 u32 vnet_crypto_register_post_node (vlib_main_t * vm, char *post_node_name);
-void vnet_crypto_register_async_handler (vlib_main_t * vm,
-					 u32 engine_index,
-					 vnet_crypto_async_op_id_t opt,
-					 vnet_crypto_frame_enqueue_t * enq_fn,
-					 vnet_crypto_frame_dequeue_t *
-					 deq_fn);
+
+void
+vnet_crypto_register_enqueue_handler (vlib_main_t *vm, u32 engine_index,
+				      vnet_crypto_async_op_id_t opt,
+				      vnet_crypto_frame_enqueue_t *enq_fn);
+
+void
+vnet_crypto_register_dequeue_handler (vlib_main_t *vm, u32 engine_index,
+				      vnet_crypto_frame_dequeue_t *deq_fn);
 
 typedef struct
 {
@@ -439,7 +443,7 @@ typedef struct
     vnet_crypto_chained_ops_handler_t
     * chained_ops_handlers[VNET_CRYPTO_N_OP_IDS];
   vnet_crypto_frame_enqueue_t *enqueue_handlers[VNET_CRYPTO_ASYNC_OP_N_IDS];
-  vnet_crypto_frame_dequeue_t *dequeue_handlers[VNET_CRYPTO_ASYNC_OP_N_IDS];
+  vnet_crypto_frame_dequeue_t *dequeue_handler;
 } vnet_crypto_engine_t;
 
 typedef struct
@@ -456,7 +460,6 @@ typedef struct
   vnet_crypto_chained_ops_handler_t **chained_ops_handlers;
   vnet_crypto_frame_enqueue_t **enqueue_handlers;
   vnet_crypto_frame_dequeue_t **dequeue_handlers;
-  clib_bitmap_t *async_active_ids;
   vnet_crypto_op_data_t opt_data[VNET_CRYPTO_N_OP_IDS];
   vnet_crypto_async_op_data_t async_opt_data[VNET_CRYPTO_ASYNC_OP_N_IDS];
   vnet_crypto_engine_t *engines;
@@ -591,7 +594,6 @@ vnet_crypto_async_submit_open_frame (vlib_main_t * vm,
 {
   vnet_crypto_main_t *cm = &crypto_main;
   vlib_thread_main_t *tm = vlib_get_thread_main ();
-  vnet_crypto_async_op_id_t opt = frame->op;
   u32 i = vlib_num_workers () > 0;
 
   frame->state = VNET_CRYPTO_FRAME_STATE_PENDING;
@@ -599,7 +601,6 @@ vnet_crypto_async_submit_open_frame (vlib_main_t * vm,
 
   int ret = (cm->enqueue_handlers[frame->op]) (vm, frame);
 
-  clib_bitmap_set_no_check (cm->async_active_ids, opt, 1);
   if (PREDICT_TRUE (ret == 0))
     {
       if (cm->dispatch_mode == VNET_CRYPTO_ASYNC_DISPATCH_INTERRUPT)

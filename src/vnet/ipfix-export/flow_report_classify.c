@@ -29,13 +29,10 @@ typedef struct
 flow_report_classify_main_t flow_report_classify_main;
 
 u8 *
-ipfix_classify_template_rewrite (flow_report_main_t * frm,
-				 flow_report_t * fr,
-				 ip4_address_t * collector_address,
-				 ip4_address_t * src_address,
+ipfix_classify_template_rewrite (ipfix_exporter_t *exp, flow_report_t *fr,
 				 u16 collector_port,
-				 ipfix_report_element_t * elts,
-				 u32 n_elts, u32 * stream_index)
+				 ipfix_report_element_t *elts, u32 n_elts,
+				 u32 *stream_index)
 {
   flow_report_classify_main_t *fcm = &flow_report_classify_main;
   vnet_classify_table_t *tblp;
@@ -61,7 +58,7 @@ ipfix_classify_template_rewrite (flow_report_main_t * frm,
   u8 *virt_mask;
   u8 *real_mask;
 
-  stream = &frm->streams[fr->stream_index];
+  stream = &exp->streams[fr->stream_index];
 
   ipfix_classify_table_t *table = &fcm->tables[flow_table_index];
 
@@ -109,8 +106,8 @@ ipfix_classify_template_rewrite (flow_report_main_t * frm,
   ip->ip_version_and_header_length = 0x45;
   ip->ttl = 254;
   ip->protocol = IP_PROTOCOL_UDP;
-  ip->src_address.as_u32 = src_address->as_u32;
-  ip->dst_address.as_u32 = collector_address->as_u32;
+  ip->src_address.as_u32 = exp->src_address.ip.ip4.as_u32;
+  ip->dst_address.as_u32 = exp->ipfix_collector.ip.ip4.as_u32;
   udp->src_port = clib_host_to_net_u16 (stream->src_port);
   udp->dst_port = clib_host_to_net_u16 (collector_port);
   udp->length = clib_host_to_net_u16 (vec_len (rewrite) - sizeof (*ip));
@@ -158,9 +155,9 @@ ipfix_classify_template_rewrite (flow_report_main_t * frm,
 }
 
 vlib_frame_t *
-ipfix_classify_send_flows (flow_report_main_t * frm,
-			   flow_report_t * fr,
-			   vlib_frame_t * f, u32 * to_next, u32 node_index)
+ipfix_classify_send_flows (flow_report_main_t *frm, ipfix_exporter_t *exp,
+			   flow_report_t *fr, vlib_frame_t *f, u32 *to_next,
+			   u32 node_index)
 {
   flow_report_classify_main_t *fcm = &flow_report_classify_main;
   vnet_classify_main_t *vcm = &vnet_classify_main;
@@ -191,7 +188,7 @@ ipfix_classify_send_flows (flow_report_main_t * frm,
   u8 transport_protocol;
   u8 *virt_key;
 
-  stream = &frm->streams[fr->stream_index];
+  stream = &exp->streams[fr->stream_index];
 
   ipfix_classify_table_t *table = &fcm->tables[flow_table_index];
 
@@ -233,7 +230,7 @@ ipfix_classify_send_flows (flow_report_main_t * frm,
 		  b0->current_length = copy_len;
 		  b0->flags |= VLIB_BUFFER_TOTAL_LENGTH_VALID;
 		  vnet_buffer (b0)->sw_if_index[VLIB_RX] = 0;
-		  vnet_buffer (b0)->sw_if_index[VLIB_TX] = frm->fib_index;
+		  vnet_buffer (b0)->sw_if_index[VLIB_TX] = exp->fib_index;
 
 		  tp = vlib_buffer_get_current (b0);
 		  ip = (ip4_header_t *) & tp->ip4;
@@ -285,7 +282,7 @@ ipfix_classify_send_flows (flow_report_main_t * frm,
 	      u32 next_record_size = next_offset - record_offset;
 	      record_offset = next_offset;
 
-	      if (next_offset + next_record_size > frm->path_mtu)
+	      if (next_offset + next_record_size > exp->path_mtu)
 		{
 		  s->set_id_length = ipfix_set_id_length (fr->template_id,
 							  next_offset -
@@ -314,7 +311,7 @@ ipfix_classify_send_flows (flow_report_main_t * frm,
 		  udp->length =
 		    clib_host_to_net_u16 (b0->current_length - sizeof (*ip));
 
-		  if (frm->udp_checksum)
+		  if (exp->udp_checksum)
 		    {
 		      /* RFC 7011 section 10.3.2. */
 		      udp->checksum =
@@ -370,7 +367,7 @@ flush:
       ip->length = new_l0;
       udp->length = clib_host_to_net_u16 (b0->current_length - sizeof (*ip));
 
-      if (frm->udp_checksum)
+      if (exp->udp_checksum)
 	{
 	  /* RFC 7011 section 10.3.2. */
 	  udp->checksum = ip4_tcp_udp_compute_checksum (vm, b0, ip);
@@ -397,7 +394,7 @@ ipfix_classify_table_add_del_command_fn (vlib_main_t * vm,
 					 vlib_cli_command_t * cmd)
 {
   flow_report_classify_main_t *fcm = &flow_report_classify_main;
-  flow_report_main_t *frm = &flow_report_main;
+  ipfix_exporter_t *exp = &flow_report_main.exporters[0];
   vnet_flow_report_add_del_args_t args;
   ipfix_classify_table_t *table;
   int rv;
@@ -475,7 +472,7 @@ ipfix_classify_table_add_del_command_fn (vlib_main_t * vm,
   args.domain_id = fcm->domain_id;
   args.src_port = fcm->src_port;
 
-  rv = vnet_flow_report_add_del (frm, &args, NULL);
+  rv = vnet_flow_report_add_del (exp, &args, NULL);
 
   error = flow_report_add_del_error_to_clib_error (rv);
 
@@ -500,7 +497,7 @@ set_ipfix_classify_stream_command_fn (vlib_main_t * vm,
 				      vlib_cli_command_t * cmd)
 {
   flow_report_classify_main_t *fcm = &flow_report_classify_main;
-  flow_report_main_t *frm = &flow_report_main;
+  ipfix_exporter_t *exp = &flow_report_main.exporters[0];
   u32 domain_id = 1;
   u32 src_port = UDP_DST_PORT_ipfix;
 
@@ -518,7 +515,7 @@ set_ipfix_classify_stream_command_fn (vlib_main_t * vm,
   if (fcm->src_port != 0 &&
       (fcm->domain_id != domain_id || fcm->src_port != (u16) src_port))
     {
-      int rv = vnet_stream_change (frm, fcm->domain_id, fcm->src_port,
+      int rv = vnet_stream_change (exp, fcm->domain_id, fcm->src_port,
 				   domain_id, (u16) src_port);
       ASSERT (rv == 0);
     }

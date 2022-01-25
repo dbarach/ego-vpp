@@ -69,11 +69,23 @@ vmxnet3_interface_rx_mode_change (vnet_main_t * vnm, u32 hw_if_index, u32 qid,
   vnet_hw_interface_t *hw = vnet_get_hw_interface (vnm, hw_if_index);
   vmxnet3_device_t *vd = pool_elt_at_index (vmxm->devices, hw->dev_instance);
   vmxnet3_rxq_t *rxq = vec_elt_at_index (vd->rxqs, qid);
+  vmxnet3_per_thread_data_t *ptd;
 
-  if (mode == VNET_HW_IF_RX_MODE_POLLING)
-    rxq->int_mode = 0;
+  if (mode == rxq->mode)
+    return 0;
+  if ((mode != VNET_HW_IF_RX_MODE_POLLING) &&
+      (mode != VNET_HW_IF_RX_MODE_INTERRUPT))
+    return clib_error_return (0, "Rx mode %U not supported",
+			      format_vnet_hw_if_rx_mode, mode);
+  rxq->mode = mode;
+  ptd = vec_elt_at_index (vmxm->per_thread_data, rxq->thread_index);
+  if (rxq->mode == VNET_HW_IF_RX_MODE_POLLING)
+    ptd->polling_q_count++;
   else
-    rxq->int_mode = 1;
+    {
+      ASSERT (ptd->polling_q_count != 0);
+      ptd->polling_q_count--;
+    }
 
   return 0;
 }
@@ -288,6 +300,7 @@ vmxnet3_rxq_init (vlib_main_t * vm, vmxnet3_device_t * vd, u16 qid, u16 qsz)
   rxq = vec_elt_at_index (vd->rxqs, qid);
   clib_memset (rxq, 0, sizeof (*rxq));
   rxq->size = qsz;
+  rxq->mode = VNET_HW_IF_RX_MODE_POLLING;
   for (rid = 0; rid < VMXNET3_RX_RING_SIZE; rid++)
     {
       rxq->rx_desc[rid] = vlib_physmem_alloc_aligned_on_numa
@@ -534,8 +547,13 @@ vmxnet3_rxq_irq_handler (vlib_main_t * vm, vlib_pci_dev_handle_t h, u16 line)
   u16 qid = line;
   vmxnet3_rxq_t *rxq = vec_elt_at_index (vd->rxqs, qid);
 
-  if (vec_len (vd->rxqs) > qid && vd->rxqs[qid].int_mode != 0)
-    vnet_hw_if_rx_queue_set_int_pending (vnm, rxq->queue_index);
+  if (vec_len (vd->rxqs) > qid && (rxq->mode != VNET_HW_IF_RX_MODE_POLLING))
+    {
+      vmxnet3_per_thread_data_t *ptd =
+	vec_elt_at_index (vmxm->per_thread_data, rxq->thread_index);
+      if (ptd->polling_q_count == 0)
+	vnet_hw_if_rx_queue_set_int_pending (vnm, rxq->queue_index);
+    }
 }
 
 static void
@@ -599,8 +617,11 @@ vmxnet3_create_if (vlib_main_t * vm, vmxnet3_create_if_args_t * args)
 {
   vnet_main_t *vnm = vnet_get_main ();
   vmxnet3_main_t *vmxm = &vmxnet3_main;
+  vnet_eth_interface_registration_t eir = {};
+
   vmxnet3_device_t *vd;
   vlib_pci_dev_handle_t h;
+  vnet_hw_if_caps_change_t cc = {};
   clib_error_t *error = 0;
   u16 qid;
   u32 num_intr;
@@ -784,29 +805,24 @@ vmxnet3_create_if (vlib_main_t * vm, vmxnet3_create_if_args_t * args)
     }
 
   /* create interface */
-  error = ethernet_register_interface (vnm, vmxnet3_device_class.index,
-				       vd->dev_instance, vd->mac_addr,
-				       &vd->hw_if_index, vmxnet3_flag_change);
-
-  if (error)
-    {
-      vmxnet3_log_error (vd,
-			 "error encountered on ethernet register interface");
-      goto error;
-    }
+  eir.dev_class_index = vmxnet3_device_class.index;
+  eir.dev_instance = vd->dev_instance;
+  eir.address = vd->mac_addr;
+  eir.cb.flag_change = vmxnet3_flag_change;
+  vd->hw_if_index = vnet_eth_register_interface (vnm, &eir);
 
   vnet_sw_interface_t *sw = vnet_get_hw_sw_interface (vnm, vd->hw_if_index);
   vd->sw_if_index = sw->sw_if_index;
   args->sw_if_index = sw->sw_if_index;
 
-  vnet_hw_interface_t *hw = vnet_get_hw_interface (vnm, vd->hw_if_index);
-  hw->caps |= VNET_HW_INTERFACE_CAP_SUPPORTS_INT_MODE;
+  cc.mask = VNET_HW_IF_CAP_INT_MODE | VNET_HW_IF_CAP_TCP_GSO |
+	    VNET_HW_IF_CAP_TX_TCP_CKSUM | VNET_HW_IF_CAP_TX_UDP_CKSUM;
   if (vd->gso_enable)
-    {
-      hw->caps |= (VNET_HW_INTERFACE_CAP_SUPPORTS_TCP_GSO |
-		   VNET_HW_INTERFACE_CAP_SUPPORTS_TX_TCP_CKSUM |
-		   VNET_HW_INTERFACE_CAP_SUPPORTS_TX_UDP_CKSUM);
-    }
+    cc.val = cc.mask;
+  else
+    cc.val = VNET_HW_IF_CAP_INT_MODE;
+
+  vnet_hw_if_change_caps (vnm, vd->hw_if_index, &cc);
 
   vnet_hw_if_set_input_node (vnm, vd->hw_if_index, vmxnet3_input_node.index);
   /* Disable interrupts */
@@ -815,12 +831,20 @@ vmxnet3_create_if (vlib_main_t * vm, vmxnet3_create_if_args_t * args)
   {
     vmxnet3_rxq_t *rxq = vec_elt_at_index (vd->rxqs, qid);
     u32 qi, fi;
+    vmxnet3_per_thread_data_t *ptd;
 
     qi = vnet_hw_if_register_rx_queue (vnm, vd->hw_if_index, qid,
 				       VNET_HW_IF_RXQ_THREAD_ANY);
     fi = vlib_pci_get_msix_file_index (vm, vd->pci_dev_handle, qid);
     vnet_hw_if_set_rx_queue_file_index (vnm, qi, fi);
     rxq->queue_index = qi;
+    rxq->thread_index =
+      vnet_hw_if_get_rx_queue_thread_index (vnm, rxq->queue_index);
+    if (rxq->mode == VNET_HW_IF_RX_MODE_POLLING)
+      {
+	ptd = vec_elt_at_index (vmxm->per_thread_data, rxq->thread_index);
+	ptd->polling_q_count++;
+      }
     rxq->buffer_pool_index =
       vnet_hw_if_get_rx_queue_numa_node (vnm, rxq->queue_index);
     vmxnet3_rxq_refill_ring0 (vm, vd, rxq);
@@ -886,7 +910,14 @@ vmxnet3_delete_if (vlib_main_t * vm, vmxnet3_device_t * vd)
       vmxnet3_rxq_t *rxq = vec_elt_at_index (vd->rxqs, i);
       u16 mask = rxq->size - 1;
       u16 rid;
+      vmxnet3_per_thread_data_t *ptd =
+	vec_elt_at_index (vmxm->per_thread_data, rxq->thread_index);
 
+      if (rxq->mode == VNET_HW_IF_RX_MODE_POLLING)
+	{
+	  ASSERT (ptd->polling_q_count != 0);
+	  ptd->polling_q_count--;
+	}
       for (rid = 0; rid < VMXNET3_RX_RING_SIZE; rid++)
 	{
 	  vmxnet3_rx_ring *ring;

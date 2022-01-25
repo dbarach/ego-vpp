@@ -59,6 +59,7 @@ typedef struct session_tx_context_
 
   /** Vector of tx buffer free lists */
   u32 *tx_buffers;
+  vlib_buffer_t **transport_pending_bufs;
 } session_tx_context_t;
 
 typedef struct session_evt_elt
@@ -170,13 +171,18 @@ extern session_fifo_rx_fn session_tx_fifo_dequeue_internal;
 
 u8 session_node_lookup_fifo_event (svm_fifo_t * f, session_event_t * e);
 
+typedef void (*session_update_time_fn) (f64 time_now, u8 thread_index);
+
 typedef struct session_main_
 {
   /** Worker contexts */
   session_worker_t *wrk;
 
+  /** Vector of transport update time functions */
+  session_update_time_fn *update_time_fns;
+
   /** Event queues memfd segment */
-  fifo_segment_t evt_qs_segment;
+  fifo_segment_t wrk_mqs_segment;
 
   /** Unique segment name counter */
   u32 unique_segment_name_counter;
@@ -217,12 +223,10 @@ typedef struct session_main_
   u8 no_adaptive;
 
   /** vpp fifo event queue configured length */
-  u32 configured_event_queue_length;
+  u32 configured_wrk_mq_length;
 
   /** Session ssvm segment configs*/
-  uword session_baseva;
-  uword session_va_space_size;
-  uword evt_qs_segment_size;
+  uword wrk_mqs_segment_size;
 
   /** Session table size parameters */
   u32 configured_v4_session_table_buckets;
@@ -529,6 +533,7 @@ void session_register_transport (transport_proto_t transport_proto,
 				 const transport_proto_vft_t * vft, u8 is_ip4,
 				 u32 output_node);
 transport_proto_t session_add_transport_proto (void);
+void session_register_update_time_fn (session_update_time_fn fn, u8 is_add);
 int session_tx_fifo_peek_bytes (transport_connection_t * tc, u8 * buffer,
 				u32 offset, u32 max_bytes);
 u32 session_tx_fifo_dequeue_drop (transport_connection_t * tc, u32 max_bytes);
@@ -761,7 +766,7 @@ session_wrk_update_time (session_worker_t *wrk, f64 now)
 }
 
 void session_wrk_enable_adaptive_mode (session_worker_t *wrk);
-fifo_segment_t *session_main_get_evt_q_segment (void);
+fifo_segment_t *session_main_get_wrk_mqs_segment (void);
 void session_node_enable_disable (u8 is_en);
 clib_error_t *vnet_session_enable_disable (vlib_main_t * vm, u8 is_en);
 

@@ -173,6 +173,7 @@ session_mq_connect_one (session_connect_msg_t *mp)
   a->sep.port = mp->port;
   a->sep.transport_proto = mp->proto;
   a->sep.peer.fib_index = mp->vrf;
+  a->sep.dscp = mp->dscp;
   clib_memcpy_fast (&a->sep.peer.ip, &mp->lcl_ip, sizeof (mp->lcl_ip));
   if (mp->is_ip4)
     {
@@ -453,19 +454,10 @@ session_mq_accepted_reply_handler (void *data)
   app_worker_t *app_wrk;
   session_t *s;
 
-  /* Server isn't interested, kill the session */
-  if (mp->retval)
-    {
-      a->app_index = mp->context;
-      a->handle = mp->handle;
-      vnet_disconnect_session (a);
-      return;
-    }
-
   /* Mail this back from the main thread. We're not polling in main
    * thread so we're using other workers for notifications. */
-  if (vlib_num_workers () && vlib_get_thread_index () != 0
-      && session_thread_from_handle (mp->handle) == 0)
+  if (session_thread_from_handle (mp->handle) == 0 && vlib_num_workers () &&
+      vlib_get_thread_index () != 0)
     {
       vlib_rpc_call_main_thread (session_mq_accepted_reply_handler,
 				 (u8 *) mp, sizeof (*mp));
@@ -483,27 +475,35 @@ session_mq_accepted_reply_handler (void *data)
       return;
     }
 
+  /* Server isn't interested, disconnect the session */
+  if (mp->retval)
+    {
+      a->app_index = mp->context;
+      a->handle = mp->handle;
+      vnet_disconnect_session (a);
+      return;
+    }
+
+  /* Special handling for cut-through sessions */
   if (!session_has_transport (s))
     {
       s->session_state = SESSION_STATE_READY;
-      if (ct_session_connect_notify (s, SESSION_E_NONE))
-	return;
+      ct_session_connect_notify (s, SESSION_E_NONE);
+      return;
     }
-  else
+
+  old_state = s->session_state;
+  s->session_state = SESSION_STATE_READY;
+
+  if (!svm_fifo_is_empty_prod (s->rx_fifo))
+    app_worker_lock_and_send_event (app_wrk, s, SESSION_IO_EVT_RX);
+
+  /* Closed while waiting for app to reply. Resend disconnect */
+  if (old_state >= SESSION_STATE_TRANSPORT_CLOSING)
     {
-      old_state = s->session_state;
-      s->session_state = SESSION_STATE_READY;
-
-      if (!svm_fifo_is_empty_prod (s->rx_fifo))
-	app_worker_lock_and_send_event (app_wrk, s, SESSION_IO_EVT_RX);
-
-      /* Closed while waiting for app to reply. Resend disconnect */
-      if (old_state >= SESSION_STATE_TRANSPORT_CLOSING)
-	{
-	  app_worker_close_notify (app_wrk, s);
-	  s->session_state = old_state;
-	  return;
-	}
+      app_worker_close_notify (app_wrk, s);
+      s->session_state = old_state;
+      return;
     }
 }
 
@@ -795,21 +795,21 @@ format_session_queue_trace (u8 * s, va_list * args)
   return s;
 }
 
-#define foreach_session_queue_error		\
-_(TX, "Packets transmitted")                  	\
-_(TIMER, "Timer events")			\
-_(NO_BUFFER, "Out of buffers")
+#define foreach_session_queue_error                                           \
+  _ (TX, tx, INFO, "Packets transmitted")                                     \
+  _ (TIMER, timer, INFO, "Timer events")                                      \
+  _ (NO_BUFFER, no_buffer, ERROR, "Out of buffers")
 
 typedef enum
 {
-#define _(sym,str) SESSION_QUEUE_ERROR_##sym,
+#define _(f, n, s, d) SESSION_QUEUE_ERROR_##f,
   foreach_session_queue_error
 #undef _
     SESSION_QUEUE_N_ERROR,
 } session_queue_error_t;
 
-static char *session_queue_error_strings[] = {
-#define _(sym,string) string,
+static vlib_error_desc_t session_error_counters[] = {
+#define _(f, n, s, d) { #n, d, VL_COUNTER_SEVERITY_##s },
   foreach_session_queue_error
 #undef _
 };
@@ -973,7 +973,7 @@ session_tx_fill_buffer (vlib_main_t * vm, session_tx_context_t * ctx,
 	  n_bytes_read = svm_fifo_peek (f, offset, deq_now, data0);
 	  ASSERT (n_bytes_read > 0);
 
-	  if (ctx->s->session_state == SESSION_STATE_LISTENING)
+	  if (transport_connection_is_cless (ctx->tc))
 	    {
 	      ip_copy (&ctx->tc->rmt_ip, &hdr->rmt_ip, ctx->tc->is_ip4);
 	      ctx->tc->rmt_port = hdr->rmt_port;
@@ -1018,7 +1018,15 @@ session_tx_not_ready (session_t * s, u8 peek_data)
       /* Can retransmit for closed sessions but can't send new data if
        * session is not ready or closed */
       else if (s->session_state < SESSION_STATE_READY)
-	return 1;
+	{
+	  /* Allow accepting session to send custom packets.
+	   * For instance, tcp want to send acks in established, but
+	   * the app has not called accept() yet */
+	  if (s->session_state == SESSION_STATE_ACCEPTING &&
+	      (s->flags & SESSION_F_CUSTOM_TX))
+	    return 0;
+	  return 1;
+	}
       else if (s->session_state >= SESSION_STATE_TRANSPORT_CLOSED)
 	{
 	  /* Allow closed transports to still send custom packets.
@@ -1180,8 +1188,14 @@ session_tx_maybe_reschedule (session_worker_t * wrk,
 
   svm_fifo_unset_event (s->tx_fifo);
   if (svm_fifo_max_dequeue_cons (s->tx_fifo) > ctx->sp.tx_offset)
-    if (svm_fifo_set_event (s->tx_fifo))
-      session_evt_add_head_old (wrk, elt);
+    {
+      if (svm_fifo_set_event (s->tx_fifo))
+	session_evt_add_head_old (wrk, elt);
+    }
+  else
+    {
+      transport_connection_deschedule (ctx->tc);
+    }
 }
 
 always_inline int
@@ -1237,6 +1251,11 @@ session_tx_fifo_read_and_snd_i (session_worker_t * wrk,
 	  return SESSION_TX_OK;
 	}
     }
+
+  /* Connection previously descheduled because it had no data to send.
+   * Clear descheduled flag and reset pacer if in use */
+  if (transport_connection_is_descheduled (ctx->tc))
+    transport_connection_clear_descheduled (ctx->tc);
 
   transport_connection_snd_params (ctx->tc, &ctx->sp);
 
@@ -1300,6 +1319,8 @@ session_tx_fifo_read_and_snd_i (session_worker_t * wrk,
   ctx->left_to_snd = ctx->max_len_to_snd;
   n_left = ctx->n_segs_per_evt;
 
+  vec_validate (ctx->transport_pending_bufs, n_left);
+
   while (n_left >= 4)
     {
       vlib_buffer_t *b0, *b1;
@@ -1321,9 +1342,8 @@ session_tx_fifo_read_and_snd_i (session_worker_t * wrk,
       session_tx_fill_buffer (vm, ctx, b0, &n_bufs, peek_data);
       session_tx_fill_buffer (vm, ctx, b1, &n_bufs, peek_data);
 
-      ctx->transport_vft->push_header (ctx->tc, b0);
-      ctx->transport_vft->push_header (ctx->tc, b1);
-
+      ctx->transport_pending_bufs[ctx->n_segs_per_evt - n_left] = b0;
+      ctx->transport_pending_bufs[ctx->n_segs_per_evt - n_left + 1] = b1;
       n_left -= 2;
 
       vec_add1 (wrk->pending_tx_buffers, bi0);
@@ -1347,15 +1367,16 @@ session_tx_fifo_read_and_snd_i (session_worker_t * wrk,
       b0 = vlib_get_buffer (vm, bi0);
       session_tx_fill_buffer (vm, ctx, b0, &n_bufs, peek_data);
 
-      /* Ask transport to push header after current_length and
-       * total_length_not_including_first_buffer are updated */
-      ctx->transport_vft->push_header (ctx->tc, b0);
-
+      ctx->transport_pending_bufs[ctx->n_segs_per_evt - n_left] = b0;
       n_left -= 1;
 
       vec_add1 (wrk->pending_tx_buffers, bi0);
       vec_add1 (wrk->pending_tx_nexts, next_index);
     }
+
+  /* Ask transport to push headers */
+  ctx->transport_vft->push_header (ctx->tc, ctx->transport_pending_bufs,
+				   ctx->n_segs_per_evt);
 
   if (PREDICT_FALSE ((n_trace = vlib_get_trace_count (vm, node)) > 0))
     session_tx_trace_frame (vm, node, next_index, wrk->pending_tx_buffers,
@@ -1572,7 +1593,7 @@ session_event_dispatch_io (session_worker_t * wrk, vlib_node_runtime_t * node,
       s = session_event_get_session (wrk, e);
       if (PREDICT_FALSE (!s))
 	break;
-      CLIB_PREFETCH (s->tx_fifo, 2 * CLIB_CACHE_LINE_BYTES, LOAD);
+      CLIB_PREFETCH (s->tx_fifo, sizeof (*(s->tx_fifo)), LOAD);
       wrk->ctx.s = s;
       /* Spray packets in per session type frames, since they go to
        * different nodes */
@@ -1621,6 +1642,16 @@ static const u32 session_evt_msg_sizes[] = {
 /* *INDENT-ON* */
 
 always_inline void
+session_update_time_subscribers (session_main_t *smm, clib_time_type_t now,
+				 u32 thread_index)
+{
+  session_update_time_fn *fn;
+
+  vec_foreach (fn, smm->update_time_fns)
+    (*fn) (now, thread_index);
+}
+
+always_inline void
 session_evt_add_to_list (session_worker_t * wrk, session_event_t * evt)
 {
   session_evt_elt_t *elt;
@@ -1652,9 +1683,9 @@ static void
 session_flush_pending_tx_buffers (session_worker_t * wrk,
 				  vlib_node_runtime_t * node)
 {
-  vlib_buffer_enqueue_to_next (wrk->vm, node, wrk->pending_tx_buffers,
-			       wrk->pending_tx_nexts,
-			       vec_len (wrk->pending_tx_nexts));
+  vlib_buffer_enqueue_to_next_vec (wrk->vm, node, &wrk->pending_tx_buffers,
+				   &wrk->pending_tx_nexts,
+				   vec_len (wrk->pending_tx_nexts));
   vec_reset_length (wrk->pending_tx_buffers);
   vec_reset_length (wrk->pending_tx_nexts);
 }
@@ -1734,7 +1765,7 @@ session_queue_node_fn (vlib_main_t * vm, vlib_node_runtime_t * node,
   /*
    *  Update transport time
    */
-  transport_update_time (wrk->last_vlib_time, thread_index);
+  session_update_time_subscribers (smm, wrk->last_vlib_time, thread_index);
   n_tx_packets = vec_len (wrk->pending_tx_buffers);
   SESSION_EVT (SESSION_EVT_DSP_CNTRS, UPDATE_TIME, wrk);
 
@@ -1824,15 +1855,14 @@ session_queue_node_fn (vlib_main_t * vm, vlib_node_runtime_t * node,
 }
 
 /* *INDENT-OFF* */
-VLIB_REGISTER_NODE (session_queue_node) =
-{
+VLIB_REGISTER_NODE (session_queue_node) = {
   .function = session_queue_node_fn,
   .flags = VLIB_NODE_FLAG_TRACE_SUPPORTED,
   .name = "session-queue",
   .format_trace = format_session_queue_trace,
   .type = VLIB_NODE_TYPE_INPUT,
-  .n_errors = ARRAY_LEN (session_queue_error_strings),
-  .error_strings = session_queue_error_strings,
+  .n_errors = SESSION_QUEUE_N_ERROR,
+  .error_counters = session_error_counters,
   .state = VLIB_NODE_STATE_DISABLED,
 };
 /* *INDENT-ON* */

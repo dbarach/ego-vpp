@@ -16,6 +16,8 @@ unset(VNET_HEADERS)
 unset(VNET_API_FILES)
 unset(VNET_MULTIARCH_SOURCES)
 
+option(VPP_IP_FIB_MTRIE_16 "IP FIB's MTRIE Stride is 16-8-8 (if not set it's 8-8-8-8)" ON)
+
 ##############################################################################
 # Generic stuff
 ##############################################################################
@@ -24,6 +26,7 @@ list(APPEND VNET_SOURCES
   config.c
   devices/devices.c
   devices/netlink.c
+  error.c
   flow/flow.c
   flow/flow_cli.c
   flow/flow_api.c
@@ -33,9 +36,11 @@ list(APPEND VNET_SOURCES
   interface_cli.c
   interface_format.c
   interface_output.c
+  interface/caps.c
   interface/rx_queue.c
   interface/tx_queue.c
   interface/runtime.c
+  interface/monitor.c
   interface_stats.c
   misc.c
 )
@@ -48,13 +53,13 @@ list(APPEND VNET_MULTIARCH_SOURCES
 
 list(APPEND VNET_HEADERS
   api_errno.h
+  error.h
   buffer.h
   config.h
   devices/devices.h
   devices/netlink.h
   flow/flow.h
   global_funcs.h
-  handoff.h
   interface/rx_queue_funcs.h
   interface/tx_queue_funcs.h
   interface.h
@@ -71,7 +76,9 @@ list(APPEND VNET_HEADERS
   util/refcount.h
   format_fns.h
   ip/ip_format_fns.h
+  ip/ip_sas.h
   ethernet/ethernet_format_fns.h
+  ethernet/ethernet_types_api.h
 )
 
 list(APPEND VNET_API_FILES
@@ -411,6 +418,7 @@ list(APPEND VNET_SOURCES
   ip/punt.c
   ip/punt_node.c
   ip/vtep.c
+  ip/ip_sas.c
 )
 
 list(APPEND VNET_MULTIARCH_SOURCES
@@ -453,6 +461,7 @@ list(APPEND VNET_HEADERS
   ip/ip_table.h
   ip/ip_interface.h
   ip/ip_packet.h
+  ip/ip_psh_cksum.h
   ip/ip_source_and_port_range_check.h
   ip/ip_types.h
   ip/lookup.h
@@ -774,30 +783,6 @@ list(APPEND VNET_HEADERS
 list(APPEND VNET_API_FILES mpls/mpls.api)
 
 ##############################################################################
-# Tunnel protocol: vxlan-gbp
-##############################################################################
-list(APPEND VNET_SOURCES
-  vxlan-gbp/decap.c
-  vxlan-gbp/encap.c
-  vxlan-gbp/vxlan_gbp_api.c
-  vxlan-gbp/vxlan_gbp.c
-  vxlan-gbp/vxlan_gbp_packet.c
-)
-
-list (APPEND VNET_MULTIARCH_SOURCES
-  vxlan-gbp/decap.c
-  vxlan-gbp/encap.c
-)
-
-list(APPEND VNET_HEADERS
-  vxlan-gbp/vxlan_gbp.h
-  vxlan-gbp/vxlan_gbp_packet.h
-  vxlan-gbp/vxlan_gbp_error.def
-)
-
-list(APPEND VNET_API_FILES vxlan-gbp/vxlan_gbp.api)
-
-##############################################################################
 # Tunnel protocol: vxlan-gpe
 ##############################################################################
 
@@ -875,6 +860,21 @@ list(APPEND VNET_HEADERS
 )
 
 list(APPEND VNET_API_FILES ipfix-export/ipfix_export.api)
+
+##############################################################################
+# HASH
+##############################################################################
+list(APPEND VNET_SOURCES
+  hash/hash.c
+  hash/cli.c
+  hash/crc32_5tuple.c
+  hash/handoff_eth.c
+  hash/hash_eth.c
+)
+
+list(APPEND VNET_HEADERS
+  hash/hash.h
+)
 
 ##############################################################################
 # GSO
@@ -985,7 +985,7 @@ list(APPEND VNET_SOURCES
   devices/virtio/virtio_api.c
   devices/virtio/virtio_pci_legacy.c
   devices/virtio/virtio_pci_modern.c
-  devices/virtio/virtio_process.c
+  devices/virtio/virtio_pre_input.c
   devices/virtio/virtio_types_api.c
 )
 
@@ -1164,7 +1164,10 @@ list(APPEND VNET_HEADERS
 
 list(APPEND VNET_SOURCES
   fib/fib.c
+  fib/ip4_fib_hash.c
   fib/ip4_fib.c
+  fib/ip4_fib_16.c
+  fib/ip4_fib_8.c
   fib/ip6_fib.c
   fib/mpls_fib.c
   fib/fib_table.c
@@ -1201,6 +1204,9 @@ list(APPEND VNET_HEADERS
   fib/fib.h
   fib/fib_api.h
   fib/ip4_fib.h
+  fib/ip4_fib_8.h
+  fib/ip4_fib_16.h
+  fib/ip4_fib_hash.h
   fib/ip6_fib.h
   fib/fib_types.h
   fib/fib_table.h
@@ -1287,6 +1293,7 @@ list(APPEND VNET_MULTIARCH_SOURCES
 
 list(APPEND VNET_HEADERS
   dpo/load_balance.h
+  dpo/load_balance_map.h
   dpo/drop_dpo.h
   dpo/lookup_dpo.h
   dpo/punt_dpo.h
@@ -1462,6 +1469,7 @@ list (APPEND VNET_SOURCES
   ip6-nd/ip6_nd.c
   ip6-nd/ip6_nd_api.c
   ip6-nd/ip6_nd_proxy.c
+  ip6-nd/ip6_nd_mirror_proxy.c
   ip6-nd/ip6_ra.c
   ip6-nd/rd_cp.c
   ip6-nd/rd_cp_api.c
@@ -1496,6 +1504,17 @@ add_vpp_library(vnet
 add_vpp_library (vatclient
   SOURCES ip/ip_types_api.c
   DEPENDS api_headers
+)
+
+add_vat_test_library(vnet
+  interface_test.c
+  ip/ip_test.c
+  arp/arp_test.c
+  ip6-nd/ip6_nd_test.c
+  srmpls/sr_mpls_test.c
+  session/session_test.c
+  l2/l2_test.c
+  ipsec/ipsec_test.c
 )
 
 ##############################################################################

@@ -45,7 +45,6 @@
 #include <vppinfra/vec.h>
 #include <vppinfra/random.h>
 #include <vppinfra/error.h>
-#include <vppinfra/bitops.h>	/* for count_set_bits */
 
 typedef uword clib_bitmap_t;
 
@@ -114,6 +113,24 @@ clib_bitmap_is_equal (uword * a, uword * b)
 /* Make sure that a bitmap is at least n_bits in size */
 #define clib_bitmap_validate(v,n_bits) \
   clib_bitmap_vec_validate ((v), ((n_bits) - 1) / BITS (uword))
+
+/** Copy a bitmap
+    @param dst - copy to
+    @param src - copy from
+*/
+static_always_inline void
+clib_bitmap_copy (clib_bitmap_t **dst, const clib_bitmap_t *src)
+{
+  if (vec_len (src))
+    {
+      clib_bitmap_vec_validate (*dst, vec_len (src) - 1);
+      vec_copy (*dst, src);
+    }
+  else
+    {
+      vec_reset_length (*dst);
+    }
+}
 
 /* low-level routine to remove trailing zeros from a bitmap */
 always_inline uword *
@@ -186,6 +203,14 @@ clib_bitmap_set (uword * ai, uword i, uword value)
     ai = _clib_bitmap_remove_trailing_zeros (ai);
 
   return ai;
+}
+
+always_inline u8
+clib_bitmap_will_expand (uword *ai, uword i)
+{
+  uword i0 = i / BITS (ai[0]);
+  return _vec_resize_will_expand (ai, 1, i0 * sizeof (ai[0]), 0,
+				  sizeof (uword));
 }
 
 /** Gets the ith bit value from a bitmap
@@ -716,8 +741,7 @@ clib_bitmap_next_clear (uword * ai, uword i)
 	    return log2_first_set (t) + i0 * BITS (ai[0]);
 	}
 
-      /* no clear bit left in bitmap, return bit just beyond bitmap */
-      return (i0 * BITS (ai[0])) + 1;
+      return i0 * BITS (ai[0]);
     }
   return i;
 }

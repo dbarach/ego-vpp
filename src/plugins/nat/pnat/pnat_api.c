@@ -22,6 +22,7 @@
 #include <vnet/ip/reass/ip4_sv_reass.h>
 #include <vnet/ip/reass/ip6_full_reass.h>
 #include <vnet/ip/reass/ip6_sv_reass.h>
+#include <vpp/app/version.h>
 
 /*
  * This file contains the API handlers for the pnat.api
@@ -45,11 +46,7 @@ vl_api_pnat_binding_attach_t_handler(vl_api_pnat_binding_attach_t *mp) {
     vl_api_pnat_binding_attach_reply_t *rmp;
     int rv;
 
-    /* Ensure that the interface exists */
-    if (!vnet_sw_if_index_is_api_valid(mp->sw_if_index)) {
-        rv = VNET_API_ERROR_INVALID_SW_IF_INDEX;
-        goto bad_sw_if_index;
-    }
+    VALIDATE_SW_IF_INDEX_END(mp);
 
     rv =
         pnat_binding_attach(mp->sw_if_index, mp->attachment, mp->binding_index);
@@ -64,11 +61,7 @@ vl_api_pnat_binding_detach_t_handler(vl_api_pnat_binding_detach_t *mp) {
     vl_api_pnat_binding_detach_reply_t *rmp;
     int rv;
 
-    /* Ensure that the interface exists */
-    if (!vnet_sw_if_index_is_api_valid(mp->sw_if_index)) {
-        rv = VNET_API_ERROR_INVALID_SW_IF_INDEX;
-        goto bad_sw_if_index;
-    }
+    VALIDATE_SW_IF_INDEX_END(mp);
 
     rv =
         pnat_binding_detach(mp->sw_if_index, mp->attachment, mp->binding_index);
@@ -193,7 +186,7 @@ clib_error_t *pnat_plugin_api_hookup(vlib_main_t *vm) {
  */
 #include <vnet/plugin/plugin.h>
 VLIB_PLUGIN_REGISTER() = {
-    .version = "0.0.1",
+    .version = VPP_BUILD_VER,
     .description = "Policy 1:1 NAT",
 };
 

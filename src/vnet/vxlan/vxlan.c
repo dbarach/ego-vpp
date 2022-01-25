@@ -82,6 +82,8 @@ format_vxlan_tunnel (u8 * s, va_list * args)
   if (PREDICT_FALSE (t->decap_next_index != VXLAN_INPUT_NEXT_L2_INPUT))
     s = format (s, "decap-next-%U ", format_decap_next, t->decap_next_index);
 
+  s = format (s, "l3 %u ", t->is_l3);
+
   if (PREDICT_FALSE (ip46_address_is_multicast (&t->dst)))
     s = format (s, "mcast-sw-if-idx %d ", t->mcast_sw_if_index);
 
@@ -245,7 +247,8 @@ const static fib_node_vft_t vxlan_vft = {
   _ (src)                                                                     \
   _ (dst)                                                                     \
   _ (src_port)                                                                \
-  _ (dst_port)
+  _ (dst_port)                                                                \
+  _ (is_l3)
 
 static void
 vxlan_rewrite (vxlan_tunnel_t * t, bool is_ip6)
@@ -448,12 +451,13 @@ int vnet_vxlan_add_del_tunnel
       t->user_instance = user_instance; /* name */
       t->flow_index = ~0;
 
-      if (a->is_l3)
+      if (a->is_l3 == 0)
 	t->hw_if_index =
 	  vnet_register_interface (vnm, vxlan_device_class.index, dev_instance,
 				   vxlan_hw_class.index, dev_instance);
       else
 	{
+	  vnet_eth_interface_registration_t eir = {};
 	  f64 now = vlib_time_now (vm);
 	  u32 rnd;
 	  rnd = (u32) (now * 1e6);
@@ -461,15 +465,12 @@ int vnet_vxlan_add_del_tunnel
 	  memcpy (hw_addr + 2, &rnd, sizeof (rnd));
 	  hw_addr[0] = 2;
 	  hw_addr[1] = 0xfe;
-	  if (ethernet_register_interface (
-		vnm, vxlan_device_class.index, dev_instance, hw_addr,
-		&t->hw_if_index, vxlan_eth_flag_change))
-	    {
-	      hash_unset (vxm->instance_used, t->user_instance);
 
-	      pool_put (vxm->tunnels, t);
-	      return VNET_API_ERROR_SYSCALL_ERROR_2;
-	    }
+	  eir.dev_class_index = vxlan_device_class.index;
+	  eir.dev_instance = dev_instance;
+	  eir.address = hw_addr;
+	  eir.cb.flag_change = vxlan_eth_flag_change;
+	  t->hw_if_index = vnet_eth_register_interface (vnm, &eir);
 	}
 
       vnet_hw_interface_t *hi = vnet_get_hw_interface (vnm, t->hw_if_index);
@@ -503,7 +504,7 @@ int vnet_vxlan_add_del_tunnel
 
       if (add_failed)
 	{
-	  if (a->is_l3)
+	  if (a->is_l3 == 0)
 	    vnet_delete_hw_interface (vnm, t->hw_if_index);
 	  else
 	    ethernet_delete_interface (vnm, t->hw_if_index);
@@ -581,15 +582,16 @@ int vnet_vxlan_add_del_tunnel
 	       *  - the forwarding interface is for-us
 	       *  - the accepting interface is that from the API
 	       */
-	      mfib_table_entry_path_update (t->encap_fib_index,
-					    &mpfx, MFIB_SOURCE_VXLAN, &path);
+	      mfib_table_entry_path_update (t->encap_fib_index, &mpfx,
+					    MFIB_SOURCE_VXLAN,
+					    MFIB_ENTRY_FLAG_NONE, &path);
 
 	      path.frp_sw_if_index = a->mcast_sw_if_index;
 	      path.frp_flags = FIB_ROUTE_PATH_FLAG_NONE;
 	      path.frp_mitf_flags = MFIB_ITF_FLAG_ACCEPT;
-	      mfei = mfib_table_entry_path_update (t->encap_fib_index,
-						   &mpfx,
-						   MFIB_SOURCE_VXLAN, &path);
+	      mfei = mfib_table_entry_path_update (
+		t->encap_fib_index, &mpfx, MFIB_SOURCE_VXLAN,
+		MFIB_ENTRY_FLAG_NONE, &path);
 
 	      /*
 	       * Create the mcast adjacency to send traffic to the group
@@ -655,8 +657,7 @@ int vnet_vxlan_add_del_tunnel
 	  mcast_shared_remove (&t->dst);
 	}
 
-      vnet_hw_interface_t *hw = vnet_get_hw_interface (vnm, t->hw_if_index);
-      if (hw->dev_class_index == vxlan_device_class.index)
+      if (t->is_l3 == 0)
 	vnet_delete_hw_interface (vnm, t->hw_if_index);
       else
 	ethernet_delete_interface (vnm, t->hw_if_index);
@@ -843,7 +844,6 @@ vxlan_add_del_tunnel_command_fn (vlib_main_t * vm,
 
   vnet_vxlan_add_del_tunnel_args_t a = { .is_add = is_add,
 					 .is_ip6 = ipv6_set,
-					 .is_l3 = is_l3,
 					 .instance = instance,
 #define _(x) .x = x,
 					 foreach_copy_field
@@ -1073,7 +1073,7 @@ set_ip4_vxlan_bypass (vlib_main_t * vm,
 /*?
  * This command adds the 'ip4-vxlan-bypass' graph node for a given interface.
  * By adding the IPv4 vxlan-bypass graph node to an interface, the node checks
- *  for and validate input vxlan packet and bypass ip4-lookup, ip4-local,
+ * for and validate input vxlan packet and bypass ip4-lookup, ip4-local,
  * ip4-udp-lookup nodes to speedup vxlan packet forwarding. This node will
  * cause extra overhead to for non-vxlan packets which is kept at a minimum.
  *
@@ -1130,7 +1130,7 @@ set_ip6_vxlan_bypass (vlib_main_t * vm,
 /*?
  * This command adds the 'ip6-vxlan-bypass' graph node for a given interface.
  * By adding the IPv6 vxlan-bypass graph node to an interface, the node checks
- *  for and validate input vxlan packet and bypass ip6-lookup, ip6-local,
+ * for and validate input vxlan packet and bypass ip6-lookup, ip6-local,
  * ip6-udp-lookup nodes to speedup vxlan packet forwarding. This node will
  * cause extra overhead to for non-vxlan packets which is kept at a minimum.
  *

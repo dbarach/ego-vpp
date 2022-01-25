@@ -20,7 +20,7 @@
     called through a shared memory interface.
 */
 
-option version = "3.1.0";
+option version = "3.2.0";
 
 import "vnet/interface_types.api";
 import "vnet/fib/fib_types.api";
@@ -54,6 +54,35 @@ autoreply define ip_table_add_del
   u32 client_index;
   u32 context;
   bool is_add [default=true];
+  vl_api_ip_table_t table;
+};
+
+/** \brief Allocate an unused table
+           A table can be added multiple times.
+           If a large number of tables are in use (millions), this API might
+           fail to find a free ID with very low probability, and will return
+           EAGAIN. A subsequent attempt may be successful.
+  @param client_index - opaque cookie to identify the sender
+  @param context - sender context, to match reply w/ request
+  @param table - if table.table_id == ~0, vpp allocates an unused table_id and
+                    proceeds as in ip_table_add_del with is_add = true
+                 if table.table_id != ~0, vpp uses the table.table_id and
+                    proceeds as in ip_table_add_del with is_add = true
+                 table.table_id should never be 0
+*/
+define ip_table_allocate
+{
+  u32 client_index;
+  u32 context;
+
+  vl_api_ip_table_t table;
+};
+
+define ip_table_allocate_reply
+{
+  u32 context;
+  i32 retval;
+
   vl_api_ip_table_t table;
 };
 
@@ -557,6 +586,7 @@ typedef punt_redirect
 */
 autoreply define ip_punt_redirect
 {
+  option deprecated;
   u32 client_index;
   u32 context;
   vl_api_punt_redirect_t punt;
@@ -575,6 +605,48 @@ define ip_punt_redirect_details
 {
   u32 context;
   vl_api_punt_redirect_t punt;
+};
+
+/** \brief Punt redirect type
+    @param rx_sw_if_index - specify the original RX interface of traffic
+                            that should be redirected. ~0 means any interface.
+    @param af - Address family (ip4 or ip6)
+    @param paths - the TX paths to which traffic should be redirected.
+*/
+typedef punt_redirect_v2
+{
+  vl_api_interface_index_t rx_sw_if_index [default=0xffffffff];
+  vl_api_address_family_t af;
+  u32 n_paths;
+  vl_api_fib_path_t paths[n_paths];
+};
+
+/** \brief Add IP punt redirect rule
+    @param client_index - opaque cookie to identify the sender
+    @param context - sender context, to match reply w/ request
+    @param punt - punt definition
+    @param is_add - 1 to add punt_redirect rule, 0 to delete
+*/
+autoreply define add_del_ip_punt_redirect_v2
+{
+  u32 client_index;
+  u32 context;
+  bool is_add [default=true];
+  vl_api_punt_redirect_v2_t punt;
+};
+
+define ip_punt_redirect_v2_dump
+{
+  u32 client_index;
+  u32 context;
+  vl_api_interface_index_t sw_if_index;
+  vl_api_address_family_t af;
+};
+
+define ip_punt_redirect_v2_details
+{
+  u32 context;
+  vl_api_punt_redirect_v2_t punt;
 };
 
 autoreply define ip_container_proxy_add_del

@@ -28,15 +28,15 @@ M:	Dave Barach <vpp@barachs.net>
 F:	build-root/Makefile
 F:	build-data/
 
+VNET
+I:	vnet
+M:	Damjan Marion <damarion@cisco.com>
+F:	src/vnet/error.*
+
 VNET Link Bonding
 I:	bonding
 M:	Steven Luong <sluong@cisco.com>
 F:	src/vnet/bonding/
-
-Doxygen
-I:	doxygen
-M:	Chris Luke <chrisy@flirble.org>
-F:	doxygen/
 
 Sphinx Documents
 I:	docs
@@ -188,6 +188,7 @@ VNET IPSec
 I:	ipsec
 M:	Neale Ranns <neale@graphiant.com>
 M:	Radu Nicolau <radu.nicolau@intel.com>
+M:	Fan Zhang <roy.fan.zhang@intel.com>
 F:	src/vnet/ipsec/
 
 VNET Crypto Infra
@@ -219,26 +220,19 @@ F:	src/plugins/crypto_openssl/
 Plugin - Crypto - ipsecmb
 I:	crypto-ipsecmb
 M:	Neale Ranns <neale@graphiant.com>
+M:      Fan Zhang <roy.fan.zhang@intel.com>
 F:	src/plugins/crypto_ipsecmb/
+
+Plugin - Crypto - sw_scheduler
+I:	crypto-sw-scheduler
+M:	Fan Zhang <roy.fan.zhang@intel.com>
+F:	src/plugs/crypto_sw_scheduler/
 
 VNET L2
 I:	l2
 M:	John Lo <lojultra2020@outlook.com>
 M:	Steven Luong <sluong@cisco.com>
 F:	src/vnet/l2/
-
-VNET Link Layer Discovery Protocol (LLDP)
-I:	lldp
-M:	Klement Sekera <ksekera@cisco.com>
-F:	src/vnet/lldp/
-
-VNET LISP
-I:	lisp
-Y:	src/vnet/lisp-cp/FEATURE.yaml
-Y:	src/vnet/lisp-gpe/FEATURE.yaml
-M:	Florin Coras <fcoras@cisco.com>
-F:	src/vnet/lisp-cp/
-F:	src/vnet/lisp-gpe/
 
 VNET GRE
 I:	gre
@@ -296,12 +290,6 @@ VNET VXLAN-GPE
 I:	vxlan-gpe
 M:	Hongjun Ni <hongjun.ni@intel.com>
 F:	src/vnet/vxlan-gpe/
-
-VNET VXLAN-GBP
-I:	vxlan-gbp
-M:	Mohsin Kazmi <sykazmi@cisco.com>
-M:	Neale Ranns <neale@graphiant.com>
-F:	src/vnet/vxlan-gbp/
 
 VNET IPIP
 I:	ipip
@@ -361,6 +349,12 @@ I:	flow
 M:	Damjan Marion <damarion@cisco.com>
 F:	src/vnet/flow/
 
+VNET Hash
+I:	hash
+M:	Mohsin Kazmi <sykazmi@cisco.com>
+M:	Damjan Marion <damarion@cisco.com>
+F:	src/vnet/hash/
+
 VPP Main App
 I:	vpp
 M:	Dave Barach <vpp@barachs.net>
@@ -412,13 +406,15 @@ F:	src/plugins/dispatch-trace
 Plugin - DPDK
 I:	dpdk
 M:	Damjan Marion <damarion@cisco.com>
+M:	Mohammed Hawari <mohammed@hawari.fr>
 F:	src/plugins/dpdk/
 
 Plugin - DPDK Crypto
-I:	dpdk-ipsec
+I:	dpdk-cryptodev
 M:	Sergio Gonzalez Monroy <sergio.gonzalez.monroy@outlook.com>
 M:	Radu Nicolau <radu.nicolau@intel.com>
-F:	src/plugins/dpdk/ipsec/
+M:	Fan Zhang <roy.fan.zhang@intel.com>
+F:	src/plugins/dpdk/cryptodev/
 
 Plugin - flowprobe
 I:	flowprobe
@@ -435,11 +431,6 @@ Plugin - builtinurl
 I:	builtinurl
 M:	Dave Barach <vpp@barachs.net>
 F:	src/plugins/builtinurl/
-
-Plugin - Group Based Policy (GBP)
-I:	gbp
-M:	Neale Ranns <neale@graphiant.com>
-F:	src/plugins/gbp/
 
 Plugin - GTPU
 I:	gtpu
@@ -463,6 +454,18 @@ Plugin - L3 Cross-Connect (L3XC)
 I:	l3xc
 M:	Neale Ranns <neale@graphiant.com>
 F:	src/plugins/l3xc/
+
+Plugin - LISP
+I:	lisp
+Y:	src/plugins/lisp/lisp-cp/FEATURE.yaml
+Y:	src/plugins/lisp/lisp-gpe/FEATURE.yaml
+M:	Florin Coras <fcoras@cisco.com>
+F:	src/plugins/lisp/
+
+Plugin - Link Layer Discovery Protocol (LLDP)
+I:	lldp
+M:	Klement Sekera <ksekera@cisco.com>
+F:	src/plugins/lldp/
 
 Plugin - memif device driver
 I:	memif
@@ -684,11 +687,6 @@ I:	svs
 M:	Neale Ranns <neale@graphiant.com>
 F:	src/plugins/svs/
 
-Plugin - LAN Emulation
-I:	l2e
-M:	Neale Ranns <neale@graphiant.com>
-F:	src/plugins/l2e/
-
 Plugin - IPv6 Connection Tracker
 I:	ct6
 M:	Dave Barach <vpp@barachs.net>
@@ -730,6 +728,7 @@ F:	src/plugins/cnat
 Plugin - Wireguard
 I:	wireguard
 M:	Artem Glazychev <artem.glazychev@xored.com>
+M:	Fan Zhang <roy.fan.zhang@intel.com>
 F:	src/plugins/wireguard
 
 VPP Config Tooling
@@ -764,6 +763,21 @@ I:	srtp
 M:	Florin Coras <fcoras@cisco.com>
 F:	src/plugins/srtp/
 
+Plugin - bufmon
+I:	bufmon
+M:	Benoît Ganne <bganne@cisco.com>
+F:	src/plugins/bufmon/
+
+Plugin - HSI
+I:	hsi
+M:	Florin Coras <fcoras@cisco.com>
+F:	src/plugins/hsi/
+
+Plugin - HTTP
+I:	http
+M:	Florin Coras <fcoras@cisco.com>
+F:	src/plugins/http
+
 cJSON
 I:	cjson
 M:	Ole Troan <ot@cisco.com>
@@ -773,6 +787,17 @@ VAT2
 I:	vat2
 M:	Ole Troan <ot@cisco.com>
 F:	src/vat2/
+
+VNET Ipfix Export
+I:	ipfix-export
+M:	Ole Troan <ot@cisco.com>
+M:	Paul Atkins <patkins@graphiant.com>
+F:	src/vnet/ipfix-export/
+
+RPM packaging on openSUSE
+I:	rpm-packaging
+M:	Laszlo Kiraly <laszlo.kiraly@est.tech>
+F:	src/extras/rpm/opensuse
 
 THE REST
 I:	misc

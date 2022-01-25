@@ -83,7 +83,7 @@ static void
 vl_api_ip6nd_proxy_dump_t_handler (vl_api_ip6nd_proxy_dump_t * mp)
 {
   ip6_main_t *im6 = &ip6_main;
-  fib_table_t *fib_table;
+  u32 fib_index;
   api_ip6nd_proxy_fib_table_walk_ctx_t ctx = {
     .indices = NULL,
   };
@@ -96,13 +96,11 @@ vl_api_ip6nd_proxy_dump_t_handler (vl_api_ip6nd_proxy_dump_t * mp)
     return;
 
   /* *INDENT-OFF* */
-  pool_foreach (fib_table, im6->fibs)
-   {
-    fib_table_walk(fib_table->ft_index,
-                   FIB_PROTOCOL_IP6,
-                   api_ip6nd_proxy_fib_table_walk,
-                   &ctx);
-  }
+  pool_foreach_index (fib_index, im6->fibs)
+    {
+      fib_table_walk (fib_index, FIB_PROTOCOL_IP6,
+		      api_ip6nd_proxy_fib_table_walk, &ctx);
+    }
   /* *INDENT-ON* */
 
   vec_sort_with_function (ctx.indices, fib_entry_cmp_for_sort);
@@ -118,6 +116,24 @@ vl_api_ip6nd_proxy_dump_t_handler (vl_api_ip6nd_proxy_dump_t * mp)
   }
 
   vec_free (ctx.indices);
+}
+
+static void
+vl_api_ip6nd_proxy_enable_disable_t_handler (
+  vl_api_ip6nd_proxy_enable_disable_t *mp)
+{
+  vl_api_ip6nd_proxy_enable_disable_reply_t *rmp;
+  int rv = 0;
+
+  VALIDATE_SW_IF_INDEX (mp);
+
+  if (mp->is_enable)
+    rv = ip6_nd_proxy_enable_disable (ntohl (mp->sw_if_index), 1);
+  else
+    rv = ip6_nd_proxy_enable_disable (ntohl (mp->sw_if_index), 0);
+
+  BAD_SW_IF_INDEX_LABEL;
+  REPLY_MACRO (VL_API_IP6ND_PROXY_ENABLE_DISABLE_REPLY);
 }
 
 static void

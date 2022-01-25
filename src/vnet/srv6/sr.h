@@ -75,6 +75,7 @@ typedef struct
 
   u8 *rewrite;					/**< Precomputed rewrite header */
   u8 *rewrite_bsid;				/**< Precomputed rewrite header for bindingSID */
+  u8 policy_type;
 
   u32 egress_fib_table; /**< Egress FIB table for encap packet */
 
@@ -100,7 +101,7 @@ typedef struct
 
   u8 type;					/**< Type (default is 0) */
   /* SR Policy specific DPO                                       */
-  /* IF Type = DEFAULT Then Load Balancer DPO among SID lists     */
+  /* IF Type = DEFAULT Then Load-Balancer DPO among SID lists     */
   /* IF Type = SPRAY then Spray DPO with all SID lists            */
   dpo_id_t bsid_dpo;			/**< SR Policy specific DPO - BSID */
   dpo_id_t ip4_dpo;			/**< SR Policy specific DPO - IPv6 */
@@ -342,10 +343,9 @@ sr_policy_register_function (vlib_main_t * vm, u8 * fn_name,
 			     sr_p_plugin_callback_t * creation_fn,
 			     sr_p_plugin_callback_t * removal_fn);
 
-extern int
-sr_policy_add (ip6_address_t * bsid, ip6_address_t * segments,
-	       u32 weight, u8 behavior, u32 fib_table, u8 is_encap,
-	       u16 plugin, void *plugin_mem);
+extern int sr_policy_add (ip6_address_t *bsid, ip6_address_t *segments,
+			  u32 weight, u8 type, u32 fib_table, u8 is_encap,
+			  u16 plugin, void *plugin_mem);
 extern int sr_policy_mod (ip6_address_t * bsid, u32 index, u32 fib_table,
 			  u8 operation, ip6_address_t * segments,
 			  u32 sl_index, u32 weight);

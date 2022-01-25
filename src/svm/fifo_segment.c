@@ -105,13 +105,14 @@ fsh_n_active_fifos (fifo_segment_header_t * fsh)
 }
 
 static inline uword
-fsh_virtual_mem (fifo_segment_header_t * fsh)
+fs_virtual_mem (fifo_segment_t *fs)
 {
+  fifo_segment_header_t *fsh = fs->h;
   fifo_segment_slice_t *fss;
   uword total_vm = 0;
   int i;
 
-  for (i = 0; i < fsh->n_slices; i++)
+  for (i = 0; i < fs->n_slices; i++)
     {
       fss = fsh_slice_get (fsh, i);
       total_vm += clib_atomic_load_relax_n (&fss->virtual_mem);
@@ -294,7 +295,7 @@ fss_fl_chunk_bytes_sub (fifo_segment_slice_t * fss, uword size)
 int
 fifo_segment_init (fifo_segment_t * fs)
 {
-  u32 align = 8, offset = 2 * 4096, slices_sz, i;
+  u32 align = 8, offset = FIFO_SEGMENT_ALLOC_OVERHEAD, slices_sz, i;
   uword max_fifo, seg_start, seg_sz;
   fifo_segment_header_t *fsh;
   ssvm_shared_header_t *sh;
@@ -386,6 +387,8 @@ fifo_segment_attach (fifo_segment_main_t * sm, fifo_segment_create_args_t * a)
 
   pool_get_zero (sm->segments, fs);
 
+  fs->fs_index = fs - sm->segments;
+  fs->sm_index = ~0;
   fs->ssvm.ssvm_size = a->segment_size;
   fs->ssvm.my_pid = getpid ();
   fs->ssvm.name = format (0, "%s%c", a->segment_name, 0);
@@ -866,6 +869,9 @@ fifo_segment_alloc_fifo_w_slice (fifo_segment_t * fs, u32 slice_index,
   f->shr = sf;
 
   svm_fifo_init (f, data_bytes);
+
+  f->segment_manager = fs->sm_index;
+  f->segment_index = fs->fs_index;
 
   fss = fsh_slice_get (fsh, slice_index);
   pfss = fs_slice_private_get (fs, slice_index);
@@ -1376,16 +1382,16 @@ fifo_segment_size (fifo_segment_t * fs)
   return fs->h->max_byte_index - fs->h->n_reserved_bytes;
 }
 
-u8
-fsh_has_reached_mem_limit (fifo_segment_header_t * fsh)
+static u8
+fs_has_reached_mem_limit (fifo_segment_t *fs)
 {
-  return (fsh->flags & FIFO_SEGMENT_F_MEM_LIMIT) ? 1 : 0;
+  return (fs->flags & FIFO_SEGMENT_F_MEM_LIMIT) ? 1 : 0;
 }
 
-void
-fsh_reset_mem_limit (fifo_segment_header_t * fsh)
+static void
+fs_reset_mem_limit (fifo_segment_t *fs)
 {
-  fsh->flags &= ~FIFO_SEGMENT_F_MEM_LIMIT;
+  fs->flags &= ~FIFO_SEGMENT_F_MEM_LIMIT;
 }
 
 void *
@@ -1460,26 +1466,26 @@ fifo_segment_get_mem_usage (fifo_segment_t * fs)
 }
 
 fifo_segment_mem_status_t
-fifo_segment_determine_status (fifo_segment_header_t * fsh, u8 usage)
+fifo_segment_determine_status (fifo_segment_t *fs, u8 usage)
 {
-  if (!fsh->high_watermark || !fsh->low_watermark)
+  if (!fs->high_watermark || !fs->low_watermark)
     return MEMORY_PRESSURE_NO_PRESSURE;
 
   /* once the no-memory is detected, the status continues
    * until memory usage gets below the high watermark
    */
-  if (fsh_has_reached_mem_limit (fsh))
+  if (fs_has_reached_mem_limit (fs))
     {
-      if (usage >= fsh->high_watermark)
+      if (usage >= fs->high_watermark)
 	return MEMORY_PRESSURE_NO_MEMORY;
       else
-	fsh_reset_mem_limit (fsh);
+	fs_reset_mem_limit (fs);
     }
 
-  if (usage >= fsh->high_watermark)
+  if (usage >= fs->high_watermark)
     return MEMORY_PRESSURE_HIGH_PRESSURE;
 
-  else if (usage >= fsh->low_watermark)
+  else if (usage >= fs->low_watermark)
     return MEMORY_PRESSURE_LOW_PRESSURE;
 
   return MEMORY_PRESSURE_NO_PRESSURE;
@@ -1488,10 +1494,9 @@ fifo_segment_determine_status (fifo_segment_header_t * fsh, u8 usage)
 fifo_segment_mem_status_t
 fifo_segment_get_mem_status (fifo_segment_t * fs)
 {
-  fifo_segment_header_t *fsh = fs->h;
   u8 usage = fifo_segment_get_mem_usage (fs);
 
-  return fifo_segment_determine_status (fsh, usage);
+  return fifo_segment_determine_status (fs, usage);
 }
 
 u8 *
@@ -1536,22 +1541,15 @@ format_fifo_segment (u8 * s, va_list * args)
   f64 usage;
   fifo_segment_mem_status_t mem_st;
 
-  indent = format_get_indent (s) + 2;
-
-  if (fs == 0)
-    {
-      s = format (s, "%-20s%10s%15s%15s%15s%15s", "Name", "Type",
-		  "HeapSize (M)", "ActiveFifos", "FreeFifos", "Address");
-      return s;
-    }
+  indent = format_get_indent (s);
 
   fifo_segment_info (fs, &address, &size);
   active_fifos = fifo_segment_num_fifos (fs);
   free_fifos = fifo_segment_num_free_fifos (fs);
 
-  s = format (s, "%-20v%10U%15llu%15u%15u%15llx", ssvm_name (&fs->ssvm),
-	      format_fifo_segment_type, fs, size >> 20ULL, active_fifos,
-	      free_fifos, address);
+  s = format (s, "%U%v type: %U size: %U active fifos: %u", format_white_space,
+	      2, ssvm_name (&fs->ssvm), format_fifo_segment_type, fs,
+	      format_memory_size, size, active_fifos);
 
   if (!verbose)
     return s;
@@ -1560,9 +1558,8 @@ format_fifo_segment (u8 * s, va_list * args)
 
   free_chunks = fifo_segment_num_free_chunks (fs, ~0);
   if (free_chunks)
-    s =
-      format (s, "\n\n%UFree/Allocated chunks by size:\n", format_white_space,
-	      indent + 2);
+    s = format (s, "\n\n%UFree/Allocated chunks by size:\n",
+		format_white_space, indent + 2);
   else
     s = format (s, "\n");
 
@@ -1598,7 +1595,7 @@ format_fifo_segment (u8 * s, va_list * args)
   in_use = fifo_segment_size (fs) - est_free_seg_bytes - tracked_cached_bytes;
   usage = (100.0 * in_use) / allocated;
   mem_st = fifo_segment_get_mem_status (fs);
-  virt = fsh_virtual_mem (fsh);
+  virt = fs_virtual_mem (fs);
   reserved = fsh->n_reserved_bytes;
 
   s = format (s, "\n%Useg free bytes: %U (%lu) estimated: %U (%lu) reserved:"

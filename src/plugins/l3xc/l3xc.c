@@ -67,11 +67,11 @@ l3xc_stack (l3xc_t * l3xc)
    */
   dpo_id_t via_dpo = DPO_INVALID;
 
-  fib_path_list_contribute_forwarding (l3xc->l3xc_pl,
-				       (FIB_PROTOCOL_IP4 == l3xc->l3xc_proto ?
-					FIB_FORW_CHAIN_TYPE_UNICAST_IP4 :
-					FIB_FORW_CHAIN_TYPE_UNICAST_IP6),
-				       FIB_PATH_LIST_FWD_FLAG_NONE, &via_dpo);
+  fib_path_list_contribute_forwarding (
+    l3xc->l3xc_pl,
+    (FIB_PROTOCOL_IP4 == l3xc->l3xc_proto ? FIB_FORW_CHAIN_TYPE_UNICAST_IP4 :
+					    FIB_FORW_CHAIN_TYPE_UNICAST_IP6),
+    FIB_PATH_LIST_FWD_FLAG_COLLAPSE, &via_dpo);
 
   dpo_stack_from_node ((FIB_PROTOCOL_IP4 == l3xc->l3xc_proto ?
 			l3xc_ip4_node.index :
@@ -381,7 +381,7 @@ static const fib_node_vft_t l3xc_vft = {
 static clib_error_t *
 l3xc_init (vlib_main_t * vm)
 {
-  l3xc_fib_node_type = fib_node_register_new_type (&l3xc_vft);
+  l3xc_fib_node_type = fib_node_register_new_type ("l3xc", &l3xc_vft);
 
   return (NULL);
 }

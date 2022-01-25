@@ -227,7 +227,7 @@ srtp_ctx_write (srtp_tc_t *ctx, session_t *app_session,
 {
   u32 n_wrote = 0, to_deq, dgram_sz;
   session_dgram_pre_hdr_t hdr;
-  app_session_transport_t at;
+  app_session_transport_t at = {};
   svm_msg_q_t *mq;
   session_t *us;
   u8 buf[2000];
@@ -243,7 +243,7 @@ srtp_ctx_write (srtp_tc_t *ctx, session_t *app_session,
     {
       /* Peeking only pre-header dgram because the session is connected */
       rv = svm_fifo_peek (app_session->tx_fifo, 0, sizeof (hdr), (u8 *) &hdr);
-      ASSERT (rv == sizeof (hdr) && hdr.data_length < vec_len (buf));
+      ASSERT (rv == sizeof (hdr) && hdr.data_length < 2000);
       ASSERT (to_deq >= hdr.data_length + SESSION_CONN_HDR_LEN);
 
       dgram_sz = hdr.data_length + SESSION_CONN_HDR_LEN;

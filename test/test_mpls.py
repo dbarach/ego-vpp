@@ -1069,13 +1069,23 @@ class TestMPLS(VppTestCase):
     def test_mpls_tunnel_many(self):
         """ MPLS Multiple Tunnels """
 
-        for ii in range(10):
+        for ii in range(100):
             mpls_tun = VppMPLSTunnelInterface(
                 self,
                 [VppRoutePath(self.pg0.remote_ip4,
                               self.pg0.sw_if_index,
                               labels=[VppMplsLabel(44, ttl=32),
                                       VppMplsLabel(46, MplsLspMode.UNIFORM)])])
+            mpls_tun.add_vpp_config()
+            mpls_tun.admin_up()
+        for ii in range(100):
+            mpls_tun = VppMPLSTunnelInterface(
+                self,
+                [VppRoutePath(self.pg0.remote_ip4,
+                              self.pg0.sw_if_index,
+                              labels=[VppMplsLabel(44, ttl=32),
+                                      VppMplsLabel(46, MplsLspMode.UNIFORM)])],
+                is_l2=1)
             mpls_tun.add_vpp_config()
             mpls_tun.admin_up()
 
@@ -1552,6 +1562,33 @@ class TestMPLS(VppTestCase):
                                          [VppMplsLabel(45),
                                           VppMplsLabel(32),
                                           VppMplsLabel(99)])
+
+    def test_attached(self):
+        """ Attach Routes with Local Label """
+
+        #
+        # test that if a local label is associated with an attached/connected
+        # prefix, that we can reach hosts in the prefix.
+        #
+        binding = VppMplsIpBind(self, 44,
+                                self.pg0._local_ip4_subnet,
+                                self.pg0.local_ip4_prefix_len)
+        binding.add_vpp_config()
+
+        tx = (Ether(src=self.pg1.remote_mac,
+                    dst=self.pg1.local_mac) /
+              MPLS(label=44, ttl=64) /
+              IP(src=self.pg0.remote_ip4, dst=self.pg0.remote_ip4) /
+              UDP(sport=1234, dport=1234) /
+              Raw(b'\xa5' * 100))
+        rxs = self.send_and_expect(self.pg0, [tx], self.pg0)
+        for rx in rxs:
+            # if there's an ARP then the label is linked to the glean
+            # which is wrong.
+            self.assertFalse(rx.haslayer(ARP))
+            # it should be unicasted to the host
+            self.assertEqual(rx[Ether].dst, self.pg0.remote_mac)
+            self.assertEqual(rx[IP].dst, self.pg0.remote_ip4)
 
 
 class TestMPLSDisabled(VppTestCase):

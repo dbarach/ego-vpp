@@ -30,8 +30,8 @@
  * The max number for q pair is naturally 128.
  */
 #define VHOST_VRING_MAX_MQ_PAIR_SZ      128
-#define VHOST_VRING_IDX_RX(qid)         (2*qid)
-#define VHOST_VRING_IDX_TX(qid)         (2*qid + 1)
+#define VHOST_VRING_IDX_RX(qid)		(2 * (qid))
+#define VHOST_VRING_IDX_TX(qid)		(2 * (qid) + 1)
 
 #define VHOST_USER_VRING_NOFD_MASK      0x100
 
@@ -231,6 +231,7 @@ typedef struct
   u16 last_kick;
   u8 first_kick;
   u32 queue_index;
+  u32 thread_index;
 } vhost_user_vring_t;
 
 #define VHOST_USER_EVENT_START_TIMER 1
@@ -278,10 +279,6 @@ typedef struct
   void *log_base_addr;
   u64 log_size;
 
-  /* Whether to use spinlock or per_cpu_tx_qid assignment */
-  u8 use_tx_spinlock;
-  u16 *per_cpu_tx_qid;
-
   u8 enable_gso;
 
   /* Packed ring configured */
@@ -289,6 +286,12 @@ typedef struct
 
   u8 enable_event_idx;
 } vhost_user_intf_t;
+
+#define FOR_ALL_VHOST_TXQ(qid, vui) for (qid = 1; qid < vui->num_qid; qid += 2)
+
+#define FOR_ALL_VHOST_RXQ(qid, vui) for (qid = 0; qid < vui->num_qid; qid += 2)
+
+#define FOR_ALL_VHOST_RX_TXQ(qid, vui) for (qid = 0; qid < vui->num_qid; qid++)
 
 typedef struct
 {
@@ -323,6 +326,7 @@ typedef struct
 
   u32 *to_next_list;
   vlib_buffer_t **rx_buffers_pdesc;
+  u32 polling_q_count;
 } vhost_cpu_t;
 
 typedef struct
@@ -365,6 +369,8 @@ typedef struct
 
 int vhost_user_dump_ifs (vnet_main_t * vnm, vlib_main_t * vm,
 			 vhost_user_intf_details_t ** out_vuids);
+void vhost_user_set_operation_mode (vhost_user_intf_t *vui,
+				    vhost_user_vring_t *txvq);
 
 extern vlib_node_registration_t vhost_user_send_interrupt_node;
 extern vnet_device_class_t vhost_user_device_class;

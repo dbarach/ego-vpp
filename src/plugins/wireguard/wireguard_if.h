@@ -31,8 +31,6 @@ typedef struct wg_if_t_
   cookie_checker_t cookie_checker;
   u16 port;
 
-  wg_index_table_t index_table;
-
   /* Source IP address for originated packets */
   ip_address_t src_ip;
 
@@ -52,8 +50,7 @@ u8 *format_wg_if (u8 * s, va_list * va);
 typedef walk_rc_t (*wg_if_walk_cb_t) (index_t wgi, void *data);
 void wg_if_walk (wg_if_walk_cb_t fn, void *data);
 
-typedef walk_rc_t (*wg_if_peer_walk_cb_t) (wg_if_t * wgi, index_t peeri,
-					   void *data);
+typedef walk_rc_t (*wg_if_peer_walk_cb_t) (index_t peeri, void *data);
 index_t wg_if_peer_walk (wg_if_t * wgi, wg_if_peer_walk_cb_t fn, void *data);
 
 void wg_if_peer_add (wg_if_t * wgi, index_t peeri);
@@ -72,16 +69,16 @@ wg_if_get (index_t wgii)
   return (pool_elt_at_index (wg_if_pool, wgii));
 }
 
-extern index_t *wg_if_index_by_port;
+extern index_t **wg_if_indexes_by_port;
 
-static_always_inline wg_if_t *
-wg_if_get_by_port (u16 port)
+static_always_inline index_t *
+wg_if_indexes_get_by_port (u16 port)
 {
-  if (vec_len (wg_if_index_by_port) < port)
+  if (vec_len (wg_if_indexes_by_port) == 0)
     return (NULL);
-  if (INDEX_INVALID == wg_if_index_by_port[port])
+  if (vec_len (wg_if_indexes_by_port[port]) == 0)
     return (NULL);
-  return (wg_if_get (wg_if_index_by_port[port]));
+  return (wg_if_indexes_by_port[port]);
 }
 
 

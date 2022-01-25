@@ -31,6 +31,8 @@
  */
 /*? %%clicmd:group_label Static HTTP Server %% ?*/
 
+#define HTTP_FIFO_THRESH (16 << 10)
+
 http_static_server_main_t http_static_server_main;
 
 /** \brief Format the called-from enum
@@ -299,8 +301,8 @@ static_send_data (http_session_t * hs, u8 * data, u32 length, u32 offset)
     {
       int actual_transfer;
 
-      actual_transfer = svm_fifo_enqueue
-	(hs->tx_fifo, bytes_to_send, data + offset);
+      actual_transfer = svm_fifo_enqueue (
+	hs->tx_fifo, clib_min (bytes_to_send, 4 << 20), data + offset);
 
       /* Made any progress? */
       if (actual_transfer <= 0)
@@ -892,8 +894,7 @@ state_send_more_data (session_t * s, http_session_t * hs,
   if (hs->data_offset < vec_len (hs->data))
     {
       /* No: ask for a shoulder-tap when the tx fifo has space */
-      svm_fifo_add_want_deq_ntf (hs->tx_fifo,
-				 SVM_FIFO_WANT_DEQ_NOTIF_IF_FULL);
+      svm_fifo_add_want_deq_ntf (hs->tx_fifo, SVM_FIFO_WANT_DEQ_NOTIF);
       hs->session_state = HTTP_STATE_SEND_MORE_DATA;
       return 0;
     }
@@ -1033,6 +1034,7 @@ http_static_server_session_accept_callback (session_t * s)
 {
   http_static_server_main_t *hsm = &http_static_server_main;
   http_session_t *hs;
+  u32 thresh;
 
   hsm->vpp_queue[s->thread_index] =
     session_main_get_vpp_event_queue (s->thread_index);
@@ -1050,6 +1052,17 @@ http_static_server_session_accept_callback (session_t * s)
   http_static_server_session_timer_start (hs);
 
   http_static_server_sessions_writer_unlock ();
+
+  /* The application sets a threshold for it's fifo to get notified when
+   * additional data can be enqueued. We want to keep the TX fifo reasonably
+   * full, however avoid entering a state where the
+   * fifo is full all the time and small chunks of data are being enqueued
+   * each time. If the fifo is small (under 16K) we set
+   * the threshold to it's size, meaning a notification will be given when the
+   * fifo empties.
+   */
+  thresh = clib_min (svm_fifo_size (hs->tx_fifo), HTTP_FIFO_THRESH);
+  svm_fifo_set_deq_thresh (hs->tx_fifo, thresh);
 
   s->session_state = SESSION_STATE_READY;
   return 0;

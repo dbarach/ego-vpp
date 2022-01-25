@@ -208,8 +208,9 @@ format_tcp_vars (u8 * s, va_list * args)
 	      tc->mrtt_us * 1e3, tc->rttvar / 1000.0);
   s = format (s, " rtt_ts %.4f rtt_seq %u\n", tc->rtt_ts,
 	      tc->rtt_seq - tc->iss);
-  s = format (s, " next_node %u opaque 0x%x fib_index %u\n",
-	      tc->next_node_index, tc->next_node_opaque, tc->c_fib_index);
+  s = format (s, " next_node %u opaque 0x%x fib_index %u sw_if_index %d\n",
+	      tc->next_node_index, tc->next_node_opaque, tc->c_fib_index,
+	      tc->sw_if_index);
   s = format (s, " cong:   %U", format_tcp_congestion, tc);
 
   if (tc->state >= TCP_STATE_ESTABLISHED)
@@ -410,6 +411,8 @@ tcp_configure_v4_source_address_range (vlib_main_t * vm,
     return VNET_API_ERROR_NEXT_HOP_NOT_IN_FIB;
 
   sw_if_index = fib_entry_get_resolving_interface (fei);
+  if (sw_if_index == (u32) ~0)
+    return VNET_API_ERROR_NO_MATCHING_INTERFACE;
 
   /* Configure proxy arp across the range */
   rv = ip4_neighbor_proxy_add (fib_index, start, end);
@@ -430,7 +433,7 @@ tcp_configure_v4_source_address_range (vlib_main_t * vm,
 
       /* Add local adjacencies for the range */
 
-      receive_dpo_add_or_lock (DPO_PROTO_IP4, ~0 /* sw_if_index */ ,
+      receive_dpo_add_or_lock (DPO_PROTO_IP4, sw_if_index /* sw_if_index */,
 			       NULL, &dpo);
       prefix.fp_len = 32;
       prefix.fp_proto = FIB_PROTOCOL_IP4;
@@ -505,7 +508,7 @@ tcp_configure_v6_source_address_range (vlib_main_t * vm,
       ip6_neighbor_proxy_add (sw_if_index, start);
 
       /* Add a receive adjacency for this address */
-      receive_dpo_add_or_lock (DPO_PROTO_IP6, ~0 /* sw_if_index */ ,
+      receive_dpo_add_or_lock (DPO_PROTO_IP6, sw_if_index /* sw_if_index */,
 			       NULL, &dpo);
 
       fib_table_entry_special_dpo_update (fib_index,

@@ -36,6 +36,7 @@
 #include <vnet/plugin/plugin.h>
 #include <vnet/ethernet/ethernet.h>
 #include <vnet/interface/rx_queue_funcs.h>
+#include <vnet/interface/tx_queue_funcs.h>
 #include <vpp/app/version.h>
 #include <memif/memif.h>
 #include <memif/private.h>
@@ -146,7 +147,6 @@ memif_disconnect (memif_if_t * mif, clib_error_t * err)
 	}
     }
   vnet_hw_if_unregister_all_rx_queues (vnm, mif->hw_if_index);
-  vnet_hw_if_update_runtime_data (vnm, mif->hw_if_index);
 
   /* *INDENT-OFF* */
   vec_foreach_index (i, mif->tx_queues)
@@ -158,9 +158,12 @@ memif_disconnect (memif_if_t * mif, clib_error_t * err)
       {
         memif_disconnect_free_zc_queue_buffer(mq, 0);
       }
+      clib_spinlock_free (&mq->lockp);
     }
     mq->ring = 0;
   }
+  vnet_hw_if_unregister_all_tx_queues (vnm, mif->hw_if_index);
+  vnet_hw_if_update_runtime_data (vnm, mif->hw_if_index);
 
   /* free tx and rx queues */
   vec_foreach (mq, mif->rx_queues)
@@ -228,12 +231,15 @@ memif_int_fd_read_ready (clib_file_t * uf)
 clib_error_t *
 memif_connect (memif_if_t * mif)
 {
+  memif_main_t *mm = &memif_main;
   vlib_main_t *vm = vlib_get_main ();
   vnet_main_t *vnm = vnet_get_main ();
   clib_file_t template = { 0 };
   memif_region_t *mr;
-  int i;
+  int i, j;
+  u32 n_txqs = 0, n_threads = vlib_get_n_threads ();
   clib_error_t *err = NULL;
+  u8 max_log2_ring_sz = 0;
 
   memif_log_debug (mif, "connect %u", mif->dev_instance);
 
@@ -268,12 +274,26 @@ memif_connect (memif_if_t * mif)
   vec_foreach_index (i, mif->tx_queues)
     {
       memif_queue_t *mq = vec_elt_at_index (mif->tx_queues, i);
+      max_log2_ring_sz = clib_max (max_log2_ring_sz, mq->log2_ring_size);
 
       mq->ring = mif->regions[mq->region].shm + mq->offset;
       if (mq->ring->cookie != MEMIF_COOKIE)
 	{
 	  err = clib_error_return (0, "wrong cookie on tx ring %u", i);
 	  goto error;
+	}
+      mq->queue_index =
+	vnet_hw_if_register_tx_queue (vnm, mif->hw_if_index, i);
+      clib_spinlock_init (&mq->lockp);
+    }
+
+  if (vec_len (mif->tx_queues) > 0)
+    {
+      n_txqs = vec_len (mif->tx_queues);
+      for (j = 0; j < n_threads; j++)
+	{
+	  u32 qi = mif->tx_queues[j % n_txqs].queue_index;
+	  vnet_hw_if_tx_queue_assign_thread (vnm, qi, j);
 	}
     }
 
@@ -283,6 +303,8 @@ memif_connect (memif_if_t * mif)
       u32 ti;
       u32 qi;
       int rv;
+
+      max_log2_ring_sz = clib_max (max_log2_ring_sz, mq->log2_ring_size);
 
       mq->ring = mif->regions[mq->region].shm + mq->offset;
       if (mq->ring->cookie != MEMIF_COOKIE)
@@ -325,6 +347,30 @@ memif_connect (memif_if_t * mif)
 	}
     }
   /* *INDENT-ON* */
+
+  if (1 << max_log2_ring_sz > vec_len (mm->per_thread_data[0].desc_data))
+    {
+      memif_per_thread_data_t *ptd;
+      int with_barrier = 1;
+
+      if (vlib_worker_thread_barrier_held ())
+	with_barrier = 0;
+
+      if (with_barrier)
+	vlib_worker_thread_barrier_sync (vm);
+
+      vec_foreach (ptd, mm->per_thread_data)
+	{
+	  vec_validate_aligned (ptd->desc_data, pow2_mask (max_log2_ring_sz),
+				CLIB_CACHE_LINE_BYTES);
+	  vec_validate_aligned (ptd->desc_len, pow2_mask (max_log2_ring_sz),
+				CLIB_CACHE_LINE_BYTES);
+	  vec_validate_aligned (ptd->desc_status, pow2_mask (max_log2_ring_sz),
+				CLIB_CACHE_LINE_BYTES);
+	}
+      if (with_barrier)
+	vlib_worker_thread_barrier_release (vm);
+    }
 
   mif->flags &= ~MEMIF_IF_FLAG_CONNECTING;
   mif->flags |= MEMIF_IF_FLAG_CONNECTED;
@@ -470,6 +516,7 @@ memif_init_regions_and_queues (memif_if_t * mif)
 	  err = clib_error_return_unix (0, "eventfd[tx queue %u]", i);
 	  goto error;
 	}
+
       mq->int_clib_file_index = ~0;
       mq->ring = memif_get_ring (mif, MEMIF_RING_S2M, i);
       mq->log2_ring_size = mif->cfg.log2_ring_size;
@@ -797,7 +844,6 @@ memif_delete_if (vlib_main_t * vm, memif_if_t * mif)
     }
 
   /* free interface data structures */
-  clib_spinlock_free (&mif->lockp);
   mhash_unset (&msf->dev_instance_by_id, &mif->id, 0);
 
   /* remove socket file */
@@ -838,10 +884,10 @@ memif_delete_if (vlib_main_t * vm, memif_if_t * mif)
 }
 
 /* *INDENT-OFF* */
-VNET_HW_INTERFACE_CLASS (memif_ip_hw_if_class, static) =
-{
+VNET_HW_INTERFACE_CLASS (memif_ip_hw_if_class, static) = {
   .name = "memif-ip",
   .flags = VNET_HW_INTERFACE_CLASS_FLAG_P2P,
+  .tx_hash_fn_type = VNET_HASH_FN_TYPE_IP,
 };
 /* *INDENT-ON* */
 
@@ -851,12 +897,12 @@ memif_create_if (vlib_main_t * vm, memif_create_if_args_t * args)
   memif_main_t *mm = &memif_main;
   vlib_thread_main_t *tm = vlib_get_thread_main ();
   vnet_main_t *vnm = vnet_get_main ();
+  vnet_eth_interface_registration_t eir = {};
   memif_if_t *mif = 0;
   vnet_sw_interface_t *sw;
   clib_error_t *error = 0;
   int ret = 0;
   uword *p;
-  vnet_hw_interface_t *hw;
   memif_socket_file_t *msf = 0;
   int rv = 0;
 
@@ -952,9 +998,6 @@ memif_create_if (vlib_main_t * vm, memif_create_if_args_t * args)
   if (args->secret)
     mif->secret = vec_dup (args->secret);
 
-  if (tm->n_vlib_mains > 1)
-    clib_spinlock_init (&mif->lockp);
-
   if (mif->mode == MEMIF_INTERFACE_MODE_ETHERNET)
     {
 
@@ -969,10 +1012,12 @@ memif_create_if (vlib_main_t * vm, memif_create_if_args_t * args)
 	  args->hw_addr[0] = 2;
 	  args->hw_addr[1] = 0xfe;
 	}
-      error = ethernet_register_interface (vnm, memif_device_class.index,
-					   mif->dev_instance, args->hw_addr,
-					   &mif->hw_if_index,
-					   memif_eth_flag_change);
+
+      eir.dev_class_index = memif_device_class.index;
+      eir.dev_instance = mif->dev_instance;
+      eir.address = args->hw_addr;
+      eir.cb.flag_change = memif_eth_flag_change;
+      mif->hw_if_index = vnet_eth_register_interface (vnm, &eir);
     }
   else if (mif->mode == MEMIF_INTERFACE_MODE_IP)
     {
@@ -1047,8 +1092,7 @@ memif_create_if (vlib_main_t * vm, memif_create_if_args_t * args)
 	mif->flags |= MEMIF_IF_FLAG_ZERO_COPY;
     }
 
-  hw = vnet_get_hw_interface (vnm, mif->hw_if_index);
-  hw->caps |= VNET_HW_INTERFACE_CAP_SUPPORTS_INT_MODE;
+  vnet_hw_if_set_caps (vnm, mif->hw_if_index, VNET_HW_IF_CAP_INT_MODE);
   vnet_hw_if_set_input_node (vnm, mif->hw_if_index, memif_input_node.index);
   mhash_set (&msf->dev_instance_by_id, &mif->id, mif->dev_instance, 0);
 
@@ -1081,7 +1125,14 @@ memif_interface_admin_up_down (vnet_main_t *vnm, u32 hw_if_index, u32 flags)
   static clib_error_t *error = 0;
 
   if (flags & VNET_SW_INTERFACE_FLAG_ADMIN_UP)
-    mif->flags |= MEMIF_IF_FLAG_ADMIN_UP;
+    {
+      if (mif->flags & MEMIF_IF_FLAG_CONNECTED)
+	{
+	  vnet_hw_interface_set_flags (vnm, mif->hw_if_index,
+				       VNET_HW_INTERFACE_FLAG_LINK_UP);
+	}
+      mif->flags |= MEMIF_IF_FLAG_ADMIN_UP;
+    }
   else
     mif->flags &= ~MEMIF_IF_FLAG_ADMIN_UP;
 

@@ -36,7 +36,7 @@ static uint32_t noise_remote_handshake_index_get (noise_remote_t *);
 static void noise_remote_handshake_index_drop (noise_remote_t *);
 
 static uint64_t noise_counter_send (noise_counter_t *);
-static bool noise_counter_recv (noise_counter_t *, uint64_t);
+bool noise_counter_recv (noise_counter_t *, uint64_t);
 
 static void noise_kdf (uint8_t *, uint8_t *, uint8_t *, const uint8_t *,
 		       size_t, size_t, size_t, size_t,
@@ -407,6 +407,8 @@ noise_remote_begin_session (vlib_main_t * vm, noise_remote_t * r)
 
   /* Now we need to add_new_keypair */
   clib_rwlock_writer_lock (&r->r_keypair_lock);
+  /* Activate barrier to synchronization keys between threads */
+  vlib_worker_thread_barrier_sync (vm);
   next = r->r_next;
   current = r->r_current;
   previous = r->r_previous;
@@ -438,6 +440,7 @@ noise_remote_begin_session (vlib_main_t * vm, noise_remote_t * r)
       r->r_next = noise_remote_keypair_allocate (r);
       *r->r_next = kp;
     }
+  vlib_worker_thread_barrier_release (vm);
   clib_rwlock_writer_unlock (&r->r_keypair_lock);
 
   secure_zero_memory (&r->r_handshake, sizeof (r->r_handshake));
@@ -518,6 +521,7 @@ chacha20poly1305_calc (vlib_main_t * vm,
     {
       op->tag = src + src_len - NOISE_AUTHTAG_LEN;
       src_len -= NOISE_AUTHTAG_LEN;
+      op->flags |= VNET_CRYPTO_OP_FLAG_HMAC_CHECK;
     }
   else
     op->tag = tag_;
@@ -548,7 +552,6 @@ noise_remote_encrypt (vlib_main_t * vm, noise_remote_t * r, uint32_t * r_idx,
   noise_keypair_t *kp;
   enum noise_state_crypt ret = SC_FAILED;
 
-  clib_rwlock_reader_lock (&r->r_keypair_lock);
   if ((kp = r->r_current) == NULL)
     goto error;
 
@@ -588,94 +591,6 @@ noise_remote_encrypt (vlib_main_t * vm, noise_remote_t * r, uint32_t * r_idx,
 
   ret = SC_OK;
 error:
-  clib_rwlock_reader_unlock (&r->r_keypair_lock);
-  return ret;
-}
-
-enum noise_state_crypt
-noise_remote_decrypt (vlib_main_t * vm, noise_remote_t * r, uint32_t r_idx,
-		      uint64_t nonce, uint8_t * src, size_t srclen,
-		      uint8_t * dst)
-{
-  noise_keypair_t *kp;
-  enum noise_state_crypt ret = SC_FAILED;
-  clib_rwlock_reader_lock (&r->r_keypair_lock);
-
-  if (r->r_current != NULL && r->r_current->kp_local_index == r_idx)
-    {
-      kp = r->r_current;
-    }
-  else if (r->r_previous != NULL && r->r_previous->kp_local_index == r_idx)
-    {
-      kp = r->r_previous;
-    }
-  else if (r->r_next != NULL && r->r_next->kp_local_index == r_idx)
-    {
-      kp = r->r_next;
-    }
-  else
-    {
-      goto error;
-    }
-
-  /* We confirm that our values are within our tolerances. These values
-   * are the same as the encrypt routine.
-   *
-   * kp_ctr isn't locked here, we're happy to accept a racy read. */
-  if (wg_birthdate_has_expired (kp->kp_birthdate, REJECT_AFTER_TIME) ||
-      kp->kp_ctr.c_recv >= REJECT_AFTER_MESSAGES)
-    goto error;
-
-  /* Decrypt, then validate the counter. We don't want to validate the
-   * counter before decrypting as we do not know the message is authentic
-   * prior to decryption. */
-  if (!chacha20poly1305_calc (vm, src, srclen, dst, NULL, 0, nonce,
-			      VNET_CRYPTO_OP_CHACHA20_POLY1305_DEC,
-			      kp->kp_recv_index))
-    goto error;
-
-  if (!noise_counter_recv (&kp->kp_ctr, nonce))
-    goto error;
-
-  /* If we've received the handshake confirming data packet then move the
-   * next keypair into current. If we do slide the next keypair in, then
-   * we skip the REKEY_AFTER_TIME_RECV check. This is safe to do as a
-   * data packet can't confirm a session that we are an INITIATOR of. */
-  if (kp == r->r_next)
-    {
-      clib_rwlock_reader_unlock (&r->r_keypair_lock);
-      clib_rwlock_writer_lock (&r->r_keypair_lock);
-      if (kp == r->r_next && kp->kp_local_index == r_idx)
-	{
-	  noise_remote_keypair_free (vm, r, &r->r_previous);
-	  r->r_previous = r->r_current;
-	  r->r_current = r->r_next;
-	  r->r_next = NULL;
-
-	  ret = SC_CONN_RESET;
-	  clib_rwlock_writer_unlock (&r->r_keypair_lock);
-	  clib_rwlock_reader_lock (&r->r_keypair_lock);
-	  goto error;
-	}
-      clib_rwlock_writer_unlock (&r->r_keypair_lock);
-      clib_rwlock_reader_lock (&r->r_keypair_lock);
-    }
-
-  /* Similar to when we encrypt, we want to notify the caller when we
-   * are approaching our tolerances. We notify if:
-   *  - we're the initiator and the current keypair is older than
-   *    REKEY_AFTER_TIME_RECV seconds. */
-  ret = SC_KEEP_KEY_FRESH;
-  kp = r->r_current;
-  if (kp != NULL &&
-      kp->kp_valid &&
-      kp->kp_is_initiator &&
-      wg_birthdate_has_expired (kp->kp_birthdate, REKEY_AFTER_TIME_RECV))
-    goto error;
-
-  ret = SC_OK;
-error:
-  clib_rwlock_reader_unlock (&r->r_keypair_lock);
   return ret;
 }
 
@@ -687,21 +602,6 @@ noise_remote_keypair_allocate (noise_remote_t * r)
   noise_keypair_t *kp;
   kp = clib_mem_alloc (sizeof (*kp));
   return kp;
-}
-
-static void
-noise_remote_keypair_free (vlib_main_t * vm, noise_remote_t * r,
-			   noise_keypair_t ** kp)
-{
-  noise_local_t *local = noise_local_get (r->r_local_idx);
-  struct noise_upcall *u = &local->l_upcall;
-  if (*kp)
-    {
-      u->u_index_drop ((*kp)->kp_local_index);
-      vnet_crypto_key_del (vm, (*kp)->kp_send_index);
-      vnet_crypto_key_del (vm, (*kp)->kp_recv_index);
-      clib_mem_free (*kp);
-    }
 }
 
 static uint32_t
@@ -720,55 +620,6 @@ noise_remote_handshake_index_drop (noise_remote_t * r)
   struct noise_upcall *u = &local->l_upcall;
   if (hs->hs_state != HS_ZEROED)
     u->u_index_drop (hs->hs_local_index);
-}
-
-static uint64_t
-noise_counter_send (noise_counter_t * ctr)
-{
-  uint64_t ret;
-  ret = ctr->c_send++;
-  return ret;
-}
-
-static bool
-noise_counter_recv (noise_counter_t * ctr, uint64_t recv)
-{
-  uint64_t i, top, index_recv, index_ctr;
-  unsigned long bit;
-  bool ret = false;
-
-  /* Check that the recv counter is valid */
-  if (ctr->c_recv >= REJECT_AFTER_MESSAGES || recv >= REJECT_AFTER_MESSAGES)
-    goto error;
-
-  /* If the packet is out of the window, invalid */
-  if (recv + COUNTER_WINDOW_SIZE < ctr->c_recv)
-    goto error;
-
-  /* If the new counter is ahead of the current counter, we'll need to
-   * zero out the bitmap that has previously been used */
-  index_recv = recv / COUNTER_BITS;
-  index_ctr = ctr->c_recv / COUNTER_BITS;
-
-  if (recv > ctr->c_recv)
-    {
-      top = clib_min (index_recv - index_ctr, COUNTER_NUM);
-      for (i = 1; i <= top; i++)
-	ctr->c_backtrack[(i + index_ctr) & (COUNTER_NUM - 1)] = 0;
-      ctr->c_recv = recv;
-    }
-
-  index_recv %= COUNTER_NUM;
-  bit = 1ul << (recv % COUNTER_BITS);
-
-  if (ctr->c_backtrack[index_recv] & bit)
-    goto error;
-
-  ctr->c_backtrack[index_recv] |= bit;
-
-  ret = true;
-error:
-  return ret;
 }
 
 static void

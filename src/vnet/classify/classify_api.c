@@ -91,7 +91,8 @@ static void vl_api_classify_pcap_lookup_table_t_handler
 
 out:
   rmp = vl_msg_api_alloc (sizeof (*rmp));
-  rmp->_vl_msg_id = ntohs (VL_API_CLASSIFY_PCAP_LOOKUP_TABLE_REPLY);
+  rmp->_vl_msg_id =
+    ntohs (REPLY_MSG_ID_BASE + VL_API_CLASSIFY_PCAP_LOOKUP_TABLE_REPLY);
   rmp->context = mp->context;
   rmp->retval = ntohl (rv);
   rmp->table_index = htonl (table_index);
@@ -132,7 +133,8 @@ static void vl_api_classify_pcap_set_table_t_handler
 
 out:
   rmp = vl_msg_api_alloc (sizeof (*rmp));
-  rmp->_vl_msg_id = ntohs (VL_API_CLASSIFY_PCAP_SET_TABLE_REPLY);
+  rmp->_vl_msg_id =
+    ntohs (REPLY_MSG_ID_BASE + VL_API_CLASSIFY_PCAP_SET_TABLE_REPLY);
   rmp->context = mp->context;
   rmp->retval = ntohl (rv);
   rmp->table_index = htonl (table_index);
@@ -181,7 +183,8 @@ static void vl_api_classify_pcap_get_tables_t_handler
 out:
   count = vec_len (tables);
   rmp = vl_msg_api_alloc_as_if_client (sizeof (*rmp) + count * sizeof (u32));
-  rmp->_vl_msg_id = ntohs (VL_API_CLASSIFY_PCAP_GET_TABLES_REPLY);
+  rmp->_vl_msg_id =
+    ntohs (REPLY_MSG_ID_BASE + VL_API_CLASSIFY_PCAP_GET_TABLES_REPLY);
   rmp->context = mp->context;
   rmp->retval = ntohl (rv);
   rmp->count = htonl (count);
@@ -233,7 +236,8 @@ static void vl_api_classify_trace_lookup_table_t_handler
 
 out:
   rmp = vl_msg_api_alloc (sizeof (*rmp));
-  rmp->_vl_msg_id = ntohs ((VL_API_CLASSIFY_TRACE_LOOKUP_TABLE_REPLY));
+  rmp->_vl_msg_id =
+    ntohs ((REPLY_MSG_ID_BASE + VL_API_CLASSIFY_TRACE_LOOKUP_TABLE_REPLY));
   rmp->context = mp->context;
   rmp->retval = ntohl (rv);
   rmp->table_index = htonl (table_index);
@@ -270,7 +274,8 @@ static void vl_api_classify_trace_set_table_t_handler
 
 out:
   rmp = vl_msg_api_alloc (sizeof (*rmp));
-  rmp->_vl_msg_id = ntohs ((VL_API_CLASSIFY_TRACE_SET_TABLE_REPLY));
+  rmp->_vl_msg_id =
+    ntohs ((REPLY_MSG_ID_BASE + VL_API_CLASSIFY_TRACE_SET_TABLE_REPLY));
   rmp->context = mp->context;
   rmp->retval = ntohl (rv);
   rmp->table_index = htonl (table_index);
@@ -311,7 +316,8 @@ static void vl_api_classify_trace_get_tables_t_handler
 out:
   count = vec_len (tables);
   rmp = vl_msg_api_alloc_as_if_client (sizeof (*rmp) + count * sizeof (u32));
-  rmp->_vl_msg_id = ntohs (VL_API_CLASSIFY_TRACE_GET_TABLES_REPLY);
+  rmp->_vl_msg_id =
+    ntohs (REPLY_MSG_ID_BASE + VL_API_CLASSIFY_TRACE_GET_TABLES_REPLY);
   rmp->context = mp->context;
   rmp->retval = ntohl (rv);
   rmp->count = htonl (count);
@@ -469,7 +475,7 @@ send_policer_classify_details (u32 sw_if_index,
 
   mp = vl_msg_api_alloc (sizeof (*mp));
   clib_memset (mp, 0, sizeof (*mp));
-  mp->_vl_msg_id = ntohs (VL_API_POLICER_CLASSIFY_DETAILS);
+  mp->_vl_msg_id = ntohs (REPLY_MSG_ID_BASE + VL_API_POLICER_CLASSIFY_DETAILS);
   mp->context = context;
   mp->sw_if_index = htonl (sw_if_index);
   mp->table_index = htonl (table_index);
@@ -538,7 +544,8 @@ vl_api_classify_table_ids_t_handler (vl_api_classify_table_ids_t * mp)
 
   vl_api_classify_table_ids_reply_t *rmp;
   rmp = vl_msg_api_alloc_as_if_client (sizeof (*rmp) + count * sizeof (u32));
-  rmp->_vl_msg_id = ntohs (VL_API_CLASSIFY_TABLE_IDS_REPLY);
+  rmp->_vl_msg_id =
+    ntohs (REPLY_MSG_ID_BASE + VL_API_CLASSIFY_TABLE_IDS_REPLY);
   rmp->context = mp->context;
   rmp->count = ntohl (count);
   clib_memcpy (rmp->ids, table_ids, count * sizeof (u32));
@@ -616,34 +623,35 @@ vl_api_classify_table_info_t_handler (vl_api_classify_table_info_t * mp)
   u32 table_id = ntohl (mp->table_id);
   vnet_classify_table_t *t;
 
-   /* *INDENT-OFF* */
-   pool_foreach (t, cm->tables)
+  pool_foreach (t, cm->tables)
     {
-     if (table_id == t - cm->tables)
-       {
-         rmp = vl_msg_api_alloc_as_if_client
-           (sizeof (*rmp) + t->match_n_vectors * sizeof (u32x4));
-         rmp->_vl_msg_id = ntohs (VL_API_CLASSIFY_TABLE_INFO_REPLY);
-         rmp->context = mp->context;
-         rmp->table_id = ntohl(table_id);
-         rmp->nbuckets = ntohl(t->nbuckets);
-         rmp->match_n_vectors = ntohl(t->match_n_vectors);
-         rmp->skip_n_vectors = ntohl(t->skip_n_vectors);
-         rmp->active_sessions = ntohl(t->active_elements);
-         rmp->next_table_index = ntohl(t->next_table_index);
-         rmp->miss_next_index = ntohl(t->miss_next_index);
-         rmp->mask_length = ntohl(t->match_n_vectors * sizeof (u32x4));
-         clib_memcpy(rmp->mask, t->mask, t->match_n_vectors * sizeof(u32x4));
-         rmp->retval = 0;
-         break;
-       }
-   }
-   /* *INDENT-ON* */
+      if (table_id == t - cm->tables)
+	{
+	  rmp = vl_msg_api_alloc_as_if_client (
+	    sizeof (*rmp) + t->match_n_vectors * sizeof (u32x4));
+	  rmp->_vl_msg_id =
+	    ntohs (REPLY_MSG_ID_BASE + VL_API_CLASSIFY_TABLE_INFO_REPLY);
+	  rmp->context = mp->context;
+	  rmp->table_id = ntohl (table_id);
+	  rmp->nbuckets = ntohl (t->nbuckets);
+	  rmp->match_n_vectors = ntohl (t->match_n_vectors);
+	  rmp->skip_n_vectors = ntohl (t->skip_n_vectors);
+	  rmp->active_sessions = ntohl (t->active_elements);
+	  rmp->next_table_index = ntohl (t->next_table_index);
+	  rmp->miss_next_index = ntohl (t->miss_next_index);
+	  rmp->mask_length = ntohl (t->match_n_vectors * sizeof (u32x4));
+	  clib_memcpy (rmp->mask, t->mask,
+		       t->match_n_vectors * sizeof (u32x4));
+	  rmp->retval = 0;
+	  break;
+	}
+    }
 
   if (rmp == 0)
     {
       rmp = vl_msg_api_alloc (sizeof (*rmp));
-      rmp->_vl_msg_id = ntohs (VL_API_CLASSIFY_TABLE_INFO_REPLY);
+      rmp->_vl_msg_id =
+	ntohs (REPLY_MSG_ID_BASE + VL_API_CLASSIFY_TABLE_INFO_REPLY);
       rmp->context = mp->context;
       rmp->retval = ntohl (VNET_API_ERROR_CLASSIFY_TABLE_NOT_FOUND);
     }
@@ -661,7 +669,8 @@ send_classify_session_details (vl_api_registration_t * reg,
 
   rmp = vl_msg_api_alloc (sizeof (*rmp));
   clib_memset (rmp, 0, sizeof (*rmp));
-  rmp->_vl_msg_id = ntohs (VL_API_CLASSIFY_SESSION_DETAILS);
+  rmp->_vl_msg_id =
+    ntohs (REPLY_MSG_ID_BASE + VL_API_CLASSIFY_SESSION_DETAILS);
   rmp->context = context;
   rmp->table_id = ntohl (table_id);
   rmp->hit_next_index = ntohl (e->next_index);
@@ -755,7 +764,7 @@ send_flow_classify_details (u32 sw_if_index,
 
   mp = vl_msg_api_alloc (sizeof (*mp));
   clib_memset (mp, 0, sizeof (*mp));
-  mp->_vl_msg_id = ntohs (VL_API_FLOW_CLASSIFY_DETAILS);
+  mp->_vl_msg_id = ntohs (REPLY_MSG_ID_BASE + VL_API_FLOW_CLASSIFY_DETAILS);
   mp->context = context;
   mp->sw_if_index = htonl (sw_if_index);
   mp->table_index = htonl (table_index);
@@ -887,6 +896,22 @@ static void vl_api_input_acl_set_interface_t_handler
   REPLY_MACRO (VL_API_INPUT_ACL_SET_INTERFACE_REPLY);
 }
 
+static void
+vl_api_punt_acl_add_del_t_handler (vl_api_punt_acl_add_del_t *mp)
+{
+  vlib_main_t *vm = vlib_get_main ();
+  vl_api_punt_acl_add_del_reply_t *rmp;
+  int rv;
+
+  rv = vnet_set_in_out_acl_intfc (
+    vm, 0 /* sw_if_index */, ~0 /* ip4_table_index */,
+    ~0 /* ip6_table_index */, ~0 /* l2_table_index */,
+    ntohl (mp->ip4_table_index), ntohl (mp->ip6_table_index), mp->is_add,
+    0 /* is_output */);
+
+  REPLY_MACRO (VL_API_PUNT_ACL_ADD_DEL_REPLY);
+}
+
 static void vl_api_output_acl_set_interface_t_handler
   (vl_api_output_acl_set_interface_t * mp)
 {
@@ -915,6 +940,15 @@ static void vl_api_output_acl_set_interface_t_handler
 static clib_error_t *
 classify_api_hookup (vlib_main_t * vm)
 {
+  api_main_t *am = vlibapi_get_main ();
+
+  /*
+   * Trace space for classifier mask+match
+   */
+  am->api_trace_cfg[VL_API_CLASSIFY_ADD_DEL_TABLE].size += 5 * sizeof (u32x4);
+  am->api_trace_cfg[VL_API_CLASSIFY_ADD_DEL_SESSION].size +=
+    5 * sizeof (u32x4);
+
   /*
    * Set up the (msg_name, crc, message-id) table
    */

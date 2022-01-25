@@ -413,6 +413,8 @@ int vnet_pppoe_add_del_session
       si->flags &= ~VNET_SW_INTERFACE_FLAG_HIDDEN;
       vnet_sw_interface_set_flags (vnm, sw_if_index,
 				   VNET_SW_INTERFACE_FLAG_ADMIN_UP);
+      vnet_set_interface_l3_output_node (vnm->vlib_main, sw_if_index,
+					 (u8 *) "tunnel-output");
 
       /* add reverse route for client ip */
       fib_table_entry_path_add (a->decap_fib_index, &pfx,
@@ -431,6 +433,7 @@ int vnet_pppoe_add_del_session
       t = pool_elt_at_index (pem->sessions, result.fields.session_index);
       sw_if_index = t->sw_if_index;
 
+      vnet_reset_interface_l3_output_node (vnm->vlib_main, sw_if_index);
       vnet_sw_interface_set_flags (vnm, t->sw_if_index, 0 /* down */ );
       vnet_sw_interface_t *si = vnet_get_sw_interface (vnm, t->sw_if_index);
       si->flags |= VNET_SW_INTERFACE_FLAG_HIDDEN;
@@ -721,7 +724,7 @@ show_pppoe_fib_command_fn (vlib_main_t * vm,
 }
 
 /*?
- * This command dispays the MAC Address entries of the PPPoE FIB table.
+ * This command displays the MAC Address entries of the PPPoE FIB table.
  * Output can be filtered to just get the number of MAC Addresses or display
  * each MAC Address.
  *
@@ -729,9 +732,9 @@ show_pppoe_fib_command_fn (vlib_main_t * vm,
  * Example of how to display the number of MAC Address entries in the PPPoE
  * FIB table:
  * @cliexstart{show pppoe fib}
- *     Mac Address      session_id      Interface           sw_if_index  session_index
- *  52:54:00:53:18:33     1          GigabitEthernet0/8/0        2          0
- *  52:54:00:53:18:55     2          GigabitEthernet0/8/1        3          1
+ *    Mac Address    session_id    Interface         sw_if_index session_index
+ * 52:54:00:53:18:33   1        GigabitEthernet0/8/0      2          0
+ * 52:54:00:53:18:55   2        GigabitEthernet0/8/1      3          1
  * @cliexend
 ?*/
 /* *INDENT-OFF* */

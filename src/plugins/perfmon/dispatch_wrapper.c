@@ -26,44 +26,15 @@
 #include <perfmon/perfmon.h>
 
 static_always_inline void
-perfmon_read_pmcs (u64 *counters, int *pmc_index, u8 n_counters)
+perfmon_read_pmcs (u64 *counters, u32 *indexes, u8 n_counters)
 {
-  switch (n_counters)
-    {
-    default:
-    case 7:
-      counters[6] = _rdpmc (pmc_index[6]);
-    case 6:
-      counters[5] = _rdpmc (pmc_index[5]);
-    case 5:
-      counters[4] = _rdpmc (pmc_index[4]);
-    case 4:
-      counters[3] = _rdpmc (pmc_index[3]);
-    case 3:
-      counters[2] = _rdpmc (pmc_index[2]);
-    case 2:
-      counters[1] = _rdpmc (pmc_index[1]);
-    case 1:
-      counters[0] = _rdpmc (pmc_index[0]);
-      break;
-    }
+  for (int i = 0; i < n_counters; i++)
+    counters[i] = _rdpmc (indexes[i] - 1);
 }
 
-static_always_inline int
-perfmon_calc_mmap_offset (perfmon_thread_runtime_t *tr, u8 i)
-{
-  return (int) (tr->mmap_pages[i]->index + tr->mmap_pages[i]->offset);
-}
-
-static_always_inline int
-perfmon_metric_index (perfmon_bundle_t *b, u8 i)
-{
-  return (int) (b->metrics[i]);
-}
-
-uword
-perfmon_dispatch_wrapper_mmap (vlib_main_t *vm, vlib_node_runtime_t *node,
-			       vlib_frame_t *frame)
+static_always_inline uword
+perfmon_dispatch_wrapper_inline (vlib_main_t *vm, vlib_node_runtime_t *node,
+				 vlib_frame_t *frame, u8 n_events)
 {
   perfmon_main_t *pm = &perfmon_main;
   perfmon_thread_runtime_t *rt =
@@ -71,38 +42,17 @@ perfmon_dispatch_wrapper_mmap (vlib_main_t *vm, vlib_node_runtime_t *node,
   perfmon_node_stats_t *s =
     vec_elt_at_index (rt->node_stats, node->node_index);
 
-  u8 n_events = rt->n_events;
-
-  u64 before[PERF_MAX_EVENTS];
-  u64 after[PERF_MAX_EVENTS];
-  int pmc_index[PERF_MAX_EVENTS];
+  struct
+  {
+    u64 t[2][PERF_MAX_EVENTS];
+  } samples;
   uword rv;
 
   clib_prefetch_load (s);
 
-  switch (n_events)
-    {
-    default:
-    case 7:
-      pmc_index[6] = perfmon_calc_mmap_offset (rt, 6);
-    case 6:
-      pmc_index[5] = perfmon_calc_mmap_offset (rt, 5);
-    case 5:
-      pmc_index[4] = perfmon_calc_mmap_offset (rt, 4);
-    case 4:
-      pmc_index[3] = perfmon_calc_mmap_offset (rt, 3);
-    case 3:
-      pmc_index[2] = perfmon_calc_mmap_offset (rt, 2);
-    case 2:
-      pmc_index[1] = perfmon_calc_mmap_offset (rt, 1);
-    case 1:
-      pmc_index[0] = perfmon_calc_mmap_offset (rt, 0);
-      break;
-    }
-
-  perfmon_read_pmcs (&before[0], pmc_index, n_events);
+  perfmon_read_pmcs (&samples.t[0][0], &rt->indexes[0], n_events);
   rv = node->function (vm, node, frame);
-  perfmon_read_pmcs (&after[0], pmc_index, n_events);
+  perfmon_read_pmcs (&samples.t[1][0], &rt->indexes[0], n_events);
 
   if (rv == 0)
     return rv;
@@ -111,60 +61,36 @@ perfmon_dispatch_wrapper_mmap (vlib_main_t *vm, vlib_node_runtime_t *node,
   s->n_packets += rv;
 
   for (int i = 0; i < n_events; i++)
-    s->value[i] += after[i] - before[i];
-
-  return rv;
-}
-
-uword
-perfmon_dispatch_wrapper_metrics (vlib_main_t *vm, vlib_node_runtime_t *node,
-				  vlib_frame_t *frame)
-{
-  perfmon_main_t *pm = &perfmon_main;
-  perfmon_thread_runtime_t *rt =
-    vec_elt_at_index (pm->thread_runtimes, vm->thread_index);
-  perfmon_node_stats_t *s =
-    vec_elt_at_index (rt->node_stats, node->node_index);
-
-  u8 n_events = rt->n_events;
-
-  u64 before[PERF_MAX_EVENTS];
-  int pmc_index[PERF_MAX_EVENTS];
-  uword rv;
-
-  clib_prefetch_load (s);
-
-  switch (n_events)
     {
-    default:
-    case 7:
-      pmc_index[6] = perfmon_metric_index (rt->bundle, 6);
-    case 6:
-      pmc_index[5] = perfmon_metric_index (rt->bundle, 5);
-    case 5:
-      pmc_index[4] = perfmon_metric_index (rt->bundle, 4);
-    case 4:
-      pmc_index[3] = perfmon_metric_index (rt->bundle, 3);
-    case 3:
-      pmc_index[2] = perfmon_metric_index (rt->bundle, 2);
-    case 2:
-      pmc_index[1] = perfmon_metric_index (rt->bundle, 1);
-    case 1:
-      pmc_index[0] = perfmon_metric_index (rt->bundle, 0);
-      break;
+      if (!(rt->preserve_samples & 1 << i))
+	{
+	  s->value[i] += samples.t[1][i] - samples.t[0][i];
+	}
+      else
+	{
+	  s->t[0].value[i] = samples.t[0][i];
+	  s->t[1].value[i] = samples.t[1][i];
+	}
     }
 
-  perfmon_read_pmcs (&before[0], pmc_index, n_events);
-  rv = node->function (vm, node, frame);
-
-  clib_memcpy_fast (&s->t[0].value[0], &before, sizeof (before));
-  perfmon_read_pmcs (&s->t[1].value[0], pmc_index, n_events);
-
-  if (rv == 0)
-    return rv;
-
-  s->n_calls += 1;
-  s->n_packets += rv;
-
   return rv;
 }
+
+#define foreach_n_events                                                      \
+  _ (1) _ (2) _ (3) _ (4) _ (5) _ (6) _ (7) _ (8) _ (9) _ (10) _ (11) _ (12)
+
+#define _(x)                                                                  \
+  static uword perfmon_dispatch_wrapper##x (                                  \
+    vlib_main_t *vm, vlib_node_runtime_t *node, vlib_frame_t *frame)          \
+  {                                                                           \
+    return perfmon_dispatch_wrapper_inline (vm, node, frame, x);              \
+  }
+
+foreach_n_events
+#undef _
+
+  vlib_node_function_t *perfmon_dispatch_wrappers[PERF_MAX_EVENTS + 1] = {
+#define _(x) [x] = &perfmon_dispatch_wrapper##x,
+    foreach_n_events
+#undef _
+  };

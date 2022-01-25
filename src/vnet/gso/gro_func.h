@@ -21,9 +21,14 @@
 #include <vnet/gso/hdr_offset_parser.h>
 #include <vnet/ip/ip4.h>
 #include <vnet/ip/ip6.h>
+#include <vnet/ip/ip6_inlines.h>
 #include <vnet/udp/udp_packet.h>
 #include <vnet/tcp/tcp_packet.h>
 #include <vnet/vnet.h>
+#include <vnet/interface.h>
+
+#define GRO_MIN_PACKET_SIZE    256
+#define GRO_PADDED_PACKET_SIZE 64
 
 static_always_inline u8
 gro_is_bad_packet (vlib_buffer_t * b, u8 flags, i16 l234_sz)
@@ -160,6 +165,34 @@ gro_validate_checksum (vlib_main_t * vm, vlib_buffer_t * b0,
 }
 
 static_always_inline u32
+gro_fix_padded_packet_len (vlib_buffer_t *b0, generic_header_offset_t *gho0,
+			   ip4_header_t *ip4_0, ip6_header_t *ip6_0,
+			   u32 pkt_len0, u16 l234_sz0)
+{
+  u32 tcp_payload_len0 = 0;
+  if (gho0->gho_flags & GHO_F_IP4)
+    {
+      tcp_payload_len0 = clib_net_to_host_u16 (ip4_0->length) -
+			 ip4_header_bytes (ip4_0) - gho0->l4_hdr_sz;
+    }
+  else
+    {
+      tcp_payload_len0 =
+	clib_net_to_host_u16 (ip6_0->payload_length) - gho0->l4_hdr_sz;
+    }
+
+  ASSERT (l234_sz0 + tcp_payload_len0 <= pkt_len0);
+
+  if (PREDICT_FALSE (l234_sz0 + tcp_payload_len0 < pkt_len0))
+    {
+      /* small packet with padding at the end, remove padding */
+      b0->current_length = l234_sz0 + tcp_payload_len0;
+      pkt_len0 = b0->current_length;
+    }
+  return pkt_len0;
+}
+
+static_always_inline u32
 gro_get_packet_data (vlib_main_t *vm, vlib_buffer_t *b0,
 		     generic_header_offset_t *gho0, gro_flow_key_t *flow_key0,
 		     u8 is_l2)
@@ -222,6 +255,11 @@ gro_get_packet_data (vlib_main_t *vm, vlib_buffer_t *b0,
   if (PREDICT_FALSE (pkt_len0 >= TCP_MAX_GSO_SZ))
     return 0;
 
+  if (PREDICT_FALSE (pkt_len0 <= GRO_PADDED_PACKET_SIZE))
+    {
+      pkt_len0 =
+	gro_fix_padded_packet_len (b0, gho0, ip4_0, ip6_0, pkt_len0, l234_sz0);
+    }
   return pkt_len0;
 }
 
@@ -264,8 +302,8 @@ gro_coalesce_buffers (vlib_main_t *vm, vlib_buffer_t *b0, vlib_buffer_t *b1,
   pkt_len0 = vlib_buffer_length_in_chain (vm, b0);
   pkt_len1 = vlib_buffer_length_in_chain (vm, b1);
 
-  if (((gho0.gho_flags & GHO_F_TCP) == 0)
-      || ((gho1.gho_flags & GHO_F_TCP) == 0))
+  if (((gho0.gho_flags & GHO_F_TCP) == 0 || pkt_len0 <= GRO_MIN_PACKET_SIZE) ||
+      ((gho1.gho_flags & GHO_F_TCP) == 0 || pkt_len1 <= GRO_MIN_PACKET_SIZE))
     return 0;
 
   ip4_0 =
@@ -407,9 +445,9 @@ vnet_gro_flow_table_flush (vlib_main_t * vm, gro_flow_table_t * flow_table,
 }
 
 static_always_inline void
-vnet_gro_flow_table_schedule_node_on_dispatcher (vlib_main_t * vm,
-						 gro_flow_table_t *
-						 flow_table)
+vnet_gro_flow_table_schedule_node_on_dispatcher (vlib_main_t *vm,
+						 vnet_hw_if_tx_queue_t *txq,
+						 gro_flow_table_t *flow_table)
 {
   if (gro_flow_table_is_timeout (vm, flow_table))
     {
@@ -420,8 +458,12 @@ vnet_gro_flow_table_schedule_node_on_dispatcher (vlib_main_t * vm,
 	{
 	  u32 node_index = flow_table->node_index;
 	  vlib_frame_t *f = vlib_get_frame_to_node (vm, node_index);
+	  vnet_hw_if_tx_frame_t *ft = vlib_frame_scalar_args (f);
 	  u32 *f_to = vlib_frame_vector_args (f);
 	  u32 i = 0;
+
+	  ft->shared_queue = txq->shared_queue;
+	  ft->queue_id = txq->queue_id;
 
 	  while (i < n_to)
 	    {
@@ -483,7 +525,8 @@ vnet_gro_flow_table_inline (vlib_main_t * vm, gro_flow_table_t * flow_table,
     }
 
   tcp0 = (tcp_header_t *) (vlib_buffer_get_current (b0) + gho0.l4_hdr_offset);
-  if (PREDICT_TRUE ((tcp0->flags & TCP_FLAG_PSH) == 0))
+  if (PREDICT_TRUE (((tcp0->flags & TCP_FLAG_PSH) == 0) &&
+		    (pkt_len0 > GRO_MIN_PACKET_SIZE)))
     gro_flow = gro_flow_table_find_or_add_flow (flow_table, &flow_key0);
   else
     {

@@ -4,7 +4,7 @@ import copy
 
 from scapy.layers.ipsec import SecurityAssociation, ESP
 from scapy.layers.l2 import Ether, GRE, Dot1Q
-from scapy.packet import Raw
+from scapy.packet import Raw, bind_layers
 from scapy.layers.inet import IP, UDP
 from scapy.layers.inet6 import IPv6
 from scapy.contrib.mpls import MPLS
@@ -40,6 +40,18 @@ def config_tun_params(p, encryption_type, tun_if, src=None, dst=None):
         p.tun_dst = dst
         p.tun_src = src
 
+    if p.nat_header:
+        is_default_port = (p.nat_header.dport == 4500)
+    else:
+        is_default_port = True
+
+    if is_default_port:
+        outbound_nat_header = p.nat_header
+    else:
+        outbound_nat_header = UDP(sport=p.nat_header.dport,
+                                  dport=p.nat_header.sport)
+        bind_layers(UDP, ESP, dport=p.nat_header.dport)
+
     p.scapy_tun_sa = SecurityAssociation(
         encryption_type, spi=p.vpp_tun_spi,
         crypt_algo=p.crypt_algo,
@@ -48,7 +60,7 @@ def config_tun_params(p, encryption_type, tun_if, src=None, dst=None):
         tunnel_header=ip_class_by_addr_type[p.addr_type](
             src=p.tun_dst,
             dst=p.tun_src),
-        nat_t_header=p.nat_header,
+        nat_t_header=outbound_nat_header,
         esn_en=esn_en)
     p.vpp_tun_sa = SecurityAssociation(
         encryption_type, spi=p.scapy_tun_spi,
@@ -69,13 +81,26 @@ def config_tra_params(p, encryption_type, tun_if):
     crypt_key = mk_scapy_crypt_key(p)
     p.tun_dst = tun_if.remote_ip
     p.tun_src = tun_if.local_ip
+
+    if p.nat_header:
+        is_default_port = (p.nat_header.dport == 4500)
+    else:
+        is_default_port = True
+
+    if is_default_port:
+        outbound_nat_header = p.nat_header
+    else:
+        outbound_nat_header = UDP(sport=p.nat_header.dport,
+                                  dport=p.nat_header.sport)
+        bind_layers(UDP, ESP, dport=p.nat_header.dport)
+
     p.scapy_tun_sa = SecurityAssociation(
         encryption_type, spi=p.vpp_tun_spi,
         crypt_algo=p.crypt_algo,
         crypt_key=crypt_key,
         auth_algo=p.auth_algo, auth_key=p.auth_key,
         esn_en=esn_en,
-        nat_t_header=p.nat_header)
+        nat_t_header=outbound_nat_header)
     p.vpp_tun_sa = SecurityAssociation(
         encryption_type, spi=p.scapy_tun_spi,
         crypt_algo=p.crypt_algo,
@@ -1354,8 +1379,8 @@ class TestIpsecGreTebUdpIfEspTra(TemplateIpsec,
                                  flags=(p.flags |
                                         VppEnum.vl_api_ipsec_sad_flags_t.
                                         IPSEC_API_SAD_FLAG_IS_INBOUND),
-                                 udp_src=5454,
-                                 udp_dst=4545)
+                                 udp_src=4545,
+                                 udp_dst=5454)
         p.tun_sa_in.add_vpp_config()
 
         p.tun_if = VppGreInterface(self,
@@ -2320,7 +2345,7 @@ class TestIpsec6TunProtect(TemplateIpsec,
         p.tun_protect.update_vpp_config(np3.tun_sa_out,
                                         [np3.tun_sa_in])
         self.verify_tun_66(np3, np3, count=127)
-        self.verify_drop_tun_66(np, count=127)
+        self.verify_drop_tun_rx_66(np, count=127)
 
         self.assertEqual(p.tun_if.get_rx_stats(), 127*9)
         self.assertEqual(p.tun_if.get_tx_stats(), 127*8)
@@ -2596,6 +2621,10 @@ class TestIpsecItf4(TemplateIpsec,
         p = self.ipv4_params
 
         self.config_network(p)
+        config_tun_params(p, self.encryption_type, None,
+                          self.pg0.local_ip4,
+                          self.pg0.remote_ip4)
+        self.verify_tun_dropped_44(p, count=n_pkts)
         self.config_sa_tun(p,
                            self.pg0.local_ip4,
                            self.pg0.remote_ip4)
@@ -2668,6 +2697,7 @@ class TestIpsecItf4(TemplateIpsec,
                            self.pg0.remote_ip4)
         self.config_protect(p)
 
+        self.logger.info(self.vapi.cli("sh ipsec sa"))
         self.verify_tun_44(p, count=n_pkts)
 
         # teardown
@@ -2886,7 +2916,7 @@ class TestIpsecItf6(TemplateIpsec,
     def tearDown(self):
         super(TestIpsecItf6, self).tearDown()
 
-    def test_tun_44(self):
+    def test_tun_66(self):
         """IPSEC interface IPv6"""
 
         tf = VppEnum.vl_api_tunnel_encap_decap_flags_t
@@ -2898,6 +2928,10 @@ class TestIpsecItf6(TemplateIpsec,
         p.tun_flags = tf.TUNNEL_API_ENCAP_DECAP_FLAG_ENCAP_COPY_HOP_LIMIT
 
         self.config_network(p)
+        config_tun_params(p, self.encryption_type, None,
+                          self.pg0.local_ip6,
+                          self.pg0.remote_ip6)
+        self.verify_drop_tun_66(p, count=n_pkts)
         self.config_sa_tun(p,
                            self.pg0.local_ip6,
                            self.pg0.remote_ip6)
@@ -3077,6 +3111,15 @@ class TestIpsecMIfEsp4(TemplateIpsec, IpsecTun4):
         self.pg0.generate_remote_hosts(N_NHS)
         self.pg0.configure_ipv4_neighbors()
 
+        r_all = AclRule(True,
+                        src_prefix="0.0.0.0/0",
+                        dst_prefix="0.0.0.0/0",
+                        proto=0)
+        a = VppAcl(self, [r_all]).add_vpp_config()
+
+        VppAclInterface(self, self.pg0.sw_if_index, [a]).add_vpp_config()
+        VppAclInterface(self, p.tun_if.sw_if_index, [a]).add_vpp_config()
+
         # setup some SAs for several next-hops on the interface
         self.multi_params = []
 
@@ -3128,9 +3171,10 @@ class TestIpsecMIfEsp4(TemplateIpsec, IpsecTun4):
                               self.pg0.remote_hosts[ii].ip4)
             self.multi_params.append(p)
 
-            VppIpRoute(self, p.remote_tun_if_host, 32,
-                       [VppRoutePath(p.tun_if.remote_hosts[ii].ip4,
-                                     p.tun_if.sw_if_index)]).add_vpp_config()
+            p.via_tun_route = VppIpRoute(
+                self, p.remote_tun_if_host, 32,
+                [VppRoutePath(p.tun_if.remote_hosts[ii].ip4,
+                              p.tun_if.sw_if_index)]).add_vpp_config()
 
             p.tun_dst = self.pg0.remote_hosts[ii].ip4
 
@@ -3142,6 +3186,21 @@ class TestIpsecMIfEsp4(TemplateIpsec, IpsecTun4):
     def test_tun_44(self):
         """P2MP IPSEC 44"""
         N_PKTS = 63
+        for p in self.multi_params:
+            self.verify_tun_44(p, count=N_PKTS)
+
+        # remove one tunnel protect, the rest should still work
+        self.multi_params[0].tun_protect.remove_vpp_config()
+        self.verify_tun_dropped_44(self.multi_params[0], count=N_PKTS)
+        self.multi_params[0].via_tun_route.remove_vpp_config()
+        self.verify_tun_dropped_44(self.multi_params[0], count=N_PKTS)
+
+        for p in self.multi_params[1:]:
+            self.verify_tun_44(p, count=N_PKTS)
+
+        self.multi_params[0].tun_protect.add_vpp_config()
+        self.multi_params[0].via_tun_route.add_vpp_config()
+
         for p in self.multi_params:
             self.verify_tun_44(p, count=N_PKTS)
 

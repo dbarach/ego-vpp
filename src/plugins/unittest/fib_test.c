@@ -142,28 +142,21 @@ fib_test_mk_intf (u32 ninterfaces)
 
     for (i = 0; i < ninterfaces; i++)
     {
+      vnet_eth_interface_registration_t eir = {};
+      vnet_main_t *vnm = vnet_get_main();
+
         hw_address[5] = i;
 
-        error = ethernet_register_interface(vnet_get_main(),
-                                            test_interface_device_class.index,
-                                            i /* instance */,
-                                            hw_address,
-                                            &tm->hw_if_indicies[i],
-                                            /* flag change */ 0);
-
-        FIB_TEST((NULL == error), "ADD interface %d", i);
+       eir.dev_class_index = test_interface_device_class.index;
+       eir.dev_instance = i;
+       eir.address = hw_address;
+       tm->hw_if_indicies[i] = vnet_eth_register_interface (vnm, &eir);
 
         error = vnet_hw_interface_set_flags(vnet_get_main(),
                                             tm->hw_if_indicies[i],
                                             VNET_HW_INTERFACE_FLAG_LINK_UP);
         tm->hw[i] = vnet_get_hw_interface(vnet_get_main(),
                                           tm->hw_if_indicies[i]);
-        vec_validate (ip4_main.fib_index_by_sw_if_index,
-                      tm->hw[i]->sw_if_index);
-        vec_validate (ip6_main.fib_index_by_sw_if_index,
-                      tm->hw[i]->sw_if_index);
-        ip4_main.fib_index_by_sw_if_index[tm->hw[i]->sw_if_index] = 0;
-        ip6_main.fib_index_by_sw_if_index[tm->hw[i]->sw_if_index] = 0;
 
         error = vnet_sw_interface_set_flags(vnet_get_main(),
                                             tm->hw[i]->sw_if_index,
@@ -826,9 +819,7 @@ fib_test_v4 (void)
                                                   FIB_SOURCE_API);
 
     for (ii = 0; ii < 4; ii++)
-    {
-        ip4_main.fib_index_by_sw_if_index[tm->hw[ii]->sw_if_index] = fib_index;
-    }
+      fib_table_bind (FIB_PROTOCOL_IP4, tm->hw[ii]->sw_if_index, fib_index);
 
     fib_prefix_t pfx_0_0_0_0_s_0 = {
         .fp_len = 0,
@@ -4397,6 +4388,9 @@ fib_test_v4 (void)
                                              FIB_SOURCE_INTERFACE)),
              "NO INterface Source'd prefixes");
 
+    for (ii = 0; ii < 4; ii++)
+      fib_table_bind (FIB_PROTOCOL_IP4, tm->hw[ii]->sw_if_index, 0);
+
     fib_table_unlock(fib_index, FIB_PROTOCOL_IP4, FIB_SOURCE_API);
 
     FIB_TEST((0  == fib_path_list_db_size()), "path list DB population:%d",
@@ -4455,9 +4449,7 @@ fib_test_v6 (void)
                                                   FIB_SOURCE_API);
 
     for (ii = 0; ii < 4; ii++)
-    {
-        ip6_main.fib_index_by_sw_if_index[tm->hw[ii]->sw_if_index] = fib_index;
-    }
+      fib_table_bind (FIB_PROTOCOL_IP6, tm->hw[ii]->sw_if_index, fib_index);
 
     fib_prefix_t pfx_0_0 = {
         .fp_len = 0,
@@ -5176,12 +5168,11 @@ fib_test_v6 (void)
     /*
      * Add the interface back. routes stay unresolved.
      */
-    error = ethernet_register_interface(vnet_get_main(),
-                                        test_interface_device_class.index,
-                                        0 /* instance */,
-                                        hw_address,
-                                        &tm->hw_if_indicies[0],
-                                        /* flag change */ 0);
+    vnet_eth_interface_registration_t eir = {};
+    eir.dev_class_index = test_interface_device_class.index;
+    eir.dev_instance = 0;
+    eir.address = hw_address;
+    tm->hw_if_indicies[0] = vnet_eth_register_interface (vnet_get_main(), &eir);
 
     fei = fib_table_lookup_exact_match(fib_index, &pfx_2001_b_s_64);
     FIB_TEST(load_balance_is_drop(fib_entry_contribute_ip_forwarding(fei)),
@@ -5276,6 +5267,10 @@ fib_test_v6 (void)
     /*
      * now remove the VRF
      */
+
+    for (ii = 0; ii < 4; ii++)
+      fib_table_bind (FIB_PROTOCOL_IP6, tm->hw[ii]->sw_if_index, 0);
+
     fib_table_unlock(fib_index, FIB_PROTOCOL_IP6, FIB_SOURCE_API);
 
     FIB_TEST((0 == fib_path_list_db_size()),   "path list DB population:%d",
@@ -5314,14 +5309,12 @@ fib_test_ae (void)
 {
     const dpo_id_t *dpo, *dpo_drop;
     const u32 fib_index = 0;
-    fib_node_index_t fei;
+    fib_node_index_t dfrt, fei;
     test_main_t *tm;
-    ip4_main_t *im;
     int res;
 
     res = 0;
     tm = &test_main;
-    im = &ip4_main;
 
     FIB_TEST((0 == adj_nbr_db_size()), "ADJ DB size is %d",
              adj_nbr_db_size());
@@ -5341,8 +5334,7 @@ fib_test_ae (void)
         },
     };
 
-    vec_validate(im->fib_index_by_sw_if_index, tm->hw[0]->sw_if_index);
-    im->fib_index_by_sw_if_index[tm->hw[0]->sw_if_index] = fib_index;
+    fib_table_bind (FIB_PROTOCOL_IP4, tm->hw[0]->sw_if_index, fib_index);
 
     dpo_drop = drop_dpo_get(DPO_PROTO_IP4);
 
@@ -5415,6 +5407,44 @@ fib_test_ae (void)
     import_fib_index1 = fib_table_find_or_create_and_lock(FIB_PROTOCOL_IP4,
                                                           11,
                                                           FIB_SOURCE_CLI);
+    /*
+     * Add default route in the import FIB
+     */
+    fib_prefix_t pfx_0_0_0_0_s_0 = {
+        .fp_len = 0,
+        .fp_proto = FIB_PROTOCOL_IP4,
+        .fp_addr = {
+            .ip4 = {
+                {0}
+            },
+        },
+    };
+
+    dfrt = fib_table_lookup(import_fib_index1, &pfx_0_0_0_0_s_0);
+    FIB_TEST((FIB_NODE_INDEX_INVALID != dfrt), "default route present");
+
+    fib_table_entry_path_add(import_fib_index1,
+                             &pfx_0_0_0_0_s_0,
+                             FIB_SOURCE_API,
+                             FIB_ENTRY_FLAG_NONE,
+                             DPO_PROTO_IP4,
+                             NULL,
+                             tm->hw[0]->sw_if_index,
+                             ~0, // invalid fib index
+                             1,
+                             NULL,
+                             FIB_ROUTE_PATH_FLAG_NONE);
+    fei = fib_table_lookup(fib_index, &pfx_0_0_0_0_s_0);
+    FIB_TEST((FIB_NODE_INDEX_INVALID != fei), "default route present");
+    FIB_TEST((fei != dfrt), "default route added");
+
+    /*
+     * delete default route and check for the presence in the import table
+     */
+    fib_table_entry_delete(import_fib_index1, &pfx_0_0_0_0_s_0, FIB_SOURCE_API);
+    fei = fib_table_lookup(import_fib_index1, &pfx_0_0_0_0_s_0);
+    FIB_TEST((FIB_NODE_INDEX_INVALID != fei), "default route present");
+    FIB_TEST((fei == dfrt), "default route removed");
 
     /*
      * Add an attached route in the import FIB
@@ -5871,11 +5901,9 @@ static int
 fib_test_pref (void)
 {
     test_main_t *tm;
-    ip4_main_t *im;
     int res, i;
 
     tm = &test_main;
-    im = &ip4_main;
     res = 0;
 
     const fib_prefix_t pfx_1_1_1_1_s_32 = {
@@ -5888,10 +5916,8 @@ fib_test_pref (void)
         },
     };
 
-    vec_validate(im->fib_index_by_sw_if_index, tm->hw[2]->sw_if_index);
-
     for (i = 0; i <= 2; i++)
-        im->fib_index_by_sw_if_index[tm->hw[i]->sw_if_index] = 0;
+      fib_table_bind (FIB_PROTOCOL_IP4, tm->hw[i]->sw_if_index, 0);
 
     /*
      * 2 high, 2 medium and 2 low preference non-recursive paths
@@ -6340,12 +6366,10 @@ fib_test_label (void)
     const u32 fib_index = 0;
     int lb_count, ii, res;
     test_main_t *tm;
-    ip4_main_t *im;
 
     res = 0;
     lb_count = pool_elts(load_balance_pool);
     tm = &test_main;
-    im = &ip4_main;
 
     /*
      * add interface routes. We'll assume this works. It's more rigorously
@@ -6365,8 +6389,7 @@ fib_test_label (void)
     FIB_TEST((0 == adj_nbr_db_size()), "ADJ DB size is %d",
              adj_nbr_db_size());
 
-    vec_validate(im->fib_index_by_sw_if_index, tm->hw[0]->sw_if_index);
-    im->fib_index_by_sw_if_index[tm->hw[0]->sw_if_index] = fib_index;
+    fib_table_bind (FIB_PROTOCOL_IP4, tm->hw[0]->sw_if_index, fib_index);
 
     fib_table_entry_update_one_path(fib_index, &local0_pfx,
                                     FIB_SOURCE_INTERFACE,
@@ -6411,8 +6434,7 @@ fib_test_label (void)
         },
     };
 
-    vec_validate(im->fib_index_by_sw_if_index, tm->hw[1]->sw_if_index);
-    im->fib_index_by_sw_if_index[tm->hw[1]->sw_if_index] = fib_index;
+    fib_table_bind (FIB_PROTOCOL_IP4, tm->hw[1]->sw_if_index, fib_index);
 
     fib_table_entry_update_one_path(fib_index, &local1_pfx,
                                     FIB_SOURCE_INTERFACE,
@@ -8535,7 +8557,7 @@ lfib_test (void)
     mpls_table_create(MPLS_FIB_DEFAULT_TABLE_ID, FIB_SOURCE_API, NULL);
     mpls_sw_interface_enable_disable(&mpls_main,
                                      tm->hw[0]->sw_if_index,
-                                     1, 1);
+                                     1);
 
     ip46_address_t nh_10_10_10_1 = {
         .ip4.as_u32 = clib_host_to_net_u32(0x0a0a0a01),
@@ -9106,7 +9128,7 @@ lfib_test (void)
      */
     mpls_sw_interface_enable_disable(&mpls_main,
                                      tm->hw[0]->sw_if_index,
-                                     0, 1);
+                                     0);
     mpls_table_delete(MPLS_FIB_DEFAULT_TABLE_ID, FIB_SOURCE_API);
 
     FIB_TEST(0 == pool_elts(mpls_disp_dpo_pool),
@@ -9128,22 +9150,15 @@ fib_test_inherit (void)
     fib_node_index_t fei;
     int n_feis, res, i;
     test_main_t *tm;
-    ip4_main_t *im4;
-    ip6_main_t *im6;
 
     tm = &test_main;
-    im4 = &ip4_main;
-    im6 = &ip6_main;
     res = 0;
 
-    vec_validate(im4->fib_index_by_sw_if_index, tm->hw[2]->sw_if_index);
-    vec_validate(im6->fib_index_by_sw_if_index, tm->hw[2]->sw_if_index);
-
     for (i = 0; i <= 2; i++)
-    {
-        im4->fib_index_by_sw_if_index[tm->hw[i]->sw_if_index] = 0;
-        im6->fib_index_by_sw_if_index[tm->hw[i]->sw_if_index] = 0;
-    }
+      {
+	fib_table_bind (FIB_PROTOCOL_IP4, tm->hw[i]->sw_if_index, 0);
+	fib_table_bind (FIB_PROTOCOL_IP6, tm->hw[i]->sw_if_index, 0);
+      }
     n_feis = fib_entry_pool_size();
 
     const ip46_address_t nh_10_10_10_1 = {

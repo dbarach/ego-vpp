@@ -132,7 +132,6 @@ mark_tcp_udp_cksum_calc (vlib_buffer_t *b, u8 *l4_hdr_sz)
 	  tcp_header_t *tcp = (tcp_header_t *) (vlib_buffer_get_current (b) +
 						sizeof (ethernet_header_t) +
 						ip4_header_bytes (ip4));
-	  tcp->checksum = 0;
 	  *l4_hdr_sz = tcp_header_bytes (tcp);
 	}
       else if (ip4->protocol == IP_PROTOCOL_UDP)
@@ -141,7 +140,6 @@ mark_tcp_udp_cksum_calc (vlib_buffer_t *b, u8 *l4_hdr_sz)
 	  udp_header_t *udp = (udp_header_t *) (vlib_buffer_get_current (b) +
 						sizeof (ethernet_header_t) +
 						ip4_header_bytes (ip4));
-	  udp->checksum = 0;
 	  *l4_hdr_sz = sizeof (*udp);
 	}
       vnet_buffer (b)->l3_hdr_offset = sizeof (ethernet_header_t);
@@ -172,7 +170,6 @@ mark_tcp_udp_cksum_calc (vlib_buffer_t *b, u8 *l4_hdr_sz)
 	  tcp_header_t *tcp =
 	    (tcp_header_t *) (vlib_buffer_get_current (b) +
 			      sizeof (ethernet_header_t) + ip6_hdr_len);
-	  tcp->checksum = 0;
 	  *l4_hdr_sz = tcp_header_bytes (tcp);
 	}
       else if (ip6->protocol == IP_PROTOCOL_UDP)
@@ -181,7 +178,6 @@ mark_tcp_udp_cksum_calc (vlib_buffer_t *b, u8 *l4_hdr_sz)
 	  udp_header_t *udp =
 	    (udp_header_t *) (vlib_buffer_get_current (b) +
 			      sizeof (ethernet_header_t) + ip6_hdr_len);
-	  udp->checksum = 0;
 	  *l4_hdr_sz = sizeof (*udp);
 	}
       vnet_buffer (b)->l3_hdr_offset = sizeof (ethernet_header_t);
@@ -198,7 +194,7 @@ af_packet_device_input_fn (vlib_main_t * vm, vlib_node_runtime_t * node,
 {
   af_packet_main_t *apm = &af_packet_main;
   struct tpacket2_hdr *tph;
-  u32 next_index = VNET_DEVICE_INPUT_NEXT_ETHERNET_INPUT;
+  u32 next_index;
   u32 block = 0;
   u32 rx_frame;
   u32 n_free_bufs;
@@ -213,6 +209,23 @@ af_packet_device_input_fn (vlib_main_t * vm, vlib_node_runtime_t * node,
   u32 thread_index = vm->thread_index;
   u32 n_buffer_bytes = vlib_buffer_get_default_data_size (vm);
   u32 min_bufs = apif->rx_req->tp_frame_size / n_buffer_bytes;
+  u32 eth_header_size = 0;
+  vlib_buffer_t bt;
+
+  if (apif->mode == AF_PACKET_IF_MODE_IP)
+    {
+      next_index = VNET_DEVICE_INPUT_NEXT_IP4_INPUT;
+    }
+  else
+    {
+      eth_header_size = sizeof (ethernet_header_t);
+      next_index = VNET_DEVICE_INPUT_NEXT_ETHERNET_INPUT;
+      if (PREDICT_FALSE (apif->per_interface_next_index != ~0))
+	next_index = apif->per_interface_next_index;
+
+      /* redirect if feature path enabled */
+      vnet_feature_start_device_input_x1 (apif->sw_if_index, &next_index, &bt);
+    }
 
   n_free_bufs = vec_len (apm->rx_buffers[thread_index]);
   if (PREDICT_FALSE (n_free_bufs < VLIB_FRAME_SIZE))
@@ -296,7 +309,10 @@ af_packet_device_input_fn (vlib_main_t * vm, vlib_node_runtime_t * node,
 		  first_b0 = vlib_get_buffer (vm, first_bi0);
 		  if (tph->tp_status & TP_STATUS_CSUMNOTREADY)
 		    mark_tcp_udp_cksum_calc (first_b0, &l4_hdr_sz);
-		  if (tph->tp_snaplen > apif->host_mtu)
+		  /* This is a trade-off for GSO. As kernel isn't passing
+		   * us the GSO state or size, we guess it by comparing it
+		   * to the host MTU of the interface */
+		  if (tph->tp_snaplen > (apif->host_mtu + eth_header_size))
 		    fill_gso_buffer_flags (first_b0, apif->host_mtu,
 					   l4_hdr_sz);
 		}
@@ -321,14 +337,30 @@ af_packet_device_input_fn (vlib_main_t * vm, vlib_node_runtime_t * node,
 	    }
 	  else
 	    {
-	      next0 = VNET_DEVICE_INPUT_NEXT_ETHERNET_INPUT;
-
-	      if (PREDICT_FALSE (apif->per_interface_next_index != ~0))
-		next0 = apif->per_interface_next_index;
-
-	      /* redirect if feature path enabled */
-	      vnet_feature_start_device_input_x1 (apif->sw_if_index, &next0,
-						  first_b0);
+	      if (PREDICT_FALSE (apif->mode == AF_PACKET_IF_MODE_IP))
+		{
+		  switch (first_b0->data[0] & 0xf0)
+		    {
+		    case 0x40:
+		      next0 = VNET_DEVICE_INPUT_NEXT_IP4_INPUT;
+		      break;
+		    case 0x60:
+		      next0 = VNET_DEVICE_INPUT_NEXT_IP6_INPUT;
+		      break;
+		    default:
+		      next0 = VNET_DEVICE_INPUT_NEXT_DROP;
+		      break;
+		    }
+		  if (PREDICT_FALSE (apif->per_interface_next_index != ~0))
+		    next0 = apif->per_interface_next_index;
+		}
+	      else
+		{
+		  /* copy feature arc data from template */
+		  first_b0->current_config_index = bt.current_config_index;
+		  vnet_buffer (first_b0)->feature_arc_index =
+		    vnet_buffer (&bt)->feature_arc_index;
+		}
 	    }
 
 	  /* trace */
@@ -387,7 +419,6 @@ VLIB_NODE_FN (af_packet_input_node) (vlib_main_t * vm,
   return n_rx_packets;
 }
 
-/* *INDENT-OFF* */
 VLIB_REGISTER_NODE (af_packet_input_node) = {
   .name = "af-packet-input",
   .flags = VLIB_NODE_FLAG_TRACE_SUPPORTED,
@@ -398,7 +429,6 @@ VLIB_REGISTER_NODE (af_packet_input_node) = {
   .n_errors = AF_PACKET_INPUT_N_ERROR,
   .error_strings = af_packet_input_error_strings,
 };
-/* *INDENT-ON* */
 
 
 /*

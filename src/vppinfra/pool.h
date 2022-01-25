@@ -287,6 +287,25 @@ do {                                                                    \
     }                                                                   \
 } while (0)
 
+/** See if pool_put will expand free_bitmap or free_indices or not */
+#define pool_put_will_expand(P, E, YESNO)                                     \
+  do                                                                          \
+    {                                                                         \
+      pool_header_t *_pool_var (p) = pool_header (P);                         \
+                                                                              \
+      uword _pool_var (i) = (E) - (P);                                        \
+      /* free_bitmap or free_indices may expand. */                           \
+      YESNO =                                                                 \
+	clib_bitmap_will_expand (_pool_var (p)->free_bitmap, _pool_var (i));  \
+                                                                              \
+      YESNO += _vec_resize_will_expand (                                      \
+	_pool_var (p)->free_indices, 1,                                       \
+	(vec_len (_pool_var (p)->free_indices) + 1) *                         \
+	  sizeof (_pool_var (p)->free_indices[0]),                            \
+	0, 0);                                                                \
+    }                                                                         \
+  while (0)
+
 /** Tell the caller if pool get will expand the pool */
 #define pool_get_will_expand(P,YESNO) pool_get_aligned_will_expand(P,YESNO,0)
 
@@ -373,28 +392,30 @@ do {									\
  * @param A alignment (may be zero)
  * @return copy of pool
  */
-#define pool_dup_aligned(P,A)						\
-({									\
-  typeof (P) _pool_var (new) = 0;					\
-  pool_header_t * _pool_var (ph), * _pool_var (new_ph);			\
-  u32 _pool_var (n) = pool_len (P);					\
-  if ((P))								\
-    {									\
-      _pool_var (new) = _vec_resize (_pool_var (new), _pool_var (n),	\
-                                     _pool_var (n) * sizeof ((P)[0]), 	\
-                                     pool_aligned_header_bytes, (A));	\
-      clib_memcpy_fast (_pool_var (new), (P), 				\
-                        _pool_var (n) * sizeof ((P)[0]));		\
-      _pool_var (ph) = pool_header (P);					\
-      _pool_var (new_ph) = pool_header (_pool_var (new));		\
-      _pool_var (new_ph)->free_bitmap = 				\
-        clib_bitmap_dup (_pool_var (ph)->free_bitmap);			\
-      _pool_var (new_ph)->free_indices = 				\
-        vec_dup (_pool_var (ph)->free_indices);				\
-      _pool_var (new_ph)->max_elts = _pool_var (ph)->max_elts;		\
-    }									\
-  _pool_var (new);							\
-})
+#define pool_dup_aligned(P, A)                                                \
+  ({                                                                          \
+    typeof (P) _pool_var (new) = 0;                                           \
+    pool_header_t *_pool_var (ph), *_pool_var (new_ph);                       \
+    u32 _pool_var (n) = pool_len (P);                                         \
+    if ((P))                                                                  \
+      {                                                                       \
+	_pool_var (new) = _vec_resize (_pool_var (new), _pool_var (n),        \
+				       _pool_var (n) * sizeof ((P)[0]),       \
+				       pool_aligned_header_bytes, (A));       \
+	CLIB_MEM_OVERFLOW_PUSH ((P), _pool_var (n) * sizeof ((P)[0]));        \
+	clib_memcpy_fast (_pool_var (new), (P),                               \
+			  _pool_var (n) * sizeof ((P)[0]));                   \
+	CLIB_MEM_OVERFLOW_POP ();                                             \
+	_pool_var (ph) = pool_header (P);                                     \
+	_pool_var (new_ph) = pool_header (_pool_var (new));                   \
+	_pool_var (new_ph)->free_bitmap =                                     \
+	  clib_bitmap_dup (_pool_var (ph)->free_bitmap);                      \
+	_pool_var (new_ph)->free_indices =                                    \
+	  vec_dup (_pool_var (ph)->free_indices);                             \
+	_pool_var (new_ph)->max_elts = _pool_var (ph)->max_elts;              \
+      }                                                                       \
+    _pool_var (new);                                                          \
+  })
 
 /**
  * Return copy of pool without alignment

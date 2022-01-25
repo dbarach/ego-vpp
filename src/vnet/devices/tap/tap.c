@@ -58,13 +58,11 @@ tap_main_t tap_main;
       goto error; \
     }
 
-  /* *INDENT-OFF* */
-VNET_HW_INTERFACE_CLASS (tun_device_hw_interface_class, static) =
-{
+VNET_HW_INTERFACE_CLASS (tun_device_hw_interface_class, static) = {
   .name = "tun-device",
   .flags = VNET_HW_INTERFACE_CLASS_FLAG_P2P,
+  .tx_hash_fn_type = VNET_HASH_FN_TYPE_IP,
 };
-  /* *INDENT-ON* */
 
 #define TUN_MAX_PACKET_BYTES	 65355
 #define TUN_MIN_PACKET_BYTES	 64
@@ -89,6 +87,8 @@ tap_free (vlib_main_t * vm, virtio_if_t * vif)
   clib_error_t *err = 0;
   int i;
 
+  virtio_pre_input_node_disable (vm, vif);
+
   /* *INDENT-OFF* */
   vec_foreach_index (i, vif->vhost_fds) if (vif->vhost_fds[i] != -1)
     close (vif->vhost_fds[i]);
@@ -106,6 +106,7 @@ tap_free (vlib_main_t * vm, virtio_if_t * vif)
 error:
   vec_foreach_index (i, vif->tap_fds) close (vif->tap_fds[i]);
 
+  vec_free (vif->tap_fds);
   vec_free (vif->vhost_fds);
   vec_free (vif->rxq_vrings);
   vec_free (vif->txq_vrings);
@@ -129,6 +130,7 @@ tap_create_if (vlib_main_t * vm, tap_create_if_args_t * args)
   tap_main_t *tm = &tap_main;
   vnet_sw_interface_t *sw;
   vnet_hw_interface_t *hw;
+  vnet_hw_if_caps_change_t cc;
   int i, num_vhost_queues;
   int old_netns_fd = -1;
   struct ifreq ifr = {.ifr_flags = IFF_NO_PI | IFF_VNET_HDR };
@@ -190,41 +192,45 @@ tap_create_if (vlib_main_t * vm, tap_create_if_args_t * args)
 
   vif->dev_instance = vif - vim->interfaces;
   vif->id = args->id;
-  vif->num_txqs = thm->n_vlib_mains;
+  vif->num_txqs = clib_max (args->num_tx_queues, thm->n_vlib_mains);
   vif->num_rxqs = clib_max (args->num_rx_queues, 1);
 
   if (args->tap_flags & TAP_FLAG_ATTACH)
     {
-      if (args->host_if_name != NULL)
-	{
-	  host_if_name = (char *) args->host_if_name;
-	  clib_memcpy (ifr.ifr_name, host_if_name,
-		       clib_min (IFNAMSIZ, vec_len (host_if_name)));
-	}
-      else
+      if (args->host_if_name == NULL)
 	{
 	  args->rv = VNET_API_ERROR_NO_MATCHING_INTERFACE;
 	  err = clib_error_return (0, "host_if_name is not provided");
 	  goto error;
 	}
-      if (args->host_namespace)
+    }
+
+  /* if namespace is specified, all further netlink messages should be executed
+   * after we change our net namespace */
+  if (args->host_namespace)
+    {
+      old_netns_fd = clib_netns_open (NULL /* self */);
+      if ((nfd = clib_netns_open (args->host_namespace)) == -1)
 	{
-	  old_netns_fd = clib_netns_open (NULL /* self */);
-	  if ((nfd = clib_netns_open (args->host_namespace)) == -1)
-	    {
-	      args->rv = VNET_API_ERROR_SYSCALL_ERROR_2;
-	      args->error = clib_error_return_unix (0, "clib_netns_open '%s'",
-						    args->host_namespace);
-	      goto error;
-	    }
-	  if (clib_setns (nfd) == -1)
-	    {
-	      args->rv = VNET_API_ERROR_SYSCALL_ERROR_3;
-	      args->error = clib_error_return_unix (0, "setns '%s'",
-						    args->host_namespace);
-	      goto error;
-	    }
+	  args->rv = VNET_API_ERROR_SYSCALL_ERROR_2;
+	  args->error = clib_error_return_unix (0, "clib_netns_open '%s'",
+						args->host_namespace);
+	  goto error;
 	}
+      if (clib_setns (nfd) == -1)
+	{
+	  args->rv = VNET_API_ERROR_SYSCALL_ERROR_3;
+	  args->error =
+	    clib_error_return_unix (0, "setns '%s'", args->host_namespace);
+	  goto error;
+	}
+    }
+
+  if (args->host_if_name != NULL)
+    {
+      host_if_name = (char *) args->host_if_name;
+      clib_memcpy (ifr.ifr_name, host_if_name,
+		   clib_min (IFNAMSIZ, vec_len (host_if_name)));
     }
 
   if ((tfd = open ("/dev/net/tun", O_RDWR | O_NONBLOCK)) < 0)
@@ -398,54 +404,6 @@ tap_create_if (vlib_main_t * vm, tap_create_if_args_t * args)
   vif->features |= VIRTIO_FEATURE (VIRTIO_RING_F_INDIRECT_DESC);
 
   virtio_set_net_hdr_size (vif);
-
-  if (!(args->tap_flags & TAP_FLAG_ATTACH))
-    {
-      /* if namespace is specified, all further netlink messages should be executed
-         after we change our net namespace */
-      if (args->host_namespace)
-	{
-	  old_netns_fd = clib_netns_open (NULL /* self */);
-	  if ((nfd = clib_netns_open (args->host_namespace)) == -1)
-	    {
-	      args->rv = VNET_API_ERROR_SYSCALL_ERROR_2;
-	      args->error = clib_error_return_unix (0, "clib_netns_open '%s'",
-						    args->host_namespace);
-	      goto error;
-	    }
-	  args->error = vnet_netlink_set_link_netns (vif->ifindex, nfd,
-						     host_if_name);
-	  if (args->error)
-	    {
-	      args->rv = VNET_API_ERROR_NETLINK_ERROR;
-	      goto error;
-	    }
-	  if (clib_setns (nfd) == -1)
-	    {
-	      args->rv = VNET_API_ERROR_SYSCALL_ERROR_3;
-	      args->error = clib_error_return_unix (0, "setns '%s'",
-						    args->host_namespace);
-	      goto error;
-	    }
-	  if ((vif->ifindex = if_nametoindex (host_if_name)) == 0)
-	    {
-	      args->rv = VNET_API_ERROR_SYSCALL_ERROR_3;
-	      args->error = clib_error_return_unix (0, "if_nametoindex '%s'",
-						    host_if_name);
-	      goto error;
-	    }
-	}
-      else if (host_if_name)
-	{
-	  args->error =
-	    vnet_netlink_set_link_name (vif->ifindex, host_if_name);
-	  if (args->error)
-	    {
-	      args->rv = VNET_API_ERROR_NETLINK_ERROR;
-	      goto error;
-	    }
-	}
-    }
 
   if (vif->type == VIRTIO_IF_TYPE_TAP)
     {
@@ -668,10 +626,12 @@ tap_create_if (vlib_main_t * vm, tap_create_if_args_t * args)
 	ethernet_mac_address_generate (args->mac_addr.bytes);
 
       clib_memcpy (vif->mac_addr, args->mac_addr.bytes, 6);
-      vif->host_bridge = format (0, "%s%c", args->host_bridge, 0);
+      if (args->host_bridge)
+	vif->host_bridge = format (0, "%s%c", args->host_bridge, 0);
     }
   vif->host_if_name = format (0, "%s%c", host_if_name, 0);
-  vif->net_ns = format (0, "%s%c", args->host_namespace, 0);
+  if (args->host_namespace)
+    vif->net_ns = format (0, "%s%c", args->host_namespace, 0);
   vif->host_mtu_size = args->host_mtu_size;
   vif->tap_flags = args->tap_flags;
   clib_memcpy (vif->host_mac_addr, args->host_mac_addr.bytes, 6);
@@ -684,17 +644,13 @@ tap_create_if (vlib_main_t * vm, tap_create_if_args_t * args)
 
   if (vif->type != VIRTIO_IF_TYPE_TUN)
     {
-      args->error =
-	ethernet_register_interface (vnm, virtio_device_class.index,
-				     vif->dev_instance, vif->mac_addr,
-				     &vif->hw_if_index,
-				     virtio_eth_flag_change);
-      if (args->error)
-	{
-	  args->rv = VNET_API_ERROR_INVALID_REGISTRATION;
-	  goto error;
-	}
+      vnet_eth_interface_registration_t eir = {};
 
+      eir.dev_class_index = virtio_device_class.index;
+      eir.dev_instance = vif->dev_instance;
+      eir.address = vif->mac_addr;
+      eir.cb.flag_change = virtio_eth_flag_change;
+      vif->hw_if_index = vnet_eth_register_interface (vnm, &eir);
     }
   else
     {
@@ -710,18 +666,16 @@ tap_create_if (vlib_main_t * vm, tap_create_if_args_t * args)
   args->sw_if_index = vif->sw_if_index;
   args->rv = 0;
   hw = vnet_get_hw_interface (vnm, vif->hw_if_index);
-  hw->caps |= VNET_HW_INTERFACE_CAP_SUPPORTS_INT_MODE;
+  cc.mask = VNET_HW_IF_CAP_INT_MODE | VNET_HW_IF_CAP_TCP_GSO |
+	    VNET_HW_IF_CAP_TX_TCP_CKSUM | VNET_HW_IF_CAP_TX_UDP_CKSUM;
+  cc.val = VNET_HW_IF_CAP_INT_MODE;
+
   if (args->tap_flags & TAP_FLAG_GSO)
-    {
-      hw->caps |= VNET_HW_INTERFACE_CAP_SUPPORTS_TCP_GSO |
-		  VNET_HW_INTERFACE_CAP_SUPPORTS_TX_TCP_CKSUM |
-		  VNET_HW_INTERFACE_CAP_SUPPORTS_TX_UDP_CKSUM;
-    }
+    cc.val |= VNET_HW_IF_CAP_TCP_GSO | VNET_HW_IF_CAP_TX_TCP_CKSUM |
+	      VNET_HW_IF_CAP_TX_UDP_CKSUM;
   else if (args->tap_flags & TAP_FLAG_CSUM_OFFLOAD)
-    {
-      hw->caps |= VNET_HW_INTERFACE_CAP_SUPPORTS_TX_TCP_CKSUM |
-		  VNET_HW_INTERFACE_CAP_SUPPORTS_TX_UDP_CKSUM;
-    }
+    cc.val |= VNET_HW_IF_CAP_TX_TCP_CKSUM | VNET_HW_IF_CAP_TX_UDP_CKSUM;
+
   if ((args->tap_flags & TAP_FLAG_GSO)
       && (args->tap_flags & TAP_FLAG_GRO_COALESCE))
     {
@@ -729,18 +683,18 @@ tap_create_if (vlib_main_t * vm, tap_create_if_args_t * args)
     }
   if (vif->type == VIRTIO_IF_TYPE_TUN)
     {
-      hw->max_supported_packet_bytes = TUN_MAX_PACKET_BYTES;
-      hw->min_packet_bytes = hw->min_supported_packet_bytes =
-	TUN_MIN_PACKET_BYTES;
-      hw->max_packet_bytes =
-	args->host_mtu_size ? args->host_mtu_size : TUN_DEFAULT_PACKET_BYTES;
-      vnet_sw_interface_set_mtu (vnm, hw->sw_if_index, hw->max_packet_bytes);
+      hw->min_frame_size = TUN_MIN_PACKET_BYTES;
+      vnet_hw_interface_set_mtu (
+	vnm, hw->sw_if_index,
+	args->host_mtu_size ? args->host_mtu_size : TUN_DEFAULT_PACKET_BYTES);
     }
 
+  vnet_hw_if_change_caps (vnm, vif->hw_if_index, &cc);
+  virtio_pre_input_node_enable (vm, vif);
   virtio_vring_set_rx_queues (vm, vif);
+  virtio_vring_set_tx_queues (vm, vif);
 
   vif->per_interface_next_index = ~0;
-  vif->flags |= VIRTIO_IF_FLAG_ADMIN_UP;
   vnet_hw_interface_set_flags (vnm, vif->hw_if_index,
 			       VNET_HW_INTERFACE_FLAG_LINK_UP);
   /*
@@ -749,7 +703,6 @@ tap_create_if (vlib_main_t * vm, tap_create_if_args_t * args)
    * TUNSETCARRIER ioctl(). See tap_set_carrier().
    */
   vif->host_carrier_up = 1;
-  vif->cxq_vring = NULL;
 
   goto done;
 
@@ -767,7 +720,11 @@ done:
   if (vhost_mem)
     clib_mem_free (vhost_mem);
   if (old_netns_fd != -1)
-    close (old_netns_fd);
+    {
+      /* in case we errored with a switched netns */
+      clib_setns (old_netns_fd);
+      close (old_netns_fd);
+    }
   if (nfd != -1)
     close (nfd);
 }
@@ -812,6 +769,7 @@ tap_csum_offload_enable_disable (vlib_main_t * vm, u32 sw_if_index,
   virtio_main_t *mm = &virtio_main;
   virtio_if_t *vif;
   vnet_hw_interface_t *hw;
+  vnet_hw_if_caps_change_t cc;
   clib_error_t *err = 0;
   int i = 0;
 
@@ -829,21 +787,19 @@ tap_csum_offload_enable_disable (vlib_main_t * vm, u32 sw_if_index,
     _IOCTL (vif->tap_fds[i], TUNSETOFFLOAD, offload);
   vif->gso_enabled = 0;
   vif->packet_coalesce = 0;
-  vif->csum_offload_enabled = enable_disable ? 1 : 0;
 
-  if ((hw->caps & VNET_HW_INTERFACE_CAP_SUPPORTS_TCP_GSO) != 0)
-    {
-      hw->caps &= ~VNET_HW_INTERFACE_CAP_SUPPORTS_TCP_GSO;
-    }
-
+  cc.mask = VNET_HW_IF_CAP_TCP_GSO | VNET_HW_IF_CAP_L4_TX_CKSUM;
   if (enable_disable)
     {
-      hw->caps |= VNET_HW_INTERFACE_CAP_SUPPORTS_L4_TX_CKSUM;
+      cc.val = VNET_HW_IF_CAP_L4_TX_CKSUM;
+      vif->csum_offload_enabled = 1;
     }
   else
     {
-      hw->caps &= ~VNET_HW_INTERFACE_CAP_SUPPORTS_L4_TX_CKSUM;
+      cc.val = 0;
+      vif->csum_offload_enabled = 0;
     }
+  vnet_hw_if_change_caps (vnm, vif->hw_if_index, &cc);
 
 error:
   if (err)
@@ -863,6 +819,7 @@ tap_gso_enable_disable (vlib_main_t * vm, u32 sw_if_index, int enable_disable,
   virtio_main_t *mm = &virtio_main;
   virtio_if_t *vif;
   vnet_hw_interface_t *hw;
+  vnet_hw_if_caps_change_t cc;
   clib_error_t *err = 0;
   int i = 0;
 
@@ -878,29 +835,25 @@ tap_gso_enable_disable (vlib_main_t * vm, u32 sw_if_index, int enable_disable,
   unsigned int offload = enable_disable ? gso_on : gso_off;
   vec_foreach_index (i, vif->tap_fds)
     _IOCTL (vif->tap_fds[i], TUNSETOFFLOAD, offload);
-  vif->gso_enabled = enable_disable ? 1 : 0;
-  vif->csum_offload_enabled = 0;
+
+  cc.mask = VNET_HW_IF_CAP_TCP_GSO | VNET_HW_IF_CAP_L4_TX_CKSUM;
+
   if (enable_disable)
     {
-      if ((hw->caps & VNET_HW_INTERFACE_CAP_SUPPORTS_TCP_GSO) == 0)
-	{
-	  hw->caps |= VNET_HW_INTERFACE_CAP_SUPPORTS_TCP_GSO |
-		      VNET_HW_INTERFACE_CAP_SUPPORTS_L4_TX_CKSUM;
-	}
+      cc.val = cc.mask;
+      vif->gso_enabled = 1;
+      vif->csum_offload_enabled = 1;
       if (is_packet_coalesce)
-	{
-	  virtio_set_packet_coalesce (vif);
-	}
+	virtio_set_packet_coalesce (vif);
     }
   else
     {
-      if ((hw->caps & VNET_HW_INTERFACE_CAP_SUPPORTS_TCP_GSO) != 0)
-	{
-	  hw->caps &= ~(VNET_HW_INTERFACE_CAP_SUPPORTS_TCP_GSO |
-			VNET_HW_INTERFACE_CAP_SUPPORTS_L4_TX_CKSUM);
-	}
+      cc.val = 0;
+      vif->gso_enabled = 0;
+      vif->csum_offload_enabled = 0;
       vif->packet_coalesce = 0;
     }
+  vnet_hw_if_change_caps (vnm, vif->hw_if_index, &cc);
 
 error:
   if (err)

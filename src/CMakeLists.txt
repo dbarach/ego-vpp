@@ -11,9 +11,10 @@
 # See the License for the specific language governing permissions and
 # limitations under the License.
 
-cmake_minimum_required(VERSION 3.10)
+cmake_minimum_required(VERSION 3.13)
 
 set(CMAKE_C_COMPILER_NAMES
+  clang-13
   clang-12
   clang-11
   clang-10
@@ -25,16 +26,13 @@ set(CMAKE_C_COMPILER_NAMES
 
 project(vpp C)
 
-if(CMAKE_VERSION VERSION_LESS 3.12)
-  macro(add_compile_definitions defs)
-    foreach(d ${defs})
-      add_compile_options(-D${d})
-    endforeach()
-  endmacro()
+if(NOT DEFINED CMAKE_INSTALL_LIBDIR AND EXISTS "/etc/debian_version")
+  set(CMAKE_INSTALL_LIBDIR "lib/${CMAKE_LIBRARY_ARCHITECTURE}")
 endif()
 
 include(CheckCCompilerFlag)
 include(CheckIPOSupported)
+include(GNUInstallDirs)
 include(cmake/misc.cmake)
 include(cmake/cpu.cmake)
 include(cmake/ccache.cmake)
@@ -67,16 +65,16 @@ set(CMAKE_C_COMPILER_TARGET ${CMAKE_SYSTEM_PROCESSOR}-linux-gnu)
 ##############################################################################
 check_c_compiler_flag("-Wno-address-of-packed-member"
 		      compiler_flag_no_address_of_packed_member)
-set(VPP_RUNTIME_DIR "bin" CACHE STRING "Relative runtime directory path")
-set(VPP_LIBRARY_DIR "lib" CACHE STRING "Relative library directory path")
+set(VPP_RUNTIME_DIR ${CMAKE_INSTALL_BINDIR} CACHE STRING "Relative runtime directory path")
+set(VPP_LIBRARY_DIR ${CMAKE_INSTALL_LIBDIR} CACHE STRING "Relative library directory path")
 
 set(CMAKE_RUNTIME_OUTPUT_DIRECTORY ${CMAKE_BINARY_DIR}/${VPP_RUNTIME_DIR})
 set(CMAKE_LIBRARY_OUTPUT_DIRECTORY ${CMAKE_BINARY_DIR}/${VPP_LIBRARY_DIR})
 set(VPP_BINARY_DIR ${CMAKE_BINARY_DIR}/CMakeFiles)
-set(PYENV PYTHONPYCACHEPREFIX=${CMAKE_BINARY_DIR}/CMakeFile/__pycache__)
+set(PYENV PYTHONPYCACHEPREFIX=${CMAKE_BINARY_DIR}/CMakeFiles/__pycache__)
 
 if (CMAKE_BUILD_TYPE)
-  add_compile_options(-g -fPIC -Werror -Wall)
+  add_compile_options(-g -Werror -Wall)
 endif()
 
 if (compiler_flag_no_address_of_packed_member)
@@ -92,7 +90,6 @@ set(CMAKE_C_FLAGS_DEBUG "")
 if (${CMAKE_BUILD_TYPE_LC} MATCHES "release")
   add_compile_options(-O3 -fstack-protector -fno-common)
   add_compile_definitions(_FORTIFY_SOURCE=2)
-  set(CMAKE_EXE_LINKER_FLAGS_RELEASE "-pie")
 elseif (${CMAKE_BUILD_TYPE_LC} MATCHES "debug")
   add_compile_options(-O0 -fstack-protector -fno-common)
   add_compile_definitions(CLIB_DEBUG)
@@ -119,6 +116,10 @@ if (CMAKE_BUILD_TYPE_UC STREQUAL "RELEASE")
   endif()
 endif()
 
+if(VPP_USE_LTO)
+  check_c_compiler_flag("-Wno-stringop-overflow"
+		        compiler_flag_no_stringop_overflow)
+endif()
 ##############################################################################
 # sanitizers
 ##############################################################################
@@ -133,8 +134,7 @@ set(VPP_SANITIZE_ADDR_OPTIONS
 if (VPP_ENABLE_SANITIZE_ADDR)
   add_compile_options(-fsanitize=address)
   add_compile_definitions(CLIB_SANITIZE_ADDR)
-  set(CMAKE_EXE_LINKER_FLAGS "-fsanitize=address ${CMAKE_EXE_LINKER_FLAGS}")
-  set(CMAKE_SHARED_LINKER_FLAGS "-fsanitize=address ${CMAKE_SHARED_LINKER_FLAGS}")
+  add_link_options(-fsanitize=address)
 endif (VPP_ENABLE_SANITIZE_ADDR)
 
 ##############################################################################
@@ -147,11 +147,19 @@ if(VPP_ENABLE_TRAJECTORY_TRACE)
 endif()
 
 ##############################################################################
+# unittest with clang ode coverage
+##############################################################################
+
+if("${CMAKE_VERSION}" VERSION_GREATER_EQUAL "3.13" AND "${CMAKE_C_COMPILER_ID}" MATCHES "(Apple)?[Cc]lang")
+  option(VPP_BUILD_TESTS_WITH_COVERAGE "Build unit tests with code coverage" OFF)
+endif()
+
+##############################################################################
 # install config
 ##############################################################################
 option(VPP_SET_RPATH "Set rpath for resulting binaries and libraries." ON)
 if(VPP_SET_RPATH)
-  set(CMAKE_INSTALL_RPATH "${CMAKE_INSTALL_PREFIX}/lib")
+  set(CMAKE_INSTALL_RPATH "${CMAKE_INSTALL_PREFIX}/${VPP_LIBRARY_DIR}")
 endif()
 set(CMAKE_INSTALL_MESSAGE NEVER)
 
@@ -179,8 +187,8 @@ if(VPP_HOST_TOOLS_ONLY)
 elseif("${CMAKE_SYSTEM_NAME}" STREQUAL "Linux")
   find_package(OpenSSL)
   set(SUBDIRS
-    vppinfra svm vlib vlibmemory vlibapi vnet vpp vat vat2 vcl plugins
-    vpp-api tools/vppapigen tools/g2 tools/perftool cmake pkg
+    vppinfra svm vlib vlibmemory vlibapi vnet vpp vat vat2 vcl vpp-api
+    plugins tools/vppapigen tools/g2 tools/perftool cmake pkg
     tools/appimage
   )
 elseif("${CMAKE_SYSTEM_NAME}" STREQUAL "Darwin")
@@ -259,6 +267,7 @@ pr("VPP version" ${VPP_VERSION})
 pr("VPP library version" ${VPP_LIB_VERSION})
 pr("GIT toplevel dir" ${VPP_GIT_TOPLEVEL_DIR})
 pr("Build type" ${CMAKE_BUILD_TYPE})
+pr("C compiler" ${CMAKE_C_COMPILER})
 pr("C flags" ${CMAKE_C_FLAGS}${CMAKE_C_FLAGS_${CMAKE_BUILD_TYPE_UC}})
 pr("Linker flags (apps)" ${CMAKE_EXE_LINKER_FLAGS} ${CMAKE_EXE_LINKER_FLAGS_${CMAKE_BUILD_TYPE_UC}})
 pr("Linker flags (libs)" ${CMAKE_SHARED_LINKER_FLAGS} ${CMAKE_SHARED_LINKER_FLAGS_${CMAKE_BUILD_TYPE_UC}})
@@ -266,3 +275,4 @@ pr("Host processor" ${CMAKE_HOST_SYSTEM_PROCESSOR})
 pr("Target processor" ${CMAKE_SYSTEM_PROCESSOR})
 pr("Prefix path" ${CMAKE_PREFIX_PATH})
 pr("Install prefix" ${CMAKE_INSTALL_PREFIX})
+pr("Library dir" ${VPP_LIBRARY_DIR})

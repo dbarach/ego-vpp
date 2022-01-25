@@ -231,6 +231,10 @@ u32 vnet_register_interface (vnet_main_t * vnm,
 void vnet_set_interface_output_node (vnet_main_t * vnm,
 				     u32 hw_if_index, u32 node_index);
 
+void vnet_set_interface_l3_output_node (vlib_main_t *vm, u32 sw_if_index,
+					u8 *output_node);
+void vnet_reset_interface_l3_output_node (vlib_main_t *vm, u32 sw_if_index);
+
 /* Creates a software interface given template. */
 clib_error_t *vnet_create_sw_interface (vnet_main_t * vnm,
 					vnet_sw_interface_t * template,
@@ -306,7 +310,7 @@ always_inline u32
 vnet_hw_interface_get_mtu (vnet_main_t * vnm, u32 hw_if_index)
 {
   vnet_hw_interface_t *hw = vnet_get_hw_interface (vnm, hw_if_index);
-  return hw->max_packet_bytes;
+  return hw->max_frame_size - hw->frame_overhead;
 }
 
 always_inline u32
@@ -349,6 +353,9 @@ vnet_sw_interface_is_sub (vnet_main_t *vnm, u32 sw_if_index)
 
   return (sw->sw_if_index != sw->sup_sw_if_index);
 }
+
+clib_error_t *vnet_sw_interface_supports_addressing (vnet_main_t *vnm,
+						     u32 sw_if_index);
 
 always_inline vlib_frame_t *
 vnet_get_frame_to_sw_interface (vnet_main_t * vnm, u32 sw_if_index)
@@ -420,9 +427,16 @@ clib_error_t *set_hw_interface_change_rx_mode (vnet_main_t * vnm,
 /* Set rx-placement on the interface */
 clib_error_t *set_hw_interface_rx_placement (u32 hw_if_index, u32 queue_id,
 					     u32 thread_index, u8 is_main);
+/* Set tx-queue placement on the interface */
+int set_hw_interface_tx_queue (u32 hw_if_index, u32 queue_id, uword *bitmap);
 
+/* Set the Max Frame Size on the HW interface */
+clib_error_t *vnet_hw_interface_set_max_frame_size (vnet_main_t *vnm,
+						    u32 hw_if_index,
+						    u32 max_frame_size);
 /* Set the MTU on the HW interface */
-void vnet_hw_interface_set_mtu (vnet_main_t * vnm, u32 hw_if_index, u32 mtu);
+clib_error_t *vnet_hw_interface_set_mtu (vnet_main_t *vnm, u32 hw_if_index,
+					 u32 mtu);
 
 /* Set the MTU on the SW interface */
 void vnet_sw_interface_set_mtu (vnet_main_t * vnm, u32 sw_if_index, u32 mtu);
@@ -502,6 +516,7 @@ typedef enum
 {
   VNET_INTERFACE_OUTPUT_ERROR_INTERFACE_DOWN,
   VNET_INTERFACE_OUTPUT_ERROR_INTERFACE_DELETED,
+  VNET_INTERFACE_OUTPUT_ERROR_NO_TX_QUEUE,
 } vnet_interface_output_error_t;
 
 /* Format for interface output traces. */
@@ -547,6 +562,31 @@ pcap_add_buffer (pcap_main_t *pm, struct vlib_main_t *vm, u32 buffer_index,
       clib_spinlock_unlock_if_init (&pm->lock);
     }
 }
+
+typedef struct
+{
+  vnet_hw_if_caps_t val;
+  vnet_hw_if_caps_t mask;
+} vnet_hw_if_caps_change_t;
+
+void vnet_hw_if_change_caps (vnet_main_t *vnm, u32 hw_if_index,
+			     vnet_hw_if_caps_change_t *caps);
+
+static_always_inline void
+vnet_hw_if_set_caps (vnet_main_t *vnm, u32 hw_if_index, vnet_hw_if_caps_t caps)
+{
+  vnet_hw_if_caps_change_t cc = { .val = caps, .mask = caps };
+  vnet_hw_if_change_caps (vnm, hw_if_index, &cc);
+}
+
+static_always_inline void
+vnet_hw_if_unset_caps (vnet_main_t *vnm, u32 hw_if_index,
+		       vnet_hw_if_caps_t caps)
+{
+  vnet_hw_if_caps_change_t cc = { .val = 0, .mask = caps };
+  vnet_hw_if_change_caps (vnm, hw_if_index, &cc);
+}
+
 #endif /* included_vnet_interface_funcs_h */
 
 /*

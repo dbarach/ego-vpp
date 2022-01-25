@@ -45,6 +45,10 @@
 #include <vlibmemory/vl_memory_api_h.h>
 #undef vl_endianfun
 
+#define vl_calcsizefun
+#include <vlibmemory/vl_memory_api_h.h>
+#undef vl_calcsizefun
+
 socket_main_t socket_main;
 
 #define SOCK_API_REG_HANDLE_BIT (1<<31)
@@ -179,7 +183,8 @@ vl_socket_free_registration_index (u32 pool_index)
     }
   rp = pool_elt_at_index (socket_main.registration_pool, pool_index);
 
-  vl_api_call_reaper_functions (pool_index);
+  vl_api_call_reaper_functions (
+    clib_host_to_net_u32 (sock_api_registration_handle (rp)));
 
   ASSERT (rp->registration_type != REGISTRATION_TYPE_FREE);
   for (i = 0; i < vec_len (rp->additional_fds_to_close); i++)
@@ -200,7 +205,7 @@ vl_socket_process_api_msg (vl_api_registration_t * rp, i8 * input_v)
 
   u8 *the_msg = (u8 *) (mbp->data);
   socket_main.current_rp = rp;
-  vl_msg_api_socket_handler (the_msg);
+  vl_msg_api_socket_handler (the_msg, ntohl (mbp->data_len));
   socket_main.current_rp = 0;
 }
 
@@ -495,7 +500,13 @@ vl_api_sockclnt_create_t_handler (vl_api_sockclnt_create_t * mp)
 
   regp = socket_main.current_rp;
 
-  ASSERT (regp->registration_type == REGISTRATION_TYPE_SOCKET_SERVER);
+  /* client already connected through shared memory? */
+  if (!regp || regp->registration_type != REGISTRATION_TYPE_SOCKET_SERVER)
+    {
+      clib_warning (
+	"unsupported API call: already connected though shared memory?");
+      return;
+    }
 
   regp->name = format (0, "%s%c", mp->name, 0);
 
@@ -765,14 +776,15 @@ reply:
   vl_sock_api_send_fd_msg (cf->file_descriptor, &memfd->fd, 1);
 }
 
-#define foreach_vlib_api_msg                    	\
-  _(SOCKCLNT_CREATE, sockclnt_create, 1)             	\
-  _(SOCKCLNT_DELETE, sockclnt_delete, 1)		\
-  _(SOCK_INIT_SHM, sock_init_shm, 1)
+#define foreach_vlib_api_msg                                                  \
+  _ (SOCKCLNT_CREATE, sockclnt_create, 0)                                     \
+  _ (SOCKCLNT_DELETE, sockclnt_delete, 0)                                     \
+  _ (SOCK_INIT_SHM, sock_init_shm, 0)
 
 clib_error_t *
 vl_sock_api_init (vlib_main_t * vm)
 {
+  api_main_t *am = vlibapi_get_main ();
   clib_file_main_t *fm = &file_main;
   clib_file_t template = { 0 };
   vl_api_registration_t *rp;
@@ -784,13 +796,13 @@ vl_sock_api_init (vlib_main_t * vm)
   if (sm->socket_name == 0)
     return 0;
 
-#define _(N,n,t)						\
-    vl_msg_api_set_handlers(VL_API_##N, #n,                     \
-                           vl_api_##n##_t_handler,              \
-                           vl_noop_handler,                     \
-                           vl_api_##n##_t_endian,               \
-                           vl_api_##n##_t_print,                \
-                           sizeof(vl_api_##n##_t), t);
+#define _(N, n, t)                                                            \
+  vl_msg_api_set_handlers (                                                   \
+    VL_API_##N, #n, vl_api_##n##_t_handler, vl_noop_handler,                  \
+    vl_api_##n##_t_endian, vl_api_##n##_t_print, sizeof (vl_api_##n##_t), t,  \
+    vl_api_##n##_t_print_json, vl_api_##n##_t_tojson,                         \
+    vl_api_##n##_t_fromjson, vl_api_##n##_t_calc_size);                       \
+  am->api_trace_cfg[VL_API_##N].replay_enable = 0;
   foreach_vlib_api_msg;
 #undef _
 

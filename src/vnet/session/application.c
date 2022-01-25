@@ -642,7 +642,7 @@ app_rx_mqs_alloc (application_t *app)
   cfg->ring_cfgs = rc;
 
   eqs->ssvm.ssvm_size = svm_msg_q_size_to_alloc (cfg) * n_mqs + (1 << 20);
-  eqs->ssvm.name = format (0, "%s-rx-mqs-seg%c", app->name, 0);
+  eqs->ssvm.name = format (0, "%v-rx-mqs-seg%c", app->name, 0);
 
   if (ssvm_server_init (&eqs->ssvm, SSVM_SEGMENT_MEMFD))
     {
@@ -684,7 +684,7 @@ application_get_rx_mqs_segment (application_t *app)
 {
   if (application_use_private_rx_mqs ())
     return &app->rx_mqs_segment;
-  return session_main_get_evt_q_segment ();
+  return session_main_get_wrk_mqs_segment ();
 }
 
 void
@@ -747,14 +747,14 @@ application_verify_cfg (ssvm_segment_type_t st)
   u8 is_valid;
   if (st == SSVM_SEGMENT_MEMFD)
     {
-      is_valid = (session_main_get_evt_q_segment () != 0);
+      is_valid = (session_main_get_wrk_mqs_segment () != 0);
       if (!is_valid)
 	clib_warning ("memfd seg: vpp's event qs IN binary api svm region");
       return is_valid;
     }
   else if (st == SSVM_SEGMENT_SHM)
     {
-      is_valid = (session_main_get_evt_q_segment () == 0);
+      is_valid = (session_main_get_wrk_mqs_segment () == 0);
       if (!is_valid)
 	clib_warning ("shm seg: vpp's event qs NOT IN binary api svm region");
       return is_valid;
@@ -947,6 +947,31 @@ application_detach_process (application_t * app, u32 api_client_index)
   vec_free (wrks);
 }
 
+void
+application_namespace_cleanup (app_namespace_t *app_ns)
+{
+  u32 *app_indices = 0, *app_index;
+  application_t *app;
+  u32 ns_index;
+
+  ns_index = app_namespace_index (app_ns);
+  pool_foreach (app, app_main.app_pool)
+    if (app->ns_index == ns_index)
+      vec_add1 (app_indices, app->ns_index);
+
+  vec_foreach (app_index, app_indices)
+    {
+      app = application_get (*app_index);
+
+      if (application_is_proxy (app))
+	application_remove_proxy (app);
+      app->flags &= ~APP_OPTIONS_FLAGS_IS_PROXY;
+
+      application_free (app);
+    }
+  vec_free (app_indices);
+}
+
 app_worker_t *
 application_get_worker (application_t * app, u32 wrk_map_index)
 {
@@ -1061,6 +1086,8 @@ vnet_app_worker_add_del (vnet_app_worker_add_del_args_t * a)
 	return VNET_API_ERROR_INVALID_VALUE;
 
       application_api_table_del (app_wrk->api_client_index);
+      if (appns_sapi_enabled ())
+	sapi_socket_close_w_handle (app_wrk->api_client_index);
       app_worker_free (app_wrk);
       app_worker_map_free (app, wrk_map);
       if (application_n_workers (app) == 0)
@@ -1609,12 +1636,8 @@ application_setup_proxy (application_t * app)
 
   ASSERT (application_is_proxy (app));
 
-  /* *INDENT-OFF* */
-  transport_proto_foreach (tp, ({
-    if (transports & (1 << tp))
-      application_start_stop_proxy (app, tp, 1);
-  }));
-  /* *INDENT-ON* */
+  transport_proto_foreach (tp, transports)
+    application_start_stop_proxy (app, tp, 1);
 }
 
 void
@@ -1625,12 +1648,8 @@ application_remove_proxy (application_t * app)
 
   ASSERT (application_is_proxy (app));
 
-  /* *INDENT-OFF* */
-  transport_proto_foreach (tp, ({
-    if (transports & (1 << tp))
-      application_start_stop_proxy (app, tp, 0);
-  }));
-  /* *INDENT-ON* */
+  transport_proto_foreach (tp, transports)
+    application_start_stop_proxy (app, tp, 0);
 }
 
 segment_manager_props_t *
@@ -1905,10 +1924,11 @@ static clib_error_t *
 show_app_command_fn (vlib_main_t * vm, unformat_input_t * input,
 		     vlib_cli_command_t * cmd)
 {
-  int do_server = 0, do_client = 0, do_mq = 0;
+  int do_server = 0, do_client = 0, do_mq = 0, do_transports = 0;
   application_t *app;
   u32 app_index = ~0;
   int verbose = 0;
+  u8 is_ta;
 
   session_cli_return_if_not_enabled ();
 
@@ -1918,6 +1938,8 @@ show_app_command_fn (vlib_main_t * vm, unformat_input_t * input,
 	do_server = 1;
       else if (unformat (input, "client"))
 	do_client = 1;
+      else if (unformat (input, "transports"))
+	do_transports = 1;
       else if (unformat (input, "mq"))
 	do_mq = 1;
       else if (unformat (input, "%u", &app_index))
@@ -1971,11 +1993,11 @@ show_app_command_fn (vlib_main_t * vm, unformat_input_t * input,
   if (!do_server && !do_client)
     {
       vlib_cli_output (vm, "%U", format_application, 0, 0);
-      /* *INDENT-OFF* */
       pool_foreach (app, app_main.app_pool)  {
-	vlib_cli_output (vm, "%U", format_application, app, 0);
+	  is_ta = app->flags & APP_OPTIONS_FLAGS_IS_TRANSPORT_APP;
+	  if ((!do_transports && !is_ta) || (do_transports && is_ta))
+	    vlib_cli_output (vm, "%U", format_application, app, 0);
       }
-      /* *INDENT-ON* */
     }
 
   return 0;
@@ -2078,23 +2100,20 @@ application_init (vlib_main_t * vm)
   return 0;
 }
 
-/* *INDENT-OFF* */
 VLIB_INIT_FUNCTION (application_init);
 
-VLIB_CLI_COMMAND (show_app_command, static) =
-{
+VLIB_CLI_COMMAND (show_app_command, static) = {
   .path = "show app",
-  .short_help = "show app [app_id] [server|client] [mq] [verbose]",
+  .short_help = "show app [index] [server|client] [mq] [verbose] "
+		"[transports]",
   .function = show_app_command_fn,
 };
 
-VLIB_CLI_COMMAND (show_certificate_command, static) =
-{
+VLIB_CLI_COMMAND (show_certificate_command, static) = {
   .path = "show app certificate",
   .short_help = "list app certs and keys present in store",
   .function = show_certificate_command_fn,
 };
-/* *INDENT-ON* */
 
 crypto_engine_type_t
 app_crypto_engine_type_add (void)

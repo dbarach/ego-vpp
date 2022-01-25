@@ -27,6 +27,7 @@
 #include <vnet/gso/hdr_offset_parser.h>
 #include <vnet/ip/ip4_packet.h>
 #include <vnet/ip/ip6_packet.h>
+#include <vnet/ip/ip_psh_cksum.h>
 #include <vnet/tcp/tcp_packet.h>
 #include <vnet/udp/udp_packet.h>
 #include <vnet/devices/virtio/virtio.h>
@@ -88,9 +89,8 @@ format_virtio_tx_trace (u8 * s, va_list * va)
   virtio_tx_trace_t *t = va_arg (*va, virtio_tx_trace_t *);
   u32 indent = format_get_indent (s);
 
-  s = format (s, "%Ubuffer 0x%x: %U\n",
-	      format_white_space, indent,
-	      t->buffer_index, format_vnet_buffer, &t->buffer);
+  s = format (s, "%Ubuffer 0x%x: %U\n", format_white_space, indent,
+	      t->buffer_index, format_vnet_buffer_no_chain, &t->buffer);
   s =
     format (s, "%U%U\n", format_white_space, indent,
 	    format_generic_header_offset, &t->gho);
@@ -297,37 +297,60 @@ set_checksum_offsets (vlib_buffer_t *b, virtio_net_hdr_v1_t *hdr,
 					 0 /* ip6 */ );
       hdr->flags = VIRTIO_NET_HDR_F_NEEDS_CSUM;
       hdr->csum_start = gho.l4_hdr_offset;	// 0x22;
+
+      /*
+       * virtio devices do not support IP4 checksum offload. So driver takes
+       * care of it while doing tx.
+       */
+      ip4 = (ip4_header_t *) (vlib_buffer_get_current (b) + gho.l3_hdr_offset);
+      if (oflags & VNET_BUFFER_OFFLOAD_F_IP_CKSUM)
+	ip4->checksum = ip4_header_checksum (ip4);
+
+      /*
+       * virtio devices assume the l4 header is set to the checksum of the
+       * l3 pseudo-header, so we compute it before tx-ing
+       */
       if (oflags & VNET_BUFFER_OFFLOAD_F_TCP_CKSUM)
 	{
+	  tcp_header_t *tcp =
+	    (tcp_header_t *) (vlib_buffer_get_current (b) + gho.l4_hdr_offset);
+	  tcp->checksum = ip4_pseudo_header_cksum (ip4);
 	  hdr->csum_offset = STRUCT_OFFSET_OF (tcp_header_t, checksum);
 	}
       else if (oflags & VNET_BUFFER_OFFLOAD_F_UDP_CKSUM)
 	{
+	  udp_header_t *udp =
+	    (udp_header_t *) (vlib_buffer_get_current (b) + gho.l4_hdr_offset);
+	  udp->checksum = ip4_pseudo_header_cksum (ip4);
 	  hdr->csum_offset = STRUCT_OFFSET_OF (udp_header_t, checksum);
 	}
-
-      /*
-       * virtio devices do not support IP4 checksum offload. So driver takes care
-       * of it while doing tx.
-       */
-      ip4 =
-	(ip4_header_t *) (vlib_buffer_get_current (b) + gho.l3_hdr_offset);
-      if (oflags & VNET_BUFFER_OFFLOAD_F_IP_CKSUM)
-	ip4->checksum = ip4_header_checksum (ip4);
     }
   else if (b->flags & VNET_BUFFER_F_IS_IP6)
     {
+      ip6_header_t *ip6;
       generic_header_offset_t gho = { 0 };
       vnet_generic_header_offset_parser (b, &gho, is_l2, 0 /* ip4 */ ,
 					 1 /* ip6 */ );
       hdr->flags = VIRTIO_NET_HDR_F_NEEDS_CSUM;
       hdr->csum_start = gho.l4_hdr_offset;	// 0x36;
+      ip6 = (ip6_header_t *) (vlib_buffer_get_current (b) + gho.l3_hdr_offset);
+
+      /*
+       * virtio devices assume the l4 header is set to the checksum of the
+       * l3 pseudo-header, so we compute it before tx-ing
+       */
       if (oflags & VNET_BUFFER_OFFLOAD_F_TCP_CKSUM)
 	{
+	  tcp_header_t *tcp =
+	    (tcp_header_t *) (vlib_buffer_get_current (b) + gho.l4_hdr_offset);
+	  tcp->checksum = ip6_pseudo_header_cksum (ip6);
 	  hdr->csum_offset = STRUCT_OFFSET_OF (tcp_header_t, checksum);
 	}
       else if (oflags & VNET_BUFFER_OFFLOAD_F_UDP_CKSUM)
 	{
+	  udp_header_t *udp =
+	    (udp_header_t *) (vlib_buffer_get_current (b) + gho.l4_hdr_offset);
+	  udp->checksum = ip6_pseudo_header_cksum (ip6);
 	  hdr->csum_offset = STRUCT_OFFSET_OF (udp_header_t, checksum);
 	}
     }
@@ -777,6 +800,7 @@ virtio_interface_tx_packed_gso_inline (vlib_main_t *vm,
 	      vring->avail_wrap_counter ^= 1;
 	    }
 	}
+      virtio_txq_clear_scheduled (vring);
     }
 
   while (n_left && used < sz)
@@ -917,6 +941,7 @@ virtio_interface_tx_split_gso_inline (vlib_main_t *vm,
 	  n_buffers_left--;
 	  free_desc_count -= n_added;
 	}
+      virtio_txq_clear_scheduled (vring);
     }
 
   while (n_left && free_desc_count)
@@ -984,12 +1009,12 @@ virtio_interface_tx_inline (vlib_main_t *vm, vlib_node_runtime_t *node,
   vnet_main_t *vnm = vnet_get_main ();
   vnet_hw_interface_t *hw = vnet_get_hw_interface (vnm, vif->hw_if_index);
 
-  if (hw->caps & VNET_HW_INTERFACE_CAP_SUPPORTS_TCP_GSO)
+  if (hw->caps & VNET_HW_IF_CAP_TCP_GSO)
     return virtio_interface_tx_gso_inline (vm, node, vif, type, vring,
 					   buffers, n_left, packed,
 					   1 /* do_gso */ ,
 					   1 /* checksum offload */ );
-  else if (hw->caps & VNET_HW_INTERFACE_CAP_SUPPORTS_L4_TX_CKSUM)
+  else if (hw->caps & VNET_HW_IF_CAP_L4_TX_CKSUM)
     return virtio_interface_tx_gso_inline (vm, node, vif, type, vring,
 					   buffers, n_left, packed,
 					   0 /* no do_gso */ ,
@@ -1008,7 +1033,8 @@ VNET_DEVICE_CLASS_TX_FN (virtio_device_class) (vlib_main_t * vm,
   virtio_main_t *nm = &virtio_main;
   vnet_interface_output_runtime_t *rund = (void *) node->runtime_data;
   virtio_if_t *vif = pool_elt_at_index (nm->interfaces, rund->dev_instance);
-  u16 qid = vm->thread_index % vif->num_txqs;
+  vnet_hw_if_tx_frame_t *tf = vlib_frame_scalar_args (frame);
+  u16 qid = tf->queue_id;
   virtio_vring_t *vring = vec_elt_at_index (vif->txq_vrings, qid);
   u16 n_left = frame->n_vectors;
   u32 *buffers = vlib_frame_vector_args (frame);
@@ -1016,13 +1042,15 @@ VNET_DEVICE_CLASS_TX_FN (virtio_device_class) (vlib_main_t * vm,
   int packed = vif->is_packed;
   u16 n_vectors = frame->n_vectors;
 
-  clib_spinlock_lock_if_init (&vring->lockp);
+  if (tf->shared_queue)
+    clib_spinlock_lock (&vring->lockp);
 
   if (vif->packet_coalesce)
     {
       n_vectors = n_left =
 	vnet_gro_inline (vm, vring->flow_table, buffers, n_left, to);
       buffers = to;
+      virtio_txq_clear_scheduled (vring);
     }
 
   u16 retry_count = 2;
@@ -1066,7 +1094,8 @@ retry:
 				  &buffers[n_vectors - n_left], n_left,
 				  VIRTIO_TX_ERROR_NO_FREE_SLOTS);
 
-  clib_spinlock_unlock_if_init (&vring->lockp);
+  if (tf->shared_queue)
+    clib_spinlock_unlock (&vring->lockp);
 
   return frame->n_vectors - n_left;
 }
@@ -1119,7 +1148,6 @@ static clib_error_t *
 virtio_interface_rx_mode_change (vnet_main_t * vnm, u32 hw_if_index, u32 qid,
 				 vnet_hw_if_rx_mode mode)
 {
-  vlib_main_t *vm = vnm->vlib_main;
   virtio_main_t *mm = &virtio_main;
   vnet_hw_interface_t *hw = vnet_get_hw_interface (vnm, hw_if_index);
   virtio_if_t *vif = pool_elt_at_index (mm->interfaces, hw->dev_instance);
@@ -1132,30 +1160,9 @@ virtio_interface_rx_mode_change (vnet_main_t * vnm, u32 hw_if_index, u32 qid,
     }
 
   if (mode == VNET_HW_IF_RX_MODE_POLLING)
-    {
-      if (vif->packet_coalesce || vif->packet_buffering)
-	{
-	  if (mm->interrupt_queues_count > 0)
-	    mm->interrupt_queues_count--;
-	  if (mm->interrupt_queues_count == 0)
-	    vlib_process_signal_event (vm,
-				       virtio_send_interrupt_node.index,
-				       VIRTIO_EVENT_STOP_TIMER, 0);
-	}
       virtio_set_rx_polling (vif, rx_vring);
-    }
   else
-    {
-      if (vif->packet_coalesce || vif->packet_buffering)
-	{
-	  mm->interrupt_queues_count++;
-	  if (mm->interrupt_queues_count == 1)
-	    vlib_process_signal_event (vm,
-				       virtio_send_interrupt_node.index,
-				       VIRTIO_EVENT_START_TIMER, 0);
-	}
       virtio_set_rx_interrupt (vif, rx_vring);
-    }
 
   rx_vring->mode = mode;
 

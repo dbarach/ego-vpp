@@ -22,6 +22,38 @@
 
 /* EventCode, UMask, EdgeDetect, AnyThread, Invert, CounterMask
  * counter_unit, name, suffix, description */
+#define foreach_perf_intel_peusdo_event                                       \
+  _ (0x00, 0x80, 0, 0, 0, 0x00, TOPDOWN, L1_RETIRING_METRIC,                  \
+     "TMA retiring slots for an unhalted logical processor.")                 \
+  _ (0x00, 0x81, 0, 0, 0, 0x00, TOPDOWN, L1_BAD_SPEC_METRIC,                  \
+     "TMA bad spec slots or an unhalted logical processor.")                  \
+  _ (0x00, 0x82, 0, 0, 0, 0x00, TOPDOWN, L1_FE_BOUND_METRIC,                  \
+     "TMA fe bound slots for an unhalted logical processor.")                 \
+  _ (0x00, 0x83, 0, 0, 0, 0x00, TOPDOWN, L1_BE_BOUND_METRIC,                  \
+     "TMA be bound slots for an unhalted logical processor.")                 \
+  _ (0x00, 0x84, 0, 0, 0, 0x00, TOPDOWN, L2_HEAVYOPS_METRIC,                  \
+     "TMA heavy operations for an unhalted logical processor.")               \
+  _ (0x00, 0x85, 0, 0, 0, 0x00, TOPDOWN, L2_BMISPRED_METRIC,                  \
+     "TMA branch misprediction slots or an unhalted logical processor.")      \
+  _ (0x00, 0x86, 0, 0, 0, 0x00, TOPDOWN, L2_FETCHLAT_METRIC,                  \
+     "TMA fetch latency slots for an unhalted logical processor.")            \
+  _ (0x00, 0x87, 0, 0, 0, 0x00, TOPDOWN, L2_MEMBOUND_METRIC,                  \
+     "TMA mem bound slots for an unhalted logical processor.")
+
+/* EventCode, UMask, EdgeDetect, AnyThread, Invert, CounterMask
+ * counter_unit, name, suffix, description */
+#define foreach_perf_intel_tremont_event                                      \
+  _ (0xc2, 0x00, 0, 0, 0, 0x00, TOPDOWN, L1_RETIRING_TREMONT,                 \
+     "TMA retiring slots for an unhalted logical processor.")                 \
+  _ (0x71, 0x00, 0, 0, 0, 0x00, TOPDOWN, L1_FE_BOUND_TREMONT,                 \
+     "TMA fe bound slots for an unhalted logical processor.")                 \
+  _ (0x73, 0x06, 0, 0, 0, 0x00, TOPDOWN, L1_BAD_SPEC_TREMONT,                 \
+     "TMA bad spec slots or an unhalted logical processor.")                  \
+  _ (0x74, 0x00, 0, 0, 0, 0x00, TOPDOWN, L1_BE_BOUND_TREMONT,                 \
+     "TMA be bound slots for an unhalted logical processor.")
+
+/* EventCode, UMask, EdgeDetect, AnyThread, Invert, CounterMask
+ * counter_unit, name, suffix, description */
 #define foreach_perf_intel_core_event                                         \
   _ (0x00, 0x02, 0, 0, 0, 0x00, CPU_CLK_UNHALTED, THREAD,                     \
      "Core cycles when the thread is not in halt state")                      \
@@ -29,8 +61,6 @@
      "Reference cycles when the core is not in halt state.")                  \
   _ (0x00, 0x04, 0, 0, 0, 0x00, TOPDOWN, SLOTS,                               \
      "TMA slots available for an unhalted logical processor.")                \
-  _ (0x00, 0x80, 0, 0, 0, 0x00, TOPDOWN, L1_METRICS,                          \
-     "TMA slots metrics for an unhalted logical processor.")                  \
   _ (0x03, 0x02, 0, 0, 0, 0x00, LD_BLOCKS, STORE_FORWARD,                     \
      "Loads blocked due to overlapping with a preceding store that cannot be" \
      " forwarded.")                                                           \
@@ -99,6 +129,22 @@
   _ (0x9C, 0x01, 0, 0, 0, 0x00, IDQ_UOPS_NOT_DELIVERED, CORE,                 \
      "Uops not delivered to Resource Allocation Table (RAT) per thread when " \
      "backend of the machine is not stalled")                                 \
+  _ (0xA2, 0x08, 0, 0, 0, 0x00, RESOURCE_STALLS, SB,                          \
+     "Counts allocation stall cycles caused by the store buffer (SB) being "  \
+     "full. This counts cycles that the pipeline back-end blocked uop "       \
+     "delivery"                                                               \
+     "from the front-end.")                                                   \
+  _ (0xA3, 0x04, 0, 0, 0, 0x04, CYCLE_ACTIVITY, CYCLES_NO_EXECUTE,            \
+     "This event counts cycles during which no instructions were executed in" \
+     " the execution stage of the pipeline.")                                 \
+  _ (0xA3, 0x05, 0, 0, 0, 0x05, CYCLE_ACTIVITY, STALLS_L2_MISS,               \
+     "Execution stalls while L2 cache miss demand load is outstanding")       \
+  _ (0xA3, 0x06, 0, 0, 0, 0x06, CYCLE_ACTIVITY, STALLS_L3_MISS,               \
+     "Execution stalls while L3 cache miss demand load is outstanding")       \
+  _ (0xA3, 0x0C, 0, 0, 0, 0x0C, CYCLE_ACTIVITY, STALLS_L1D_MISS,              \
+     "Execution stalls while L1 cache miss demand load is outstanding")       \
+  _ (0xA3, 0x14, 0, 0, 0, 0x14, CYCLE_ACTIVITY, STALLS_MEM_ANY,               \
+     "Execution stalls while memory subsystem has an outstanding load.")      \
   _ (0xC0, 0x00, 0, 0, 0, 0x00, INST_RETIRED, ANY_P,                          \
      "Number of instructions retired. General Counter - architectural event") \
   _ (0xC2, 0x02, 0, 0, 0, 0x00, UOPS_RETIRED, RETIRE_SLOTS,                   \
@@ -156,6 +202,9 @@
      "L2 writebacks that access L2 cache")                                    \
   _ (0xF1, 0x1F, 0, 0, 0, 0x00, L2_LINES_IN, ALL,                             \
      "L2 cache lines filling L2")                                             \
+  _ (0xF4, 0x04, 0, 0, 0, 0x00, SQ_MISC, SQ_FULL,                             \
+     "Counts the cycles for which the thread is active and the superQ cannot" \
+     "take any more entries.")                                                \
   _ (0xFE, 0x02, 0, 0, 0, 0x00, IDI_MISC, WB_UPGRADE,                         \
      "Counts number of cache lines that are allocated and written back to L3" \
      " with the intention that they are more likely to be reused shortly")    \
@@ -167,9 +216,10 @@ typedef enum
 {
 #define _(event, umask, edge, any, inv, cmask, name, suffix, desc)            \
   INTEL_CORE_E_##name##_##suffix,
-  foreach_perf_intel_core_event
+  foreach_perf_intel_core_event foreach_perf_intel_peusdo_event
+    foreach_perf_intel_tremont_event
 #undef _
-    INTEL_CORE_N_EVENTS,
+      INTEL_CORE_N_EVENTS,
 } perf_intel_core_event_t;
 
 #endif

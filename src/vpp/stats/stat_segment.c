@@ -780,9 +780,9 @@ do_stat_segment_updates (vlib_main_t *vm, stat_segment_main_t *sm)
   /* *INDENT-OFF* */
   stat_segment_gauges_pool_t *g;
   pool_foreach (g, sm->gauges)
-   {
-    g->fn(&sm->directory_vector[g->directory_index], g->caller_index);
-  }
+    {
+      g->fn (&sm->directory_vector[g->directory_index], g->caller_index);
+    }
   /* *INDENT-ON* */
 
   /* Heartbeat, so clients detect we're still here */
@@ -900,7 +900,7 @@ stat_segment_poll_add (u32 vector_index, stat_segment_update_fn update_fn,
  * Deprecated, replace with stat_segment_new_entry + stat_segment_pool_add
  */
 clib_error_t *
-stat_segment_register_gauge (u8 * name, stat_segment_update_fn update_fn,
+stat_segment_register_gauge (u8 *name, stat_segment_update_fn update_fn,
 			     u32 caller_index)
 {
   stat_segment_main_t *sm = &stat_segment_main;

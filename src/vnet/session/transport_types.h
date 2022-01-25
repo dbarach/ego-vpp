@@ -21,9 +21,7 @@
 #include <vnet/tcp/tcp_debug.h>
 #include <vppinfra/bihash_24_8.h>
 
-
 #define TRANSPORT_MAX_HDRS_LEN    140	/* Max number of bytes for headers */
-
 
 typedef enum transport_dequeue_type_
 {
@@ -106,6 +104,7 @@ typedef struct _transport_connection
   u32 c_index;			/**< Connection index in transport pool */
   u32 thread_index;		/**< Worker-thread index */
   u8 flags;			/**< Transport specific flags */
+  u8 dscp;			/**< Differentiated Services Code Point */
 
   /*fib_node_index_t rmt_fei;
      dpo_id_t rmt_dpo; */
@@ -146,6 +145,7 @@ typedef struct _transport_connection
 #define c_stats connection.stats
 #define c_pacer connection.pacer
 #define c_flags connection.flags
+#define c_dscp		 connection.dscp
 #define s_ho_handle pacer.bytes_per_sec
 } transport_connection_t;
 
@@ -164,7 +164,8 @@ STATIC_ASSERT (sizeof (transport_connection_t) <= 128,
   _ (TLS, "tls", "J")                                                         \
   _ (QUIC, "quic", "Q")                                                       \
   _ (DTLS, "dtls", "D")                                                       \
-  _ (SRTP, "srtp", "R")
+  _ (SRTP, "srtp", "R")                                                       \
+  _ (HTTP, "http", "H")
 
 typedef enum _transport_proto
 {
@@ -209,6 +210,7 @@ typedef enum transport_endpt_cfg_flags_
   _ (u32, next_node_index) 						\
   _ (u32, next_node_opaque)						\
   _ (u16, mss)           						\
+  _ (u8, dscp) \
   _ (u8, transport_flags)						\
 /* clang-format on */
 

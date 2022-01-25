@@ -462,9 +462,6 @@ vnet_sw_interface_set_flags_helper (vnet_main_t * vnm, u32 sw_if_index,
 	      goto done;
 	    }
 
-	  /* save the si admin up flag */
-	  old_flags = si->flags;
-
 	  /* update si admin up flag in advance if we are going admin down */
 	  if (!(flags & VNET_SW_INTERFACE_FLAG_ADMIN_UP))
 	    si->flags &= ~VNET_SW_INTERFACE_FLAG_ADMIN_UP;
@@ -771,18 +768,41 @@ sw_interface_walk_callback (vnet_main_t * vnm, u32 sw_if_index, void *ctx)
   return WALK_CONTINUE;
 }
 
-void
-vnet_hw_interface_set_mtu (vnet_main_t * vnm, u32 hw_if_index, u32 mtu)
+clib_error_t *
+vnet_hw_interface_set_max_frame_size (vnet_main_t *vnm, u32 hw_if_index,
+				      u32 fs)
 {
   vnet_hw_interface_t *hi = vnet_get_hw_interface (vnm, hw_if_index);
+  vnet_hw_interface_class_t *hw_if_class =
+    vnet_get_hw_interface_class (vnm, hi->hw_class_index);
+  clib_error_t *err = 0;
 
-  if (hi->max_packet_bytes != mtu)
+  log_debug ("set_max_frame_size: interface %s, max_frame_size %u -> %u",
+	     hi->name, hi->max_frame_size, fs);
+
+  if (hw_if_class->set_max_frame_size == 0)
+    return vnet_error (VNET_ERR_UNSUPPORTED,
+		       "hw class doesn't support changing Max Frame Size");
+
+  if (hi->max_frame_size != fs)
     {
-      hi->max_packet_bytes = mtu;
-      ethernet_set_flags (vnm, hw_if_index, ETHERNET_INTERFACE_FLAG_MTU);
+      u32 mtu;
+      if (hw_if_class->set_max_frame_size)
+	if ((err = hw_if_class->set_max_frame_size (vnm, hi, fs)))
+	  return err;
+      hi->max_frame_size = fs;
+      mtu = fs - hi->frame_overhead;
       vnet_hw_interface_walk_sw (vnm, hw_if_index, sw_interface_walk_callback,
 				 &mtu);
     }
+  return 0;
+}
+clib_error_t *
+vnet_hw_interface_set_mtu (vnet_main_t *vnm, u32 hw_if_index, u32 mtu)
+{
+  vnet_hw_interface_t *hi = vnet_get_hw_interface (vnm, hw_if_index);
+  return vnet_hw_interface_set_max_frame_size (vnm, hw_if_index,
+					       mtu + hi->frame_overhead);
 }
 
 static void
@@ -805,6 +825,36 @@ setup_output_node (vlib_main_t * vm,
   vlib_node_t *n = vlib_get_node (vm, node_index);
   n->format_buffer = hw_class->format_header;
   n->unformat_buffer = hw_class->unformat_header;
+}
+
+void
+vnet_reset_interface_l3_output_node (vlib_main_t *vm, u32 sw_if_index)
+{
+  vnet_set_interface_l3_output_node (vm, sw_if_index,
+				     (u8 *) "interface-output");
+}
+
+void
+vnet_set_interface_l3_output_node (vlib_main_t *vm, u32 sw_if_index,
+				   u8 *output_node)
+{
+  vlib_node_t *l3_node;
+
+  l3_node = vlib_get_node_by_name (vm, output_node);
+
+  static char *arcs[] = {
+    "ip4-output",
+    "ip6-output",
+    "mpls-output",
+    "ethernet-output",
+  };
+  u8 a;
+
+  for (a = 0; a < ARRAY_LEN (arcs); a++)
+    {
+      u8 arc = vnet_get_feature_arc_index (arcs[a]);
+      vnet_feature_modify_end_node (arc, sw_if_index, l3_node->index);
+    }
 }
 
 /* Register an interface instance. */
@@ -835,6 +885,10 @@ vnet_register_interface (vnet_main_t * vnm,
   hw_index = hw - im->hw_interfaces;
   hw->hw_if_index = hw_index;
   hw->default_rx_mode = VNET_HW_IF_RX_MODE_POLLING;
+
+  if (hw_class->tx_hash_fn_type == VNET_HASH_FN_TYPE_ETHERNET ||
+      hw_class->tx_hash_fn_type == VNET_HASH_FN_TYPE_IP)
+    hw->hf = vnet_hash_default_function (hw_class->tx_hash_fn_type);
 
   if (dev_class->format_device_name)
     hw->name = format (0, "%U", dev_class->format_device_name, dev_instance);
@@ -867,7 +921,6 @@ vnet_register_interface (vnet_main_t * vnm,
   hw->hw_instance = hw_instance;
 
   hw->max_rate_bits_per_sec = 0;
-  hw->min_packet_bytes = 0;
   vnet_sw_interface_set_mtu (vnm, hw->sw_if_index, 0);
 
   if (dev_class->tx_function == 0 && dev_class->tx_fn_registrations == 0)
@@ -993,6 +1046,7 @@ vnet_register_interface (vnet_main_t * vnm,
 	static char *e[] = {
 	  "interface is down",
 	  "interface is deleted",
+	  "no tx queue available",
 	};
 
 	r.n_errors = ARRAY_LEN (e);
@@ -1109,12 +1163,10 @@ vnet_delete_hw_interface (vnet_main_t * vnm, u32 hw_if_index)
       dn->tx_node_index = hw->tx_node_index;
       dn->output_node_index = hw->output_node_index;
     }
-
   hash_unset_mem (im->hw_interface_by_name, hw->name);
   vec_free (hw->name);
   vec_free (hw->hw_address);
-  vec_free (hw->input_node_thread_index_by_queue);
-  vec_free (hw->rx_queue_indices);
+  vec_free (hw->output_node_thread_runtimes);
   pool_put (im->hw_interfaces, hw);
 }
 
@@ -1332,6 +1384,29 @@ vnet_sw_interface_is_nbma (vnet_main_t * vnm, u32 sw_if_index)
     vnet_get_hw_interface_class (vnm, hw->hw_class_index);
 
   return (hc->flags & VNET_HW_INTERFACE_CLASS_FLAG_NBMA);
+}
+
+clib_error_t *
+vnet_sw_interface_supports_addressing (vnet_main_t *vnm, u32 sw_if_index)
+{
+  if (sw_if_index == 0)
+    {
+      return clib_error_create (
+	"local0 interface doesn't support IP addressing");
+    }
+
+  if (vnet_sw_interface_is_sub (vnm, sw_if_index))
+    {
+      vnet_sw_interface_t *si;
+      si = vnet_get_sw_interface_or_null (vnm, sw_if_index);
+      if (si && si->type == VNET_SW_INTERFACE_TYPE_SUB &&
+	  si->sub.eth.flags.exact_match == 0)
+	{
+	  return clib_error_create (
+	    "sub-interface without exact-match doesn't support IP addressing");
+	}
+    }
+  return NULL;
 }
 
 clib_error_t *
@@ -1614,16 +1689,6 @@ static int
 vnet_sw_interface_check_table_same (u32 unnumbered_sw_if_index,
 				    u32 ip_sw_if_index)
 {
-  vec_validate (ip4_main.fib_index_by_sw_if_index, unnumbered_sw_if_index);
-  vec_validate (ip4_main.mfib_index_by_sw_if_index, unnumbered_sw_if_index);
-  vec_validate (ip6_main.fib_index_by_sw_if_index, unnumbered_sw_if_index);
-  vec_validate (ip6_main.mfib_index_by_sw_if_index, unnumbered_sw_if_index);
-
-  vec_validate (ip4_main.fib_index_by_sw_if_index, ip_sw_if_index);
-  vec_validate (ip4_main.mfib_index_by_sw_if_index, ip_sw_if_index);
-  vec_validate (ip6_main.fib_index_by_sw_if_index, ip_sw_if_index);
-  vec_validate (ip6_main.mfib_index_by_sw_if_index, ip_sw_if_index);
-
   if (ip4_main.fib_index_by_sw_if_index[unnumbered_sw_if_index] !=
       ip4_main.fib_index_by_sw_if_index[ip_sw_if_index])
     return VNET_API_ERROR_UNEXPECTED_INTF_STATE;

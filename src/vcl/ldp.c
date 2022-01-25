@@ -271,10 +271,11 @@ ldp_init (void)
       /* Make sure there are enough bits in the fd set for vcl sessions */
       if (ldp->vlsh_bit_val > FD_SETSIZE / 2)
 	{
-	  LDBG (0, "ERROR: LDP vlsh bit value %d > FD_SETSIZE/2 %d!",
+	  /* Only valid for select/pselect, so just WARNING and not exit */
+	  LDBG (0,
+		"WARNING: LDP vlsh bit value %d > FD_SETSIZE/2 %d, "
+		"select/pselect not supported now!",
 		ldp->vlsh_bit_val, FD_SETSIZE / 2);
-	  ldp->init = 0;
-	  return -1;
 	}
     }
   env_var_str = getenv (LDP_ENV_TLS_TRANS);
@@ -724,10 +725,11 @@ ldp_pselect (int nfds, fd_set * __restrict readfds,
       time_out = (timeout->tv_sec == 0 && timeout->tv_nsec == 0) ?
 	(f64) 0 : (f64) timeout->tv_sec + (f64) timeout->tv_nsec / (f64) 1e9;
 
+      time_out += clib_time_now (&ldpw->clib_time);
+
       /* select as fine grained sleep */
       if (!nfds)
 	{
-	  time_out += clib_time_now (&ldpw->clib_time);
 	  while (clib_time_now (&ldpw->clib_time) < time_out)
 	    ;
 	  return 0;
@@ -966,9 +968,7 @@ assign_cert_key_pair (vls_handle_t vlsh)
     return -1;
 
   ckp_len = sizeof (ldp->ckpair_index);
-  return vppcom_session_attr (vlsh_to_session_index (vlsh),
-			      VPPCOM_ATTR_SET_CKPAIR, &ldp->ckpair_index,
-			      &ckp_len);
+  return vls_attr (vlsh, VPPCOM_ATTR_SET_CKPAIR, &ldp->ckpair_index, &ckp_len);
 }
 
 int
@@ -1530,6 +1530,15 @@ recv (int fd, void *buf, size_t n, int flags)
   return size;
 }
 
+ssize_t
+__recv_chk (int fd, void *buf, size_t n, size_t buflen, int flags)
+{
+  if (n > buflen)
+    return -1;
+
+  return recv (fd, buf, n, flags);
+}
+
 static int
 ldp_vls_sendo (vls_handle_t vlsh, const void *buf, size_t n, int flags,
 	       __CONST_SOCKADDR_ARG addr, socklen_t addr_len)
@@ -1660,7 +1669,7 @@ sendmsg (int fd, const struct msghdr * msg, int flags)
     {
       struct iovec *iov = msg->msg_iov;
       ssize_t total = 0;
-      int i, rv;
+      int i, rv = 0;
 
       for (i = 0; i < msg->msg_iovlen; ++i)
 	{

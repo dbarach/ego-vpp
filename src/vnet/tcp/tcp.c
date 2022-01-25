@@ -71,6 +71,10 @@ tcp_add_del_adjacency (tcp_connection_t * tc, u8 is_add)
 static void
 tcp_cc_init (tcp_connection_t * tc)
 {
+  /* As per RFC 6582 initialize "recover" to iss */
+  if (tcp_opts_sack_permitted (&tc->rcv_opts))
+    tc->snd_congestion = tc->iss;
+
   tc->cc_algo->init (tc);
 }
 
@@ -702,7 +706,13 @@ tcp_init_snd_vars (tcp_connection_t * tc)
   tcp_update_time_now (tcp_get_worker (vlib_get_thread_index ()));
 
   tcp_init_rcv_mss (tc);
-  tc->iss = tcp_generate_random_iss (tc);
+  /*
+   * In special case of early-kill of timewait socket, the iss will already
+   * be initialized to ensure it is greater than the last incarnation of the
+   * connection. see syn_during_timewait() for more details.
+   */
+  if (!tc->iss)
+    tc->iss = tcp_generate_random_iss (tc);
   tc->snd_una = tc->iss;
   tc->snd_nxt = tc->iss + 1;
   tc->srtt = 0.1 * THZ;		/* 100 ms */
@@ -763,6 +773,7 @@ tcp_alloc_custom_local_endpoint (tcp_main_t * tm, ip46_address_t * lcl_addr,
       index = tm->last_v4_addr_rotor++;
       if (tm->last_v4_addr_rotor >= vec_len (tcp_cfg.ip4_src_addrs))
 	tm->last_v4_addr_rotor = 0;
+      clib_memset (lcl_addr, 0, sizeof (*lcl_addr));
       lcl_addr->ip4.as_u32 = tcp_cfg.ip4_src_addrs[index].as_u32;
     }
   else
@@ -831,6 +842,8 @@ tcp_session_open (transport_endpoint_cfg_t * rmt)
   /* The other connection vars will be initialized after SYN ACK */
   tcp_connection_timers_init (tc);
   tc->mss = rmt->mss;
+  if (rmt->peer.sw_if_index != ENDPOINT_INVALID_INDEX)
+    tc->sw_if_index = rmt->peer.sw_if_index;
   tc->next_node_index = rmt->next_node_index;
   tc->next_node_opaque = rmt->next_node_opaque;
 
@@ -1429,7 +1442,8 @@ tcp_expired_timers_dispatch (u32 * expired_timers)
 
   clib_fifo_add (wrk->pending_timers, expired_timers, n_expired);
 
-  max_loops = clib_max (1, 0.5 * TCP_TIMER_TICK * wrk->vm->loops_per_second);
+  max_loops =
+    clib_max ((u32) 0.5 * TCP_TIMER_TICK * wrk->vm->loops_per_second, 1);
   max_per_loop = clib_max ((n_left + n_expired) / max_loops, 10);
   max_per_loop = clib_min (max_per_loop, VLIB_FRAME_SIZE);
   wrk->max_timers_per_loop = clib_max (n_left ? wrk->max_timers_per_loop : 0,

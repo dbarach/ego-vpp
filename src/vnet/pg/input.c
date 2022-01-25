@@ -78,7 +78,7 @@ validate_buffer_data2 (vlib_buffer_t * b, pg_stream_t * s,
   if (i >= n_bytes)
     return 1;
 
-  clib_warning ("buffer %U", format_vnet_buffer, b);
+  clib_warning ("buffer %U", format_vnet_buffer_no_chain, b);
   clib_warning ("differ at index %d", i);
   clib_warning ("is     %U", format_hex_bytes, bd, n_bytes);
   clib_warning ("mask   %U", format_hex_bytes, pm, n_bytes);
@@ -1435,8 +1435,8 @@ format_pg_input_trace (u8 * s, va_list * va)
   s = format (s, ", %d bytes", t->packet_length);
   s = format (s, ", sw_if_index %d", t->sw_if_index);
 
-  s = format (s, "\n%U%U",
-	      format_white_space, indent, format_vnet_buffer, &t->buffer);
+  s = format (s, "\n%U%U", format_white_space, indent,
+	      format_vnet_buffer_no_chain, &t->buffer);
 
   s = format (s, "\n%U", format_white_space, indent);
 
@@ -1657,7 +1657,11 @@ pg_generate_packets (vlib_node_runtime_t * node,
     }
 
   if (PREDICT_FALSE (pi->coalesce_enabled))
-    vnet_gro_flow_table_schedule_node_on_dispatcher (vm, pi->flow_table);
+    {
+      vnet_hw_if_tx_queue_t txq = { 0 };
+      vnet_gro_flow_table_schedule_node_on_dispatcher (vm, &txq,
+						       pi->flow_table);
+    }
 
   while (n_packets_to_generate > 0)
     {

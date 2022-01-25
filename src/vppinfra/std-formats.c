@@ -204,6 +204,24 @@ format_time_interval (u8 * s, va_list * args)
   return s;
 }
 
+/* Format base 10 e.g. 100, 100K, 100M, 100G */
+__clib_export u8 *
+format_base10 (u8 *s, va_list *va)
+{
+  uword size = va_arg (*va, uword);
+
+  if (size < 1000)
+    s = format (s, "%d", size);
+  else if (size < 1000000)
+    s = format (s, "%.2fK", (f64) size / 1000.);
+  else if (size < 1000000000)
+    s = format (s, "%.2fM", (f64) size / 1000000.);
+  else
+    s = format (s, "%.2fG", (f64) size / 1000000000.);
+
+  return s;
+}
+
 /* Unparse memory size e.g. 100, 100k, 100m, 100g. */
 __clib_export u8 *
 format_memory_size (u8 * s, va_list * va)
@@ -389,6 +407,37 @@ format_hexdump (u8 * s, va_list * args)
 
   vec_free (line_hex);
   vec_free (line_str);
+
+  return s;
+}
+
+__clib_export u8 *
+format_u64_bitmap (u8 *s, va_list *args)
+{
+  u64 *bitmap = va_arg (*args, u64 *);
+  int n_uword = va_arg (*args, int);
+  u32 indent = format_get_indent (s);
+
+  s = format (s, "%6s", "");
+
+  for (int i = 60; i >= 0; i -= 4)
+    s = format (s, "%5d", i);
+
+  vec_add1 (s, '\n');
+
+  for (int j = n_uword - 1; j >= 0; j--)
+    {
+      s = format (s, "%U0x%04x ", format_white_space, indent, j * 8);
+      for (int i = 63; i >= 0; i--)
+	{
+	  vec_add1 (s, (1ULL << i) & bitmap[j] ? '1' : '.');
+	  if (i % 4 == 0)
+	    vec_add1 (s, ' ');
+	}
+      s = format (s, "0x%016lx", bitmap[j]);
+      if (j)
+	vec_add1 (s, '\n');
+    }
 
   return s;
 }

@@ -21,8 +21,8 @@
 #include <vnet/session/session.h>
 #include <math.h>
 
-static char *tcp_error_strings[] = {
-#define tcp_error(n,s) s,
+static vlib_error_desc_t tcp_input_error_counters[] = {
+#define tcp_error(f, n, s, d) { #n, d, VL_COUNTER_SEVERITY_##s },
 #include <vnet/tcp/tcp_error.def>
 #undef tcp_error
 };
@@ -742,7 +742,7 @@ tcp_should_fastrecover (tcp_connection_t * tc, u8 has_sack)
 }
 
 static int
-tcp_cc_recover (tcp_connection_t * tc)
+tcp_cc_try_recover (tcp_connection_t *tc)
 {
   sack_scoreboard_hole_t *hole;
   u8 is_spurious = 0;
@@ -757,14 +757,14 @@ tcp_cc_recover (tcp_connection_t * tc)
 
   tcp_connection_tx_pacer_reset (tc, tc->cwnd, 0 /* start bucket */ );
   tc->rcv_dupacks = 0;
+  tcp_recovery_off (tc);
 
   /* Previous recovery left us congested. Continue sending as part
    * of the current recovery event with an updated snd_congestion */
-  if (tc->sack_sb.sacked_bytes)
+  if (tc->sack_sb.sacked_bytes && tcp_in_fastrecovery (tc))
     {
       tc->snd_congestion = tc->snd_nxt;
-      tcp_program_retransmit (tc);
-      return is_spurious;
+      return -1;
     }
 
   tc->rxt_delivered = 0;
@@ -778,19 +778,18 @@ tcp_cc_recover (tcp_connection_t * tc)
   if (hole && hole->start == tc->snd_una && hole->end == tc->snd_nxt)
     scoreboard_clear (&tc->sack_sb);
 
-  if (!tcp_in_recovery (tc) && !is_spurious)
+  if (tcp_in_fastrecovery (tc) && !is_spurious)
     tcp_cc_recovered (tc);
 
   tcp_fastrecovery_off (tc);
   tcp_fastrecovery_first_off (tc);
-  tcp_recovery_off (tc);
   TCP_EVT (TCP_EVT_CC_EVT, tc, 3);
 
   ASSERT (tc->rto_boff == 0);
   ASSERT (!tcp_in_cong_recovery (tc));
   ASSERT (tcp_scoreboard_is_sane_post_recovery (tc));
 
-  return is_spurious;
+  return 0;
 }
 
 static void
@@ -803,15 +802,6 @@ tcp_cc_update (tcp_connection_t * tc, tcp_rate_sample_t * rs)
 
   /* If a cumulative ack, make sure dupacks is 0 */
   tc->rcv_dupacks = 0;
-
-  /* When dupacks hits the threshold we only enter fast retransmit if
-   * cumulative ack covers more than snd_congestion. Should snd_una
-   * wrap this test may fail under otherwise valid circumstances.
-   * Therefore, proactively update snd_congestion when wrap detected. */
-  if (PREDICT_FALSE
-      (seq_leq (tc->snd_congestion, tc->snd_una - tc->bytes_acked)
-       && seq_gt (tc->snd_congestion, tc->snd_una)))
-    tc->snd_congestion = tc->snd_una - 1;
 }
 
 /**
@@ -857,6 +847,20 @@ tcp_cc_handle_event (tcp_connection_t * tc, tcp_rate_sample_t * rs,
    */
 
   /*
+   * See if we can exit and stop retransmitting
+   */
+  if (seq_geq (tc->snd_una, tc->snd_congestion))
+    {
+      /* If successfully recovered, treat ack as congestion avoidance ack
+       * and return. Otherwise, we're still congested so process feedback */
+      if (!tcp_cc_try_recover (tc))
+	{
+	  tcp_cc_rcv_ack (tc, rs);
+	  return;
+	}
+    }
+
+  /*
    * Process (re)transmit feedback. Output path uses this to decide how much
    * more data to release into the network
    */
@@ -866,8 +870,7 @@ tcp_cc_handle_event (tcp_connection_t * tc, tcp_rate_sample_t * rs,
 	tcp_fastrecovery_first_on (tc);
 
       tc->rxt_delivered += tc->sack_sb.rxt_sacked;
-      tc->prr_delivered += tc->bytes_acked + tc->sack_sb.last_sacked_bytes
-	- tc->sack_sb.last_bytes_delivered;
+      tc->prr_delivered += rs->delivered;
     }
   else
     {
@@ -889,23 +892,6 @@ tcp_cc_handle_event (tcp_connection_t * tc, tcp_rate_sample_t * rs,
       /* If partial ack, assume that the first un-acked segment was lost */
       if (tc->bytes_acked || tc->rcv_dupacks == TCP_DUPACK_THRESHOLD)
 	tcp_fastrecovery_first_on (tc);
-    }
-
-  /*
-   * See if we can exit and stop retransmitting
-   */
-  if (seq_geq (tc->snd_una, tc->snd_congestion))
-    {
-      /* If spurious return, we've already updated everything */
-      if (tcp_cc_recover (tc))
-	{
-	  tc->tsecr_last_ack = tc->rcv_opts.tsecr;
-	  return;
-	}
-
-      /* Treat as congestion avoidance ack */
-      tcp_cc_rcv_ack (tc, rs);
-      return;
     }
 
   tcp_program_retransmit (tc);
@@ -1042,6 +1028,9 @@ process_ack:
 
   if (tc->cfg_flags & TCP_CFG_F_RATE_SAMPLE)
     tcp_bt_sample_delivery_rate (tc, &rs);
+  else
+    rs.delivered = tc->bytes_acked + tc->sack_sb.last_sacked_bytes -
+		   tc->sack_sb.last_bytes_delivered;
 
   if (tc->bytes_acked + tc->sack_sb.last_sacked_bytes)
     {
@@ -1575,7 +1564,7 @@ VLIB_REGISTER_NODE (tcp4_established_node) =
   /* Takes a vector of packets. */
   .vector_size = sizeof (u32),
   .n_errors = TCP_N_ERROR,
-  .error_strings = tcp_error_strings,
+  .error_counters = tcp_input_error_counters,
   .n_next_nodes = TCP_ESTABLISHED_N_NEXT,
   .next_nodes =
   {
@@ -1594,7 +1583,7 @@ VLIB_REGISTER_NODE (tcp6_established_node) =
   /* Takes a vector of packets. */
   .vector_size = sizeof (u32),
   .n_errors = TCP_N_ERROR,
-  .error_strings = tcp_error_strings,
+  .error_counters = tcp_input_error_counters,
   .n_next_nodes = TCP_ESTABLISHED_N_NEXT,
   .next_nodes =
   {
@@ -1796,7 +1785,7 @@ tcp_check_tx_offload (tcp_connection_t * tc, int is_ipv4)
     return;
 
   hw_if = vnet_get_sup_hw_interface (vnm, sw_if_idx);
-  if (hw_if->caps & VNET_HW_INTERFACE_CAP_SUPPORTS_TCP_GSO)
+  if (hw_if->caps & VNET_HW_IF_CAP_TCP_GSO)
     tc->cfg_flags |= TCP_CFG_F_TSO;
 }
 
@@ -1933,7 +1922,6 @@ tcp46_syn_sent_inline (vlib_main_t *vm, vlib_node_runtime_t *node,
       new_tc->rcv_nxt = vnet_buffer (b[0])->tcp.seq_end;
       new_tc->irs = seq;
       new_tc->timers[TCP_TIMER_RETRANSMIT_SYN] = TCP_TIMER_HANDLE_INVALID;
-      new_tc->sw_if_index = vnet_buffer (b[0])->sw_if_index[VLIB_RX];
 
       if (tcp_opts_tstamp (&new_tc->rcv_opts))
 	{
@@ -2070,7 +2058,7 @@ VLIB_REGISTER_NODE (tcp4_syn_sent_node) =
   /* Takes a vector of packets. */
   .vector_size = sizeof (u32),
   .n_errors = TCP_N_ERROR,
-  .error_strings = tcp_error_strings,
+  .error_counters = tcp_input_error_counters,
   .n_next_nodes = TCP_SYN_SENT_N_NEXT,
   .next_nodes =
   {
@@ -2089,7 +2077,7 @@ VLIB_REGISTER_NODE (tcp6_syn_sent_node) =
   /* Takes a vector of packets. */
   .vector_size = sizeof (u32),
   .n_errors = TCP_N_ERROR,
-  .error_strings = tcp_error_strings,
+  .error_counters = tcp_input_error_counters,
   .n_next_nodes = TCP_SYN_SENT_N_NEXT,
   .next_nodes =
   {
@@ -2535,7 +2523,7 @@ VLIB_REGISTER_NODE (tcp4_rcv_process_node) =
   /* Takes a vector of packets. */
   .vector_size = sizeof (u32),
   .n_errors = TCP_N_ERROR,
-  .error_strings = tcp_error_strings,
+  .error_counters = tcp_input_error_counters,
   .n_next_nodes = TCP_RCV_PROCESS_N_NEXT,
   .next_nodes =
   {
@@ -2554,7 +2542,7 @@ VLIB_REGISTER_NODE (tcp6_rcv_process_node) =
   /* Takes a vector of packets. */
   .vector_size = sizeof (u32),
   .n_errors = TCP_N_ERROR,
-  .error_strings = tcp_error_strings,
+  .error_counters = tcp_input_error_counters,
   .n_next_nodes = TCP_RCV_PROCESS_N_NEXT,
   .next_nodes =
   {
@@ -2588,6 +2576,61 @@ tcp46_listen_trace_frame (vlib_main_t *vm, vlib_node_runtime_t *node,
 }
 
 /**
+ * SYN received in TIME-WAIT state.
+ *
+ * RFC 1122:
+ * "When a connection is [...] on TIME-WAIT state [...]
+ * [a TCP] MAY accept a new SYN from the remote TCP to
+ * reopen the connection directly, if it:
+ *
+ * (1)  assigns its initial sequence number for the new
+ * connection to be larger than the largest sequence
+ * number it used on the previous connection incarnation,
+ * and
+ *
+ * (2)  returns to TIME-WAIT state if the SYN turns out
+ * to be an old duplicate".
+ *
+ * The function returns true if the syn can be accepted during
+ * connection time-wait (port reuse). In this case the function
+ * also calculates what the iss should be for the new connection.
+ */
+always_inline int
+syn_during_timewait (tcp_connection_t *tc, vlib_buffer_t *b, u32 *iss)
+{
+  int paws_reject = tcp_segment_check_paws (tc);
+  u32 tw_iss;
+
+  *iss = 0;
+  /* Check that the SYN arrived out of window. We accept it */
+  if (!paws_reject &&
+      (seq_geq (vnet_buffer (b)->tcp.seq_number, tc->rcv_nxt) ||
+       (tcp_opts_tstamp (&tc->rcv_opts) &&
+	timestamp_lt (tc->tsval_recent, tc->rcv_opts.tsval))))
+    {
+      /* Set the iss of the new connection to be the largest sequence number
+       * the old peer would have accepted and add some random number
+       */
+      tw_iss = tc->snd_nxt + tcp_available_snd_wnd (tc) +
+	       (uword) (tcp_time_now_us (tc->c_thread_index) * 1e6) % 65535;
+      if (tw_iss == 0)
+	tw_iss++;
+      *iss = tw_iss;
+
+      return 1;
+    }
+  else
+    {
+      TCP_DBG (
+	"ERROR not accepting SYN in timewait,paws_reject=%d, seq_num =%ld, "
+	"rcv_nxt=%ld, tstamp_present=%d, tsval_recent = %d, tsval = %d\n",
+	paws_reject, vnet_buffer (b)->tcp.seq_number, tc->rcv_nxt,
+	tcp_opts_tstamp (&tc->rcv_opts), tc->tsval_recent, tc->rcv_opts.tsval);
+      return 0;
+    }
+}
+
+/**
  * LISTEN state processing as per RFC 793 p. 65
  */
 always_inline uword
@@ -2597,6 +2640,7 @@ tcp46_listen_inline (vlib_main_t *vm, vlib_node_runtime_t *node,
   u32 n_left_from, *from, n_syns = 0;
   vlib_buffer_t *bufs[VLIB_FRAME_SIZE], **b;
   u32 thread_index = vm->thread_index;
+  u32 tw_iss = 0;
 
   from = vlib_frame_vector_args (frame);
   n_left_from = frame->n_vectors;
@@ -2617,7 +2661,7 @@ tcp46_listen_inline (vlib_main_t *vm, vlib_node_runtime_t *node,
 	{
 	  lc = tcp_listener_get (vnet_buffer (b[0])->tcp.connection_index);
 	}
-      else
+      else /* We are in TimeWait state*/
 	{
 	  tcp_connection_t *tc;
 	  tc = tcp_connection_get (vnet_buffer (b[0])->tcp.connection_index,
@@ -2627,6 +2671,14 @@ tcp46_listen_inline (vlib_main_t *vm, vlib_node_runtime_t *node,
 	      error = TCP_ERROR_CREATE_EXISTS;
 	      goto done;
 	    }
+
+	  if (PREDICT_FALSE (!syn_during_timewait (tc, b[0], &tw_iss)))
+	    {
+	      /* This SYN can't be accepted */
+	      error = TCP_ERROR_CREATE_EXISTS;
+	      goto done;
+	    }
+
 	  lc = tcp_lookup_listener (b[0], tc->c_fib_index, is_ip4);
 	  /* clean up the old session */
 	  tcp_connection_del (tc);
@@ -2670,6 +2722,12 @@ tcp46_listen_inline (vlib_main_t *vm, vlib_node_runtime_t *node,
       child->state = TCP_STATE_SYN_RCVD;
       child->c_fib_index = lc->c_fib_index;
       child->cc_algo = lc->cc_algo;
+
+      /* In the regular case, the tw_iss will be zero, but
+       * in the special case of syn arriving in time_wait state, the value
+       * will be set according to rfc 1122
+       */
+      child->iss = tw_iss;
       tcp_connection_init_vars (child);
       child->rto = TCP_RTO_MIN;
 
@@ -2725,7 +2783,7 @@ VLIB_REGISTER_NODE (tcp4_listen_node) =
   /* Takes a vector of packets. */
   .vector_size = sizeof (u32),
   .n_errors = TCP_N_ERROR,
-  .error_strings = tcp_error_strings,
+  .error_counters = tcp_input_error_counters,
   .n_next_nodes = TCP_LISTEN_N_NEXT,
   .next_nodes =
   {
@@ -2744,7 +2802,7 @@ VLIB_REGISTER_NODE (tcp6_listen_node) =
   /* Takes a vector of packets. */
   .vector_size = sizeof (u32),
   .n_errors = TCP_N_ERROR,
-  .error_strings = tcp_error_strings,
+  .error_counters = tcp_input_error_counters,
   .n_next_nodes = TCP_LISTEN_N_NEXT,
   .next_nodes =
   {
@@ -2844,8 +2902,12 @@ tcp_input_dispatch_buffer (tcp_main_t * tm, tcp_connection_t * tc,
   error = tm->dispatch_table[tc->state][flags].error;
   tc->segs_in += 1;
 
-  /* Track connection state when packet was received. It helps
-   * @ref tcp46_listen_inline detect port reuse */
+  /* Track connection state when packet was received. It is required
+   * for @ref tcp46_listen_inline to detect whether we reached
+   * the node as a result of a SYN packet received while in time-wait
+   * state. In this case the connection_index in vnet buffer will point
+   * to the existing tcp connection and not the listener
+   */
   vnet_buffer (b)->tcp.flags = tc->state;
 
   if (PREDICT_FALSE (error != TCP_ERROR_NONE))
@@ -2999,7 +3061,7 @@ VLIB_REGISTER_NODE (tcp4_input_nolookup_node) =
   /* Takes a vector of packets. */
   .vector_size = sizeof (u32),
   .n_errors = TCP_N_ERROR,
-  .error_strings = tcp_error_strings,
+  .error_counters = tcp_input_error_counters,
   .n_next_nodes = TCP_INPUT_N_NEXT,
   .next_nodes =
   {
@@ -3019,7 +3081,7 @@ VLIB_REGISTER_NODE (tcp6_input_nolookup_node) =
   /* Takes a vector of packets. */
   .vector_size = sizeof (u32),
   .n_errors = TCP_N_ERROR,
-  .error_strings = tcp_error_strings,
+  .error_counters = tcp_input_error_counters,
   .n_next_nodes = TCP_INPUT_N_NEXT,
   .next_nodes =
   {
@@ -3053,7 +3115,7 @@ VLIB_REGISTER_NODE (tcp4_input_node) =
   /* Takes a vector of packets. */
   .vector_size = sizeof (u32),
   .n_errors = TCP_N_ERROR,
-  .error_strings = tcp_error_strings,
+  .error_counters = tcp_input_error_counters,
   .n_next_nodes = TCP_INPUT_N_NEXT,
   .next_nodes =
   {
@@ -3073,7 +3135,7 @@ VLIB_REGISTER_NODE (tcp6_input_node) =
   /* Takes a vector of packets. */
   .vector_size = sizeof (u32),
   .n_errors = TCP_N_ERROR,
-  .error_strings = tcp_error_strings,
+  .error_counters = tcp_input_error_counters,
   .n_next_nodes = TCP_INPUT_N_NEXT,
   .next_nodes =
   {

@@ -549,14 +549,14 @@ transport_get_interface_ip (u32 sw_if_index, u8 is_ip4, ip46_address_t * addr)
 }
 
 static session_error_t
-transport_find_local_ip_for_remote (u32 sw_if_index,
-				    transport_endpoint_t * rmt,
-				    ip46_address_t * lcl_addr)
+transport_find_local_ip_for_remote (u32 *sw_if_index,
+				    transport_endpoint_t *rmt,
+				    ip46_address_t *lcl_addr)
 {
   fib_node_index_t fei;
   fib_prefix_t prefix;
 
-  if (sw_if_index == ENDPOINT_INVALID_INDEX)
+  if (*sw_if_index == ENDPOINT_INVALID_INDEX)
     {
       /* Find a FIB path to the destination */
       clib_memcpy_fast (&prefix.fp_addr, &rmt->ip, sizeof (rmt->ip));
@@ -570,13 +570,13 @@ transport_find_local_ip_for_remote (u32 sw_if_index,
       if (fei == FIB_NODE_INDEX_INVALID)
 	return SESSION_E_NOROUTE;
 
-      sw_if_index = fib_entry_get_resolving_interface (fei);
-      if (sw_if_index == ENDPOINT_INVALID_INDEX)
+      *sw_if_index = fib_entry_get_resolving_interface (fei);
+      if (*sw_if_index == ENDPOINT_INVALID_INDEX)
 	return SESSION_E_NOINTF;
     }
 
   clib_memset (lcl_addr, 0, sizeof (*lcl_addr));
-  return transport_get_interface_ip (sw_if_index, rmt->is_ip4, lcl_addr);
+  return transport_get_interface_ip (*sw_if_index, rmt->is_ip4, lcl_addr);
 }
 
 int
@@ -593,7 +593,7 @@ transport_alloc_local_endpoint (u8 proto, transport_endpoint_cfg_t * rmt_cfg,
    */
   if (ip_is_zero (&rmt_cfg->peer.ip, rmt_cfg->peer.is_ip4))
     {
-      error = transport_find_local_ip_for_remote (rmt_cfg->peer.sw_if_index,
+      error = transport_find_local_ip_for_remote (&rmt_cfg->peer.sw_if_index,
 						  rmt, lcl_addr);
       if (error)
 	return error;
@@ -660,15 +660,15 @@ static inline u32
 spacer_max_burst (spacer_t * pacer, clib_us_time_t time_now)
 {
   u64 n_periods = (time_now - pacer->last_update);
-  u64 inc;
+  i64 inc;
 
   if ((inc = (f32) n_periods * pacer->tokens_per_period) > 10)
     {
       pacer->last_update = time_now;
-      pacer->bucket = clib_min (pacer->bucket + inc, pacer->max_burst);
+      pacer->bucket = clib_min (pacer->bucket + inc, (i64) pacer->max_burst);
     }
 
-  return pacer->bucket > 0 ? pacer->max_burst : 0;
+  return pacer->bucket >= 0 ? pacer->max_burst : 0;
 }
 
 static inline void
@@ -790,7 +790,7 @@ void
 transport_connection_reschedule (transport_connection_t * tc)
 {
   tc->flags &= ~TRANSPORT_CONNECTION_F_DESCHED;
-  transport_connection_tx_pacer_reset_bucket (tc, TRANSPORT_PACER_MIN_BURST);
+  transport_connection_tx_pacer_reset_bucket (tc, 0 /* bucket */);
   if (transport_max_tx_dequeue (tc))
     sesssion_reschedule_tx (tc);
   else
@@ -830,6 +830,9 @@ transport_enable_disable (vlib_main_t * vm, u8 is_en)
   {
     if (vft->enable)
       (vft->enable) (vm, is_en);
+
+    if (vft->update_time)
+      session_register_update_time_fn (vft->update_time, is_en);
   }
 }
 

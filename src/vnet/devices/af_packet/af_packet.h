@@ -18,8 +18,13 @@
  */
 
 #include <vppinfra/lock.h>
-
 #include <vlib/log.h>
+
+typedef enum
+{
+  AF_PACKET_IF_MODE_ETHERNET = 1,
+  AF_PACKET_IF_MODE_IP = 2
+} af_packet_if_mode_t;
 
 typedef struct
 {
@@ -49,6 +54,7 @@ typedef struct
   u8 is_admin_up;
   u32 queue_index;
   u32 host_mtu;
+  af_packet_if_mode_t mode;
 } af_packet_if_t;
 
 typedef struct
@@ -69,15 +75,27 @@ typedef struct
   vlib_log_class_t log_class;
 } af_packet_main_t;
 
+typedef struct
+{
+  u8 *host_if_name;
+  u8 *hw_addr;
+  u32 rx_frame_size;
+  u32 tx_frame_size;
+  u32 rx_frames_per_block;
+  u32 tx_frames_per_block;
+  af_packet_if_mode_t mode;
+
+  /* return */
+  u32 sw_if_index;
+} af_packet_create_if_arg_t;
+
 extern af_packet_main_t af_packet_main;
 extern vnet_device_class_t af_packet_device_class;
 extern vlib_node_registration_t af_packet_input_node;
 
-int af_packet_create_if (vlib_main_t * vm, u8 * host_if_name,
-			 u8 * hw_addr_set, u32 * sw_if_index);
-int af_packet_delete_if (vlib_main_t * vm, u8 * host_if_name);
-int af_packet_set_l4_cksum_offload (vlib_main_t * vm, u32 sw_if_index,
-				    u8 set);
+int af_packet_create_if (af_packet_create_if_arg_t *arg);
+int af_packet_delete_if (u8 *host_if_name);
+int af_packet_set_l4_cksum_offload (u32 sw_if_index, u8 set);
 int af_packet_dump_ifs (af_packet_if_detail_t ** out_af_packet_ifs);
 
 format_function_t format_af_packet_device_name;

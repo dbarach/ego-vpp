@@ -24,116 +24,53 @@
 #include <vnet/fib/ip4_fib.h>
 
 #include <nat/lib/log.h>
+#include <nat/lib/ipfix_logging.h>
 #include <nat/nat44-ed/nat44_ed.h>
 
-always_inline u64
-calc_nat_key (ip4_address_t addr, u16 port, u32 fib_index, u8 proto)
-{
-  ASSERT (fib_index <= (1 << 14) - 1);
-  ASSERT (proto <= (1 << 3) - 1);
-  return (u64) addr.as_u32 << 32 | (u64) port << 16 | fib_index << 3 |
-	 (proto & 0x7);
-}
-
 always_inline void
-split_nat_key (u64 key, ip4_address_t *addr, u16 *port, u32 *fib_index,
-	       nat_protocol_t *proto)
+init_ed_k (clib_bihash_kv_16_8_t *kv, u32 l_addr, u16 l_port, u32 r_addr,
+	   u16 r_port, u32 fib_index, ip_protocol_t proto)
 {
-  if (addr)
-    {
-      addr->as_u32 = key >> 32;
-    }
-  if (port)
-    {
-      *port = (key >> 16) & (u16) ~0;
-    }
-  if (fib_index)
-    {
-      *fib_index = key >> 3 & ((1 << 13) - 1);
-    }
-  if (proto)
-    {
-      *proto = key & 0x7;
-    }
-}
-
-always_inline void
-init_nat_k (clib_bihash_kv_8_8_t *kv, ip4_address_t addr, u16 port,
-	    u32 fib_index, nat_protocol_t proto)
-{
-  kv->key = calc_nat_key (addr, port, fib_index, proto);
-  kv->value = ~0ULL;
-}
-
-always_inline void
-init_nat_kv (clib_bihash_kv_8_8_t *kv, ip4_address_t addr, u16 port,
-	     u32 fib_index, nat_protocol_t proto, u32 thread_index,
-	     u32 session_index)
-{
-  init_nat_k (kv, addr, port, fib_index, proto);
-  kv->value = (u64) thread_index << 32 | session_index;
-}
-
-always_inline void
-init_nat_i2o_k (clib_bihash_kv_8_8_t *kv, snat_session_t *s)
-{
-  return init_nat_k (kv, s->in2out.addr, s->in2out.port, s->in2out.fib_index,
-		     s->nat_proto);
-}
-
-always_inline void
-init_nat_i2o_kv (clib_bihash_kv_8_8_t *kv, snat_session_t *s, u32 thread_index,
-		 u32 session_index)
-{
-  init_nat_k (kv, s->in2out.addr, s->in2out.port, s->in2out.fib_index,
-	      s->nat_proto);
-  kv->value = (u64) thread_index << 32 | session_index;
-}
-
-always_inline void
-init_nat_o2i_k (clib_bihash_kv_8_8_t *kv, snat_session_t *s)
-{
-  return init_nat_k (kv, s->out2in.addr, s->out2in.port, s->out2in.fib_index,
-		     s->nat_proto);
-}
-
-always_inline void
-init_nat_o2i_kv (clib_bihash_kv_8_8_t *kv, snat_session_t *s, u32 thread_index,
-		 u32 session_index)
-{
-  init_nat_k (kv, s->out2in.addr, s->out2in.port, s->out2in.fib_index,
-	      s->nat_proto);
-  kv->value = (u64) thread_index << 32 | session_index;
-}
-
-always_inline u32
-nat_value_get_thread_index (clib_bihash_kv_8_8_t *value)
-{
-  return value->value >> 32;
-}
-
-always_inline u32
-nat_value_get_session_index (clib_bihash_kv_8_8_t *value)
-{
-  return value->value & ~(u32) 0;
-}
-
-always_inline void
-init_ed_k (clib_bihash_kv_16_8_t *kv, ip4_address_t l_addr, u16 l_port,
-	   ip4_address_t r_addr, u16 r_port, u32 fib_index, u8 proto)
-{
-  kv->key[0] = (u64) r_addr.as_u32 << 32 | l_addr.as_u32;
+  kv->key[0] = (u64) r_addr << 32 | l_addr;
   kv->key[1] =
     (u64) r_port << 48 | (u64) l_port << 32 | fib_index << 8 | proto;
 }
 
 always_inline void
-init_ed_kv (clib_bihash_kv_16_8_t *kv, ip4_address_t l_addr, u16 l_port,
-	    ip4_address_t r_addr, u16 r_port, u32 fib_index, u8 proto,
-	    u32 thread_index, u32 session_index)
+init_ed_kv (clib_bihash_kv_16_8_t *kv, u32 l_addr, u16 l_port, u32 r_addr,
+	    u16 r_port, u32 fib_index, u8 proto, u32 thread_index,
+	    u32 session_index)
 {
   init_ed_k (kv, l_addr, l_port, r_addr, r_port, fib_index, proto);
   kv->value = (u64) thread_index << 32 | session_index;
+}
+
+always_inline void
+nat44_ed_sm_init_i2o_kv (clib_bihash_kv_16_8_t *kv, u32 addr, u16 port,
+			 u32 fib_index, u8 proto, u32 sm_index)
+{
+  return init_ed_kv (kv, addr, port, 0, 0, fib_index, proto, 0, sm_index);
+}
+
+always_inline void
+nat44_ed_sm_init_o2i_kv (clib_bihash_kv_16_8_t *kv, u32 e_addr, u16 e_port,
+			 u32 fib_index, u8 proto, u32 sm_index)
+{
+  return init_ed_kv (kv, 0, 0, e_addr, e_port, fib_index, proto, 0, sm_index);
+}
+
+always_inline void
+nat44_ed_sm_init_i2o_k (clib_bihash_kv_16_8_t *kv, u32 addr, u16 port,
+			u32 fib_index, u8 proto)
+{
+  return nat44_ed_sm_init_i2o_kv (kv, addr, port, fib_index, proto, 0);
+}
+
+always_inline void
+nat44_ed_sm_init_o2i_k (clib_bihash_kv_16_8_t *kv, u32 e_addr, u16 e_port,
+			u32 fib_index, u8 proto)
+{
+  return nat44_ed_sm_init_o2i_kv (kv, e_addr, e_port, fib_index, proto, 0);
 }
 
 always_inline u32
@@ -215,16 +152,16 @@ nat_get_icmp_session_lookup_values (vlib_buffer_t *b, ip4_header_t *ip0,
       *lookup_protocol = inner_ip0->protocol;
       lookup_saddr->as_u32 = inner_ip0->dst_address.as_u32;
       lookup_daddr->as_u32 = inner_ip0->src_address.as_u32;
-      switch (ip_proto_to_nat_proto (inner_ip0->protocol))
+      switch (inner_ip0->protocol)
 	{
-	case NAT_PROTOCOL_ICMP:
+	case IP_PROTOCOL_ICMP:
 	  inner_icmp0 = (icmp46_header_t *) l4_header;
 	  inner_echo0 = (icmp_echo_header_t *) (inner_icmp0 + 1);
 	  *lookup_sport = inner_echo0->identifier;
 	  *lookup_dport = inner_echo0->identifier;
 	  break;
-	case NAT_PROTOCOL_UDP:
-	case NAT_PROTOCOL_TCP:
+	case IP_PROTOCOL_UDP:
+	case IP_PROTOCOL_TCP:
 	  *lookup_sport = ((tcp_udp_header_t *) l4_header)->dst_port;
 	  *lookup_dport = ((tcp_udp_header_t *) l4_header)->src_port;
 	  break;
@@ -235,21 +172,43 @@ nat_get_icmp_session_lookup_values (vlib_buffer_t *b, ip4_header_t *ip0,
   return 0;
 }
 
+always_inline int
+nat44_ed_tcp_is_established (nat44_ed_tcp_state_e state)
+{
+  static int lookup[] = {
+    [NAT44_ED_TCP_STATE_CLOSED] = 0,
+    [NAT44_ED_TCP_STATE_SYN_I2O] = 0,
+    [NAT44_ED_TCP_STATE_SYN_O2I] = 0,
+    [NAT44_ED_TCP_STATE_ESTABLISHED] = 1,
+    [NAT44_ED_TCP_STATE_FIN_I2O] = 1,
+    [NAT44_ED_TCP_STATE_FIN_O2I] = 1,
+    [NAT44_ED_TCP_STATE_RST_TRANS] = 0,
+    [NAT44_ED_TCP_STATE_FIN_TRANS] = 0,
+    [NAT44_ED_TCP_STATE_FIN_REOPEN_SYN_I2O] = 0,
+    [NAT44_ED_TCP_STATE_FIN_REOPEN_SYN_O2I] = 0,
+    [NAT44_ED_TCP_N_STATE] = 0,
+  };
+  ASSERT (state <= ARRAY_LEN (lookup));
+  return lookup[state];
+}
+
 always_inline u32
 nat44_session_get_timeout (snat_main_t *sm, snat_session_t *s)
 {
-  switch (s->nat_proto)
+  switch (s->proto)
     {
-    case NAT_PROTOCOL_ICMP:
+    case IP_PROTOCOL_ICMP:
+      /* fallthrough */
+    case IP_PROTOCOL_ICMP6:
       return sm->timeouts.icmp;
-    case NAT_PROTOCOL_UDP:
+    case IP_PROTOCOL_UDP:
       return sm->timeouts.udp;
-    case NAT_PROTOCOL_TCP:
+    case IP_PROTOCOL_TCP:
       {
-	if (s->state)
-	  return sm->timeouts.tcp.transitory;
-	else
+	if (nat44_ed_tcp_is_established (s->tcp_state))
 	  return sm->timeouts.tcp.established;
+	else
+	  return sm->timeouts.tcp.transitory;
       }
     default:
       return sm->timeouts.udp;
@@ -300,7 +259,7 @@ nat_ed_lru_insert (snat_main_per_thread_data_t *tsm, snat_session_t *s,
 static_always_inline void
 nat_6t_flow_to_ed_k (clib_bihash_kv_16_8_t *kv, nat_6t_flow_t *f)
 {
-  init_ed_k (kv, f->match.saddr, f->match.sport, f->match.daddr,
+  init_ed_k (kv, f->match.saddr.as_u32, f->match.sport, f->match.daddr.as_u32,
 	     f->match.dport, f->match.fib_index, f->match.proto);
 }
 
@@ -308,7 +267,7 @@ static_always_inline void
 nat_6t_flow_to_ed_kv (clib_bihash_kv_16_8_t *kv, nat_6t_flow_t *f,
 		      u32 thread_idx, u32 session_idx)
 {
-  init_ed_kv (kv, f->match.saddr, f->match.sport, f->match.daddr,
+  init_ed_kv (kv, f->match.saddr.as_u32, f->match.sport, f->match.daddr.as_u32,
 	      f->match.dport, f->match.fib_index, f->match.proto, thread_idx,
 	      session_idx);
 }
@@ -348,6 +307,15 @@ nat_ed_ses_o2i_flow_hash_add_del (snat_main_t *sm, u32 thread_idx,
   else
     {
       nat_6t_flow_to_ed_kv (&kv, &s->o2i, thread_idx, s - tsm->sessions);
+      if (!(s->flags & SNAT_SESSION_FLAG_STATIC_MAPPING))
+	{
+	  if (nat44_ed_sm_o2i_lookup (sm, s->o2i.match.daddr,
+				      s->o2i.match.dport, 0,
+				      s->o2i.match.proto))
+	    {
+	      return -1;
+	    }
+	}
       nat_6t_l3_l4_csum_calc (&s->o2i);
     }
   ASSERT (thread_idx == s->thread_index);
@@ -393,10 +361,9 @@ nat_lru_free_one_with_head (snat_main_t *sm, int thread_index, f64 now,
 
       sess_timeout_time =
 	s->last_heard + (f64) nat44_session_get_timeout (sm, s);
-      if (now >= sess_timeout_time ||
-	  (s->tcp_closed_timestamp && now >= s->tcp_closed_timestamp))
+      if (now >= sess_timeout_time)
 	{
-	  nat_free_session_data (sm, s, thread_index, 0);
+	  nat44_ed_free_session_data (sm, s, thread_index, 0);
 	  nat_ed_session_delete (sm, s, thread_index, 0);
 	  return 1;
 	}
@@ -754,101 +721,303 @@ is_interface_addr (snat_main_t *sm, vlib_node_runtime_t *node,
 }
 
 always_inline void
-nat44_set_tcp_session_state_i2o (snat_main_t *sm, f64 now, snat_session_t *ses,
-				 vlib_buffer_t *b, u32 thread_index)
+nat44_ed_session_reopen (u32 thread_index, snat_session_t *s)
 {
-  snat_main_per_thread_data_t *tsm = &sm->per_thread_data[thread_index];
-  u8 tcp_flags = vnet_buffer (b)->ip.reass.icmp_type_or_tcp_flags;
-  u32 tcp_ack_number = vnet_buffer (b)->ip.reass.tcp_ack_number;
-  u32 tcp_seq_number = vnet_buffer (b)->ip.reass.tcp_seq_number;
-  if ((ses->state == 0) && (tcp_flags & TCP_FLAG_RST))
-    ses->state = NAT44_SES_RST;
-  if ((ses->state == NAT44_SES_RST) && !(tcp_flags & TCP_FLAG_RST))
-    ses->state = 0;
-  if ((tcp_flags & TCP_FLAG_ACK) && (ses->state & NAT44_SES_I2O_SYN) &&
-      (ses->state & NAT44_SES_O2I_SYN))
-    ses->state = 0;
-  if (tcp_flags & TCP_FLAG_SYN)
-    ses->state |= NAT44_SES_I2O_SYN;
-  if (tcp_flags & TCP_FLAG_FIN)
+  nat_syslog_nat44_sdel (0, s->in2out.fib_index, &s->in2out.addr,
+			 s->in2out.port, &s->ext_host_nat_addr,
+			 s->ext_host_nat_port, &s->out2in.addr, s->out2in.port,
+			 &s->ext_host_addr, s->ext_host_port, s->proto,
+			 nat44_ed_is_twice_nat_session (s));
+
+  nat_ipfix_logging_nat44_ses_delete (
+    thread_index, s->in2out.addr.as_u32, s->out2in.addr.as_u32, s->proto,
+    s->in2out.port, s->out2in.port, s->in2out.fib_index);
+  nat_ipfix_logging_nat44_ses_create (
+    thread_index, s->in2out.addr.as_u32, s->out2in.addr.as_u32, s->proto,
+    s->in2out.port, s->out2in.port, s->in2out.fib_index);
+
+  nat_syslog_nat44_sadd (0, s->in2out.fib_index, &s->in2out.addr,
+			 s->in2out.port, &s->ext_host_nat_addr,
+			 s->ext_host_nat_port, &s->out2in.addr, s->out2in.port,
+			 &s->ext_host_addr, s->ext_host_port, s->proto, 0);
+  s->total_pkts = 0;
+  s->total_bytes = 0;
+}
+
+always_inline void
+nat44_ed_init_tcp_state_stable (snat_main_t *sm)
+{
+  /* first make sure whole table is initialised in a way where state
+   * is not changed, then define special cases */
+  nat44_ed_tcp_state_e s;
+  for (s = 0; s < NAT44_ED_TCP_N_STATE; ++s)
     {
-      ses->i2o_fin_seq = clib_net_to_host_u32 (tcp_seq_number);
-      ses->state |= NAT44_SES_I2O_FIN;
-    }
-  if ((tcp_flags & TCP_FLAG_ACK) && (ses->state & NAT44_SES_O2I_FIN))
-    {
-      if (clib_net_to_host_u32 (tcp_ack_number) > ses->o2i_fin_seq)
+      int i;
+      for (i = 0; i < NAT44_ED_N_DIR; ++i)
 	{
-	  ses->state |= NAT44_SES_O2I_FIN_ACK;
-	  if (nat44_is_ses_closed (ses))
-	    { // if session is now closed, save the timestamp
-	      ses->tcp_closed_timestamp = now + sm->timeouts.tcp.transitory;
-	      ses->last_lru_update = now;
+	  int j = 0;
+	  for (j = 0; j < NAT44_ED_TCP_N_FLAG; ++j)
+	    {
+	      sm->tcp_state_change_table[s][i][j] = s;
 	    }
 	}
     }
 
-  // move the session to proper LRU
-  if (ses->state)
+  /* CLOSED and any kind of SYN -> HALF-OPEN */
+  sm->tcp_state_change_table[NAT44_ED_TCP_STATE_CLOSED][NAT44_ED_DIR_I2O]
+			    [NAT44_ED_TCP_FLAG_SYN] =
+    NAT44_ED_TCP_STATE_SYN_I2O;
+  sm->tcp_state_change_table[NAT44_ED_TCP_STATE_CLOSED][NAT44_ED_DIR_O2I]
+			    [NAT44_ED_TCP_FLAG_SYN] =
+    NAT44_ED_TCP_STATE_SYN_O2I;
+  sm->tcp_state_change_table[NAT44_ED_TCP_STATE_CLOSED][NAT44_ED_DIR_I2O]
+			    [NAT44_ED_TCP_FLAG_SYNFIN] =
+    NAT44_ED_TCP_STATE_SYN_I2O;
+  sm->tcp_state_change_table[NAT44_ED_TCP_STATE_CLOSED][NAT44_ED_DIR_O2I]
+			    [NAT44_ED_TCP_FLAG_SYNFIN] =
+    NAT44_ED_TCP_STATE_SYN_O2I;
+  sm->tcp_state_change_table[NAT44_ED_TCP_STATE_CLOSED][NAT44_ED_DIR_I2O]
+			    [NAT44_ED_TCP_FLAG_SYNFINRST] =
+    NAT44_ED_TCP_STATE_SYN_I2O;
+  sm->tcp_state_change_table[NAT44_ED_TCP_STATE_CLOSED][NAT44_ED_DIR_O2I]
+			    [NAT44_ED_TCP_FLAG_SYNFINRST] =
+    NAT44_ED_TCP_STATE_SYN_O2I;
+
+  /* HALF-OPEN and any kind of SYN in right direction -> ESTABLISHED */
+  sm->tcp_state_change_table[NAT44_ED_TCP_STATE_SYN_I2O][NAT44_ED_DIR_O2I]
+			    [NAT44_ED_TCP_FLAG_SYN] =
+    NAT44_ED_TCP_STATE_ESTABLISHED;
+  sm->tcp_state_change_table[NAT44_ED_TCP_STATE_SYN_O2I][NAT44_ED_DIR_I2O]
+			    [NAT44_ED_TCP_FLAG_SYN] =
+    NAT44_ED_TCP_STATE_ESTABLISHED;
+  sm->tcp_state_change_table[NAT44_ED_TCP_STATE_SYN_I2O][NAT44_ED_DIR_O2I]
+			    [NAT44_ED_TCP_FLAG_SYNFIN] =
+    NAT44_ED_TCP_STATE_ESTABLISHED;
+  sm->tcp_state_change_table[NAT44_ED_TCP_STATE_SYN_O2I][NAT44_ED_DIR_I2O]
+			    [NAT44_ED_TCP_FLAG_SYNFIN] =
+    NAT44_ED_TCP_STATE_ESTABLISHED;
+  sm->tcp_state_change_table[NAT44_ED_TCP_STATE_SYN_I2O][NAT44_ED_DIR_O2I]
+			    [NAT44_ED_TCP_FLAG_SYNFINRST] =
+    NAT44_ED_TCP_STATE_ESTABLISHED;
+  sm->tcp_state_change_table[NAT44_ED_TCP_STATE_SYN_O2I][NAT44_ED_DIR_I2O]
+			    [NAT44_ED_TCP_FLAG_SYNFINRST] =
+    NAT44_ED_TCP_STATE_ESTABLISHED;
+
+  /* ESTABLISHED and any kind of RST -> RST_TRANS */
+  sm->tcp_state_change_table[NAT44_ED_TCP_STATE_ESTABLISHED][NAT44_ED_DIR_I2O]
+			    [NAT44_ED_TCP_FLAG_RST] =
+    NAT44_ED_TCP_STATE_RST_TRANS;
+  sm->tcp_state_change_table[NAT44_ED_TCP_STATE_ESTABLISHED][NAT44_ED_DIR_O2I]
+			    [NAT44_ED_TCP_FLAG_RST] =
+    NAT44_ED_TCP_STATE_RST_TRANS;
+  sm->tcp_state_change_table[NAT44_ED_TCP_STATE_ESTABLISHED][NAT44_ED_DIR_I2O]
+			    [NAT44_ED_TCP_FLAG_SYNRST] =
+    NAT44_ED_TCP_STATE_RST_TRANS;
+  sm->tcp_state_change_table[NAT44_ED_TCP_STATE_ESTABLISHED][NAT44_ED_DIR_O2I]
+			    [NAT44_ED_TCP_FLAG_SYNRST] =
+    NAT44_ED_TCP_STATE_RST_TRANS;
+  sm->tcp_state_change_table[NAT44_ED_TCP_STATE_ESTABLISHED][NAT44_ED_DIR_I2O]
+			    [NAT44_ED_TCP_FLAG_FINRST] =
+    NAT44_ED_TCP_STATE_RST_TRANS;
+  sm->tcp_state_change_table[NAT44_ED_TCP_STATE_ESTABLISHED][NAT44_ED_DIR_O2I]
+			    [NAT44_ED_TCP_FLAG_FINRST] =
+    NAT44_ED_TCP_STATE_RST_TRANS;
+  sm->tcp_state_change_table[NAT44_ED_TCP_STATE_ESTABLISHED][NAT44_ED_DIR_I2O]
+			    [NAT44_ED_TCP_FLAG_SYNFINRST] =
+    NAT44_ED_TCP_STATE_RST_TRANS;
+  sm->tcp_state_change_table[NAT44_ED_TCP_STATE_ESTABLISHED][NAT44_ED_DIR_O2I]
+			    [NAT44_ED_TCP_FLAG_SYNFINRST] =
+    NAT44_ED_TCP_STATE_RST_TRANS;
+
+  /* ESTABLISHED and any kind of FIN without RST -> HALF-CLOSED */
+  sm->tcp_state_change_table[NAT44_ED_TCP_STATE_ESTABLISHED][NAT44_ED_DIR_I2O]
+			    [NAT44_ED_TCP_FLAG_FIN] =
+    NAT44_ED_TCP_STATE_FIN_I2O;
+  sm->tcp_state_change_table[NAT44_ED_TCP_STATE_ESTABLISHED][NAT44_ED_DIR_O2I]
+			    [NAT44_ED_TCP_FLAG_FIN] =
+    NAT44_ED_TCP_STATE_FIN_O2I;
+  sm->tcp_state_change_table[NAT44_ED_TCP_STATE_ESTABLISHED][NAT44_ED_DIR_I2O]
+			    [NAT44_ED_TCP_FLAG_SYNFIN] =
+    NAT44_ED_TCP_STATE_FIN_I2O;
+  sm->tcp_state_change_table[NAT44_ED_TCP_STATE_ESTABLISHED][NAT44_ED_DIR_O2I]
+			    [NAT44_ED_TCP_FLAG_SYNFIN] =
+    NAT44_ED_TCP_STATE_FIN_O2I;
+
+  /* HALF-CLOSED and any kind of FIN -> FIN_TRANS */
+  sm->tcp_state_change_table[NAT44_ED_TCP_STATE_FIN_I2O][NAT44_ED_DIR_O2I]
+			    [NAT44_ED_TCP_FLAG_FIN] =
+    NAT44_ED_TCP_STATE_FIN_TRANS;
+  sm->tcp_state_change_table[NAT44_ED_TCP_STATE_FIN_O2I][NAT44_ED_DIR_I2O]
+			    [NAT44_ED_TCP_FLAG_FIN] =
+    NAT44_ED_TCP_STATE_FIN_TRANS;
+  sm->tcp_state_change_table[NAT44_ED_TCP_STATE_FIN_I2O][NAT44_ED_DIR_O2I]
+			    [NAT44_ED_TCP_FLAG_SYNFIN] =
+    NAT44_ED_TCP_STATE_FIN_TRANS;
+  sm->tcp_state_change_table[NAT44_ED_TCP_STATE_FIN_O2I][NAT44_ED_DIR_I2O]
+			    [NAT44_ED_TCP_FLAG_SYNFIN] =
+    NAT44_ED_TCP_STATE_FIN_TRANS;
+  sm->tcp_state_change_table[NAT44_ED_TCP_STATE_FIN_I2O][NAT44_ED_DIR_O2I]
+			    [NAT44_ED_TCP_FLAG_FINRST] =
+    NAT44_ED_TCP_STATE_FIN_TRANS;
+  sm->tcp_state_change_table[NAT44_ED_TCP_STATE_FIN_O2I][NAT44_ED_DIR_I2O]
+			    [NAT44_ED_TCP_FLAG_FINRST] =
+    NAT44_ED_TCP_STATE_FIN_TRANS;
+  sm->tcp_state_change_table[NAT44_ED_TCP_STATE_FIN_I2O][NAT44_ED_DIR_O2I]
+			    [NAT44_ED_TCP_FLAG_SYNFINRST] =
+    NAT44_ED_TCP_STATE_FIN_TRANS;
+  sm->tcp_state_change_table[NAT44_ED_TCP_STATE_FIN_O2I][NAT44_ED_DIR_I2O]
+			    [NAT44_ED_TCP_FLAG_SYNFINRST] =
+    NAT44_ED_TCP_STATE_FIN_TRANS;
+
+  /* RST_TRANS and anything non-RST -> ESTABLISHED */
+  sm->tcp_state_change_table[NAT44_ED_TCP_STATE_RST_TRANS][NAT44_ED_DIR_O2I]
+			    [NAT44_ED_TCP_FLAG_NONE] =
+    NAT44_ED_TCP_STATE_ESTABLISHED;
+  sm->tcp_state_change_table[NAT44_ED_TCP_STATE_RST_TRANS][NAT44_ED_DIR_I2O]
+			    [NAT44_ED_TCP_FLAG_NONE] =
+    NAT44_ED_TCP_STATE_ESTABLISHED;
+  sm->tcp_state_change_table[NAT44_ED_TCP_STATE_RST_TRANS][NAT44_ED_DIR_O2I]
+			    [NAT44_ED_TCP_FLAG_SYN] =
+    NAT44_ED_TCP_STATE_ESTABLISHED;
+  sm->tcp_state_change_table[NAT44_ED_TCP_STATE_RST_TRANS][NAT44_ED_DIR_I2O]
+			    [NAT44_ED_TCP_FLAG_SYN] =
+    NAT44_ED_TCP_STATE_ESTABLISHED;
+  sm->tcp_state_change_table[NAT44_ED_TCP_STATE_RST_TRANS][NAT44_ED_DIR_O2I]
+			    [NAT44_ED_TCP_FLAG_FIN] =
+    NAT44_ED_TCP_STATE_ESTABLISHED;
+  sm->tcp_state_change_table[NAT44_ED_TCP_STATE_RST_TRANS][NAT44_ED_DIR_I2O]
+			    [NAT44_ED_TCP_FLAG_FIN] =
+    NAT44_ED_TCP_STATE_ESTABLISHED;
+  sm->tcp_state_change_table[NAT44_ED_TCP_STATE_RST_TRANS][NAT44_ED_DIR_O2I]
+			    [NAT44_ED_TCP_FLAG_SYNFIN] =
+    NAT44_ED_TCP_STATE_ESTABLISHED;
+  sm->tcp_state_change_table[NAT44_ED_TCP_STATE_RST_TRANS][NAT44_ED_DIR_I2O]
+			    [NAT44_ED_TCP_FLAG_SYNFIN] =
+    NAT44_ED_TCP_STATE_ESTABLISHED;
+
+  /* FIN_TRANS and any kind of SYN -> HALF-REOPEN */
+  sm->tcp_state_change_table[NAT44_ED_TCP_STATE_FIN_TRANS][NAT44_ED_DIR_I2O]
+			    [NAT44_ED_TCP_FLAG_SYN] =
+    NAT44_ED_TCP_STATE_FIN_REOPEN_SYN_I2O;
+  sm->tcp_state_change_table[NAT44_ED_TCP_STATE_FIN_TRANS][NAT44_ED_DIR_O2I]
+			    [NAT44_ED_TCP_FLAG_SYN] =
+    NAT44_ED_TCP_STATE_FIN_REOPEN_SYN_O2I;
+  sm->tcp_state_change_table[NAT44_ED_TCP_STATE_FIN_TRANS][NAT44_ED_DIR_I2O]
+			    [NAT44_ED_TCP_FLAG_SYNRST] =
+    NAT44_ED_TCP_STATE_FIN_REOPEN_SYN_I2O;
+  sm->tcp_state_change_table[NAT44_ED_TCP_STATE_FIN_TRANS][NAT44_ED_DIR_O2I]
+			    [NAT44_ED_TCP_FLAG_SYNRST] =
+    NAT44_ED_TCP_STATE_FIN_REOPEN_SYN_O2I;
+  sm->tcp_state_change_table[NAT44_ED_TCP_STATE_FIN_TRANS][NAT44_ED_DIR_I2O]
+			    [NAT44_ED_TCP_FLAG_SYNFIN] =
+    NAT44_ED_TCP_STATE_FIN_REOPEN_SYN_I2O;
+  sm->tcp_state_change_table[NAT44_ED_TCP_STATE_FIN_TRANS][NAT44_ED_DIR_O2I]
+			    [NAT44_ED_TCP_FLAG_SYNFIN] =
+    NAT44_ED_TCP_STATE_FIN_REOPEN_SYN_O2I;
+  sm->tcp_state_change_table[NAT44_ED_TCP_STATE_FIN_TRANS][NAT44_ED_DIR_I2O]
+			    [NAT44_ED_TCP_FLAG_SYNFINRST] =
+    NAT44_ED_TCP_STATE_FIN_REOPEN_SYN_I2O;
+  sm->tcp_state_change_table[NAT44_ED_TCP_STATE_FIN_TRANS][NAT44_ED_DIR_O2I]
+			    [NAT44_ED_TCP_FLAG_SYNFINRST] =
+    NAT44_ED_TCP_STATE_FIN_REOPEN_SYN_O2I;
+
+  /* HALF-REOPEN and any kind of SYN in right direction -> ESTABLISHED */
+  sm->tcp_state_change_table[NAT44_ED_TCP_STATE_FIN_REOPEN_SYN_I2O]
+			    [NAT44_ED_DIR_O2I][NAT44_ED_TCP_FLAG_SYN] =
+    NAT44_ED_TCP_STATE_ESTABLISHED;
+  sm->tcp_state_change_table[NAT44_ED_TCP_STATE_FIN_REOPEN_SYN_O2I]
+			    [NAT44_ED_DIR_I2O][NAT44_ED_TCP_FLAG_SYN] =
+    NAT44_ED_TCP_STATE_ESTABLISHED;
+  sm->tcp_state_change_table[NAT44_ED_TCP_STATE_FIN_REOPEN_SYN_I2O]
+			    [NAT44_ED_DIR_O2I][NAT44_ED_TCP_FLAG_SYNRST] =
+    NAT44_ED_TCP_STATE_ESTABLISHED;
+  sm->tcp_state_change_table[NAT44_ED_TCP_STATE_FIN_REOPEN_SYN_O2I]
+			    [NAT44_ED_DIR_I2O][NAT44_ED_TCP_FLAG_SYNRST] =
+    NAT44_ED_TCP_STATE_ESTABLISHED;
+  sm->tcp_state_change_table[NAT44_ED_TCP_STATE_FIN_REOPEN_SYN_I2O]
+			    [NAT44_ED_DIR_O2I][NAT44_ED_TCP_FLAG_SYNFIN] =
+    NAT44_ED_TCP_STATE_ESTABLISHED;
+  sm->tcp_state_change_table[NAT44_ED_TCP_STATE_FIN_REOPEN_SYN_O2I]
+			    [NAT44_ED_DIR_I2O][NAT44_ED_TCP_FLAG_SYNFIN] =
+    NAT44_ED_TCP_STATE_ESTABLISHED;
+  sm->tcp_state_change_table[NAT44_ED_TCP_STATE_FIN_REOPEN_SYN_I2O]
+			    [NAT44_ED_DIR_O2I][NAT44_ED_TCP_FLAG_SYNFINRST] =
+    NAT44_ED_TCP_STATE_ESTABLISHED;
+  sm->tcp_state_change_table[NAT44_ED_TCP_STATE_FIN_REOPEN_SYN_O2I]
+			    [NAT44_ED_DIR_I2O][NAT44_ED_TCP_FLAG_SYNFINRST] =
+    NAT44_ED_TCP_STATE_ESTABLISHED;
+}
+
+/* TCP state tracking according to RFC 7857 (and RFC 6146, which is referenced
+ * by RFC 7857). Our implementation also goes beyond by supporting creation of
+ * a new session while old session is in transitory timeout after seeing FIN
+ * packets from both sides. */
+always_inline void
+nat44_set_tcp_session_state (snat_main_t *sm, f64 now, snat_session_t *ses,
+			     u8 tcp_flags, u32 thread_index,
+			     nat44_ed_dir_e dir)
+{
+  snat_main_per_thread_data_t *tsm = &sm->per_thread_data[thread_index];
+  nat44_ed_tcp_flag_e flags =
+    tcp_flags & (TCP_FLAG_SYN | TCP_FLAG_FIN | TCP_FLAG_RST);
+
+  u8 old_state = ses->tcp_state;
+  ses->tcp_state = sm->tcp_state_change_table[ses->tcp_state][dir][flags];
+
+  if (old_state != ses->tcp_state)
     {
-      ses->lru_head_index = tsm->tcp_trans_lru_head_index;
+      if (nat44_ed_tcp_is_established (ses->tcp_state))
+	{
+	  if (NAT44_ED_TCP_STATE_FIN_REOPEN_SYN_I2O == old_state ||
+	      NAT44_ED_TCP_STATE_FIN_REOPEN_SYN_O2I == old_state)
+	    {
+	      nat44_ed_session_reopen (thread_index, ses);
+	    }
+	  ses->lru_head_index = tsm->tcp_estab_lru_head_index;
+	}
+      else
+	{
+	  if (NAT44_ED_TCP_STATE_ESTABLISHED == old_state)
+	    { // need to update last heard otherwise session might get
+	      // immediately timed out if it has been idle longer than
+	      // transitory timeout
+	      ses->last_heard = now;
+	    }
+	  ses->lru_head_index = tsm->tcp_trans_lru_head_index;
+	}
+      ses->last_lru_update = now;
+      clib_dlist_remove (tsm->lru_pool, ses->lru_index);
+      clib_dlist_addtail (tsm->lru_pool, ses->lru_head_index, ses->lru_index);
     }
-  else
-    {
-      ses->lru_head_index = tsm->tcp_estab_lru_head_index;
-    }
-  clib_dlist_remove (tsm->lru_pool, ses->lru_index);
-  clib_dlist_addtail (tsm->lru_pool, ses->lru_head_index, ses->lru_index);
+}
+
+always_inline void
+nat44_set_tcp_session_state_i2o (snat_main_t *sm, f64 now, snat_session_t *ses,
+				 u8 tcp_flags, u32 thread_index)
+{
+  return nat44_set_tcp_session_state (sm, now, ses, tcp_flags, thread_index,
+				      NAT44_ED_DIR_I2O);
 }
 
 always_inline void
 nat44_set_tcp_session_state_o2i (snat_main_t *sm, f64 now, snat_session_t *ses,
-				 u8 tcp_flags, u32 tcp_ack_number,
-				 u32 tcp_seq_number, u32 thread_index)
+				 u8 tcp_flags, u32 thread_index)
 {
-  snat_main_per_thread_data_t *tsm = &sm->per_thread_data[thread_index];
-  if ((ses->state == 0) && (tcp_flags & TCP_FLAG_RST))
-    ses->state = NAT44_SES_RST;
-  if ((ses->state == NAT44_SES_RST) && !(tcp_flags & TCP_FLAG_RST))
-    ses->state = 0;
-  if ((tcp_flags & TCP_FLAG_ACK) && (ses->state & NAT44_SES_I2O_SYN) &&
-      (ses->state & NAT44_SES_O2I_SYN))
-    ses->state = 0;
-  if (tcp_flags & TCP_FLAG_SYN)
-    ses->state |= NAT44_SES_O2I_SYN;
-  if (tcp_flags & TCP_FLAG_FIN)
-    {
-      ses->o2i_fin_seq = clib_net_to_host_u32 (tcp_seq_number);
-      ses->state |= NAT44_SES_O2I_FIN;
-    }
-  if ((tcp_flags & TCP_FLAG_ACK) && (ses->state & NAT44_SES_I2O_FIN))
-    {
-      if (clib_net_to_host_u32 (tcp_ack_number) > ses->i2o_fin_seq)
-	ses->state |= NAT44_SES_I2O_FIN_ACK;
-      if (nat44_is_ses_closed (ses))
-	{ // if session is now closed, save the timestamp
-	  ses->tcp_closed_timestamp = now + sm->timeouts.tcp.transitory;
-	  ses->last_lru_update = now;
-	}
-    }
-  // move the session to proper LRU
-  if (ses->state)
-    {
-      ses->lru_head_index = tsm->tcp_trans_lru_head_index;
-    }
-  else
-    {
-      ses->lru_head_index = tsm->tcp_estab_lru_head_index;
-    }
-  clib_dlist_remove (tsm->lru_pool, ses->lru_index);
-  clib_dlist_addtail (tsm->lru_pool, ses->lru_head_index, ses->lru_index);
+  return nat44_set_tcp_session_state (sm, now, ses, tcp_flags, thread_index,
+				      NAT44_ED_DIR_O2I);
 }
 
 always_inline void
 nat44_session_update_counters (snat_session_t *s, f64 now, uword bytes,
 			       u32 thread_index)
 {
-  s->last_heard = now;
+  if (NAT44_ED_TCP_STATE_RST_TRANS != s->tcp_state &&
+      NAT44_ED_TCP_STATE_FIN_TRANS != s->tcp_state &&
+      NAT44_ED_TCP_STATE_FIN_REOPEN_SYN_I2O != s->tcp_state &&
+      NAT44_ED_TCP_STATE_FIN_REOPEN_SYN_O2I != s->tcp_state)
+    {
+      s->last_heard = now;
+    }
   s->total_pkts++;
   s->total_bytes += bytes;
 }
@@ -866,6 +1035,19 @@ nat44_session_update_lru (snat_main_t *sm, snat_session_t *s, u32 thread_index)
 			  s->lru_head_index, s->lru_index);
       s->last_lru_update = s->last_heard;
     }
+}
+
+static_always_inline int
+nat44_ed_is_unk_proto (u8 proto)
+{
+  static const int lookup_table[256] = {
+    [IP_PROTOCOL_TCP] = 1,
+    [IP_PROTOCOL_UDP] = 1,
+    [IP_PROTOCOL_ICMP] = 1,
+    [IP_PROTOCOL_ICMP6] = 1,
+  };
+
+  return 1 - lookup_table[proto];
 }
 
 #endif /* __included_nat44_ed_inlines_h__ */

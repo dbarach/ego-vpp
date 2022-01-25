@@ -73,7 +73,9 @@ typedef unsigned int u32;
 typedef unsigned long long u64;
 #endif /* CLIB_AVOID_CLASH_WITH_LINUX_TYPES */
 
-#elif defined(alpha) || (defined(_mips) && __mips == 64) || defined(__x86_64__) || defined (__powerpc64__) || defined (__aarch64__)
+#elif defined(alpha) || (defined(_mips) && __mips == 64) ||                   \
+  defined(__x86_64__) || defined(__powerpc64__) || defined(__aarch64__) ||    \
+  (defined(__riscv) && __riscv_xlen == 64)
 typedef signed int i32;
 typedef signed long i64;
 
@@ -162,6 +164,13 @@ typedef f64 fword;
        type _data					\
        __attribute__ ((aligned (align), packed));	\
     } *) (addr))->_data)
+
+typedef u16 u16u __attribute__ ((aligned (1), __may_alias__));
+typedef u32 u32u __attribute__ ((aligned (1), __may_alias__));
+typedef u64 u64u __attribute__ ((aligned (1), __may_alias__));
+typedef i16 i16u __attribute__ ((aligned (1), __may_alias__));
+typedef i32 i32u __attribute__ ((aligned (1), __may_alias__));
+typedef i64 i64u __attribute__ ((aligned (1), __may_alias__));
 
 #endif /* included_clib_types_h */
 

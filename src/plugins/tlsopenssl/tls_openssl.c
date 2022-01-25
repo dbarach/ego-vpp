@@ -194,10 +194,10 @@ static int
 openssl_write_from_fifo_into_ssl (svm_fifo_t *f, SSL *ssl, u32 max_len)
 {
   int wrote = 0, rv, i = 0, len;
-  const int n_segs = 2;
+  u32 n_segs = 2;
   svm_fifo_seg_t fs[n_segs];
 
-  len = svm_fifo_segments (f, 0, fs, n_segs, max_len);
+  len = svm_fifo_segments (f, 0, fs, &n_segs, max_len);
   if (len <= 0)
     return 0;
 
@@ -363,6 +363,8 @@ openssl_ctx_handshake_rx (tls_ctx_t * ctx, session_t * tls_session)
 static void
 openssl_confirm_app_close (tls_ctx_t * ctx)
 {
+  openssl_ctx_t *oc = (openssl_ctx_t *) ctx;
+  SSL_shutdown (oc->ssl);
   tls_disconnect_transport (ctx);
   session_transport_closed_notify (&ctx->connection);
 }
@@ -749,29 +751,59 @@ openssl_start_listen (tls_ctx_t * lctx)
       return -1;
     }
 
+  /* use the default OpenSSL built-in DH parameters */
+  rv = SSL_CTX_set_dh_auto (ssl_ctx, 1);
+  if (rv != 1)
+    {
+      TLS_DBG (1, "Couldn't set temp DH parameters");
+      return -1;
+    }
+
   /*
    * Set the key and cert
    */
   cert_bio = BIO_new (BIO_s_mem ());
+  if (!cert_bio)
+    {
+      clib_warning ("unable to allocate memory");
+      return -1;
+    }
   BIO_write (cert_bio, ckpair->cert, vec_len (ckpair->cert));
   srvcert = PEM_read_bio_X509 (cert_bio, NULL, NULL, NULL);
   if (!srvcert)
     {
       clib_warning ("unable to parse certificate");
-      return -1;
+      goto err;
     }
-  SSL_CTX_use_certificate (ssl_ctx, srvcert);
+  rv = SSL_CTX_use_certificate (ssl_ctx, srvcert);
+  if (rv != 1)
+    {
+      clib_warning ("unable to use SSL certificate");
+      goto err;
+    }
+
   BIO_free (cert_bio);
 
   cert_bio = BIO_new (BIO_s_mem ());
+  if (!cert_bio)
+    {
+      clib_warning ("unable to allocate memory");
+      return -1;
+    }
   BIO_write (cert_bio, ckpair->key, vec_len (ckpair->key));
   pkey = PEM_read_bio_PrivateKey (cert_bio, NULL, NULL, NULL);
   if (!pkey)
     {
       clib_warning ("unable to parse pkey");
-      return -1;
+      goto err;
     }
-  SSL_CTX_use_PrivateKey (ssl_ctx, pkey);
+  rv = SSL_CTX_use_PrivateKey (ssl_ctx, pkey);
+  if (rv != 1)
+    {
+      clib_warning ("unable to use SSL PrivateKey");
+      goto err;
+    }
+
   BIO_free (cert_bio);
 
   olc_index = openssl_listen_ctx_alloc ();
@@ -785,6 +817,10 @@ openssl_start_listen (tls_ctx_t * lctx)
 
   return 0;
 
+err:
+  if (cert_bio)
+    BIO_free (cert_bio);
+  return -1;
 }
 
 static int

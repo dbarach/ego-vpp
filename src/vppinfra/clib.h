@@ -100,6 +100,11 @@
 #define __clib_packed __attribute__ ((packed))
 #define __clib_constructor __attribute__ ((constructor))
 #define __clib_noinline __attribute__ ((noinline))
+#ifdef __clang__
+#define __clib_noclone
+#else
+#define __clib_noclone		  __attribute__ ((noclone))
+#endif
 #define __clib_aligned(x) __attribute__ ((aligned(x)))
 #define __clib_section(s) __attribute__ ((section(s)))
 #define __clib_warn_unused_result __attribute__ ((warn_unused_result))
@@ -124,10 +129,17 @@
 #define PREDICT_FALSE(x) __builtin_expect((x),0)
 #define PREDICT_TRUE(x) __builtin_expect((x),1)
 #define COMPILE_TIME_CONST(x) __builtin_constant_p (x)
+#define CLIB_ASSUME(x)                                                        \
+  do                                                                          \
+    {                                                                         \
+      if (!(x))                                                               \
+	__builtin_unreachable ();                                             \
+    }                                                                         \
+  while (0)
 
 /*
  * Compiler barrier
- *   prevent compiler to reorder memory access accross this boundary
+ *   prevent compiler to reorder memory access across this boundary
  *   prevent compiler to cache values in register (force reload)
  * Not to be confused with CPU memory barrier below
  */
@@ -152,25 +164,7 @@
   decl __attribute ((destructor));		\
   decl
 
-/* Use __builtin_clz if available. */
-#if uword_bits == 64
-#define count_leading_zeros(x) __builtin_clzll (x)
-#define count_trailing_zeros(x) __builtin_ctzll (x)
-#else
-#define count_leading_zeros(x) __builtin_clzl (x)
-#define count_trailing_zeros(x) __builtin_ctzl (x)
-#endif
-
-#if defined (count_leading_zeros)
-always_inline uword
-clear_lowest_set_bit (uword x)
-{
-#ifdef __BMI2__
-  return _blsr_u64 (x);
-#else
-  return x ^ (1ULL << count_trailing_zeros (x));
-#endif
-}
+#include <vppinfra/bitops.h>
 
 always_inline uword
 min_log2 (uword x)
@@ -179,45 +173,6 @@ min_log2 (uword x)
   n = count_leading_zeros (x);
   return BITS (uword) - n - 1;
 }
-#else
-always_inline uword
-min_log2 (uword x)
-{
-  uword a = x, b = BITS (uword) / 2, c = 0, r = 0;
-
-  /* Reduce x to 4 bit result. */
-#define _					\
-{						\
-  c = a >> b;					\
-  if (c) a = c;					\
-  if (c) r += b;				\
-  b /= 2;					\
-}
-
-  if (BITS (uword) > 32)
-    _;
-  _;
-  _;
-  _;
-#undef _
-
-  /* Do table lookup on 4 bit partial. */
-  if (BITS (uword) > 32)
-    {
-      const u64 table = 0x3333333322221104LL;
-      uword t = (table >> (4 * a)) & 0xf;
-      r = t < 4 ? r + t : ~0;
-    }
-  else
-    {
-      const u32 table = 0x22221104;
-      uword t = (a & 8) ? 3 : ((table >> (4 * a)) & 0xf);
-      r = t < 4 ? r + t : ~0;
-    }
-
-  return r;
-}
-#endif
 
 always_inline uword
 max_log2 (uword x)
@@ -251,6 +206,9 @@ min_log2_u64 (u64 x)
 always_inline uword
 pow2_mask (uword x)
 {
+#ifdef __BMI2__
+  return _bzhi_u64 (-1ULL, x);
+#endif
   return ((uword) 1 << x) - (uword) 1;
 }
 
@@ -291,18 +249,6 @@ always_inline uword
 first_set (uword x)
 {
   return x & -x;
-}
-
-always_inline uword
-log2_first_set (uword x)
-{
-  uword result;
-#ifdef count_trailing_zeros
-  result = count_trailing_zeros (x);
-#else
-  result = min_log2 (first_set (x));
-#endif
-  return result;
 }
 
 always_inline f64

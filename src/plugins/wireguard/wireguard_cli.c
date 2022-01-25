@@ -192,7 +192,7 @@ wg_peer_add_command_fn (vlib_main_t * vm,
 	;
       else if (unformat (line_input, "table-id %d", &table_id))
 	;
-      else if (unformat (line_input, "port %d", &portDst))
+      else if (unformat (line_input, "dst-port %d", &portDst))
 	;
       else if (unformat (line_input, "persistent-keepalive %d",
 			 &persistent_keepalive))
@@ -213,16 +213,8 @@ wg_peer_add_command_fn (vlib_main_t * vm,
 	}
     }
 
-  if (AF_IP6 == ip_addr_version (&ip) ||
-      FIB_PROTOCOL_IP6 == allowed_ip.fp_proto)
-    rv = VNET_API_ERROR_INVALID_PROTOCOL;
-  else
-    rv = wg_peer_add (tun_sw_if_index,
-		      public_key,
-		      table_id,
-		      &ip_addr_46 (&ip),
-		      allowed_ips,
-		      portDst, persistent_keepalive, &peer_index);
+  rv = wg_peer_add (tun_sw_if_index, public_key, table_id, &ip_addr_46 (&ip),
+		    allowed_ips, portDst, persistent_keepalive, &peer_index);
 
   switch (rv)
     {
@@ -254,12 +246,12 @@ done:
 }
 
 /* *INDENT-OFF* */
-VLIB_CLI_COMMAND (wg_peer_add_command, static) =
-{
+VLIB_CLI_COMMAND (wg_peer_add_command, static) = {
   .path = "wireguard peer add",
-  .short_help = "wireguard peer add <wg_int> public-key <pub_key_other>"
-  "endpoint <ip4_dst> allowed-ip <prefix>"
-  "dst-port [port_dst] persistent-keepalive [keepalive_interval]",
+  .short_help =
+    "wireguard peer add <wg_int> public-key <pub_key_other> "
+    "endpoint <ip4_dst> allowed-ip <prefix> "
+    "dst-port [port_dst] persistent-keepalive [keepalive_interval]",
   .function = wg_peer_add_command_fn,
 };
 /* *INDENT-ON* */
@@ -364,6 +356,61 @@ VLIB_CLI_COMMAND (wg_show_itfs_command, static) =
   .short_help = "show wireguard",
   .function = wg_show_if_command_fn,
 };
+
+static clib_error_t *
+wg_set_async_mode_command_fn (vlib_main_t *vm, unformat_input_t *input,
+			      vlib_cli_command_t *cmd)
+{
+  unformat_input_t _line_input, *line_input = &_line_input;
+  int async_enable = 0;
+
+  if (!unformat_user (input, unformat_line_input, line_input))
+    return 0;
+
+  while (unformat_check_input (line_input) != UNFORMAT_END_OF_INPUT)
+    {
+      if (unformat (line_input, "on"))
+	async_enable = 1;
+      else if (unformat (line_input, "off"))
+	async_enable = 0;
+      else
+	return (clib_error_return (0, "unknown input '%U'",
+				   format_unformat_error, line_input));
+    }
+
+  wg_set_async_mode (async_enable);
+
+  unformat_free (line_input);
+  return (NULL);
+}
+
+VLIB_CLI_COMMAND (wg_set_async_mode_command, static) = {
+  .path = "set wireguard async mode",
+  .short_help = "set wireguard async mode on|off",
+  .function = wg_set_async_mode_command_fn,
+};
+
+static clib_error_t *
+wg_show_mode_command_fn (vlib_main_t *vm, unformat_input_t *input,
+			 vlib_cli_command_t *cmd)
+{
+  vlib_cli_output (vm, "Wireguard mode");
+
+#define _(v, f, s)                                                            \
+  vlib_cli_output (vm, "\t%s: %s", s,                                         \
+		   (wg_op_mode_is_set_##f () ? "enabled" : "disabled"));
+  foreach_wg_op_mode_flags
+#undef _
+
+    return (NULL);
+}
+
+VLIB_CLI_COMMAND (wg_show_modemode_command, static) = {
+  .path = "show wireguard mode",
+  .short_help = "show wireguard mode",
+  .function = wg_show_mode_command_fn,
+};
+
 /* *INDENT-ON* */
 
 /*

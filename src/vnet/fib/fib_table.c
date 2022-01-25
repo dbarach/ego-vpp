@@ -1322,6 +1322,7 @@ fib_table_lock_dec (fib_table_t *fib_table,
 {
     vec_validate(fib_table->ft_locks, source);
 
+    ASSERT(fib_table->ft_locks[source] > 0);
     fib_table->ft_locks[source]--;
     fib_table->ft_total_locks--;
 }
@@ -1337,6 +1338,36 @@ fib_table_lock_inc (fib_table_t *fib_table,
     fib_table->ft_total_locks++;
 }
 
+
+static void
+fib_table_lock_clear (fib_table_t *fib_table,
+                      fib_source_t source)
+{
+    vec_validate(fib_table->ft_locks, source);
+
+    ASSERT(fib_table->ft_locks[source] <= 1);
+    if (fib_table->ft_locks[source])
+    {
+        fib_table->ft_locks[source]--;
+        fib_table->ft_total_locks--;
+    }
+}
+
+static void
+fib_table_lock_set (fib_table_t *fib_table,
+                    fib_source_t source)
+{
+    vec_validate(fib_table->ft_locks, source);
+
+    ASSERT(fib_table->ft_locks[source] <= 1);
+    ASSERT(fib_table->ft_total_locks < (0xffffffff - 1));
+    if (!fib_table->ft_locks[source])
+    {
+        fib_table->ft_locks[source]++;
+        fib_table->ft_total_locks++;
+    }
+}
+
 void
 fib_table_unlock (u32 fib_index,
 		  fib_protocol_t proto,
@@ -1345,12 +1376,16 @@ fib_table_unlock (u32 fib_index,
     fib_table_t *fib_table;
 
     fib_table = fib_table_get(fib_index, proto);
-    fib_table_lock_dec(fib_table, source);
+
+    if (source == FIB_SOURCE_API || source == FIB_SOURCE_CLI)
+        fib_table_lock_clear(fib_table, source);
+    else
+        fib_table_lock_dec(fib_table, source);
 
     if (0 == fib_table->ft_total_locks)
     {
         /*
-         * no more locak from any source - kill it
+         * no more lock from any source - kill it
          */
 	fib_table_destroy(fib_table);
     }
@@ -1365,7 +1400,10 @@ fib_table_lock (u32 fib_index,
 
     fib_table = fib_table_get(fib_index, proto);
 
-    fib_table_lock_inc(fib_table, source);
+    if (source == FIB_SOURCE_API || source == FIB_SOURCE_CLI)
+        fib_table_lock_set(fib_table, source);
+    else
+        fib_table_lock_inc(fib_table, source);
 }
 
 u32

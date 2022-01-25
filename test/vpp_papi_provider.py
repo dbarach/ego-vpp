@@ -93,8 +93,6 @@ defaultmapping = {
     'vxlan_add_del_tunnel': {'mcast_sw_if_index': 4294967295, 'is_add': 1,
                              'decap_next_index': 4294967295,
                              'instance': 4294967295, },
-    'vxlan_gpe_add_del_tunnel': {'mcast_sw_if_index': 4294967295, 'is_add': 1,
-                                 'protocol': 3, },
     'want_bfd_events': {'enable_disable': 1, },
     'want_igmp_events': {'enable': 1, },
     'want_interface_events': {'enable_disable': 1, },
@@ -149,21 +147,25 @@ class VppPapiProvider(object):
         return self
 
     def assert_negative_api_retval(self):
-        """ Expect API failure - used with with, e.g.:
-            with self.vapi.assert_negative_api_retval():
-                self.vapi.<api call expected to fail>
+        """ Expect API failure - used with with, e.g.::
+
+                with self.vapi.assert_negative_api_retval():
+                    self.vapi.<api call expected to fail>
+
+            ..
         """
         self._expect_stack.append(self._expect_api_retval)
         self._expect_api_retval = self._negative
         return self
 
     def assert_zero_api_retval(self):
-        """ Expect API success - used with with, e.g.:
-            with self.vapi.assert_negative_api_retval():
-                self.vapi.<api call expected to succeed>
+        """ Expect API success - used with with, e.g.::
 
-            note: this is useful only inside another with block
-                  as success is the default expected value
+                with self.vapi.assert_negative_api_retval():
+                    self.vapi.<api call expected to succeed>
+
+            :note: this is useful only inside another with block
+                 as success is the default expected value
         """
         self._expect_stack.append(self._expect_api_retval)
         self._expect_api_retval = self._zero
@@ -650,45 +652,6 @@ class VppPapiProvider(object):
                             'is_ip6': is_ip6
                         }})
 
-    def vxlan_gpe_add_del_tunnel(
-            self,
-            src_addr,
-            dst_addr,
-            mcast_sw_if_index=0xFFFFFFFF,
-            is_add=1,
-            is_ipv6=0,
-            encap_vrf_id=0,
-            decap_vrf_id=0,
-            protocol=3,
-            vni=0):
-        """
-
-        :param local:
-        :param remote:
-        :param is_add:  (Default value = 1)
-        :param is_ipv6:  (Default value = 0)
-        :param encap_vrf_id:  (Default value = 0)
-        :param decap_vrf_id:  (Default value = 0)
-        :param mcast_sw_if_index:  (Default value = 0xFFFFFFFF)
-        :param protocol:  (Default value = 3)
-        :param vni:  (Default value = 0)
-
-        """
-        return self.api(self.papi.vxlan_gpe_add_del_tunnel,
-                        {'is_add': is_add,
-                         'is_ipv6': is_ipv6,
-                         'local': src_addr,
-                         'remote': dst_addr,
-                         'mcast_sw_if_index': mcast_sw_if_index,
-                         'encap_vrf_id': encap_vrf_id,
-                         'decap_vrf_id': decap_vrf_id,
-                         'protocol': protocol,
-                         'vni': vni})
-
-    def vxlan_gbp_tunnel_dump(self, sw_if_index=0xffffffff):
-        return self.api(self.papi.vxlan_gbp_tunnel_dump,
-                        {'sw_if_index': sw_if_index})
-
     def pppoe_add_del_session(
             self,
             client_ip,
@@ -843,7 +806,7 @@ class VppPapiProvider(object):
 
         :param spd_id - SPD ID to be created in the vpp . mandatory
         :param is_add - create (1) or delete(0) SPD (Default 1 - add) .
-              optional
+        optional
         :returns: reply from the API
         """
         return self.api(
@@ -894,11 +857,12 @@ class VppPapiProvider(object):
                                 is_ip_any=0):
         """ IPSEC policy SPD add/del   -
                     Wrapper to configure ipsec SPD policy entries in VPP
+
         :param spd_id: SPD ID for the policy
         :param local_address_start: local-ip-range start address
-        :param local_address_stop : local-ip-range stop address
+        :param local_address_stop: local-ip-range stop address
         :param remote_address_start: remote-ip-range start address
-        :param remote_address_stop : remote-ip-range stop address
+        :param remote_address_stop: remote-ip-range stop address
         :param local_port_start: (Default value = 0)
         :param local_port_stop: (Default value = 65535)
         :param remote_port_start: (Default value = 0)
@@ -906,10 +870,10 @@ class VppPapiProvider(object):
         :param protocol: Any(0), AH(51) & ESP(50) protocol (Default value = 0)
         :param sa_id: Security Association ID for mapping it to SPD
         :param policy: bypass(0), discard(1), resolve(2) or protect(3) action
-               (Default value = 0)
+            (Default value = 0)
         :param priority: value for the spd action (Default value = 100)
         :param is_outbound: flag for inbound(0) or outbound(1)
-               (Default value = 1)
+            (Default value = 1)
         :param is_add: (Default value = 1)
         """
         return self.api(
@@ -992,30 +956,6 @@ class VppPapiProvider(object):
         return self.api(self.papi.punt_socket_deregister,
                         {'punt': reg})
 
-    def gbp_endpoint_dump(self):
-        """ GBP endpoint Dump """
-        return self.api(self.papi.gbp_endpoint_dump, {})
-
-    def gbp_recirc_dump(self):
-        """ GBP recirc Dump """
-        return self.api(self.papi.gbp_recirc_dump, {})
-
-    def gbp_ext_itf_dump(self):
-        """ GBP recirc Dump """
-        return self.api(self.papi.gbp_ext_itf_dump, {})
-
-    def gbp_subnet_dump(self):
-        """ GBP Subnet Dump """
-        return self.api(self.papi.gbp_subnet_dump, {})
-
-    def gbp_contract_dump(self):
-        """ GBP contract Dump """
-        return self.api(self.papi.gbp_contract_dump, {})
-
-    def gbp_vxlan_tunnel_dump(self):
-        """ GBP VXLAN tunnel add/del """
-        return self.api(self.papi.gbp_vxlan_tunnel_dump, {})
-
     def igmp_enable_disable(self, sw_if_index, enable, host):
         """ Enable/disable IGMP on a given interface """
         return self.api(self.papi.igmp_enable_disable,
@@ -1038,7 +978,7 @@ class VppPapiProvider(object):
     def igmp_listen(self, filter, sw_if_index, saddrs, gaddr):
         """ Listen for new (S,G) on specified interface
 
-        :param enable: add/del
+        :param enable: add/delas
         :param sw_if_index: interface sw index
         :param saddr: source ip4 addr
         :param gaddr: group ip4 addr

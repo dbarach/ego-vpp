@@ -85,7 +85,8 @@ typedef struct _transport_proto_vft
    * Transmission
    */
 
-  u32 (*push_header) (transport_connection_t * tconn, vlib_buffer_t * b);
+  u32 (*push_header) (transport_connection_t *tconn, vlib_buffer_t **b,
+		      u32 n_bufs);
   int (*send_params) (transport_connection_t * tconn,
 		      transport_send_params_t *sp);
   void (*update_time) (f64 time_now, u8 thread_index);
@@ -127,12 +128,10 @@ typedef struct _transport_proto_vft
 
 extern transport_proto_vft_t *tp_vfts;
 
-#define transport_proto_foreach(VAR, BODY)			\
-do {								\
-    for (VAR = 0; VAR < vec_len (tp_vfts); VAR++)		\
-      if (tp_vfts[VAR].push_header != 0)			\
-	do { BODY; } while (0);					\
-} while (0)
+#define transport_proto_foreach(VAR, VAR_ALLOW_BM)                            \
+  for (VAR = 0; VAR < vec_len (tp_vfts); VAR++)                               \
+    if (tp_vfts[VAR].push_header != 0)                                        \
+      if (VAR_ALLOW_BM & (1 << VAR))
 
 int transport_connect (transport_proto_t tp, transport_endpoint_cfg_t * tep);
 void transport_half_close (transport_proto_t tp, u32 conn_index,
@@ -327,6 +326,19 @@ always_inline u8
 transport_connection_is_tx_paced (transport_connection_t * tc)
 {
   return (tc->flags & TRANSPORT_CONNECTION_F_IS_TX_PACED);
+}
+
+/**
+ * Clear descheduled flag and update pacer if needed
+ *
+ * To add session to scheduler use @ref transport_connection_reschedule
+ */
+always_inline void
+transport_connection_clear_descheduled (transport_connection_t *tc)
+{
+  tc->flags &= ~TRANSPORT_CONNECTION_F_DESCHED;
+  if (transport_connection_is_tx_paced (tc))
+    transport_connection_tx_pacer_reset_bucket (tc, 0 /* bucket */);
 }
 
 u8 *format_transport_pacer (u8 * s, va_list * args);

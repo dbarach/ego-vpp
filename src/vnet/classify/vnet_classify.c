@@ -139,7 +139,7 @@ vnet_classify_new_table (vnet_classify_main_t *cm, const u8 *mask,
 
   pool_get_aligned_zero (cm->tables, t, CLIB_CACHE_LINE_BYTES);
 
-  vec_validate_aligned (t->mask, match_n_vectors - 1, sizeof (u32x4));
+  clib_memset_u32 (t->mask, 0, 4 * ARRAY_LEN (t->mask));
   clib_memcpy_fast (t->mask, mask, match_n_vectors * sizeof (u32x4));
 
   t->next_table_index = ~0;
@@ -148,6 +148,7 @@ vnet_classify_new_table (vnet_classify_main_t *cm, const u8 *mask,
   t->match_n_vectors = match_n_vectors;
   t->skip_n_vectors = skip_n_vectors;
   t->entries_per_page = 2;
+  t->load_mask = pow2_mask (match_n_vectors * 2);
 
   t->mheap = clib_mem_create_heap (0, memory_size, 1 /* locked */ ,
 				   "classify");
@@ -175,7 +176,6 @@ vnet_classify_delete_table_index (vnet_classify_main_t * cm,
     /* Recursively delete the entire chain */
     vnet_classify_delete_table_index (cm, t->next_table_index, del_chain);
 
-  vec_free (t->mask);
   vec_free (t->buckets);
   clib_mem_destroy_heap (t->mheap);
   pool_put (cm->tables, t);
@@ -1649,13 +1649,13 @@ filter_table_mask_compare (void *a1, void *a2)
   m1 = (u8 *) (t1->mask);
   m2 = (u8 *) (t2->mask);
 
-  for (i = 0; i < vec_len (t1->mask) * sizeof (u32x4); i++)
+  for (i = 0; i < t1->match_n_vectors * sizeof (u32x4); i++)
     {
       n1 += count_set_bits (m1[0]);
       m1++;
     }
 
-  for (i = 0; i < vec_len (t2->mask) * sizeof (u32x4); i++)
+  for (i = 0; i < t2->match_n_vectors * sizeof (u32x4); i++)
     {
       n2 += count_set_bits (m2[0]);
       m2++;
@@ -1815,11 +1815,11 @@ classify_lookup_chain (u32 table_index, u8 * mask, u32 n_skip, u32 n_match)
 	continue;
 
       /* Masks aren't congruent, can't use this table. */
-      if (vec_len (t->mask) * sizeof (u32x4) != vec_len (mask))
+      if (t->match_n_vectors * sizeof (u32x4) != vec_len (mask))
 	continue;
 
       /* Masks aren't bit-for-bit identical, can't use this table. */
-      if (memcmp (t->mask, mask, vec_len (mask)))
+      if (memcmp (t->mask, mask, t->match_n_vectors * sizeof (u32x4)))
 	continue;
 
       /* Winner... */
@@ -2043,7 +2043,7 @@ vlib_enable_disable_pkt_trace_filter (int enable)
  * It's reasonably likely that folks will configure a single
  * table with one or two matches. As a result, we configure
  * 8 hash buckets and 128K of match rule space. One can override
- * the defaults by specifiying "buckets <nnn>" and "memory-size <xxx>"
+ * the defaults by specifying "buckets <nnn>" and "memory-size <xxx>"
  * as desired.
  *
  * To build up complex filter chains, repeatedly issue the
@@ -2079,16 +2079,18 @@ vlib_enable_disable_pkt_trace_filter (int enable)
  *
  * Configure a simple classify filter, and configure pcap rx trace to use it:
  *
- * <b><em>classify filter rx mask l3 ip4 src match l3 ip4 src 192.168.1.11"</em></b><br>
+ * @cliexcmd{classify filter rx mask l3 ip4 src match l3 ip4 src 192.168.1.11}
  * <b><em>pcap rx trace on max 100 filter</em></b>
  *
  * Configure another fairly simple filter
  *
- * <b><em>classify filter mask l3 ip4 src dst match l3 ip4 src 192.168.1.10 dst 192.168.2.10"</em></b>
+ * @cliexcmd{classify filter mask l3 ip4 src dst match l3 ip4 src 192.168.1.10
+ * dst 192.168.2.10}
  *
  *
  * Configure a filter for use with the vpp packet tracer:
- * <b><em>classify filter trace mask l3 ip4 src dst match l3 ip4 src 192.168.1.10 dst 192.168.2.10"</em></b>
+ * @cliexcmd{classify filter trace mask l3 ip4 src dst match l3 ip4 src
+ * 192.168.1.10 dst 192.168.2.10}
  * <b><em>trace add dpdk-input 100 filter</em></b>
  *
  * Clear classifier filters
@@ -2096,7 +2098,7 @@ vlib_enable_disable_pkt_trace_filter (int enable)
  * <b><em>classify filter [trace | rx | tx  | <intfc>] del</em></b>
  *
  * To display the top-level classifier tables for each use case:
- * <b><em>show classify filter</em/></b>
+ * <b><em>show classify filter</em></b>
  *
  * To inspect the classifier tables, use
  *
@@ -2213,7 +2215,7 @@ format_vnet_classify_table (u8 *s, va_list *args)
 
   if (index == ~0)
     {
-      s = format (s, "%10s%10s%10s%10s", "TableIdx", "Sessions", "NextTbl",
+      s = format (s, "\n%10s%10s%10s%10s", "TableIdx", "Sessions", "NextTbl",
 		  "NextNode", verbose ? "Details" : "");
       return s;
     }
@@ -2274,11 +2276,13 @@ show_classify_tables_command_fn (vlib_main_t * vm,
 
   if (vec_len (indices))
     {
-      vlib_cli_output (vm, "%U", format_vnet_classify_table, cm, verbose,
-		       ~0 /* hdr */ );
       for (i = 0; i < vec_len (indices); i++)
-	vlib_cli_output (vm, "%U", format_vnet_classify_table, cm,
-			 verbose, indices[i]);
+	{
+	  vlib_cli_output (vm, "%U", format_vnet_classify_table, cm, verbose,
+			   ~0 /* hdr */);
+	  vlib_cli_output (vm, "%U", format_vnet_classify_table, cm, verbose,
+			   indices[i]);
+	}
     }
   else
     vlib_cli_output (vm, "No classifier tables configured");
@@ -2314,7 +2318,7 @@ unformat_l4_match (unformat_input_t * input, va_list * args)
       else if (unformat (input, "dst_port %d", &dst_port))
 	;
       else
-	return 0;
+	break;
     }
 
   h.src_port = clib_host_to_net_u16 (src_port);

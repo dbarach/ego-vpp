@@ -35,9 +35,9 @@ bfd_calc_echo_checksum (u32 discriminator, u64 expire_time, u32 secret)
 {
   u64 checksum = 0;
 #if defined(clib_crc32c_uses_intrinsics) && !defined (__i386__)
-  checksum = crc32_u64 (0, discriminator);
-  checksum = crc32_u64 (checksum, expire_time);
-  checksum = crc32_u64 (checksum, secret);
+  checksum = clib_crc32c_u64 (0, discriminator);
+  checksum = clib_crc32c_u64 (checksum, expire_time);
+  checksum = clib_crc32c_u64 (checksum, secret);
 #else
   checksum = clib_xxhash (discriminator ^ expire_time ^ secret);
 #endif
@@ -1847,6 +1847,8 @@ bfd_consume_pkt (vlib_main_t * vm, bfd_main_t * bm, const bfd_pkt_t * pkt,
 	  bfd_set_poll_state (bs, BFD_POLL_NOT_NEEDED);
 	  if (BFD_STATE_up == bs->local_state)
 	    {
+	      bfd_set_effective_desired_min_tx (
+		bm, bs, now, bs->config_desired_min_tx_nsec);
 	      bfd_set_effective_required_min_rx (bm, bs,
 						 clib_max (bs->echo *
 							   bm->min_required_min_rx_while_echo_nsec,
@@ -2020,22 +2022,27 @@ bfd_auth_activate (bfd_session_t * bs, u32 conf_key_id,
   bfd_auth_key_t *key = pool_elt_at_index (bm->auth_keys, key_idx);
   if (is_delayed)
     {
-      if (bs->auth.next_key == key)
+      if (bs->auth.next_key == key && bs->auth.next_bfd_key_id == bfd_key_id)
 	{
 	  /* already using this key, no changes required */
 	  return 0;
 	}
-      bs->auth.next_key = key;
+      if (bs->auth.next_key != key)
+	{
+	  ++key->use_count;
+	  bs->auth.next_key = key;
+	}
       bs->auth.next_bfd_key_id = bfd_key_id;
       bs->auth.is_delayed = 1;
     }
   else
     {
-      if (bs->auth.curr_key == key)
+      if (bs->auth.curr_key == key && bs->auth.curr_bfd_key_id == bfd_key_id)
 	{
 	  /* already using this key, no changes required */
 	  return 0;
 	}
+      ++key->use_count;
       if (bs->auth.curr_key)
 	{
 	  --bs->auth.curr_key->use_count;
@@ -2044,7 +2051,6 @@ bfd_auth_activate (bfd_session_t * bs, u32 conf_key_id,
       bs->auth.curr_bfd_key_id = bfd_key_id;
       bs->auth.is_delayed = 0;
     }
-  ++key->use_count;
   BFD_DBG ("\nSession auth modified: %U", format_bfd_session, bs);
   vlib_log_info (bm->log_class, "session auth modified: %U",
 		 format_bfd_session_brief, bs);

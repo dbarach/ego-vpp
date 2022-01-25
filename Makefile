@@ -1,4 +1,4 @@
-# Copyright (c) 2016 Cisco and/or its affiliates.
+# Copyright (c) 2021 Cisco and/or its affiliates.
 # Licensed under the Apache License, Version 2.0 (the "License");
 # you may not use this file except in compliance with the License.
 # You may obtain a copy of the License at:
@@ -56,14 +56,14 @@ endif
 
 ifeq ($(filter ubuntu debian,$(OS_ID)),$(OS_ID))
 PKG=deb
-else ifeq ($(filter rhel centos fedora,$(OS_ID)),$(OS_ID))
+else ifeq ($(filter rhel centos fedora opensuse-leap,$(OS_ID)),$(OS_ID))
 PKG=rpm
 endif
 
 # +libganglia1-dev if building the gmond plugin
 
 DEB_DEPENDS  = curl build-essential autoconf automake ccache
-DEB_DEPENDS += debhelper dkms git libtool libapr1-dev dh-systemd dh-python
+DEB_DEPENDS += debhelper dkms git libtool libapr1-dev dh-python
 DEB_DEPENDS += libconfuse-dev git-review exuberant-ctags cscope pkg-config
 DEB_DEPENDS += lcov chrpath autoconf libnuma-dev
 DEB_DEPENDS += python3-all python3-setuptools check
@@ -72,34 +72,35 @@ DEB_DEPENDS += cmake ninja-build uuid-dev python3-jsonschema python3-yaml
 DEB_DEPENDS += python3-venv  # ensurepip
 DEB_DEPENDS += python3-dev   # needed for python3 -m pip install psutil
 DEB_DEPENDS += libnl-3-dev libnl-route-3-dev
-# python3.6 on 16.04 requires python36-dev
+DEB_DEPENDS += enchant  # for docs
+DEB_DEPENDS += python3-virtualenv
+DEB_DEPENDS += libssl-dev
+DEB_DEPENDS += libelf-dev # for libbpf (af_xdp)
 
 LIBFFI=libffi6 # works on all but 20.04 and debian-testing
 
-ifeq ($(OS_VERSION_ID),18.04)
-	DEB_DEPENDS += python-dev python-all python-pip python-virtualenv
-	DEB_DEPENDS += libssl-dev
-	DEB_DEPENDS += clang-9 clang-format-10
-else ifeq ($(OS_VERSION_ID),20.04)
+ifeq ($(OS_VERSION_ID),20.04)
 	DEB_DEPENDS += python3-virtualenv
 	DEB_DEPENDS += libssl-dev
 	DEB_DEPENDS += libelf-dev # for libbpf (af_xdp)
-	DEB_DEPENDS += clang-format-10
+	# TODO: change CLANG_FORMAT_VER default in extras/scripts/checkstyle.sh
+	#       when clang-format-10 is removed
+	DEB_DEPENDS += clang-11 clang-format-11 clang-format-10
 	LIBFFI=libffi7
+	DEB_DEPENDS += enchant-2  # for docs
 else ifeq ($(OS_VERSION_ID),20.10)
-        DEB_DEPENDS += python3-virtualenv
-        DEB_DEPENDS += libssl-dev
-        DEB_DEPENDS += libelf-dev # for libbpf (af_xdp)
-        DEB_DEPENDS += clang-format-10
-        LIBFFI=libffi8ubuntu1
+	# TODO: change CLANG_FORMAT_VER default in extras/scripts/checkstyle.sh
+	#       when clang-format-10 is removed
+	DEB_DEPENDS += clang-11 clang-format-11 clang-format-10
+	LIBFFI=libffi8ubuntu1
 else ifeq ($(OS_ID)-$(OS_VERSION_ID),debian-10)
-	DEB_DEPENDS += python3-virtualenv virtualenv
-	DEB_DEPENDS += libssl-dev
-	DEB_DEPENDS += libelf-dev # for libbpf (af_xdp)
+	DEB_DEPENDS += virtualenv
 else
-	DEB_DEPENDS += libssl-dev
-	DEB_DEPENDS += libelf-dev # for libbpf (af_xdp)
+	# TODO: change CLANG_FORMAT_VER default in extras/scripts/checkstyle.sh
+	#       when clang-format-10 is removed
+	DEB_DEPENDS += clang-11 clang-format-11 clang-format-10
 	LIBFFI=libffi7
+	DEB_DEPENDS += enchant-2  # for docs
 endif
 
 DEB_DEPENDS += $(LIBFFI)
@@ -152,6 +153,32 @@ RPM_DEPENDS_DEBUG  = glibc-debuginfo e2fsprogs-debuginfo
 RPM_DEPENDS_DEBUG += krb5-debuginfo openssl-debuginfo
 RPM_DEPENDS_DEBUG += zlib-debuginfo nss-softokn-debuginfo
 RPM_DEPENDS_DEBUG += yum-plugin-auto-update-debug-info
+
+RPM_SUSE_BUILDTOOLS_DEPS = autoconf automake ccache check-devel chrpath
+RPM_SUSE_BUILDTOOLS_DEPS += clang cmake indent libtool make ninja python3-ply
+
+RPM_SUSE_DEVEL_DEPS = glibc-devel-static libnuma-devel libelf-devel
+RPM_SUSE_DEVEL_DEPS += libopenssl-devel openssl-devel mbedtls-devel libuuid-devel
+
+RPM_SUSE_PYTHON_DEPS = python-devel python3-devel python-pip python3-pip
+RPM_SUSE_PYTHON_DEPS += python-rpm-macros python3-rpm-macros
+
+RPM_SUSE_PLATFORM_DEPS = distribution-release shadow rpm-build
+
+ifeq ($(OS_ID),opensuse-leap)
+ifeq ($(OS_VERSION_ID),15.3)
+	RPM_SUSE_DEVEL_DEPS += curl libstdc++-devel bison gcc-c++ zlib-devel xmlto
+	RPM_SUSE_DEVEL_DEPS += lsb-release
+	RPM_SUSE_DEVEL_DEPS += asciidoc git
+	RPM_SUSE_PYTHON_DEPS += python3 python2-ply
+endif
+ifeq ($(OS_VERSION_ID),15.0)
+	RPM_SUSE_DEVEL_DEPS += gcc git curl
+	RPM_SUSE_PYTHON_DEPS += python3-ply python2-virtualenv
+endif
+endif
+
+RPM_SUSE_DEPENDS += $(RPM_SUSE_BUILDTOOLS_DEPS) $(RPM_SUSE_DEVEL_DEPS) $(RPM_SUSE_PYTHON_DEPS) $(RPM_SUSE_PLATFORM_DEPS)
 
 ifneq ($(wildcard $(STARTUP_DIR)/startup.conf),)
         STARTUP_CONF ?= $(STARTUP_DIR)/startup.conf
@@ -209,9 +236,9 @@ help:
 	@echo " checkstyle-test-diff - check test framework coding style (only changed files)"
 	@echo " checkstyle-api       - check api for incompatible changes"
 	@echo " fixstyle             - fix coding style"
-	@echo " doxygen              - (re)generate documentation"
-	@echo " bootstrap-doxygen    - setup Doxygen dependencies"
-	@echo " wipe-doxygen         - wipe all generated documentation"
+	@echo " doxygen              - DEPRECATED - use 'make docs'"
+	@echo " bootstrap-doxygen    - DEPRECATED"
+	@echo " wipe-doxygen         - DEPRECATED"
 	@echo " checkfeaturelist     - check FEATURE.yaml according to schema"
 	@echo " featurelist          - dump feature list in markdown"
 	@echo " json-api-files       - (re)-generate json api files"
@@ -306,8 +333,11 @@ else ifeq ($(OS_ID),fedora)
 	@sudo -E dnf install $(CONFIRM) $(RPM_DEPENDS)
 	@sudo -E debuginfo-install $(CONFIRM) glibc openssl-libs mbedtls-devel zlib
 endif
+else ifeq ($(filter opensuse-leap,$(OS_ID)),$(OS_ID))
+	@sudo -E zypper refresh
+	@sudo -E zypper install  -y $(RPM_SUSE_DEPENDS)
 else
-	$(error "This option currently works only on Ubuntu, Debian, RHEL, or CentOS systems")
+	$(error "This option currently works only on Ubuntu, Debian, RHEL, CentOS or openSUSE-leap systems")
 endif
 	git config commit.template .git_commit_template.txt
 
@@ -424,10 +454,7 @@ define test
 	make -C test \
 	  VPP_BUILD_DIR=$(BR)/build-$(2)-native \
 	  VPP_BIN=$(BR)/install-$(2)-native/vpp/bin/vpp \
-	  VPP_PLUGIN_PATH=$(call libexpand,$(libs),$(2),vpp_plugins) \
-	  VPP_TEST_PLUGIN_PATH=$(call libexpand,$(libs),$(2),vpp_api_test_plugins) \
 	  VPP_INSTALL_PATH=$(BR)/install-$(2)-native/ \
-	  LD_LIBRARY_PATH=$(call libexpand,$(libs),$(2),) \
 	  EXTENDED_TESTS=$(EXTENDED_TESTS) \
 	  PYTHON=$(PYTHON) \
 	  OS_ID=$(OS_ID) \
@@ -492,11 +519,13 @@ test-dep:
 
 .PHONY: test-doc
 test-doc:
-	@make -C test doc
+	@echo "make test-doc is DEPRECATED: use 'make docs'"
+	sleep 300
 
 .PHONY: test-wipe-doc
 test-wipe-doc:
-	@make -C test wipe-doc
+	@echo "make test-wipe-doc is DEPRECATED"
+	sleep 300
 
 .PHONY: test-cov
 test-cov:
@@ -708,42 +737,28 @@ checkfeaturelist: centos-pyyaml
 # Build the documentation
 #
 
-# Doxygen configuration and our utility scripts
-export DOXY_DIR ?= $(WS_ROOT)/doxygen
-
-define make-doxy
-	@OS_ID="$(OS_ID)" make -C $(DOXY_DIR) $@
-endef
-
 .PHONY: bootstrap-doxygen
 bootstrap-doxygen:
-	$(call make-doxy)
+	@echo "make bootstrap-doxygen is DEPRECATED"
+	sleep 300
 
 .PHONY: doxygen
-doxygen: bootstrap-doxygen
-	$(call make-doxy)
+doxygen: docs
+	@echo "make doxygen is DEPRECATED: use 'make docs'"
+	sleep 300
 
 .PHONY: wipe-doxygen
 wipe-doxygen:
-	$(call make-doxy)
+	@echo "make wipe-doxygen is DEPRECATED"
+	sleep 300
 
-# Sphinx Documents
-export DOCS_DIR = $(WS_ROOT)/docs
-export VENV_DIR = $(WS_ROOT)/sphinx_venv
-export SPHINX_SCRIPTS_DIR = $(WS_ROOT)/docs/scripts
-
-.PHONY: docs-venv
-docs-venv:
-	@($(SPHINX_SCRIPTS_DIR)/sphinx-make.sh venv)
+.PHONY: docs-%
+docs-%:
+	@make -C $(WS_ROOT)/docs $*
 
 .PHONY: docs
-docs: $(DOCS_DIR)
-	@($(SPHINX_SCRIPTS_DIR)/sphinx-make.sh html)
-
-.PHONY: docs-clean
-docs-clean:
-	@rm -rf $(DOCS_DIR)/_build
-	@rm -rf $(VENV_DIR)
+docs:
+	@make -C $(WS_ROOT)/docs docs
 
 .PHONY: pkg-verify
 pkg-verify: install-dep $(BR)/.deps.ok install-ext-deps
@@ -756,7 +771,7 @@ pkg-verify: install-dep $(BR)/.deps.ok install-ext-deps
 	$(call banner,"Building $(PKG) packages")
 	@make pkg-$(PKG)
 
-MAKE_VERIFY_GATE_OS ?= ubuntu-18.04
+MAKE_VERIFY_GATE_OS ?= ubuntu-20.04
 .PHONY: verify
 verify: pkg-verify
 ifeq ($(OS_ID)-$(OS_VERSION_ID),$(MAKE_VERIFY_GATE_OS))

@@ -131,7 +131,7 @@ pipe_tx (vlib_main_t * vm, vlib_node_runtime_t * node, vlib_frame_t * frame)
 {
   u32 n_left_from, n_left_to_next, n_copy, *from, *to_next;
   u32 next_index = VNET_PIPE_TX_NEXT_ETHERNET_INPUT;
-  u32 i, sw_if_index = 0, n_pkts = 0, n_bytes = 0;
+  u32 i, sw_if_index = 0, n_pkts = 0;
   vlib_buffer_t *b;
   pipe_t *pipe;
 
@@ -160,7 +160,6 @@ pipe_tx (vlib_main_t * vm, vlib_node_runtime_t * node, vlib_frame_t * frame)
 
 	  i++;
 	  n_pkts++;
-	  n_bytes += vlib_buffer_length_in_chain (vm, b);
 	}
       from += n_copy;
 
@@ -534,6 +533,7 @@ vnet_create_pipe_interface (u8 is_specified,
 {
   vnet_main_t *vnm = vnet_get_main ();
   vlib_main_t *vm = vlib_get_main ();
+  vnet_eth_interface_registration_t eir = {};
   u8 address[6] = {
     [0] = 0x22,
     [1] = 0x22,
@@ -564,15 +564,10 @@ vnet_create_pipe_interface (u8 is_specified,
    */
   address[5] = instance;
 
-  error = ethernet_register_interface (vnm, pipe_device_class.index,
-				       instance, address, &hw_if_index,
-				       /* flag change */ 0);
-
-  if (error)
-    {
-      rv = VNET_API_ERROR_INVALID_REGISTRATION;
-      goto oops;
-    }
+  eir.dev_class_index = pipe_device_class.index;
+  eir.dev_instance = instance;
+  eir.address = address;
+  hw_if_index = vnet_eth_register_interface (vnm, &eir);
 
   hi = vnet_get_hw_interface (vnm, hw_if_index);
   *parent_sw_if_index = hi->sw_if_index;

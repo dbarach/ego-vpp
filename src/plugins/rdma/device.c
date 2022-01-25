@@ -183,11 +183,11 @@ rdma_mac_change (vnet_hw_interface_t * hw, const u8 * old, const u8 * new)
   return 0;
 }
 
-static u32
-rdma_dev_change_mtu (rdma_device_t * rd)
+static clib_error_t *
+rdma_set_max_frame_size (vnet_main_t *vnm, vnet_hw_interface_t *hw,
+			 u32 frame_size)
 {
-  rdma_log__ (VLIB_LOG_LEVEL_ERR, rd, "MTU change not supported");
-  return ~0;
+  return vnet_error (VNET_ERR_UNSUPPORTED, 0);
 }
 
 static u32
@@ -202,8 +202,6 @@ rdma_flag_change (vnet_main_t * vnm, vnet_hw_interface_t * hw, u32 flags)
       return rdma_dev_set_ucast (rd);
     case ETHERNET_INTERFACE_FLAG_ACCEPT_ALL:
       return rdma_dev_set_promisc (rd);
-    case ETHERNET_INTERFACE_FLAG_MTU:
-      return rdma_dev_change_mtu (rd);
     }
 
   rdma_log__ (VLIB_LOG_LEVEL_ERR, rd, "unknown flag %x requested", flags);
@@ -355,18 +353,20 @@ rdma_async_event_cleanup (rdma_device_t * rd)
 static clib_error_t *
 rdma_register_interface (vnet_main_t * vnm, rdma_device_t * rd)
 {
-  clib_error_t *err =
-    ethernet_register_interface (vnm, rdma_device_class.index,
-				 rd->dev_instance, rd->hwaddr.bytes,
-				 &rd->hw_if_index, rdma_flag_change);
+  vnet_eth_interface_registration_t eir = {};
 
+  eir.dev_class_index = rdma_device_class.index;
+  eir.dev_instance = rd->dev_instance;
+  eir.address = rd->hwaddr.bytes;
+  eir.cb.flag_change = rdma_flag_change;
+  eir.cb.set_max_frame_size = rdma_set_max_frame_size;
+  rd->hw_if_index = vnet_eth_register_interface (vnm, &eir);
   /* Indicate ability to support L3 DMAC filtering and
    * initialize interface to L3 non-promisc mode */
-  vnet_hw_interface_t *hi = vnet_get_hw_interface (vnm, rd->hw_if_index);
-  hi->caps |= VNET_HW_INTERFACE_CAP_SUPPORTS_MAC_FILTER;
+  vnet_hw_if_set_caps (vnm, rd->hw_if_index, VNET_HW_IF_CAP_MAC_FILTER);
   ethernet_set_flags (vnm, rd->hw_if_index,
 		      ETHERNET_INTERFACE_FLAG_DEFAULT_L3);
-  return err;
+  return 0;
 }
 
 static void
@@ -1022,7 +1022,7 @@ are explicitly disabled, and if the interface supports it.*/
   /*
    * FIXME: add support for interrupt mode
    * vnet_hw_interface_t *hw = vnet_get_hw_interface (vnm, rd->hw_if_index);
-   * hw->caps |= VNET_HW_INTERFACE_CAP_SUPPORTS_INT_MODE;
+   * hw->caps |= VNET_HW_IF_CAP_INT_MODE;
    */
   vnet_hw_if_set_input_node (vnm, rd->hw_if_index, rdma_input_node.index);
 

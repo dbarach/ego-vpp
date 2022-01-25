@@ -98,6 +98,18 @@ _ (i32x16, i16x32, _mm512_packs_epi32)
 _ (i32x16, u16x32, _mm512_packus_epi32)
 #undef _
 
+static_always_inline u64x8
+u64x8_byte_swap (u64x8 v)
+{
+  u8x64 swap = {
+    7, 6, 5, 4, 3, 2, 1, 0, 15, 14, 13, 12, 11, 10, 9, 8,
+    7, 6, 5, 4, 3, 2, 1, 0, 15, 14, 13, 12, 11, 10, 9, 8,
+    7, 6, 5, 4, 3, 2, 1, 0, 15, 14, 13, 12, 11, 10, 9, 8,
+    7, 6, 5, 4, 3, 2, 1, 0, 15, 14, 13, 12, 11, 10, 9, 8,
+  };
+  return (u64x8) _mm512_shuffle_epi8 ((__m512i) v, (__m512i) swap);
+}
+
 static_always_inline u32x16
 u32x16_byte_swap (u32x16 v)
 {
@@ -184,6 +196,13 @@ u8x64_xor3 (u8x64 a, u8x64 b, u8x64 c)
 					    (__m512i) c, 0x96);
 }
 
+static_always_inline u64x8
+u64x8_xor3 (u64x8 a, u64x8 b, u64x8 c)
+{
+  return (u64x8) _mm512_ternarylogic_epi32 ((__m512i) a, (__m512i) b,
+					    (__m512i) c, 0x96);
+}
+
 static_always_inline u8x64
 u8x64_reflect_u8x16 (u8x64 x)
 {
@@ -196,14 +215,11 @@ u8x64_reflect_u8x16 (u8x64 x)
   return (u8x64) _mm512_shuffle_epi8 ((__m512i) x, (__m512i) mask);
 }
 
-static_always_inline u8x64
-u8x64_shuffle (u8x64 v, u8x64 m)
-{
-  return (u8x64) _mm512_shuffle_epi8 ((__m512i) v, (__m512i) m);
-}
-
 #define u8x64_align_right(a, b, imm) \
   (u8x64) _mm512_alignr_epi8 ((__m512i) a, (__m512i) b, imm)
+
+#define u64x8_align_right(a, b, imm)                                          \
+  (u64x8) _mm512_alignr_epi64 ((__m512i) a, (__m512i) b, imm)
 
 static_always_inline u32
 u32x16_sum_elts (u32x16 sum16)
@@ -243,14 +259,42 @@ _ (u64x4, u8, _mm256, __m256i, epi64)
 _ (u64x2, u8, _mm, __m128i, epi64)
 #undef _
 
+#define _(t, m, p, i, e)                                                      \
+  static_always_inline t t##_mask_and (t a, t b, m mask)                      \
+  {                                                                           \
+    return (t) p##_mask_and_##e ((i) a, mask, (i) a, (i) b);                  \
+  }                                                                           \
+  static_always_inline t t##_mask_andnot (t a, t b, m mask)                   \
+  {                                                                           \
+    return (t) p##_mask_andnot_##e ((i) a, mask, (i) a, (i) b);               \
+  }                                                                           \
+  static_always_inline t t##_mask_xor (t a, t b, m mask)                      \
+  {                                                                           \
+    return (t) p##_mask_xor_##e ((i) a, mask, (i) a, (i) b);                  \
+  }                                                                           \
+  static_always_inline t t##_mask_or (t a, t b, m mask)                       \
+  {                                                                           \
+    return (t) p##_mask_or_##e ((i) a, mask, (i) a, (i) b);                   \
+  }
+_ (u32x16, u16, _mm512, __m512i, epi32)
+_ (u32x8, u8, _mm256, __m256i, epi32)
+_ (u32x4, u8, _mm, __m128i, epi32)
+_ (u64x8, u8, _mm512, __m512i, epi64)
+_ (u64x4, u8, _mm256, __m256i, epi64)
+_ (u64x2, u8, _mm, __m128i, epi64)
+#undef _
+
 #ifdef CLIB_HAVE_VEC512
 #define CLIB_HAVE_VEC512_MASK_LOAD_STORE
+#define CLIB_HAVE_VEC512_MASK_BITWISE_OPS
 #endif
 #ifdef CLIB_HAVE_VEC256
 #define CLIB_HAVE_VEC256_MASK_LOAD_STORE
+#define CLIB_HAVE_VEC256_MASK_BITWISE_OPS
 #endif
 #ifdef CLIB_HAVE_VEC128
 #define CLIB_HAVE_VEC128_MASK_LOAD_STORE
+#define CLIB_HAVE_VEC128_MASK_BITWISE_OPS
 #endif
 
 static_always_inline u8x64
@@ -277,10 +321,44 @@ u8x64_mask_blend (u8x64 a, u8x64 b, u64 mask)
   return (u8x64) _mm512_mask_blend_epi8 (mask, (__m512i) a, (__m512i) b);
 }
 
+static_always_inline u8x64
+u8x64_permute (u8x64 idx, u8x64 a)
+{
+  return (u8x64) _mm512_permutexvar_epi8 ((__m512i) idx, (__m512i) a);
+}
+
+static_always_inline u8x64
+u8x64_permute2 (u8x64 idx, u8x64 a, u8x64 b)
+{
+  return (u8x64) _mm512_permutex2var_epi8 ((__m512i) a, (__m512i) idx,
+					   (__m512i) b);
+}
+
 #define _(t, m, e, p, it)                                                     \
   static_always_inline m t##_is_equal_mask (t a, t b)                         \
   {                                                                           \
     return p##_cmpeq_##e##_mask ((it) a, (it) b);                             \
+  }
+_ (u8x16, u16, epu8, _mm, __m128i)
+_ (u16x8, u8, epu16, _mm, __m128i)
+_ (u32x4, u8, epu32, _mm, __m128i)
+_ (u64x2, u8, epu64, _mm, __m128i)
+
+_ (u8x32, u32, epu8, _mm256, __m256i)
+_ (u16x16, u16, epu16, _mm256, __m256i)
+_ (u32x8, u8, epu32, _mm256, __m256i)
+_ (u64x4, u8, epu64, _mm256, __m256i)
+
+_ (u8x64, u64, epu8, _mm512, __m512i)
+_ (u16x32, u32, epu16, _mm512, __m512i)
+_ (u32x16, u16, epu32, _mm512, __m512i)
+_ (u64x8, u8, epu64, _mm512, __m512i)
+#undef _
+
+#define _(t, m, e, p, it)                                                     \
+  static_always_inline m t##_is_not_equal_mask (t a, t b)                     \
+  {                                                                           \
+    return p##_cmpneq_##e##_mask ((it) a, (it) b);                            \
   }
 _ (u8x16, u16, epu8, _mm, __m128i)
 _ (u16x8, u8, epu16, _mm, __m128i)
@@ -338,9 +416,17 @@ _ (u8x16, u16, _mm, __m128i, epi8)
 
 #ifdef CLIB_HAVE_VEC256
 #define CLIB_HAVE_VEC256_COMPRESS
+#ifdef __AVX512VBMI2__
+#define CLIB_HAVE_VEC256_COMPRESS_U8_U16
+#endif
+
 #endif
 #ifdef CLIB_HAVE_VEC512
 #define CLIB_HAVE_VEC512_COMPRESS
+#ifdef __AVX512VBMI2__
+#define CLIB_HAVE_VEC512_COMPRESS_U8_U16
+#endif
+
 #endif
 
 #ifndef __AVX512VBMI2__
@@ -356,6 +442,14 @@ u16x8_compress (u16x8 v, u8 mask)
   return u16x8_from_u32x8 (u32x8_compress (u32x8_from_u16x8 (v), mask));
 }
 #endif
+
+static_always_inline u64
+u64x8_hxor (u64x8 v)
+{
+  v ^= u64x8_align_right (v, v, 4);
+  v ^= u64x8_align_right (v, v, 2);
+  return v[0] ^ v[1];
+}
 
 static_always_inline void
 u32x16_transpose (u32x16 m[16])

@@ -86,6 +86,10 @@ typedef struct
   struct xsk_ring_prod tx;
   struct xsk_ring_cons cq;
   int xsk_fd;
+
+  /* fields below are accessed in control-plane only (cold) */
+
+  u32 queue_index;
 } af_xdp_txq_t;
 
 typedef struct
@@ -112,6 +116,8 @@ typedef struct
   u8 hwaddr[6];
 
   u8 rxq_num;
+
+  char *netns;
 
   struct xsk_umem **umem;
   struct xsk_socket **xsk;
@@ -149,6 +155,7 @@ typedef struct
   char *linux_ifname;
   char *name;
   char *prog;
+  char *netns;
   af_xdp_mode_t mode;
   af_xdp_create_flag_t flags;
   u32 rxq_size;

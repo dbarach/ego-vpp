@@ -22,6 +22,7 @@
 #define SESSION_INVALID_INDEX ((u32)~0)
 #define SESSION_INVALID_HANDLE ((u64)~0)
 #define SESSION_CTRL_MSG_MAX_SIZE 86
+#define SESSION_CTRL_MSG_TX_MAX_SIZE 160
 #define SESSION_NODE_FRAME_SIZE 128
 
 #define foreach_session_endpoint_fields				\
@@ -469,6 +470,7 @@ STATIC_ASSERT (sizeof (session_dgram_hdr_t) == (SESSION_CONN_ID_LEN + 8),
   _ (PORTINUSE, "lcl port in use")                                            \
   _ (IPINUSE, "ip in use")                                                    \
   _ (ALREADY_LISTENING, "ip port pair already listened on")                   \
+  _ (INVALID, "invalid value")                                                \
   _ (INVALID_RMT_IP, "invalid remote ip")                                     \
   _ (INVALID_APPWRK, "invalid app worker")                                    \
   _ (INVALID_NS, "invalid namespace")                                         \

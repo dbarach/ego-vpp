@@ -1372,7 +1372,7 @@ class ARPTestCase(VppTestCase):
 
     def test_arp_incomplete(self):
         """ ARP Incomplete"""
-        self.pg1.generate_remote_hosts(3)
+        self.pg1.generate_remote_hosts(4)
 
         p0 = (Ether(dst=self.pg0.local_mac, src=self.pg0.remote_mac) /
               IP(src=self.pg0.remote_ip4,
@@ -1382,6 +1382,11 @@ class ARPTestCase(VppTestCase):
         p1 = (Ether(dst=self.pg0.local_mac, src=self.pg0.remote_mac) /
               IP(src=self.pg0.remote_ip4,
                  dst=self.pg1.remote_hosts[2].ip4) /
+              UDP(sport=1234, dport=1234) /
+              Raw())
+        p2 = (Ether(dst=self.pg0.local_mac, src=self.pg0.remote_mac) /
+              IP(src=self.pg0.remote_ip4,
+                 dst="1.1.1.1") /
               UDP(sport=1234, dport=1234) /
               Raw())
 
@@ -1405,6 +1410,18 @@ class ARPTestCase(VppTestCase):
         static_arp.add_vpp_config()
 
         #
+        # add a route through remote host 3 hence we get an incomplete
+        #
+        VppIpRoute(self, "1.1.1.1", 32,
+                   [VppRoutePath(self.pg1.remote_hosts[3].ip4,
+                                 self.pg1.sw_if_index)]).add_vpp_config()
+        rx = self.send_and_expect(self.pg0, [p2], self.pg1)
+        self.verify_arp_req(rx[0],
+                            self.pg1.local_mac,
+                            self.pg1.local_ip4,
+                            self.pg1._remote_hosts[3].ip4)
+
+        #
         # change the interface's MAC
         #
         self.vapi.sw_interface_set_mac_address(self.pg1.sw_if_index,
@@ -1418,6 +1435,11 @@ class ARPTestCase(VppTestCase):
                             "00:00:00:33:33:33",
                             self.pg1.local_ip4,
                             self.pg1._remote_hosts[2].ip4)
+        rx = self.send_and_expect(self.pg0, [p2], self.pg1)
+        self.verify_arp_req(rx[0],
+                            "00:00:00:33:33:33",
+                            self.pg1.local_ip4,
+                            self.pg1._remote_hosts[3].ip4)
 
         #
         # packets to the resolved host also have the new source mac
@@ -1977,16 +1999,6 @@ class NeighborAgeTestCase(VppTestCase):
             i.unconfig_ip6()
             i.admin_down()
 
-    def wait_for_no_nbr(self, intf, address,
-                        n_tries=50, s_time=1):
-        while (n_tries):
-            if not find_nbr(self, intf, address):
-                return True
-            n_tries = n_tries - 1
-            self.sleep(s_time)
-
-        return False
-
     def verify_arp_req(self, rx, smac, sip, dip):
         ether = rx[Ether]
         self.assertEqual(ether.dst, "ff:ff:ff:ff:ff:ff")
@@ -2077,10 +2089,13 @@ class NeighborAgeTestCase(VppTestCase):
 
         self.vapi.cli("sh ip4 neighbor-sorted")
 
+        # age out neighbors
+        self.virtual_sleep(3)
+
         #
         # expect probes from all these ARP entries as they age
         # 3 probes for each neighbor 3*200 = 600
-        rxs = self.pg0.get_capture(600, timeout=8)
+        rxs = self.pg0.get_capture(600, timeout=2)
 
         for ii in range(3):
             for jj in range(200):
@@ -2091,9 +2106,7 @@ class NeighborAgeTestCase(VppTestCase):
         # 3 probes sent then 1 more second to see if a reply comes, before
         # they age out
         #
-        for jj in range(1, 201):
-            self.wait_for_no_nbr(self.pg0.sw_if_index,
-                                 self.pg0.remote_hosts[jj].ip4)
+        self.virtual_sleep(1)
 
         self.assertFalse(self.vapi.ip_neighbor_dump(sw_if_index=0xffffffff,
                                                     af=vaf.ADDRESS_IP4))
@@ -2120,7 +2133,7 @@ class NeighborAgeTestCase(VppTestCase):
             self.assertEqual(e.neighbor.mac_address,
                              self.pg0.remote_hosts[ii].mac)
 
-        self.sleep(10)
+        self.virtual_sleep(10)
         self.assertFalse(self.vapi.ip_neighbor_dump(sw_if_index=0xffffffff,
                                                     af=vaf.ADDRESS_IP4))
 
@@ -2168,7 +2181,7 @@ class NeighborAgeTestCase(VppTestCase):
                                      max_age=0,
                                      recycle=False)
 
-        self.sleep(10)
+        self.virtual_sleep(10)
         self.assertTrue(find_nbr(self,
                                  self.pg0.sw_if_index,
                                  self.pg0.remote_hosts[0].ip4))

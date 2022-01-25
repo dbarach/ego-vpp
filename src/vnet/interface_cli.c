@@ -53,6 +53,7 @@
 #include <vnet/classify/vnet_classify.h>
 #include <vnet/interface/rx_queue_funcs.h>
 #include <vnet/interface/tx_queue_funcs.h>
+#include <vnet/hash/hash.h>
 static int
 compare_interface_names (void *a1, void *a2)
 {
@@ -319,6 +320,21 @@ show_sw_interfaces (vlib_main_t * vm,
 	    show_vtr = 1;
 	  else if (unformat (linput, "verbose"))
 	    verbose = 1;
+	  else if (unformat (linput, "%d", &sw_if_index))
+	    {
+	      if (!pool_is_free_index (im->sw_interfaces, sw_if_index))
+		{
+		  si = pool_elt_at_index (im->sw_interfaces, sw_if_index);
+		  vec_add1 (sorted_sis, si[0]);
+		}
+	      else
+		{
+		  vec_free (sorted_sis);
+		  error = clib_error_return (0, "unknown interface index `%d'",
+					     sw_if_index);
+		  goto done;
+		}
+	    }
 	  else
 	    {
 	      vec_free (sorted_sis);
@@ -448,11 +464,11 @@ show_sw_interfaces (vlib_main_t * vm,
 				      1 /* honor unnumbered */,
 	({
 	  ip4_address_t *r4 = ip_interface_address_get_address (lm4, ia);
-	  if (fib4->table_id)
-	    vlib_cli_output (vm, "  L3 %U/%d ip4 table-id %d fib-idx %d",
-			     format_ip4_address, r4, ia->address_length,
-			     fib4->table_id,
-			     ip4_fib_index_from_table_id (fib4->table_id));
+	  if (fib4->hash.table_id)
+	    vlib_cli_output (
+	      vm, "  L3 %U/%d ip4 table-id %d fib-idx %d", format_ip4_address,
+	      r4, ia->address_length, fib4->hash.table_id,
+	      ip4_fib_index_from_table_id (fib4->hash.table_id));
 	  else
 	    vlib_cli_output (vm, "  L3 %U/%d",
 			     format_ip4_address, r4, ia->address_length);
@@ -926,7 +942,6 @@ done:
   return error;
 }
 
-
 /*?
  * This command is used to change the admin state (up/down) of an interface.
  *
@@ -936,9 +951,11 @@ done:
  * '<em>punt</em>' flag (interface is still down).
  *
  * @cliexpar
- * Example of how to configure the admin state of an interface to '<em>up</em?':
+ * Example of how to configure the admin state of an interface to
+ '<em>up</em>':
  * @cliexcmd{set interface state GigabitEthernet2/0/0 up}
- * Example of how to configure the admin state of an interface to '<em>down</em?':
+ * Example of how to configure the admin state of an interface to
+ '<em>down</em>':
  * @cliexcmd{set interface state GigabitEthernet2/0/0 down}
  ?*/
 /* *INDENT-OFF* */
@@ -1141,6 +1158,7 @@ mtu_cmd (vlib_main_t * vm, unformat_input_t * input, vlib_cli_command_t * cmd)
   u32 hw_if_index, sw_if_index, mtu;
   ethernet_main_t *em = &ethernet_main;
   u32 mtus[VNET_N_MTU] = { 0, 0, 0, 0 };
+  clib_error_t *err;
 
   if (unformat (input, "%d %U", &mtu,
 		unformat_vnet_hw_interface, vnm, &hw_if_index))
@@ -1149,22 +1167,14 @@ mtu_cmd (vlib_main_t * vm, unformat_input_t * input, vlib_cli_command_t * cmd)
        * Change physical MTU on interface. Only supported for Ethernet
        * interfaces
        */
-      vnet_hw_interface_t *hi = vnet_get_hw_interface (vnm, hw_if_index);
       ethernet_interface_t *eif = ethernet_get_interface (em, hw_if_index);
 
       if (!eif)
 	return clib_error_return (0, "not supported");
 
-      if (mtu < hi->min_supported_packet_bytes)
-	return clib_error_return (0, "Invalid mtu (%d): "
-				  "must be >= min pkt bytes (%d)", mtu,
-				  hi->min_supported_packet_bytes);
-
-      if (mtu > hi->max_supported_packet_bytes)
-	return clib_error_return (0, "Invalid mtu (%d): must be <= (%d)", mtu,
-				  hi->max_supported_packet_bytes);
-
-      vnet_hw_interface_set_mtu (vnm, hw_if_index, mtu);
+      err = vnet_hw_interface_set_mtu (vnm, hw_if_index, mtu);
+      if (err)
+	return err;
       goto done;
     }
   else if (unformat (input, "packet %d %U", &mtu,
@@ -1824,28 +1834,24 @@ VLIB_CLI_COMMAND (cmd_set_if_rx_placement,static) = {
 };
 /* *INDENT-ON* */
 
-clib_error_t *
+int
 set_hw_interface_tx_queue (u32 hw_if_index, u32 queue_id, uword *bitmap)
 {
   vnet_main_t *vnm = vnet_get_main ();
-  vnet_device_main_t *vdm = &vnet_device_main;
-  vnet_hw_interface_t *hw;
+  vlib_thread_main_t *vtm = vlib_get_thread_main ();
   vnet_hw_if_tx_queue_t *txq;
   u32 queue_index;
   u32 thread_index;
 
-  hw = vnet_get_hw_interface (vnm, hw_if_index);
-
   /* highest set bit in bitmap should not exceed last worker thread index */
   thread_index = clib_bitmap_last_set (bitmap);
-  if ((thread_index != ~0) && (thread_index > vdm->last_worker_thread_index))
-    return clib_error_return (0, "please specify valid thread(s)");
+  if ((thread_index != ~0) && (thread_index >= vtm->n_vlib_mains))
+    return VNET_API_ERROR_INVALID_VALUE;
 
   queue_index =
     vnet_hw_if_get_tx_queue_index_by_id (vnm, hw_if_index, queue_id);
   if (queue_index == ~0)
-    return clib_error_return (0, "unknown queue %u on interface %s", queue_id,
-			      hw->name);
+    return VNET_API_ERROR_INVALID_QUEUE;
 
   txq = vnet_hw_if_get_tx_queue (vnm, queue_index);
 
@@ -1873,6 +1879,7 @@ set_interface_tx_queue (vlib_main_t *vm, unformat_input_t *input,
   u32 hw_if_index = (u32) ~0;
   u32 queue_id = (u32) 0;
   uword *bitmap = 0;
+  int rv = 0;
 
   if (!unformat_user (input, unformat_line_input, line_input))
     return 0;
@@ -1904,7 +1911,23 @@ set_interface_tx_queue (vlib_main_t *vm, unformat_input_t *input,
       goto error;
     }
 
-  error = set_hw_interface_tx_queue (hw_if_index, queue_id, bitmap);
+  rv = set_hw_interface_tx_queue (hw_if_index, queue_id, bitmap);
+
+  switch (rv)
+    {
+    case VNET_API_ERROR_INVALID_VALUE:
+      error = clib_error_return (
+	0, "please specify valid thread(s) - last thread index %u",
+	clib_bitmap_last_set (bitmap));
+      break;
+    case VNET_API_ERROR_INVALID_QUEUE:
+      error = clib_error_return (
+	0, "unknown queue %u on interface %s", queue_id,
+	vnet_get_hw_interface (vnet_get_main (), hw_if_index)->name);
+      break;
+    default:
+      break;
+    }
 
 error:
   clib_bitmap_free (bitmap);
@@ -2377,7 +2400,7 @@ pcap_trace_command_fn (vlib_main_t * vm,
  * @cliexend
  * Example of how to start a tx packet capture:
  * @cliexstart{pcap trace tx max 35 intfc GigabitEthernet0/8/0 file
-vppTest.pcap}
+ * vppTest.pcap}
  * @cliexend
  * Example of how to display the status of a tx packet capture in progress:
  * @cliexstart{pcap trace status}
@@ -2401,6 +2424,187 @@ VLIB_CLI_COMMAND (pcap_tx_trace_command, static) = {
     .function = pcap_trace_command_fn,
 };
 /* *INDENT-ON* */
+
+static clib_error_t *
+set_interface_name (vlib_main_t *vm, unformat_input_t *input,
+		    vlib_cli_command_t *cmd)
+{
+  clib_error_t *error = 0;
+  unformat_input_t _line_input, *line_input = &_line_input;
+  vnet_main_t *vnm = vnet_get_main ();
+  u32 hw_if_index = ~0;
+  char *name = 0;
+
+  if (!unformat_user (input, unformat_line_input, line_input))
+    return 0;
+
+  while (unformat_check_input (line_input) != UNFORMAT_END_OF_INPUT)
+    {
+      if (unformat (line_input, "%U %s", unformat_vnet_hw_interface, vnm,
+		    &hw_if_index, &name))
+	;
+      else
+	{
+	  error = clib_error_return (0, "parse error: '%U'",
+				     format_unformat_error, line_input);
+	  unformat_free (line_input);
+	  vec_free (name);
+	  return error;
+	}
+    }
+
+  unformat_free (line_input);
+
+  if (hw_if_index == (u32) ~0 || name == 0)
+    {
+      vec_free (name);
+      error = clib_error_return (0, "please specify valid interface name");
+      return error;
+    }
+
+  error = vnet_rename_interface (vnm, hw_if_index, name);
+  vec_free (name);
+
+  return (error);
+}
+
+VLIB_CLI_COMMAND (cmd_set_if_name, static) = {
+  .path = "set interface name",
+  .short_help = "set interface name <interface-name> <new-interface-name>",
+  .function = set_interface_name,
+  .is_mp_safe = 1,
+};
+
+static clib_error_t *
+set_interface_tx_hash_cmd (vlib_main_t *vm, unformat_input_t *input,
+			   vlib_cli_command_t *cmd)
+{
+  clib_error_t *error = 0;
+  unformat_input_t _line_input, *line_input = &_line_input;
+  vnet_main_t *vnm = vnet_get_main ();
+  vnet_hw_interface_t *hi;
+  u8 *hash_name = 0;
+  u32 hw_if_index = (u32) ~0;
+  vnet_hash_fn_t hf;
+  vnet_hash_fn_type_t ftype;
+
+  if (!unformat_user (input, unformat_line_input, line_input))
+    return 0;
+
+  while (unformat_check_input (line_input) != UNFORMAT_END_OF_INPUT)
+    {
+      if (unformat (line_input, "%U", unformat_vnet_hw_interface, vnm,
+		    &hw_if_index))
+	;
+      else if (unformat (line_input, "hash-name %s", &hash_name))
+	;
+      else
+	{
+	  error = clib_error_return (0, "parse error: '%U'",
+				     format_unformat_error, line_input);
+	  unformat_free (line_input);
+	  return error;
+	}
+    }
+
+  unformat_free (line_input);
+
+  if (hw_if_index == (u32) ~0)
+    {
+      error = clib_error_return (0, "please specify valid interface name");
+      goto error;
+    }
+
+  if (hash_name == 0)
+    {
+      error = clib_error_return (0, "hash-name is required");
+      goto error;
+    }
+
+  hi = vnet_get_hw_interface (vnm, hw_if_index);
+  ftype =
+    vnet_get_hw_interface_class (vnm, hi->hw_class_index)->tx_hash_fn_type;
+  hf = vnet_hash_function_from_name ((const char *) hash_name, ftype);
+
+  if (!hf)
+    {
+      error = clib_error_return (0, "please specify valid hash name");
+      goto error;
+    }
+
+  hi->hf = hf;
+error:
+  vec_free (hash_name);
+  return (error);
+}
+
+VLIB_CLI_COMMAND (cmd_set_if_tx_hash, static) = {
+  .path = "set interface tx-hash",
+  .short_help = "set interface tx-hash <interface> hash-name <hash-name>",
+  .function = set_interface_tx_hash_cmd,
+};
+
+static clib_error_t *
+show_tx_hash (vlib_main_t *vm, unformat_input_t *input,
+	      vlib_cli_command_t *cmd)
+{
+  clib_error_t *error = 0;
+  unformat_input_t _line_input, *line_input = &_line_input;
+  vnet_main_t *vnm = vnet_get_main ();
+  vnet_hw_interface_t *hi;
+  vnet_hash_function_registration_t *hash;
+  u32 hw_if_index = (u32) ~0;
+  vnet_hash_fn_type_t ftype;
+
+  if (!unformat_user (input, unformat_line_input, line_input))
+    return 0;
+
+  while (unformat_check_input (line_input) != UNFORMAT_END_OF_INPUT)
+    {
+      if (unformat (line_input, "%U", unformat_vnet_hw_interface, vnm,
+		    &hw_if_index))
+	;
+      else
+	{
+	  error = clib_error_return (0, "parse error: '%U'",
+				     format_unformat_error, line_input);
+	  unformat_free (line_input);
+	  goto error;
+	}
+    }
+
+  unformat_free (line_input);
+
+  if (hw_if_index == (u32) ~0)
+    {
+      error = clib_error_return (0, "please specify valid interface name");
+      goto error;
+    }
+
+  hi = vnet_get_hw_interface (vnm, hw_if_index);
+  ftype =
+    vnet_get_hw_interface_class (vnm, hi->hw_class_index)->tx_hash_fn_type;
+
+  if (hi->hf)
+    {
+      hash = vnet_hash_function_from_func (hi->hf, ftype);
+      if (hash)
+	vlib_cli_output (vm, "%U", format_vnet_hash, hash);
+      else
+	vlib_cli_output (vm, "no matching hash function found");
+    }
+  else
+    vlib_cli_output (vm, "no hashing function set");
+
+error:
+  return (error);
+}
+
+VLIB_CLI_COMMAND (cmd_show_tx_hash, static) = {
+  .path = "show interface tx-hash",
+  .short_help = "show interface tx-hash [interface]",
+  .function = show_tx_hash,
+};
 
 /*
  * fd.io coding-style-patch-verification: ON

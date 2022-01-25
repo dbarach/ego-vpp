@@ -136,7 +136,7 @@ session_create_lookpback (u32 table_id, u32 * sw_if_index,
   if (table_id != 0)
     {
       ip_table_create (FIB_PROTOCOL_IP4, table_id, 0, 0);
-      ip_table_bind (FIB_PROTOCOL_IP4, *sw_if_index, table_id, 0);
+      ip_table_bind (FIB_PROTOCOL_IP4, *sw_if_index, table_id);
     }
 
   vnet_sw_interface_set_flags (vnet_get_main (), *sw_if_index,
@@ -290,11 +290,11 @@ session_test_endpoint_cfg (vlib_main_t * vm, unformat_input_t * input)
   /*
    * Create the loopbacks
    */
-  intf_addr[0].as_u32 = clib_host_to_net_u32 (0x01010101),
-    session_create_lookpback (0, &sw_if_index[0], &intf_addr[0]);
+  intf_addr[0].as_u32 = clib_host_to_net_u32 (0x01010101);
+  session_create_lookpback (0, &sw_if_index[0], &intf_addr[0]);
 
-  intf_addr[1].as_u32 = clib_host_to_net_u32 (0x02020202),
-    session_create_lookpback (1, &sw_if_index[1], &intf_addr[1]);
+  intf_addr[1].as_u32 = clib_host_to_net_u32 (0x02020202);
+  session_create_lookpback (1, &sw_if_index[1], &intf_addr[1]);
 
   session_add_del_route_via_lookup_in_table (0, 1, &intf_addr[1], 32,
 					     1 /* is_add */ );
@@ -419,6 +419,10 @@ session_test_endpoint_cfg (vlib_main_t * vm, unformat_input_t * input)
   vnet_application_detach (&detach_args);
   detach_args.app_index = client_index;
   vnet_application_detach (&detach_args);
+
+  ns_args.is_add = 0;
+  error = vnet_app_namespace_add_del (&ns_args);
+  SESSION_TEST ((error == 0), "app ns delete should succeed: %d", error);
 
   /* Allow the disconnects to finish before removing the routes. */
   vlib_process_suspend (vm, 10e-3);
@@ -765,6 +769,10 @@ session_test_namespace (vlib_main_t * vm, unformat_input_t * input)
 		"zero listener should exist in local table");
   detach_args.app_index = server_index;
   vnet_application_detach (&detach_args);
+
+  ns_args.is_add = 0;
+  error = vnet_app_namespace_add_del (&ns_args);
+  SESSION_TEST ((error == 0), "app ns delete should succeed: %d", error);
 
   /*
    * Cleanup
@@ -1601,6 +1609,10 @@ session_test_rules (vlib_main_t * vm, unformat_input_t * input)
   detach_args.app_index = server_index2;
   vnet_application_detach (&detach_args);
 
+  ns_args.is_add = 0;
+  error = vnet_app_namespace_add_del (&ns_args);
+  SESSION_TEST ((error == 0), "app ns delete should succeed: %d", error);
+
   vec_free (ns_id);
   vec_free (attach_args.name);
   return 0;
@@ -1930,7 +1942,7 @@ session_test_mq_basic (vlib_main_t * vm, unformat_input_t * input)
 
   smq = svm_msg_q_alloc (cfg);
   svm_msg_q_attach (mq, smq);
-  SESSION_TEST (mq != 0, "svm_msg_q_alloc");
+  SESSION_TEST (smq != 0, "svm_msg_q_alloc");
   SESSION_TEST (vec_len (mq->rings) == 2, "ring allocation");
   rings_ptr = (u8 *) mq->rings[0].shr->data;
   vec_foreach (ring, mq->rings)

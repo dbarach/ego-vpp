@@ -33,6 +33,16 @@ if(IPSECMB_INCLUDE_DIR AND IPSECMB_LIB)
 		${IPSECMB_LINK_FLAGS}
 		)
 
+	file(READ "${IPSECMB_INCLUDE_DIR}/intel-ipsec-mb.h" ipsecmb_header)
+	string(REGEX MATCH "IMB_VERSION_STR (\"+[0-9]+\\.[0-9]+\\.[0-9]+\")" _ ${ipsecmb_header})
+	string(REPLACE "\"" "" IPSECMB_VERSION ${CMAKE_MATCH_1})
+
+	if (${IPSECMB_VERSION} VERSION_GREATER "0.54.0")
+		add_definitions(-DHAVE_IPSECMB_CHACHA_POLY)
+	else()
+		message(STATUS "Intel IPSecMB ${IPSECMB_VERSION} does not support chacha20-poly1305. Disabled")
+	endif()
+
 	target_compile_options(crypto_ipsecmb_plugin PRIVATE "-march=silvermont" "-maes")
 	message(STATUS "Intel IPSecMB found: ${IPSECMB_INCLUDE_DIR}")
 else()

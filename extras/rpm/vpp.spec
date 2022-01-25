@@ -41,7 +41,7 @@ BuildRequires: mbedtls-devel mbedtls
 %if 0%{?fedora}
 Requires: vpp-lib = %{_version}-%{_release}, vpp-selinux-policy = %{_version}-%{_release}, net-tools, pciutils
 Requires: compat-openssl10
-Requires: boost-filesystem mbedtls libffi-devel
+Requires: mbedtls libffi-devel
 BuildRequires: subunit, subunit-devel
 BuildRequires: compat-openssl10-devel
 BuildRequires: python, python-devel, python-virtualenv, python-ply
@@ -50,7 +50,7 @@ BuildRequires: cmake
 %else
 %if 0%{rhel} >= 7
 Requires: vpp-lib = %{_version}-%{_release}, vpp-selinux-policy = %{_version}-%{_release}, net-tools, pciutils, python36
-Requires: boost-filesystem mbedtls libffi-devel
+Requires: mbedtls libffi-devel
 BuildRequires: epel-release
 BuildRequires: mbedtls-devel mbedtls
 BuildREquires: openssl-devel
@@ -70,7 +70,6 @@ BuildRequires: redhat-lsb
 BuildRequires: apr-devel
 BuildRequires: numactl-devel
 BuildRequires: autoconf automake libtool byacc bison flex
-BuildRequires: boost boost-devel
 BuildRequires: selinux-policy selinux-policy-devel
 
 Source: %{name}-%{_version}-%{_release}.tar.xz
@@ -276,15 +275,15 @@ mkdir -p -m755 %{buildroot}%{_localstatedir}/log/vpp
 #
 mkdir -p -m755 %{buildroot}/usr/lib/vpp_plugins
 mkdir -p -m755 %{buildroot}/usr/lib/vpp_api_test_plugins
-for file in $(cd %{_mu_build_dir}/%{_vpp_install_dir}/vpp/lib/vpp_plugins && find -type f -print)
+for file in $(cd %{_mu_build_dir}/%{_vpp_install_dir}/vpp/%{_lib}/vpp_plugins && find -type f -print)
 do
-        install -p -m 755 %{_mu_build_dir}/%{_vpp_install_dir}/vpp/lib/vpp_plugins/$file \
+        install -p -m 755 %{_mu_build_dir}/%{_vpp_install_dir}/vpp/%{_lib}/vpp_plugins/$file \
            %{buildroot}/usr/lib/vpp_plugins/$file
 done
 
-for file in $(cd %{_mu_build_dir}/%{_vpp_install_dir}/vpp/lib/vpp_api_test_plugins && find -type f -print)
+for file in $(cd %{_mu_build_dir}/%{_vpp_install_dir}/vpp/%{_lib}/vpp_api_test_plugins && find -type f -print)
 do
-        install -p -m 755 %{_mu_build_dir}/%{_vpp_install_dir}/vpp/lib/vpp_api_test_plugins/$file \
+        install -p -m 755 %{_mu_build_dir}/%{_vpp_install_dir}/vpp/%{_lib}/vpp_api_test_plugins/$file \
            %{buildroot}/usr/lib/vpp_api_test_plugins/$file
 done
 
@@ -353,6 +352,7 @@ fi
 %files
 %defattr(-,bin,bin)
 %{_unitdir}/vpp.service
+/usr/bin/vat2
 /usr/bin/vpp*
 /usr/bin/svm*
 %config(noreplace) /etc/sysctl.d/80-vpp.conf

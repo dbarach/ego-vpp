@@ -74,25 +74,34 @@ format_af_packet_device (u8 * s, va_list * args)
   af_packet_main_t *apm = &af_packet_main;
   af_packet_if_t *apif = pool_elt_at_index (apm->interfaces, dev_instance);
   clib_spinlock_lock_if_init (&apif->lockp);
-  u32 block_size = apif->tx_req->tp_block_size;
-  u32 frame_size = apif->tx_req->tp_frame_size;
-  u32 frame_num = apif->tx_req->tp_frame_nr;
+  u32 tx_block_sz = apif->tx_req->tp_block_size;
+  u32 tx_frame_sz = apif->tx_req->tp_frame_size;
+  u32 tx_frame_nr = apif->tx_req->tp_frame_nr;
+  u32 tx_block_nr = apif->tx_req->tp_block_nr;
+  u32 rx_block_size = apif->rx_req->tp_block_size;
+  u32 rx_frame_size = apif->rx_req->tp_frame_size;
+  u32 rx_frame_nr = apif->rx_req->tp_frame_nr;
+  u32 rx_block_nr = apif->rx_req->tp_block_nr;
   int block = 0;
-  u8 *block_start = apif->tx_ring + block * block_size;
+  u8 *tx_block_start = apif->tx_ring + block * tx_block_sz;
   u32 tx_frame = apif->next_tx_frame;
   struct tpacket2_hdr *tph;
 
   s = format (s, "Linux PACKET socket interface\n");
-  s = format (s, "%Ublock:%d frame:%d\n", format_white_space, indent,
-	      block_size, frame_size);
+  s = format (s, "%UTX block size:%d nr:%d  TX frame size:%d nr:%d\n",
+	      format_white_space, indent, tx_block_sz, tx_block_nr,
+	      tx_frame_sz, tx_frame_nr);
+  s = format (s, "%URX block size:%d nr:%d  RX frame size:%d nr:%d\n",
+	      format_white_space, indent, rx_block_size, rx_block_nr,
+	      rx_frame_size, rx_frame_nr);
   s = format (s, "%Unext frame:%d\n", format_white_space, indent,
 	      apif->next_tx_frame);
 
   int n_send_req = 0, n_avail = 0, n_sending = 0, n_tot = 0, n_wrong = 0;
   do
     {
-      tph = (struct tpacket2_hdr *) (block_start + tx_frame * frame_size);
-      tx_frame = (tx_frame + 1) % frame_num;
+      tph = (struct tpacket2_hdr *) (tx_block_start + tx_frame * tx_frame_sz);
+      tx_frame = (tx_frame + 1) % tx_frame_nr;
       if (tph->tp_status == 0)
 	n_avail++;
       else if (tph->tp_status & TP_STATUS_SEND_REQUEST)
@@ -149,17 +158,12 @@ VNET_DEVICE_CLASS_TX_FN (af_packet_device_class) (vlib_main_t * vm,
       u32 bi = buffers[0];
       buffers++;
 
-    nextframe:
       tph = (struct tpacket2_hdr *) (block_start + tx_frame * frame_size);
       if (PREDICT_FALSE (tph->tp_status &
 			 (TP_STATUS_SEND_REQUEST | TP_STATUS_SENDING)))
 	{
-	  tx_frame = (tx_frame + 1) % frame_num;
 	  frame_not_ready++;
-	  /* check if we've exhausted the ring */
-	  if (PREDICT_FALSE (frame_not_ready + n_sent == frame_num))
-	    break;
-	  goto nextframe;
+	  goto next;
 	}
 
       do
@@ -180,6 +184,7 @@ VNET_DEVICE_CLASS_TX_FN (af_packet_device_class) (vlib_main_t * vm,
 
       tx_frame = (tx_frame + 1) % frame_num;
 
+    next:
       /* check if we've exhausted the ring */
       if (PREDICT_FALSE (frame_not_ready + n_sent == frame_num))
 	break;
@@ -187,22 +192,24 @@ VNET_DEVICE_CLASS_TX_FN (af_packet_device_class) (vlib_main_t * vm,
 
   CLIB_MEMORY_BARRIER ();
 
-  apif->next_tx_frame = tx_frame;
-
   if (PREDICT_TRUE (n_sent))
-    if (PREDICT_FALSE (sendto (apif->fd, NULL, 0, MSG_DONTWAIT, NULL, 0) ==
-		       -1))
-      {
-	/* Uh-oh, drop & move on, but count whether it was fatal or not.
-	 * Note that we have no reliable way to properly determine the
-	 * disposition of the packets we just enqueued for delivery.
-	 */
-	vlib_error_count (vm, node->node_index,
-			  unix_error_is_fatal (errno) ?
-			    AF_PACKET_TX_ERROR_TXRING_FATAL :
-			    AF_PACKET_TX_ERROR_TXRING_EAGAIN,
-			  n_sent);
-      }
+    {
+      apif->next_tx_frame = tx_frame;
+
+      if (PREDICT_FALSE (sendto (apif->fd, NULL, 0, MSG_DONTWAIT, NULL, 0) ==
+			 -1))
+	{
+	  /* Uh-oh, drop & move on, but count whether it was fatal or not.
+	   * Note that we have no reliable way to properly determine the
+	   * disposition of the packets we just enqueued for delivery.
+	   */
+	  vlib_error_count (vm, node->node_index,
+			    unix_error_is_fatal (errno) ?
+			      AF_PACKET_TX_ERROR_TXRING_FATAL :
+			      AF_PACKET_TX_ERROR_TXRING_EAGAIN,
+			    n_sent);
+	}
+    }
 
   clib_spinlock_unlock_if_init (&apif->lockp);
 
@@ -329,9 +336,18 @@ static clib_error_t *af_packet_set_mac_address_function
   af_packet_main_t *apm = &af_packet_main;
   af_packet_if_t *apif =
     pool_elt_at_index (apm->interfaces, hi->dev_instance);
-  int rv, fd = socket (AF_UNIX, SOCK_DGRAM, 0);
+  int rv, fd;
   struct ifreq ifr;
 
+  if (apif->mode == AF_PACKET_IF_MODE_IP)
+    {
+      vlib_log_warn (apm->log_class, "af_packet_%s interface is in IP mode",
+		     apif->host_if_name);
+      return clib_error_return (0,
+				" MAC update failed, interface is in IP mode");
+    }
+
+  fd = socket (AF_UNIX, SOCK_DGRAM, 0);
   if (0 > fd)
     {
       vlib_log_warn (apm->log_class, "af_packet_%s could not open socket",
@@ -373,7 +389,6 @@ error:
   return 0;			/* no error */
 }
 
-/* *INDENT-OFF* */
 VNET_DEVICE_CLASS (af_packet_device_class) = {
   .name = "af-packet",
   .format_device_name = format_af_packet_device_name,
@@ -387,7 +402,6 @@ VNET_DEVICE_CLASS (af_packet_device_class) = {
   .subif_add_del_function = af_packet_subif_add_del_function,
   .mac_addr_change_function = af_packet_set_mac_address_function,
 };
-/* *INDENT-ON* */
 
 /*
  * fd.io coding-style-patch-verification: ON

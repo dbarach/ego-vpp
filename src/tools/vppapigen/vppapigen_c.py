@@ -24,6 +24,7 @@ VAT2 tests.
 '''
 
 import datetime
+import itertools
 import os
 import time
 import sys
@@ -66,7 +67,10 @@ class ToJSON():
         write('#ifndef included_{}_api_tojson_h\n'.format(self.module))
         write('#define included_{}_api_tojson_h\n'.format(self.module))
         write('#include <vppinfra/cJSON.h>\n\n')
-        write('#include <vat2/jsonconvert.h>\n\n')
+        write('#include <vppinfra/jsonformat.h>\n\n')
+        if self.module == 'interface_types':
+            write('#define vl_printfun\n')
+            write('#include <vnet/interface_types.api.h>\n\n')
 
     def footer(self):
         '''Output the bottom boilerplate.'''
@@ -203,8 +207,11 @@ class ToJSON():
         write('    cJSON *array = cJSON_CreateArray();\n')
 
         for b in o.block:
+            if b[1] == 0:
+                    continue
             write('    if (a & {})\n'.format(b[0]))
-            write('       cJSON_AddItemToArray(array, cJSON_CreateString("{}"));\n'.format(b[0]))
+            write(
+                '       cJSON_AddItemToArray(array, cJSON_CreateString("{}"));\n'.format(b[0]))
         write('    return array;\n')
         write('}\n')
 
@@ -231,6 +238,8 @@ class ToJSON():
         write('    cJSON *o = cJSON_CreateObject();\n')
         write('    cJSON_AddStringToObject(o, "_msgname", "{}");\n'
               .format(o.name))
+        write('    cJSON_AddStringToObject(o, "_crc", "{crc:08x}");\n'
+              .format(crc=o.crc))
 
         for t in o.block:
             self._dispatch[t.type](self, t)
@@ -312,7 +321,7 @@ class FromJSON():
         write('#ifndef included_{}_api_fromjson_h\n'.format(self.module))
         write('#define included_{}_api_fromjson_h\n'.format(self.module))
         write('#include <vppinfra/cJSON.h>\n\n')
-        write('#include <vat2/jsonconvert.h>\n\n')
+        write('#include <vppinfra/jsonformat.h>\n\n')
         write('#pragma GCC diagnostic ignored "-Wunused-label"\n')
 
     def is_base_type(self, t):
@@ -338,7 +347,7 @@ class FromJSON():
         if o.modern_vla:
             write('    char *p = cJSON_GetStringValue(item);\n')
             write('    size_t plen = strlen(p);\n')
-            write('    {msgvar} = realloc({msgvar}, {msgsize} + plen);\n'
+            write('    {msgvar} = cJSON_realloc({msgvar}, {msgsize} + plen, {msgsize});\n'
                   .format(msgvar=msgvar, msgsize=msgsize))
             write('    if ({msgvar} == 0) goto error;\n'.format(msgvar=msgvar))
             write('    vl_api_c_string_to_api_string(p, (void *){msgvar} + '
@@ -393,7 +402,7 @@ class FromJSON():
         cJSON *array = cJSON_GetObjectItem(o, "{n}");
         int size = cJSON_GetArraySize(array);
         {lfield} = size;
-        {realloc} = realloc({realloc}, {msgsize} + sizeof({t}) * size);
+        {realloc} = cJSON_realloc({realloc}, {msgsize} + sizeof({t}) * size, {msgsize});
         {t} *d = (void *){realloc} + {msgsize};
         {msgsize} += sizeof({t}) * size;
         for (i = 0; i < size; i++) {{
@@ -419,8 +428,8 @@ class FromJSON():
                 write('    if (!s) goto error;\n')
                 write('    {} = vec_len(s);\n'.format(lfield))
 
-                write('    {realloc} = realloc({realloc}, {msgsize} + '
-                      'vec_len(s));\n'.format(msgvar=msgvar, msgsize=msgsize, realloc=realloc))
+                write('    {realloc} = cJSON_realloc({realloc}, {msgsize} + '
+                      'vec_len(s), {msgsize});\n'.format(msgvar=msgvar, msgsize=msgsize, realloc=realloc))
                 write('    memcpy((void *){realloc} + {msgsize}, s, '
                       'vec_len(s));\n'.format(realloc=realloc, msgsize=msgsize))
                 write('    {msgsize} += vec_len(s);\n'.format(msgsize=msgsize))
@@ -553,7 +562,7 @@ class FromJSON():
         write('    cJSON *item __attribute__ ((unused));\n')
         write('    u8 *s __attribute__ ((unused));\n')
         write('    int l = sizeof(vl_api_{}_t);\n'.format(o.name))
-        write('    vl_api_{}_t *a = malloc(l);\n'.format(o.name))
+        write('    vl_api_{}_t *a = cJSON_malloc(l);\n'.format(o.name))
         write('\n')
 
         for t in o.block:
@@ -573,7 +582,7 @@ class FromJSON():
 
         if error:
             write('\n  error:\n')
-            write('    free(a);\n')
+            write('    cJSON_free(a);\n')
             write('    return 0;\n')
         write('}\n')
 
@@ -677,7 +686,7 @@ TOP_BOILERPLATE = '''\
     || defined(vl_printfun) ||defined(vl_endianfun) \\
     || defined(vl_api_version)||defined(vl_typedefs) \\
     || defined(vl_msg_name)||defined(vl_msg_name_crc_list) \\
-    || defined(vl_api_version_tuple)
+    || defined(vl_api_version_tuple) || defined(vl_calcsizefun)
 /* ok, something was selected */
 #else
 #warning no content included from {input_filename}
@@ -742,7 +751,7 @@ def msg_name_crc_list(s, suffix):
 
     for t in s['Define']:
         output += "\\\n_(VL_API_%s, %s, %08x) " % \
-                   (t.name.upper(), t.name, t.crc)
+            (t.name.upper(), t.name, t.crc)
     output += "\n#endif"
 
     return output
@@ -928,10 +937,13 @@ def printfun(objs, stream, modulename):
 #define _uword_cast long
 #endif
 
+#include "{module}.api_tojson.h"
+#include "{module}.api_fromjson.h"
+
 '''
 
     signature = '''\
-static inline void *vl_api_{name}_t_print (vl_api_{name}_t *a, void *handle)
+static inline void *vl_api_{name}_t_print{suffix} (vl_api_{name}_t *a, void *handle)
 {{
     u8 *s = 0;
     u32 indent __attribute__((unused)) = 2;
@@ -946,7 +958,7 @@ static inline void *vl_api_{name}_t_print (vl_api_{name}_t *a, void *handle)
         if t.manual_print:
             write("/***** manual: vl_api_%s_t_print  *****/\n\n" % t.name)
             continue
-        write(signature.format(name=t.name))
+        write(signature.format(name=t.name, suffix=''))
         write('    /* Message definition: vl_api_{}_t: */\n'.format(t.name))
         write("    s = format(s, \"vl_api_%s_t:\");\n" % t.name)
         for o in t.block:
@@ -954,6 +966,16 @@ static inline void *vl_api_{name}_t_print (vl_api_{name}_t *a, void *handle)
         write('    vec_add1(s, 0);\n')
         write('    vl_print (handle, (char *)s);\n')
         write('    vec_free (s);\n')
+        write('    return handle;\n')
+        write('}\n\n')
+
+        write(signature.format(name=t.name, suffix='_json'))
+        write('    cJSON * o = vl_api_{}_t_tojson(a);\n'.format(t.name))
+        write('    (void)s;\n')
+        write('    char *out = cJSON_Print(o);\n')
+        write('    vl_print(handle, out);\n')
+        write('    cJSON_Delete(o);\n')
+        write('    cJSON_free(out);\n')
         write('    return handle;\n')
         write('}\n\n')
 
@@ -1124,7 +1146,7 @@ static inline void vl_api_{name}_t_endian (vl_api_{name}_t *a)
 '''
 
     for t in objs:
-        if t.__class__.__name__ == 'Enum' or t.__class__.__name__ == 'EnumFlag' :
+        if t.__class__.__name__ == 'Enum' or t.__class__.__name__ == 'EnumFlag':
             output += signature.format(name=t.name)
             if t.enumtype in ENDIAN_STRINGS:
                 output += ('    *a = {}(*a);\n'
@@ -1162,6 +1184,78 @@ static inline void vl_api_{name}_t_endian (vl_api_{name}_t *a)
 
     output += "\n#endif"
     output += "\n#endif /* vl_endianfun */\n\n"
+
+    return output
+
+
+def calc_size_fun(objs, modulename):
+    '''Main entry point for calculate size function generation'''
+    output = '''\
+
+/****** Calculate size functions *****/\n\
+#ifdef vl_calcsizefun
+#ifndef included_{module}_calcsizefun
+#define included_{module}_calcsizefun
+
+'''
+    output = output.format(module=modulename)
+
+    signature = '''\
+/* calculate message size of message in network byte order */
+static inline uword vl_api_{name}_t_calc_size (vl_api_{name}_t *a)
+{{
+'''
+
+    for o in objs:
+        tname = o.__class__.__name__
+
+        output += signature.format(name=o.name)
+        output += f"      return sizeof(*a)"
+        if tname == 'Using':
+            if 'length' in o.alias:
+                try:
+                    tmp = int(o.alias['length'])
+                    if tmp == 0:
+                        raise (f"Unexpected length '0' for alias {o}")
+                except:
+                    # output += f" + vl_api_{o.alias.name}_t_calc_size({o.name})"
+                    print("culprit:")
+                    print(o)
+                    print(dir(o.alias))
+                    print(o.alias)
+                    raise
+        elif tname == 'Enum' or tname == 'EnumFlag':
+            pass
+        else:
+            for b in o.block:
+                if b.type == 'Option':
+                    continue
+                elif b.type == 'Field':
+                    if b.fieldtype.startswith('vl_api_'):
+                        output += f" - sizeof(a->{b.fieldname})"
+                        output += f" + {b.fieldtype}_calc_size(&a->{b.fieldname})"
+                elif b.type == 'Array':
+                    if b.lengthfield:
+                        m = list(filter(lambda x: x.fieldname == b.lengthfield, o.block))
+                        if len(m) != 1:
+                            raise Exception(f"Expected 1 match for field '{b.lengthfield}', got '{m}'")
+                        lf = m[0]
+                        if lf.fieldtype in ENDIAN_STRINGS:
+                            output += f" + {ENDIAN_STRINGS[lf.fieldtype]}(a->{b.lengthfield}) * sizeof(a->{b.fieldname}[0])"
+                        elif lf.fieldtype == "u8":
+                            output += f" + a->{b.lengthfield} * sizeof(a->{b.fieldname}[0])"
+                        else:
+                            raise Exception(f"Don't know how to endian swap {lf.fieldtype}")
+                    else:
+                        # Fixed length strings decay to nul terminated u8
+                        if b.fieldtype == 'string':
+                            if b.modern_vla:
+                                output += f" + vl_api_string_len(&a->{b.fieldname})"
+
+        output += ";\n"
+        output += '}\n\n'
+    output += "\n#endif"
+    output += "\n#endif /* vl_calcsizefun */\n\n"
 
     return output
 
@@ -1236,7 +1330,7 @@ def generate_include_types(s, module, stream):
             filename = i.filename.replace('plugins/', '')
             write('#include <{}_types.h>\n'.format(filename))
 
-    for o in s['types'] + s['Define']:
+    for o in itertools.chain(s['types'], s['Define']):
         tname = o.__class__.__name__
         if tname == 'Using':
             if 'length' in o.alias:
@@ -1295,6 +1389,7 @@ def generate_include_types(s, module, stream):
                                      .format(b, o.name))
 
             write('} vl_api_%s_t;\n' % o.name)
+            write(f'#define VL_API_{o.name.upper()}_IS_CONSTANT_SIZE ({0 if o.vla else 1})\n\n')
 
     for t in s['Define']:
         write('#define VL_API_{ID}_CRC "{n}_{crc:08x}"\n'
@@ -1313,6 +1408,10 @@ def generate_c_boilerplate(services, defines, counters, file_crc,
 #define vl_endianfun		/* define message structures */
 #include "{module}.api.h"
 #undef vl_endianfun
+
+#define vl_calcsizefun
+#include "{module}.api.h"
+#undef vl_calsizefun
 
 /* instantiate all the print functions we know about */
 #define vl_print(handle, ...) vlib_cli_output (handle, __VA_ARGS__)
@@ -1346,6 +1445,10 @@ def generate_c_boilerplate(services, defines, counters, file_crc,
               '   .print = vl_api_{n}_t_print,\n'
               '   .traced = 1,\n'
               '   .replay = 1,\n'
+              '   .print_json = vl_api_{n}_t_print_json,\n'
+              '   .tojson = vl_api_{n}_t_tojson,\n'
+              '   .fromjson = vl_api_{n}_t_fromjson,\n'
+              '   .calc_size = vl_api_{n}_t_calc_size,\n'
               '   .is_autoendian = {auto}}};\n'
               .format(n=s.caller, ID=s.caller.upper(),
                       auto=d.autoendian))
@@ -1359,6 +1462,12 @@ def generate_c_boilerplate(services, defines, counters, file_crc,
                   '  .cleanup = vl_noop_handler,\n'
                   '  .endian = vl_api_{n}_t_endian,\n'
                   '  .print = vl_api_{n}_t_print,\n'
+                  '  .traced = 1,\n'
+                  '  .replay = 1,\n'
+                  '  .print_json = vl_api_{n}_t_print_json,\n'
+                  '  .tojson = vl_api_{n}_t_tojson,\n'
+                  '  .fromjson = vl_api_{n}_t_fromjson,\n'
+                  '  .calc_size = vl_api_{n}_t_calc_size,\n'
                   '  .is_autoendian = {auto}}};\n'
                   .format(n=s.reply, ID=s.reply.upper(),
                           auto=d.autoendian))
@@ -1396,6 +1505,10 @@ def generate_c_test_boilerplate(services, defines, file_crc, module, plugin,
 #define vl_endianfun            /* define message structures */
 #include "{module}.api.h"
 #undef vl_endianfun
+
+#define vl_calcsizefun
+#include "{module}.api.h"
+#undef vl_calsizefun
 
 /* instantiate all the print functions we know about */
 #define vl_print(handle, ...) vlib_cli_output (handle, __VA_ARGS__)
@@ -1455,7 +1568,11 @@ def generate_c_test_boilerplate(services, defines, file_crc, module, plugin,
               '                           vl_noop_handler,\n'
               '                           vl_api_{n}_t_endian, '
               '                           vl_api_{n}_t_print,\n'
-              '                           sizeof(vl_api_{n}_t), 1);\n'
+              '                           sizeof(vl_api_{n}_t), 1,\n'
+              '                           vl_api_{n}_t_print_json,\n'
+              '                           vl_api_{n}_t_tojson,\n'
+              '                           vl_api_{n}_t_fromjson,\n'
+              '                           vl_api_{n}_t_calc_size);\n'
               .format(n=s.reply, ID=s.reply.upper()))
         write('   hash_set_mem (vam->function_by_name, "{n}", api_{n});\n'
               .format(n=s.caller))
@@ -1474,15 +1591,15 @@ def generate_c_test_boilerplate(services, defines, file_crc, module, plugin,
                   '                           vl_noop_handler,\n'
                   '                           vl_api_{n}_t_endian, '
                   '                           vl_api_{n}_t_print,\n'
-                  '                           sizeof(vl_api_{n}_t), 1);\n'
+                  '                           sizeof(vl_api_{n}_t), 1,\n'
+                  '                           vl_api_{n}_t_print_json,\n'
+                  '                           vl_api_{n}_t_tojson,\n'
+                  '                           vl_api_{n}_t_fromjson,\n'
+                  '                           vl_api_{n}_t_calc_size);\n'
                   .format(n=e, ID=e.upper()))
 
     write('}\n')
-    if plugin:
-        write('clib_error_t * vat_plugin_register (vat_main_t *vam)\n')
-    else:
-        write('clib_error_t * vat_{}_plugin_register (vat_main_t *vam)\n'
-              .format(module))
+    write('clib_error_t * vat_plugin_register (vat_main_t *vam)\n')
     write('{\n')
     write('   {n}_test_main_t * mainp = &{n}_test_main;\n'.format(n=module))
     write('   mainp->vat_main = vam;\n')
@@ -1530,7 +1647,7 @@ api_{n} (cJSON *o)
   mp->_vl_msg_id = vac_get_msg_index(VL_API_{N}_CRC);
   vl_api_{n}_t_endian(mp);
   vac_write((char *)mp, len);
-  free(mp);
+  cJSON_free(mp);
 
   /* Read reply */
   char *p;
@@ -1563,7 +1680,7 @@ api_{n} (cJSON *o)
   mp->_vl_msg_id = msg_id;
   vl_api_{n}_t_endian(mp);
   vac_write((char *)mp, len);
-  free(mp);
+  cJSON_free(mp);
 
   vat2_control_ping(123); // FIX CONTEXT
   cJSON *reply = cJSON_CreateArray();
@@ -1619,7 +1736,7 @@ api_{n} (cJSON *o)
 
   vl_api_{n}_t_endian(mp);
   vac_write((char *)mp, len);
-  free(mp);
+  cJSON_free(mp);
 
   cJSON *reply = cJSON_CreateArray();
 
@@ -1686,8 +1803,8 @@ def generate_c_test2_boilerplate(services, defines, module, stream):
 
 #define vl_typedefs             /* define message structures */
 #include <vlibmemory/vl_memory_api_h.h>
-#include <vpp/api/vpe_types.api.h>
-#include <vpp/api/vpe.api.h>
+#include <vlibmemory/vlib.api_types.h>
+#include <vlibmemory/vlib.api.h>
 #undef vl_typedefs
 
 #include "{module}.api_enum.h"
@@ -1696,6 +1813,10 @@ def generate_c_test2_boilerplate(services, defines, module, stream):
 #define vl_endianfun		/* define message structures */
 #include "{module}.api.h"
 #undef vl_endianfun
+
+#define vl_calcsizefun
+#include "{module}.api.h"
+#undef vl_calsizefun
 
 #define vl_print(handle, ...) vlib_cli_output (handle, __VA_ARGS__)
 #define vl_printfun
@@ -1717,13 +1838,16 @@ def generate_c_test2_boilerplate(services, defines, module, stream):
             continue
         c_test_api_service(s, s.stream, stream)
 
-    write('void vat2_register_function(char *, cJSON * (*)(cJSON *));\n')
+    write('void vat2_register_function(char *, cJSON * (*)(cJSON *), cJSON * (*)(void *), u32);\n')
     # write('__attribute__((constructor))')
     write('clib_error_t *\n')
     write('vat2_register_plugin (void) {\n')
     for s in services:
-        write('   vat2_register_function("{n}", api_{n});\n'
-              .format(n=s.caller))
+        if s.reply not in define_hash:
+            continue
+        crc = define_hash[s.caller].crc
+        write('   vat2_register_function("{n}", api_{n}, (cJSON * (*)(void *))vl_api_{n}_t_tojson, 0x{crc:08x});\n'
+              .format(n=s.caller, crc=crc))
     write('   return 0;\n')
     write('}\n')
 
@@ -1828,6 +1952,7 @@ def run(args, apifilename, s):
     output += stream.getvalue()
     stream.close()
     output += endianfun(s['types'] + s['Define'], modulename)
+    output += calc_size_fun(s['types'] + s['Define'], modulename)
     output += version_tuple(s, basename)
     output += BOTTOM_BOILERPLATE.format(input_filename=basename,
                                         file_crc=s['file_crc'])

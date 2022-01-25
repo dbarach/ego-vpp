@@ -70,7 +70,7 @@ perfmon_reset (vlib_main_t *vm)
       vec_free (tr->node_stats);
       for (int j = 0; j < PERF_MAX_EVENTS; j++)
 	if (tr->mmap_pages[j])
-	  munmap (tr->mmap_pages, page_size);
+	  munmap (tr->mmap_pages[j], page_size);
     }
   vec_free (pm->thread_runtimes);
 
@@ -97,7 +97,7 @@ perfmon_set (vlib_main_t *vm, perfmon_bundle_t *b)
   s = b->src;
   ASSERT (b->n_events);
 
-  if (b->type == PERFMON_BUNDLE_TYPE_NODE)
+  if (b->active_type == PERFMON_BUNDLE_TYPE_NODE)
     is_node = 1;
 
   if (s->instances_by_type == 0)
@@ -196,6 +196,7 @@ perfmon_set (vlib_main_t *vm, perfmon_bundle_t *b)
 	  rt->bundle = b;
 	  rt->n_events = b->n_events;
 	  rt->n_nodes = n_nodes;
+	  rt->preserve_samples = b->preserve_samples;
 	  vec_validate_aligned (rt->node_stats, n_nodes - 1,
 				CLIB_CACHE_LINE_BYTES);
 	}
@@ -210,6 +211,33 @@ error:
       perfmon_reset (vm);
     }
   return err;
+}
+
+static_always_inline u32
+perfmon_mmap_read_index (const struct perf_event_mmap_page *mmap_page)
+{
+  u32 idx;
+  u32 seq;
+
+  /* See documentation in /usr/include/linux/perf_event.h, for more details
+   * but the 2 main important things are:
+   *  1) if seq != mmap_page->lock, it means the kernel is currently updating
+   *     the user page and we need to read it again
+   *  2) if idx == 0, it means the perf event is currently turned off and we
+   *     just need to read the kernel-updated 'offset', otherwise we must also
+   *     add the current hw value (hence rdmpc) */
+  do
+    {
+      seq = mmap_page->lock;
+      CLIB_COMPILER_BARRIER ();
+
+      idx = mmap_page->index;
+
+      CLIB_COMPILER_BARRIER ();
+    }
+  while (mmap_page->lock != seq);
+
+  return idx;
 }
 
 clib_error_t *
@@ -236,22 +264,30 @@ perfmon_start (vlib_main_t *vm, perfmon_bundle_t *b)
 	  return clib_error_return_unix (0, "ioctl(PERF_EVENT_IOC_ENABLE)");
 	}
     }
-  if (b->type == PERFMON_BUNDLE_TYPE_NODE)
+  if (b->active_type == PERFMON_BUNDLE_TYPE_NODE)
     {
+      for (int i = 0; i < vec_len (pm->thread_runtimes); i++)
+	{
+	  perfmon_thread_runtime_t *tr;
+	  tr = vec_elt_at_index (pm->thread_runtimes, i);
 
-      vlib_node_function_t *funcs[PERFMON_OFFSET_TYPE_MAX];
-#define _(type, pfunc) funcs[type] = pfunc;
+	  for (int j = 0; j < b->n_events; j++)
+	    {
+	      tr->indexes[j] = perfmon_mmap_read_index (tr->mmap_pages[j]);
 
-      foreach_permon_offset_type
-#undef _
-
-	ASSERT (funcs[b->offset_type]);
+	      /* if a zero index is returned generate error */
+	      if (!tr->indexes[j])
+		{
+		  perfmon_reset (vm);
+		  return clib_error_return (0, "invalid rdpmc index");
+		}
+	    }
+	}
 
       for (int i = 0; i < vlib_get_n_threads (); i++)
-	vlib_node_set_dispatch_wrapper (vlib_get_main_by_index (i),
-					funcs[b->offset_type]);
+	vlib_node_set_dispatch_wrapper (
+	  vlib_get_main_by_index (i), perfmon_dispatch_wrappers[b->n_events]);
     }
-
   pm->sample_time = vlib_time_now (vm);
   pm->is_running = 1;
 
@@ -267,7 +303,7 @@ perfmon_stop (vlib_main_t *vm)
   if (pm->is_running != 1)
     return clib_error_return (0, "not running");
 
-  if (pm->active_bundle->type == PERFMON_BUNDLE_TYPE_NODE)
+  if (pm->active_bundle->active_type == PERFMON_BUNDLE_TYPE_NODE)
     {
       for (int i = 0; i < vlib_get_n_threads (); i++)
 	vlib_node_set_dispatch_wrapper (vlib_get_main_by_index (i), 0);
@@ -285,6 +321,21 @@ perfmon_stop (vlib_main_t *vm)
 
   pm->is_running = 0;
   pm->sample_time = vlib_time_now (vm) - pm->sample_time;
+  return 0;
+}
+
+static_always_inline u8
+is_bundle_supported (perfmon_bundle_t *b)
+{
+  perfmon_cpu_supports_t *supports = b->cpu_supports;
+
+  if (!b->cpu_supports)
+    return 1;
+
+  for (int i = 0; i < b->n_cpu_supports; ++i)
+    if (supports[i].cpu_supports ())
+      return 1;
+
   return 0;
 }
 
@@ -320,6 +371,14 @@ perfmon_init (vlib_main_t *vm)
     {
       clib_error_t *err;
       uword *p;
+
+      if (!is_bundle_supported (b))
+	{
+	  log_debug ("skipping bundle '%s' - not supported", b->name);
+	  b = b->next;
+	  continue;
+	}
+
       if (hash_get_mem (pm->bundle_by_name, b->name) != 0)
 	clib_panic ("duplicate bundle name '%s'", b->name);
 

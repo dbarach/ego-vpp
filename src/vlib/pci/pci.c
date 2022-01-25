@@ -61,6 +61,12 @@ vlib_pci_get_device_info (vlib_main_t * vm, vlib_pci_addr_t * addr,
   return 0;
 }
 
+clib_error_t *__attribute__ ((weak))
+vlib_pci_get_device_root_bus (vlib_pci_addr_t *addr, vlib_pci_addr_t *root_bus)
+{
+  return 0;
+}
+
 vlib_pci_addr_t * __attribute__ ((weak)) vlib_pci_get_all_dev_addrs ()
 {
   return 0;
@@ -140,6 +146,19 @@ format_vlib_pci_addr (u8 * s, va_list * va)
   vlib_pci_addr_t *addr = va_arg (*va, vlib_pci_addr_t *);
   return format (s, "%04x:%02x:%02x.%x", addr->domain, addr->bus,
 		 addr->slot, addr->function);
+}
+
+u8 *
+format_vlib_pci_link_port (u8 *s, va_list *va)
+{
+  vlib_pci_device_info_t *d = va_arg (*va, vlib_pci_device_info_t *);
+  pcie_config_regs_t *r =
+    pci_config_find_capability (&d->config0, PCI_CAP_ID_PCIE);
+
+  if (!r)
+    return format (s, "unknown");
+
+  return format (s, "P%d", r->link_capabilities >> 24);
 }
 
 u8 *

@@ -227,9 +227,6 @@ vrrp_vr_transition_addrs (vrrp_vr_t * vr, vrrp_vr_state_t new_state)
   if (vrrp_vr_is_owner (vr))
     return;
 
-  if (vrrp_vr_is_unicast (vr))
-    return;
-
   /* only need to do something if entering or leaving master state */
   if ((vr->runtime.state != VRRP_VR_STATE_MASTER) &&
       (new_state != VRRP_VR_STATE_MASTER))
@@ -384,10 +381,9 @@ static int
 vrrp_intf_enable_disable_mcast (u8 enable, u32 sw_if_index, u8 is_ipv6)
 {
   vrrp_main_t *vrm = &vrrp_main;
-  vrrp_vr_t *vr;
   vrrp_intf_t *intf;
-  u32 fib_index;
-  u32 n_vrs = 0;
+  u32 fib_index, i;
+  u32 n_vrs_in_fib = 0;
   const mfib_prefix_t *vrrp_prefix;
   fib_protocol_t proto;
   vnet_link_t link_type;
@@ -422,30 +418,29 @@ vrrp_intf_enable_disable_mcast (u8 enable, u32 sw_if_index, u8 is_ipv6)
   via_itf.frp_proto = fib_proto_to_dpo (proto);
   fib_index = mfib_table_get_index_for_sw_if_index (proto, sw_if_index);
 
-  /* *INDENT-OFF* */
-  pool_foreach (vr, vrm->vrs)
-   {
-    if (vrrp_vr_is_ipv6 (vr) == is_ipv6)
-      n_vrs++;
-  }
-  /* *INDENT-ON* */
+  vec_foreach_index (i, vrm->vrrp_intfs)
+    {
+      if (mfib_table_get_index_for_sw_if_index (proto, i) != fib_index)
+	continue;
+
+      n_vrs_in_fib += vrrp_intf_num_vrs (i, is_ipv6);
+    }
 
   if (enable)
     {
-      /* If this is the first VR configured, add the local mcast routes */
-      if (n_vrs == 1)
-	mfib_table_entry_path_update (fib_index, vrrp_prefix, MFIB_SOURCE_API,
-				      &for_us);
+      /* ensure that the local mcast route exists */
+      mfib_table_entry_path_update (fib_index, vrrp_prefix, MFIB_SOURCE_API,
+				    MFIB_ENTRY_FLAG_NONE, &for_us);
 
       mfib_table_entry_path_update (fib_index, vrrp_prefix, MFIB_SOURCE_API,
-				    &via_itf);
+				    MFIB_ENTRY_FLAG_NONE, &via_itf);
       intf->mcast_adj_index[! !is_ipv6] =
 	adj_mcast_add_or_lock (proto, link_type, sw_if_index);
     }
   else
     {
       /* Remove mcast local routes if this is the last VR being deleted */
-      if (n_vrs == 0)
+      if (n_vrs_in_fib == 0)
 	mfib_table_entry_path_remove (fib_index, vrrp_prefix, MFIB_SOURCE_API,
 				      &for_us);
 
@@ -696,6 +691,7 @@ vrrp_vr_add_del (u8 is_add, vrrp_vr_config_t * vr_conf)
       vrrp_vr_tracking_ifs_add_del (vr, vr->tracking.interfaces, is_add);
       vrrp_vr_addrs_add_del (vr, is_add, vr->config.vr_addrs);
       mhash_unset (&vrm->vr_index_by_key, &key, 0);
+      vec_free (vr->config.peer_addrs);
       vec_free (vr->config.vr_addrs);
       vec_free (vr->tracking.interfaces);
       pool_put (vrm->vrs, vr);

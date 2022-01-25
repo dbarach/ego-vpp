@@ -10,7 +10,8 @@ from scapy.packet import Raw
 from scapy.layers.l2 import Ether, GRE
 from scapy.layers.inet import IP, UDP, ICMP
 from scapy.layers.inet6 import HBHOptUnknown, ICMPv6ParamProblem,\
-    ICMPv6TimeExceeded, IPv6, IPv6ExtHdrFragment, IPv6ExtHdrHopByHop
+    ICMPv6TimeExceeded, IPv6, IPv6ExtHdrFragment,\
+    IPv6ExtHdrHopByHop, IPv6ExtHdrDestOpt, PadN, ICMPv6EchoRequest
 from framework import VppTestCase, VppTestRunner
 from util import ppp, ppc, fragment_rfc791, fragment_rfc8200
 from vpp_gre_interface import VppGreInterface
@@ -57,7 +58,7 @@ class TestIPv4Reassembly(VppTestCase):
         self.vapi.ip_reassembly_set(timeout_ms=0, max_reassemblies=1000,
                                     max_reassembly_length=1000,
                                     expire_walk_interval_ms=10)
-        self.sleep(.25)
+        self.virtual_sleep(.25)
         self.vapi.ip_reassembly_set(timeout_ms=1000000, max_reassemblies=1000,
                                     max_reassembly_length=1000,
                                     expire_walk_interval_ms=10000)
@@ -480,7 +481,7 @@ Ethernet-Payload.IPv4-Packet.IPv4-Header.Fragment-Offset; Test-case: 5737'''
         self.src_if.add_stream(fragments)
         self.pg_start()
 
-        self.sleep(.25, "wait before sending rest of fragments")
+        self.virtual_sleep(.25, "wait before sending rest of fragments")
 
         self.src_if.add_stream(fragments2)
         self.pg_start()
@@ -539,7 +540,7 @@ class TestIPv4SVReassembly(VppTestCase):
             max_reassembly_length=1000,
             type=VppEnum.vl_api_ip_reass_type_t.IP_REASS_TYPE_SHALLOW_VIRTUAL,
             expire_walk_interval_ms=10)
-        self.sleep(.25)
+        self.virtual_sleep(.25)
         self.vapi.ip_reassembly_set(
             timeout_ms=1000000, max_reassemblies=1000,
             max_reassembly_length=1000,
@@ -672,7 +673,7 @@ class TestIPv4SVReassembly(VppTestCase):
             self.assertEqual(sent[Raw].payload, recvd[Raw].payload)
 
         # wait for cleanup
-        self.sleep(.25, "wait before sending rest of fragments")
+        self.virtual_sleep(.25, "wait before sending rest of fragments")
 
         # send rest of fragments - shouldn't be forwarded
         self.pg_enable_capture()
@@ -825,7 +826,7 @@ class TestIPv4MWReassembly(VppTestCase):
         self.vapi.ip_reassembly_set(timeout_ms=0, max_reassemblies=1000,
                                     max_reassembly_length=1000,
                                     expire_walk_interval_ms=10)
-        self.sleep(.25)
+        self.virtual_sleep(.25)
         self.vapi.ip_reassembly_set(timeout_ms=1000000, max_reassemblies=1000,
                                     max_reassembly_length=1000,
                                     expire_walk_interval_ms=10000)
@@ -997,7 +998,7 @@ class TestIPv6Reassembly(VppTestCase):
         self.vapi.ip_reassembly_set(timeout_ms=0, max_reassemblies=1000,
                                     max_reassembly_length=1000,
                                     expire_walk_interval_ms=10, is_ip6=1)
-        self.sleep(.25)
+        self.virtual_sleep(.25)
         self.vapi.ip_reassembly_set(timeout_ms=1000000, max_reassemblies=1000,
                                     max_reassembly_length=1000,
                                     expire_walk_interval_ms=10000, is_ip6=1)
@@ -1337,7 +1338,7 @@ class TestIPv6Reassembly(VppTestCase):
         self.src_if.add_stream(fragments)
         self.pg_start()
 
-        self.sleep(.25, "wait before sending rest of fragments")
+        self.virtual_sleep(.25, "wait before sending rest of fragments")
 
         self.src_if.add_stream(fragments2)
         self.pg_start()
@@ -1375,23 +1376,30 @@ class TestIPv6Reassembly(VppTestCase):
 
     def test_missing_upper(self):
         """ missing upper layer """
+        optdata = '\x00' * 100
         p = (Ether(dst=self.src_if.local_mac, src=self.src_if.remote_mac) /
              IPv6(src=self.src_if.remote_ip6,
                   dst=self.src_if.local_ip6) /
-             UDP(sport=1234, dport=5678) /
-             Raw())
-        self.extend_packet(p, 1000, self.padding)
-        fragments = fragment_rfc8200(p, 1, 500)
-        bad_fragment = p.__class__(scapy.compat.raw(fragments[1]))
-        bad_fragment[IPv6ExtHdrFragment].nh = 59
-        bad_fragment[IPv6ExtHdrFragment].offset = 0
+             IPv6ExtHdrFragment(m=1) /
+             IPv6ExtHdrDestOpt(nh=17, options=PadN(optdata='\101' * 255) /
+             PadN(optdata='\102'*255)))
+
         self.pg_enable_capture()
-        self.src_if.add_stream([bad_fragment])
+        self.src_if.add_stream([p])
         self.pg_start()
         pkts = self.src_if.get_capture(expected_count=1)
         icmp = pkts[0]
         self.assertIn(ICMPv6ParamProblem, icmp)
         self.assert_equal(icmp[ICMPv6ParamProblem].code, 3, "ICMP code")
+
+    def test_truncated_fragment(self):
+        """ truncated fragment """
+        pkt = (Ether(src=self.pg0.local_mac, dst=self.pg0.remote_mac) /
+               IPv6(src=self.pg0.remote_ip6, dst=self.pg0.local_ip6,
+                    nh=44, plen=2) /
+               IPv6ExtHdrFragment(nh=6))
+
+        self.send_and_assert_no_replies(self.pg0, [pkt], self.pg0)
 
     def test_invalid_frag_size(self):
         """ fragment size not a multiple of 8 """
@@ -1430,6 +1438,72 @@ class TestIPv6Reassembly(VppTestCase):
         icmp = pkts[0]
         self.assertIn(ICMPv6ParamProblem, icmp)
         self.assert_equal(icmp[ICMPv6ParamProblem].code, 0, "ICMP code")
+
+    def test_atomic_fragment(self):
+        """ IPv6 atomic fragment """
+        pkt = (Ether(src=self.pg0.local_mac, dst=self.pg0.remote_mac) /
+               IPv6(src=self.pg0.remote_ip6, dst=self.pg0.local_ip6,
+                    nh=44, plen=65535) /
+               IPv6ExtHdrFragment(offset=8191, m=1, res1=0xFF, res2=0xFF,
+                                  nh=255, id=0xffff)/('X'*1452))
+
+        rx = self.send_and_expect(self.pg0, [pkt], self.pg0)
+        self.assertIn(ICMPv6ParamProblem, rx[0])
+
+    def test_truncated_fragment(self):
+        """ IPv6 truncated fragment header """
+        pkt = (Ether(src=self.pg0.local_mac, dst=self.pg0.remote_mac) /
+               IPv6(src=self.pg0.remote_ip6, dst=self.pg0.local_ip6,
+                    nh=44, plen=2) /
+               IPv6ExtHdrFragment(nh=6))
+
+        self.send_and_assert_no_replies(self.pg0, [pkt])
+
+        pkt = (Ether(src=self.pg0.local_mac, dst=self.pg0.remote_mac) /
+               IPv6(src=self.pg0.remote_ip6, dst=self.pg0.remote_ip6) /
+               ICMPv6EchoRequest())
+        rx = self.send_and_expect(self.pg0, [pkt], self.pg0)
+
+    def test_one_fragment(self):
+        """ whole packet in one fragment processed independently """
+        pkt = (Ether(src=self.pg0.local_mac, dst=self.pg0.remote_mac) /
+               IPv6(src=self.pg0.remote_ip6, dst=self.pg0.local_ip6) /
+               ICMPv6EchoRequest()/Raw('X' * 1600))
+        frags = fragment_rfc8200(pkt, 1, 400)
+
+        # send a fragment with known id
+        self.send_and_assert_no_replies(self.pg0, [frags[0]])
+
+        # send an atomic fragment with same id - should be reassembled
+        pkt = (Ether(src=self.pg0.local_mac, dst=self.pg0.remote_mac) /
+               IPv6(src=self.pg0.remote_ip6, dst=self.pg0.local_ip6) /
+               IPv6ExtHdrFragment(id=1)/ICMPv6EchoRequest())
+        rx = self.send_and_expect(self.pg0, [pkt], self.pg0)
+        self.assertNotIn(IPv6ExtHdrFragment, rx)
+
+        # now finish the original reassembly, this should still be possible
+        rx = self.send_and_expect(self.pg0, frags[1:], self.pg0, n_rx=1)
+        self.assertNotIn(IPv6ExtHdrFragment, rx)
+
+    def test_bunch_of_fragments(self):
+        """ valid fragments followed by rogue fragments and atomic fragment"""
+        pkt = (Ether(src=self.pg0.local_mac, dst=self.pg0.remote_mac) /
+               IPv6(src=self.pg0.remote_ip6, dst=self.pg0.local_ip6) /
+               ICMPv6EchoRequest()/Raw('X' * 1600))
+        frags = fragment_rfc8200(pkt, 1, 400)
+        self.send_and_expect(self.pg0, frags, self.pg0, n_rx=1)
+
+        inc_frag = (Ether(src=self.pg0.local_mac, dst=self.pg0.remote_mac) /
+                    IPv6(src=self.pg0.remote_ip6, dst=self.pg0.local_ip6) /
+                    IPv6ExtHdrFragment(id=1, nh=58, offset=608)/Raw('X'*308))
+
+        self.send_and_assert_no_replies(self.pg0, inc_frag*604)
+
+        pkt = (Ether(src=self.pg0.local_mac, dst=self.pg0.remote_mac) /
+               IPv6(src=self.pg0.remote_ip6, dst=self.pg0.local_ip6) /
+               IPv6ExtHdrFragment(id=1)/ICMPv6EchoRequest())
+        rx = self.send_and_expect(self.pg0, [pkt], self.pg0)
+        self.assertNotIn(IPv6ExtHdrFragment, rx)
 
 
 class TestIPv6MWReassembly(VppTestCase):
@@ -1473,7 +1547,7 @@ class TestIPv6MWReassembly(VppTestCase):
         self.vapi.ip_reassembly_set(timeout_ms=0, max_reassemblies=1000,
                                     max_reassembly_length=1000,
                                     expire_walk_interval_ms=10, is_ip6=1)
-        self.sleep(.25)
+        self.virtual_sleep(.25)
         self.vapi.ip_reassembly_set(timeout_ms=1000000, max_reassemblies=1000,
                                     max_reassembly_length=1000,
                                     expire_walk_interval_ms=1000, is_ip6=1)
@@ -1638,7 +1712,7 @@ class TestIPv6SVReassembly(VppTestCase):
             max_reassembly_length=1000,
             type=VppEnum.vl_api_ip_reass_type_t.IP_REASS_TYPE_SHALLOW_VIRTUAL,
             expire_walk_interval_ms=10, is_ip6=1)
-        self.sleep(.25)
+        self.virtual_sleep(.25)
         self.vapi.ip_reassembly_set(
             timeout_ms=1000000, max_reassemblies=1000,
             max_reassembly_length=1000,
@@ -1769,7 +1843,7 @@ class TestIPv6SVReassembly(VppTestCase):
             self.assertEqual(sent[Raw].payload, recvd[Raw].payload)
 
         # wait for cleanup
-        self.sleep(.25, "wait before sending rest of fragments")
+        self.virtual_sleep(.25, "wait before sending rest of fragments")
 
         # send rest of fragments - shouldn't be forwarded
         self.pg_enable_capture()
@@ -1814,6 +1888,53 @@ class TestIPv6SVReassembly(VppTestCase):
             self.assertEqual(sent[IPv6].dst, recvd[IPv6].dst)
             self.assertEqual(sent[Raw].payload, recvd[Raw].payload)
 
+    def test_one_fragment(self):
+        """ whole packet in one fragment processed independently """
+        pkt = (Ether(src=self.src_if.local_mac, dst=self.src_if.remote_mac) /
+               IPv6(src=self.src_if.remote_ip6, dst=self.dst_if.remote_ip6) /
+               ICMPv6EchoRequest()/Raw('X' * 1600))
+        frags = fragment_rfc8200(pkt, 1, 400)
+
+        # send a fragment with known id
+        self.send_and_expect(self.src_if, [frags[0]], self.dst_if)
+
+        # send an atomic fragment with same id - should be reassembled
+        pkt = (Ether(src=self.src_if.local_mac, dst=self.src_if.remote_mac) /
+               IPv6(src=self.src_if.remote_ip6, dst=self.dst_if.remote_ip6) /
+               IPv6ExtHdrFragment(id=1)/ICMPv6EchoRequest())
+        rx = self.send_and_expect(self.src_if, [pkt], self.dst_if)
+
+        # now forward packets matching original reassembly, should still work
+        rx = self.send_and_expect(self.src_if, frags[1:], self.dst_if)
+
+    def test_bunch_of_fragments(self):
+        """ valid fragments followed by rogue fragments and atomic fragment"""
+        pkt = (Ether(src=self.src_if.local_mac, dst=self.src_if.remote_mac) /
+               IPv6(src=self.src_if.remote_ip6, dst=self.dst_if.remote_ip6) /
+               ICMPv6EchoRequest()/Raw('X' * 1600))
+        frags = fragment_rfc8200(pkt, 1, 400)
+        rx = self.send_and_expect(self.src_if, frags, self.dst_if)
+
+        rogue = (Ether(src=self.src_if.local_mac, dst=self.src_if.remote_mac) /
+                 IPv6(src=self.src_if.remote_ip6, dst=self.dst_if.remote_ip6) /
+                 IPv6ExtHdrFragment(id=1, nh=58, offset=608)/Raw('X'*308))
+
+        self.send_and_expect(self.src_if, rogue*604, self.dst_if)
+
+        pkt = (Ether(src=self.src_if.local_mac, dst=self.src_if.remote_mac) /
+               IPv6(src=self.src_if.remote_ip6, dst=self.dst_if.remote_ip6) /
+               IPv6ExtHdrFragment(id=1)/ICMPv6EchoRequest())
+        rx = self.send_and_expect(self.src_if, [pkt], self.dst_if)
+
+    def test_truncated_fragment(self):
+        """ truncated fragment """
+        pkt = (Ether(src=self.pg0.local_mac, dst=self.pg0.remote_mac) /
+               IPv6(src=self.pg0.remote_ip6, dst=self.pg0.local_ip6,
+                    nh=44, plen=2) /
+               IPv6ExtHdrFragment(nh=6))
+
+        self.send_and_assert_no_replies(self.pg0, [pkt], self.pg0)
+
 
 class TestIPv4ReassemblyLocalNode(VppTestCase):
     """ IPv4 Reassembly for packets coming to ip4-local node """
@@ -1845,7 +1966,7 @@ class TestIPv4ReassemblyLocalNode(VppTestCase):
         self.vapi.ip_reassembly_set(timeout_ms=0, max_reassemblies=1000,
                                     max_reassembly_length=1000,
                                     expire_walk_interval_ms=10)
-        self.sleep(.25)
+        self.virtual_sleep(.25)
         self.vapi.ip_reassembly_set(timeout_ms=1000000, max_reassemblies=1000,
                                     max_reassembly_length=1000,
                                     expire_walk_interval_ms=10000)
@@ -1981,7 +2102,7 @@ class TestFIFReassembly(VppTestCase):
         self.vapi.ip_reassembly_set(timeout_ms=0, max_reassemblies=1000,
                                     max_reassembly_length=1000,
                                     expire_walk_interval_ms=10, is_ip6=1)
-        self.sleep(.25)
+        self.virtual_sleep(.25)
         self.vapi.ip_reassembly_set(timeout_ms=1000000, max_reassemblies=1000,
                                     max_reassembly_length=1000,
                                     expire_walk_interval_ms=10000)
