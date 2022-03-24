@@ -20,7 +20,7 @@ CLANG_FORMAT_DIFF="/usr/share/clang/clang-format-diff.py"
 
 # TODO: Remove clang-format-${CLANG_FORMAT_VER} from 'make install-deps' when
 #       CLANG_FORMAT_VER default value is upgraded
-CLANG_FORMAT_VER=${CLANG_FORMAT_VER:-10}
+CLANG_FORMAT_VER=${CLANG_FORMAT_VER:-11}
 GIT_DIFF_ARGS="-U0 --no-color --relative HEAD~1"
 CLANG_FORMAT_DIFF_ARGS="-style file -p1"
 SUFFIX="-${CLANG_FORMAT_VER}"
@@ -60,9 +60,12 @@ fi
 if command -v clang-format-diff${SUFFIX} &> /dev/null;
 then
     CLANG_FORMAT_DIFF=clang-format-diff${SUFFIX}
+elif command -v clang-format-diff.py &> /dev/null;
+then
+    CLANG_FORMAT_DIFF=clang-format-diff.py
 elif command -v clang-format-diff &> /dev/null;
 then
-    CLANG_FORMAT=clang-format-diff
+    CLANG_FORMAT_DIFF=clang-format-diff
 elif [ ! -f $CLANG_FORMAT_DIFF ] ;
 then
     echo "*******************************************************************"

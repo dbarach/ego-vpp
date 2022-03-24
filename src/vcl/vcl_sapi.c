@@ -30,7 +30,9 @@ vcl_api_connect_app_socket (vcl_worker_t * wrk)
 
   if ((err = clib_socket_init (cs)))
     {
-      clib_error_report (err);
+      /* don't report the error to avoid flood of error messages during
+       * reconnect */
+      clib_error_free (err);
       rv = -1;
       goto done;
     }
@@ -436,7 +438,7 @@ vcl_sapi_del_cert_key_pair (u32 ckpair_index)
   mp->index = ckpair_index;
 
   cs = &wrk->app_api_sock;
-  err = clib_socket_sendmsg (cs, &msg, sizeof (msg), 0, 0);
+  err = clib_socket_sendmsg (cs, msg, sizeof (*msg), 0, 0);
   if (err)
     {
       clib_error_report (err);

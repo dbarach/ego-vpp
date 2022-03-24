@@ -26,6 +26,7 @@
 #include <vnet/devices/devices.h>
 #include <vnet/interface/rx_queue_funcs.h>
 #include <vnet/feature/feature.h>
+#include <vnet/tcp/tcp_packet.h>
 
 #include <dpdk/device/dpdk_priv.h>
 
@@ -364,12 +365,13 @@ dpdk_device_input (vlib_main_t * vm, dpdk_main_t * dm, dpdk_device_t * xd,
   /* get up to DPDK_RX_BURST_SZ buffers from PMD */
   while (n_rx_packets < DPDK_RX_BURST_SZ)
     {
-      n = rte_eth_rx_burst (xd->port_id, queue_id,
-			    ptd->mbufs + n_rx_packets,
-			    DPDK_RX_BURST_SZ - n_rx_packets);
+      u32 n_to_rx = clib_min (DPDK_RX_BURST_SZ - n_rx_packets, 32);
+
+      n = rte_eth_rx_burst (xd->port_id, queue_id, ptd->mbufs + n_rx_packets,
+			    n_to_rx);
       n_rx_packets += n;
 
-      if (n < 32)
+      if (n < n_to_rx)
 	break;
     }
 
@@ -541,7 +543,7 @@ VLIB_NODE_FN (dpdk_input_node) (vlib_main_t * vm, vlib_node_runtime_t * node,
   dpdk_device_t *xd;
   uword n_rx_packets = 0;
   vnet_hw_if_rxq_poll_vector_t *pv;
-  u32 thread_index = node->thread_index;
+  u32 thread_index = vm->thread_index;
 
   /*
    * Poll all devices on this cpu for input/interrupts.

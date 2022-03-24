@@ -308,10 +308,13 @@ lcp_itf_pair_add (u32 host_sw_if_index, u32 phy_sw_if_index, u8 *host_name,
     }
   else
     {
-      vnet_feature_enable_disable ("ip4-punt", "linux-cp-punt-l3", 0, 1, NULL,
-				   0);
-      vnet_feature_enable_disable ("ip6-punt", "linux-cp-punt-l3", 0, 1, NULL,
-				   0);
+      if (hash_elts (lip_db_by_vif) == 1)
+	{
+	  vnet_feature_enable_disable ("ip4-punt", "linux-cp-punt-l3", 0, 1,
+				       NULL, 0);
+	  vnet_feature_enable_disable ("ip6-punt", "linux-cp-punt-l3", 0, 1,
+				       NULL, 0);
+	}
     }
 
   /* invoke registered callbacks for pair addition */
@@ -435,12 +438,14 @@ lcp_itf_pair_del (u32 phy_sw_if_index)
     }
   else
     {
-      vnet_feature_enable_disable ("ip4-punt", "linux-cp-punt-l3", 0, 0, NULL,
-				   0);
-      vnet_feature_enable_disable ("ip6-punt", "linux-cp-punt-l3", 0, 0, NULL,
-				   0);
+      if (hash_elts (lip_db_by_vif) == 1)
+	{
+	  vnet_feature_enable_disable ("ip4-punt", "linux-cp-punt-l3", 0, 0,
+				       NULL, 0);
+	  vnet_feature_enable_disable ("ip6-punt", "linux-cp-punt-l3", 0, 0,
+				       NULL, 0);
+	}
     }
-
   lip_db_by_phy[phy_sw_if_index] = INDEX_INVALID;
   lip_db_by_host[lip->lip_host_sw_if_index] = INDEX_INVALID;
   hash_unset (lip_db_by_vif, lip->lip_vif_index);
@@ -755,6 +760,9 @@ lcp_itf_pair_find_by_outer_vlan (u32 sup_if_index, u16 vlan, bool dot1ad)
   return lip_db_by_phy[match.matched_sw_if_index];
 }
 
+static clib_error_t *lcp_itf_pair_link_up_down (vnet_main_t *vnm,
+						u32 hw_if_index, u32 flags);
+
 int
 lcp_itf_pair_create (u32 phy_sw_if_index, u8 *host_if_name,
 		     lip_host_type_t host_if_type, u8 *ns,
@@ -1059,6 +1067,17 @@ lcp_itf_pair_create (u32 phy_sw_if_index, u8 *host_if_name,
   vnet_sw_interface_admin_up (vnm, host_sw_if_index);
   lcp_itf_set_link_state (lip, sw->flags & VNET_SW_INTERFACE_FLAG_ADMIN_UP);
 
+  /*
+   * Reflect current link state and link speed of the hardware interface on the
+   * TAP interface.
+   */
+  if (host_if_type == LCP_ITF_HOST_TAP &&
+      !vnet_sw_interface_is_sub (vnm, phy_sw_if_index))
+    {
+      hw = vnet_get_sup_hw_interface (vnm, phy_sw_if_index);
+      lcp_itf_pair_link_up_down (vnm, hw->hw_if_index, hw->flags);
+    }
+
   if (host_sw_if_indexp)
     *host_sw_if_indexp = host_sw_if_index;
 
@@ -1159,7 +1178,7 @@ lcp_itf_pair_link_up_down (vnet_main_t *vnm, u32 hw_if_index, u32 flags)
 VNET_HW_INTERFACE_LINK_UP_DOWN_FUNCTION (lcp_itf_pair_link_up_down);
 
 static clib_error_t *
-lcp_itf_pair_init (vlib_main_t *vm)
+lcp_interface_init (vlib_main_t *vm)
 {
   vlib_punt_hdl_t punt_hdl = vlib_punt_client_register ("linux-cp");
 
@@ -1178,7 +1197,7 @@ lcp_itf_pair_init (vlib_main_t *vm)
   return NULL;
 }
 
-VLIB_INIT_FUNCTION (lcp_itf_pair_init) = {
+VLIB_INIT_FUNCTION (lcp_interface_init) = {
   .runs_after = VLIB_INITS ("vnet_interface_init", "tcp_init", "udp_init"),
 };
 

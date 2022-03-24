@@ -2,7 +2,7 @@
 
 import unittest
 from io import BytesIO
-from random import randint, shuffle, choice
+from random import randint, choice
 
 import scapy.compat
 from framework import VppTestCase, VppTestRunner
@@ -13,10 +13,11 @@ from scapy.layers.l2 import Ether
 from scapy.packet import Raw
 from syslog_rfc5424_parser import SyslogMessage, ParseError
 from syslog_rfc5424_parser.constants import SyslogSeverity
-from util import ppp, ip4_range
+from util import ppp, pr, ip4_range
 from vpp_acl import AclRule, VppAcl, VppAclInterface
 from vpp_ip_route import VppIpRoute, VppRoutePath
 from vpp_papi import VppEnum
+from util import StatsDiff
 
 
 class TestNAT44ED(VppTestCase):
@@ -212,6 +213,28 @@ class TestNAT44ED(VppTestCase):
 
         for r in rl:
             r.add_vpp_config()
+
+        cls.no_diff = StatsDiff({
+            pg.sw_if_index: {
+                '/nat44-ed/in2out/fastpath/tcp': 0,
+                '/nat44-ed/in2out/fastpath/udp': 0,
+                '/nat44-ed/in2out/fastpath/icmp': 0,
+                '/nat44-ed/in2out/fastpath/drops': 0,
+                '/nat44-ed/in2out/slowpath/tcp': 0,
+                '/nat44-ed/in2out/slowpath/udp': 0,
+                '/nat44-ed/in2out/slowpath/icmp': 0,
+                '/nat44-ed/in2out/slowpath/drops': 0,
+                '/nat44-ed/in2out/fastpath/tcp': 0,
+                '/nat44-ed/in2out/fastpath/udp': 0,
+                '/nat44-ed/in2out/fastpath/icmp': 0,
+                '/nat44-ed/in2out/fastpath/drops': 0,
+                '/nat44-ed/in2out/slowpath/tcp': 0,
+                '/nat44-ed/in2out/slowpath/udp': 0,
+                '/nat44-ed/in2out/slowpath/icmp': 0,
+                '/nat44-ed/in2out/slowpath/drops': 0,
+            }
+            for pg in cls.pg_interfaces
+        })
 
     def get_err_counter(self, path):
         return self.statistics.get_err_counter(path)
@@ -921,30 +944,35 @@ class TestNAT44ED(VppTestCase):
         self.nat_add_outside_interface(self.pg1)
 
         # in2out (initiate connection)
-        p1 = (Ether(src=self.pg0.remote_mac, dst=self.pg0.local_mac) /
+        p1 = [Ether(src=self.pg0.remote_mac, dst=self.pg0.local_mac) /
               IP(src=self.pg0.remote_ip4, dst=self.pg1.remote_ip4) /
-              UDP(sport=21, dport=20) / payload)
+              UDP(sport=21, dport=20) / payload,
+              Ether(src=self.pg0.remote_mac, dst=self.pg0.local_mac) /
+              IP(src=self.pg0.remote_ip4, dst=self.pg1.remote_ip4) /
+              TCP(sport=21, dport=20, flags="S") / payload,
+              Ether(src=self.pg0.remote_mac, dst=self.pg0.local_mac) /
+              IP(src=self.pg0.remote_ip4, dst=self.pg1.remote_ip4) /
+              ICMP(type='echo-request', id=7777) / payload,
+              ]
 
-        self.pg0.add_stream(p1)
-        self.pg_enable_capture(self.pg_interfaces)
-        self.pg_start()
-        capture = self.pg1.get_capture(1)[0]
+        capture = self.send_and_expect(self.pg0, p1, self.pg1)
 
         # out2in (send error message)
-        p2 = (Ether(src=self.pg1.remote_mac, dst=self.pg1.local_mac) /
+        p2 = [Ether(src=self.pg1.remote_mac, dst=self.pg1.local_mac) /
               IP(src=self.pg1.remote_ip4, dst=self.nat_addr) /
               ICMP(type='dest-unreach', code='port-unreachable') /
-              capture[IP:])
+              c[IP:]
+              for c in capture]
 
-        self.pg1.add_stream(p2)
-        self.pg_enable_capture(self.pg_interfaces)
-        self.pg_start()
+        capture = self.send_and_expect(self.pg1, p2, self.pg0)
 
-        capture = self.pg0.get_capture(1)[0]
-
-        self.logger.info(ppp("p1 packet:", p1))
-        self.logger.info(ppp("p2 packet:", p2))
-        self.logger.info(ppp("capture packet:", capture))
+        for c in capture:
+            try:
+                assert c[IP].dst == self.pg0.remote_ip4
+                assert c[IPerror].src == self.pg0.remote_ip4
+            except AssertionError as a:
+                raise AssertionError(
+                    f"Packet {pr(c)} not translated properly") from a
 
     def test_icmp_echo_reply_trailer(self):
         """ ICMP echo reply with ethernet trailer"""
@@ -1287,10 +1315,7 @@ class TestNAT44ED(VppTestCase):
 
         # in2out
         pkts = self.create_stream_in(self.pg0, self.pg1, ttl=1)
-        self.pg0.add_stream(pkts)
-        self.pg_enable_capture(self.pg_interfaces)
-        self.pg_start()
-        capture = self.pg0.get_capture(len(pkts))
+        capture = self.send_and_expect_some(self.pg0, pkts, self.pg0)
         for p in capture:
             self.assertIn(ICMP, p)
             self.assertEqual(p[ICMP].type, 11)  # 11 == time-exceeded
@@ -2622,37 +2647,41 @@ class TestNAT44EDMW(TestNAT44ED):
         self.nat_add_outside_interface(self.pg1)
 
         # in2out and no NAT addresses added
-        err_old = self.statistics.get_err_counter(
-            '/err/nat44-ed-in2out-slowpath/out of ports')
-
         pkts = self.create_stream_in(self.pg0, self.pg1)
-        self.pg0.add_stream(pkts)
-        self.pg_enable_capture(self.pg_interfaces)
-        self.pg_start()
-        self.pg1.get_capture(0, timeout=1)
 
-        err_new = self.statistics.get_err_counter(
-            '/err/nat44-ed-in2out-slowpath/out of ports')
-
-        self.assertEqual(err_new - err_old, len(pkts))
+        self.send_and_assert_no_replies(
+            self.pg0, pkts, msg="i2o pkts",
+            stats_diff=self.no_diff | {
+                "err": {
+                    '/err/nat44-ed-in2out-slowpath/out of ports': len(pkts),
+                },
+                self.pg0.sw_if_index: {
+                    '/nat44-ed/in2out/slowpath/drops': len(pkts),
+                },
+            }
+        )
 
         # in2out after NAT addresses added
         self.nat_add_address(self.nat_addr)
 
-        err_old = self.statistics.get_err_counter(
-            '/err/nat44-ed-in2out-slowpath/out of ports')
+        tcpn, udpn, icmpn = (sum(x) for x in
+                             zip(*((TCP in p, UDP in p, ICMP in p)
+                                 for p in pkts)))
 
-        pkts = self.create_stream_in(self.pg0, self.pg1)
-        self.pg0.add_stream(pkts)
-        self.pg_enable_capture(self.pg_interfaces)
-        self.pg_start()
-        capture = self.pg1.get_capture(len(pkts))
-        self.verify_capture_out(capture, ignore_port=True)
-
-        err_new = self.statistics.get_err_counter(
-            '/err/nat44-ed-in2out-slowpath/out of ports')
-
-        self.assertEqual(err_new, err_old)
+        self.send_and_expect(
+            self.pg0, pkts, self.pg1, msg="i2o pkts",
+            stats_diff=self.no_diff | {
+                "err": {
+                    '/err/nat44-ed-in2out-slowpath/out of ports': 0,
+                },
+                self.pg0.sw_if_index: {
+                    '/nat44-ed/in2out/slowpath/drops': 0,
+                    '/nat44-ed/in2out/slowpath/tcp': tcpn,
+                    '/nat44-ed/in2out/slowpath/udp': udpn,
+                    '/nat44-ed/in2out/slowpath/icmp': icmpn,
+                },
+            }
+        )
 
     def test_unknown_proto(self):
         """ NAT44ED translate packet with unknown protocol """

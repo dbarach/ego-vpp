@@ -41,7 +41,6 @@ F:	src/vnet/bonding/
 Sphinx Documents
 I:	docs
 M:	John DeNisco <jdenisco@cisco.com>
-M:	Ray Kinsella <raykinsella78@gmail.com>
 F:	docs/
 
 Infrastructure Library
@@ -425,6 +424,7 @@ F:	src/plugins/flowprobe/
 Plugin - http_static
 I:	http_static
 M:	Dave Barach <vpp@barachs.net>
+M:	Florin Coras <fcoras@cisco.com>
 F:	src/plugins/http_static/
 
 Plugin - builtinurl
@@ -480,6 +480,7 @@ F:	src/plugins/marvell/
 Plugin - performance counter
 I:	perfmon
 M:	Damjan Marion <damarion@cisco.com>
+M:	Ray Kinsella <mdr@ashroe.eu>
 F:	src/plugins/perfmon/
 
 Plugin - PPPoE
@@ -777,6 +778,11 @@ Plugin - HTTP
 I:	http
 M:	Florin Coras <fcoras@cisco.com>
 F:	src/plugins/http
+
+Plugin - Prom
+I:	prom
+M:	Florin Coras <fcoras@cisco.com>
+F:	src/plugins/prom
 
 cJSON
 I:	cjson

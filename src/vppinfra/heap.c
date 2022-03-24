@@ -624,7 +624,7 @@ _heap_free (void *v)
   vec_free (h->free_elts);
   vec_free (h->small_free_elt_free_index);
   if (!(h->flags & HEAP_IS_STATIC))
-    vec_free_h (v, sizeof (h[0]));
+    vec_free (v);
   return v;
 }
 
@@ -640,10 +640,10 @@ heap_bytes (void *v)
   bytes = sizeof (h[0]);
   bytes += vec_len (v) * sizeof (h->elt_bytes);
   for (b = 0; b < vec_len (h->free_lists); b++)
-    bytes += vec_capacity (h->free_lists[b], 0);
+    bytes += vec_mem_size (h->free_lists[b]);
   bytes += vec_bytes (h->free_lists);
-  bytes += vec_capacity (h->elts, 0);
-  bytes += vec_capacity (h->free_elts, 0);
+  bytes += vec_mem_size (h->elts);
+  bytes += vec_mem_size (h->free_elts);
   bytes += vec_bytes (h->used_elt_bitmap);
 
   return bytes;

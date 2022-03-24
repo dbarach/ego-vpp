@@ -4,6 +4,7 @@
 from __future__ import division
 
 import binascii
+from collections import namedtuple
 import hashlib
 import ipaddress
 import reprlib
@@ -19,10 +20,11 @@ from scapy.layers.inet6 import IPv6
 from scapy.layers.l2 import Ether, GRE
 from scapy.packet import Raw
 
+from config import config
 from bfd import VppBFDAuthKey, BFD, BFDAuthType, VppBFDUDPSession, \
     BFDDiagCode, BFDState, BFD_vpp_echo
 from framework import tag_fixme_vpp_workers
-from framework import VppTestCase, VppTestRunner, running_extended_tests
+from framework import VppTestCase, VppTestRunner
 from framework import tag_run_solo
 from util import ppp
 from vpp_ip import DpoProto
@@ -133,6 +135,34 @@ class BFDAPITestCase(VppTestCase):
         session.modify_parameters(desired_min_tx=session.desired_min_tx * 2,
                                   required_min_rx=session.required_min_rx * 2,
                                   detect_mult=session.detect_mult * 2)
+        s = session.get_bfd_udp_session_dump_entry()
+        self.assert_equal(session.desired_min_tx,
+                          s.desired_min_tx,
+                          "desired min transmit interval")
+        self.assert_equal(session.required_min_rx,
+                          s.required_min_rx,
+                          "required min receive interval")
+        self.assert_equal(session.detect_mult, s.detect_mult, "detect mult")
+
+    def test_upd_bfd(self):
+        """ Create/Modify w/ Update BFD session parameters """
+        session = VppBFDUDPSession(self, self.pg0, self.pg0.remote_ip4,
+                                   desired_min_tx=50000,
+                                   required_min_rx=10000,
+                                   detect_mult=1)
+        session.upd_vpp_config()
+        s = session.get_bfd_udp_session_dump_entry()
+        self.assert_equal(session.desired_min_tx,
+                          s.desired_min_tx,
+                          "desired min transmit interval")
+        self.assert_equal(session.required_min_rx,
+                          s.required_min_rx,
+                          "required min receive interval")
+
+        self.assert_equal(session.detect_mult, s.detect_mult, "detect mult")
+        session.upd_vpp_config(desired_min_tx=session.desired_min_tx * 2,
+                               required_min_rx=session.required_min_rx * 2,
+                               detect_mult=session.detect_mult * 2)
         s = session.get_bfd_udp_session_dump_entry()
         self.assert_equal(session.desired_min_tx,
                           s.desired_min_tx,
@@ -345,6 +375,10 @@ class BFDTestSession(object):
         self.state = BFDState.down
         self.auth_type = BFDAuthType.no_auth
         self.tunnel_header = tunnel_header
+        self.tx_packets = 0
+        self.rx_packets = 0
+        self.tx_packets_echo = 0
+        self.rx_packets_echo = 0
 
     def inc_seq_num(self):
         """ increment sequence number, wrapping if needed """
@@ -467,6 +501,7 @@ class BFDTestSession(object):
             interface = self.phy_interface
         self.test.logger.debug(ppp("Sending packet:", packet))
         interface.add_stream(packet)
+        self.tx_packets += 1
         self.test.pg_start()
 
     def verify_sha1_auth(self, packet):
@@ -657,6 +692,7 @@ def wait_for_bfd_packet(test, timeout=1, pcap_time_min=None, is_tunnel=False):
         if time_left < 0:
             raise CaptureTimeoutError("Packet did not arrive within timeout")
         p = test.pg0.wait_for_packet(timeout=time_left)
+        test.test_session.rx_packets += 1
         test.logger.debug(ppp("BFD: Got packet:", p))
         if pcap_time_min is not None and p.time < pcap_time_min:
             test.logger.debug(ppp("BFD: ignoring packet (pcap time %s < "
@@ -677,6 +713,33 @@ def wait_for_bfd_packet(test, timeout=1, pcap_time_min=None, is_tunnel=False):
     verify_udp(test, p)
     test.test_session.verify_bfd(p)
     return p
+
+
+BFDStats = namedtuple("BFDStats", "rx rx_echo tx tx_echo")
+
+
+def bfd_grab_stats_snapshot(test, bs_idx=0, thread_index=None):
+    s = test.statistics
+    ti = thread_index
+    if ti is None:
+        rx = s['/bfd/rx-session-counters'][:, bs_idx].sum_packets()
+        rx_echo = s['/bfd/rx-session-echo-counters'][:, bs_idx].sum_packets()
+        tx = s['/bfd/tx-session-counters'][:, bs_idx].sum_packets()
+        tx_echo = s['/bfd/tx-session-echo-counters'][:, bs_idx].sum_packets()
+    else:
+        rx = s['/bfd/rx-session-counters'][ti, bs_idx].sum_packets()
+        rx_echo = s['/bfd/rx-session-echo-counters'][ti, bs_idx].sum_packets()
+        tx = s['/bfd/tx-session-counters'][ti, bs_idx].sum_packets()
+        tx_echo = s['/bfd/tx-session-echo-counters'][ti, bs_idx].sum_packets()
+    return BFDStats(rx, rx_echo, tx, tx_echo)
+
+
+def bfd_stats_diff(stats_before, stats_after):
+    rx = stats_after.rx - stats_before.rx
+    rx_echo = stats_after.rx_echo - stats_before.rx_echo
+    tx = stats_after.tx - stats_before.tx
+    tx_echo = stats_after.tx_echo - stats_before.tx_echo
+    return BFDStats(rx, rx_echo, tx, tx_echo)
 
 
 @tag_run_solo
@@ -717,6 +780,8 @@ class BFD4TestCase(VppTestCase):
         self.vapi.want_bfd_events()
         self.pg0.enable_capture()
         try:
+            self.bfd_udp4_sessions = self.statistics['/bfd/udp4/sessions']
+            self.bfd_udp6_sessions = self.statistics['/bfd/udp6/sessions']
             self.vpp_session = VppBFDUDPSession(self, self.pg0,
                                                 self.pg0.remote_ip4)
             self.vpp_session.add_vpp_config()
@@ -735,6 +800,10 @@ class BFD4TestCase(VppTestCase):
     def test_session_up(self):
         """ bring BFD session up """
         bfd_session_up(self)
+        bfd_udp4_sessions = self.statistics['/bfd/udp4/sessions']
+        bfd_udp6_sessions = self.statistics['/bfd/udp6/sessions']
+        self.assert_equal(bfd_udp4_sessions - self.bfd_udp4_sessions, 1)
+        self.assert_equal(bfd_udp6_sessions, self.bfd_udp6_sessions)
 
     def test_session_up_by_ip(self):
         """ bring BFD session up - first frame looked up by address pair """
@@ -1054,7 +1123,7 @@ class BFD4TestCase(VppTestCase):
                          "Poll bit set in BFD packet")
 
     # returning inconsistent results requiring retries in per-patch tests
-    @unittest.skipUnless(running_extended_tests, "part of extended tests")
+    @unittest.skipUnless(config.extended, "part of extended tests")
     def test_poll_response(self):
         """ test correct response to control frame with poll bit set """
         bfd_session_up(self)
@@ -1093,8 +1162,8 @@ class BFD4TestCase(VppTestCase):
 
     def test_echo_looped_back(self):
         """ echo packets looped back """
-        # don't need a session in this case..
-        self.vpp_session.remove_vpp_config()
+        bfd_session_up(self)
+        stats_before = bfd_grab_stats_snapshot(self)
         self.pg0.enable_capture()
         echo_packet_count = 10
         # random source port low enough to increment a few times..
@@ -1113,7 +1182,10 @@ class BFD4TestCase(VppTestCase):
             self.logger.debug(ppp("Sending packet:", echo_packet))
             self.pg0.add_stream(echo_packet)
             self.pg_start()
-        for dummy in range(echo_packet_count):
+            self.logger.debug(self.vapi.ppcli("show trace"))
+        counter = 0
+        bfd_control_packets_rx = 0
+        while counter < echo_packet_count:
             p = self.pg0.wait_for_packet(1)
             self.logger.debug(ppp("Got packet:", p))
             ether = p[Ether]
@@ -1122,8 +1194,11 @@ class BFD4TestCase(VppTestCase):
             self.assert_equal(self.pg0.local_mac, ether.src, "Source MAC")
             ip = p[IP]
             self.assert_equal(self.pg0.remote_ip4, ip.dst, "Destination IP")
-            self.assert_equal(self.pg0.remote_ip4, ip.src, "Destination IP")
             udp = p[UDP]
+            if udp.dport == BFD.udp_dport:
+                bfd_control_packets_rx += 1
+                continue
+            self.assert_equal(self.pg0.remote_ip4, ip.src, "Source IP")
             self.assert_equal(udp.dport, BFD.udp_dport_echo,
                               "UDP destination port")
             self.assert_equal(udp.sport, udp_sport_rx, "UDP source port")
@@ -1133,11 +1208,23 @@ class BFD4TestCase(VppTestCase):
             self.assertEqual(scapy.compat.raw(p[UDP].payload),
                              scapy.compat.raw(echo_packet[UDP].payload),
                              "Received packet is not the echo packet sent")
+            counter += 1
         self.assert_equal(udp_sport_tx, udp_sport_rx, "UDP source port (== "
                           "ECHO packet identifier for test purposes)")
+        stats_after = bfd_grab_stats_snapshot(self)
+        diff = bfd_stats_diff(stats_before, stats_after)
+        self.assertEqual(
+            0, diff.rx, "RX counter bumped but no BFD packets sent")
+        self.assertEqual(
+            bfd_control_packets_rx, diff.tx, "TX counter incorrect")
+        self.assertEqual(0, diff.rx_echo,
+                         "RX echo counter bumped but no BFD session exists")
+        self.assertEqual(0, diff.tx_echo,
+                         "TX echo counter bumped but no BFD session exists")
 
     def test_echo(self):
         """ echo function """
+        stats_before = bfd_grab_stats_snapshot(self)
         bfd_session_up(self)
         self.test_session.update(required_min_echo_rx=150000)
         self.test_session.send_packet()
@@ -1173,9 +1260,12 @@ class BFD4TestCase(VppTestCase):
                                       "ECHO packet destination MAC address")
                     p[Ether].dst = self.pg0.local_mac
                     self.pg0.add_stream(p)
+                    self.test_session.rx_packets_echo += 1
+                    self.test_session.tx_packets_echo += 1
                     self.pg_start()
                     echo_seen = True
                 elif p.haslayer(BFD):
+                    self.test_session.rx_packets += 1
                     if echo_seen:
                         self.assertGreaterEqual(
                             p[BFD].required_min_rx_interval,
@@ -1191,6 +1281,20 @@ class BFD4TestCase(VppTestCase):
                                   "number of bfd events")
             self.test_session.send_packet()
         self.assertTrue(echo_seen, "No echo packets received")
+
+        stats_after = bfd_grab_stats_snapshot(self)
+        diff = bfd_stats_diff(stats_before, stats_after)
+        # our rx is vpp tx and vice versa, also tolerate one packet off
+        self.assert_in_range(self.test_session.tx_packets,
+                             diff.rx - 1, diff.rx + 1, "RX counter")
+        self.assert_in_range(self.test_session.rx_packets,
+                             diff.tx - 1, diff.tx + 1, "TX counter")
+        self.assert_in_range(self.test_session.tx_packets_echo,
+                             diff.rx_echo - 1, diff.rx_echo + 1,
+                             "RX echo counter")
+        self.assert_in_range(self.test_session.rx_packets_echo,
+                             diff.tx_echo - 1, diff.tx_echo + 1,
+                             "TX echo counter")
 
     def test_echo_fail(self):
         """ session goes down if echo function fails """
@@ -1527,6 +1631,8 @@ class BFD6TestCase(VppTestCase):
         self.vapi.want_bfd_events()
         self.pg0.enable_capture()
         try:
+            self.bfd_udp4_sessions = self.statistics['/bfd/udp4/sessions']
+            self.bfd_udp6_sessions = self.statistics['/bfd/udp6/sessions']
             self.vpp_session = VppBFDUDPSession(self, self.pg0,
                                                 self.pg0.remote_ip6,
                                                 af=AF_INET6)
@@ -1547,6 +1653,10 @@ class BFD6TestCase(VppTestCase):
     def test_session_up(self):
         """ bring BFD session up """
         bfd_session_up(self)
+        bfd_udp4_sessions = self.statistics['/bfd/udp4/sessions']
+        bfd_udp6_sessions = self.statistics['/bfd/udp6/sessions']
+        self.assert_equal(bfd_udp4_sessions, self.bfd_udp4_sessions)
+        self.assert_equal(bfd_udp6_sessions - self.bfd_udp6_sessions, 1)
 
     def test_session_up_by_ip(self):
         """ bring BFD session up - first frame looked up by address pair """
@@ -1586,8 +1696,8 @@ class BFD6TestCase(VppTestCase):
 
     def test_echo_looped_back(self):
         """ echo packets looped back """
-        # don't need a session in this case..
-        self.vpp_session.remove_vpp_config()
+        bfd_session_up(self)
+        stats_before = bfd_grab_stats_snapshot(self)
         self.pg0.enable_capture()
         echo_packet_count = 10
         # random source port low enough to increment a few times..
@@ -1606,7 +1716,9 @@ class BFD6TestCase(VppTestCase):
             self.logger.debug(ppp("Sending packet:", echo_packet))
             self.pg0.add_stream(echo_packet)
             self.pg_start()
-        for dummy in range(echo_packet_count):
+        counter = 0
+        bfd_control_packets_rx = 0
+        while counter < echo_packet_count:
             p = self.pg0.wait_for_packet(1)
             self.logger.debug(ppp("Got packet:", p))
             ether = p[Ether]
@@ -1615,8 +1727,11 @@ class BFD6TestCase(VppTestCase):
             self.assert_equal(self.pg0.local_mac, ether.src, "Source MAC")
             ip = p[IPv6]
             self.assert_equal(self.pg0.remote_ip6, ip.dst, "Destination IP")
-            self.assert_equal(self.pg0.remote_ip6, ip.src, "Destination IP")
             udp = p[UDP]
+            if udp.dport == BFD.udp_dport:
+                bfd_control_packets_rx += 1
+                continue
+            self.assert_equal(self.pg0.remote_ip6, ip.src, "Source IP")
             self.assert_equal(udp.dport, BFD.udp_dport_echo,
                               "UDP destination port")
             self.assert_equal(udp.sport, udp_sport_rx, "UDP source port")
@@ -1626,13 +1741,23 @@ class BFD6TestCase(VppTestCase):
             self.assertEqual(scapy.compat.raw(p[UDP].payload),
                              scapy.compat.raw(echo_packet[UDP].payload),
                              "Received packet is not the echo packet sent")
+            counter += 1
         self.assert_equal(udp_sport_tx, udp_sport_rx, "UDP source port (== "
                           "ECHO packet identifier for test purposes)")
-        self.assert_equal(udp_sport_tx, udp_sport_rx, "UDP source port (== "
-                          "ECHO packet identifier for test purposes)")
+        stats_after = bfd_grab_stats_snapshot(self)
+        diff = bfd_stats_diff(stats_before, stats_after)
+        self.assertEqual(
+            0, diff.rx, "RX counter bumped but no BFD packets sent")
+        self.assertEqual(bfd_control_packets_rx,
+                         diff.tx, "TX counter incorrect")
+        self.assertEqual(0, diff.rx_echo,
+                         "RX echo counter bumped but no BFD session exists")
+        self.assertEqual(0, diff.tx_echo,
+                         "TX echo counter bumped but no BFD session exists")
 
     def test_echo(self):
         """ echo function """
+        stats_before = bfd_grab_stats_snapshot(self)
         bfd_session_up(self)
         self.test_session.update(required_min_echo_rx=150000)
         self.test_session.send_packet()
@@ -1666,11 +1791,14 @@ class BFD6TestCase(VppTestCase):
                     self.logger.debug(ppp("Looping back packet:", p))
                     self.assert_equal(p[Ether].dst, self.pg0.remote_mac,
                                       "ECHO packet destination MAC address")
+                    self.test_session.rx_packets_echo += 1
+                    self.test_session.tx_packets_echo += 1
                     p[Ether].dst = self.pg0.local_mac
                     self.pg0.add_stream(p)
                     self.pg_start()
                     echo_seen = True
                 elif p.haslayer(BFD):
+                    self.test_session.rx_packets += 1
                     if echo_seen:
                         self.assertGreaterEqual(
                             p[BFD].required_min_rx_interval,
@@ -1686,6 +1814,20 @@ class BFD6TestCase(VppTestCase):
                                   "number of bfd events")
             self.test_session.send_packet()
         self.assertTrue(echo_seen, "No echo packets received")
+
+        stats_after = bfd_grab_stats_snapshot(self)
+        diff = bfd_stats_diff(stats_before, stats_after)
+        # our rx is vpp tx and vice versa, also tolerate one packet off
+        self.assert_in_range(self.test_session.tx_packets,
+                             diff.rx - 1, diff.rx + 1, "RX counter")
+        self.assert_in_range(self.test_session.rx_packets,
+                             diff.tx - 1, diff.tx + 1, "TX counter")
+        self.assert_in_range(self.test_session.tx_packets_echo,
+                             diff.rx_echo - 1, diff.rx_echo + 1,
+                             "RX echo counter")
+        self.assert_in_range(self.test_session.rx_packets_echo,
+                             diff.tx_echo - 1, diff.tx_echo + 1,
+                             "TX echo counter")
 
     def test_intf_deleted(self):
         """ interface with bfd session deleted """
@@ -1809,7 +1951,7 @@ class BFDFIBTestCase(VppTestCase):
                              packet[IPv6].dst)
 
 
-@unittest.skipUnless(running_extended_tests, "part of extended tests")
+@unittest.skipUnless(config.extended, "part of extended tests")
 class BFDTunTestCase(VppTestCase):
     """ BFD over GRE tunnel """
 

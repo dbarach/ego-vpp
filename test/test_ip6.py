@@ -1754,19 +1754,19 @@ class IPv6NDProxyTest(TestIPv6ND):
         self.assertTrue(rx[0].haslayer(ICMPv6ND_NS))
 
 
-class TestIPNull(VppTestCase):
+class TestIP6Null(VppTestCase):
     """ IPv6 routes via NULL """
 
     @classmethod
     def setUpClass(cls):
-        super(TestIPNull, cls).setUpClass()
+        super(TestIP6Null, cls).setUpClass()
 
     @classmethod
     def tearDownClass(cls):
-        super(TestIPNull, cls).tearDownClass()
+        super(TestIP6Null, cls).tearDownClass()
 
     def setUp(self):
-        super(TestIPNull, self).setUp()
+        super(TestIP6Null, self).setUp()
 
         # create 2 pg interfaces
         self.create_pg_interfaces(range(1))
@@ -1777,7 +1777,7 @@ class TestIPNull(VppTestCase):
             i.resolve_ndp()
 
     def tearDown(self):
-        super(TestIPNull, self).tearDown()
+        super(TestIP6Null, self).tearDown()
         for i in self.pg_interfaces:
             i.unconfig_ip6()
             i.admin_down()
@@ -1835,19 +1835,19 @@ class TestIPNull(VppTestCase):
         self.assertEqual(icmp.code, 1)
 
 
-class TestIPDisabled(VppTestCase):
+class TestIP6Disabled(VppTestCase):
     """ IPv6 disabled """
 
     @classmethod
     def setUpClass(cls):
-        super(TestIPDisabled, cls).setUpClass()
+        super(TestIP6Disabled, cls).setUpClass()
 
     @classmethod
     def tearDownClass(cls):
-        super(TestIPDisabled, cls).tearDownClass()
+        super(TestIP6Disabled, cls).tearDownClass()
 
     def setUp(self):
-        super(TestIPDisabled, self).setUp()
+        super(TestIP6Disabled, self).setUp()
 
         # create 2 pg interfaces
         self.create_pg_interfaces(range(2))
@@ -1861,7 +1861,7 @@ class TestIPDisabled(VppTestCase):
         self.pg1.admin_up()
 
     def tearDown(self):
-        super(TestIPDisabled, self).tearDown()
+        super(TestIP6Disabled, self).tearDown()
         for i in self.pg_interfaces:
             i.unconfig_ip4()
             i.admin_down()
@@ -1964,25 +1964,6 @@ class TestIP6LoadBalance(VppTestCase):
             i.admin_down()
             i.disable_mpls()
         super(TestIP6LoadBalance, self).tearDown()
-
-    def pg_send(self, input, pkts):
-        self.vapi.cli("clear trace")
-        input.add_stream(pkts)
-        self.pg_enable_capture(self.pg_interfaces)
-        self.pg_start()
-
-    def send_and_expect_load_balancing(self, input, pkts, outputs):
-        self.pg_send(input, pkts)
-        rxs = []
-        for oo in outputs:
-            rx = oo._get_capture(1)
-            self.assertNotEqual(0, len(rx))
-            rxs.append(rx)
-        return rxs
-
-    def send_and_expect_one_itf(self, input, pkts, itf):
-        self.pg_send(input, pkts)
-        rx = itf.get_capture(len(pkts))
 
     def test_ip6_load_balance(self):
         """ IPv6 Load-Balancing """
@@ -2107,7 +2088,7 @@ class TestIP6LoadBalance(VppTestCase):
         # The packets with Entropy label in should not load-balance,
         # since the Entropy value is fixed.
         #
-        self.send_and_expect_one_itf(self.pg0, port_ent_pkts, self.pg1)
+        self.send_and_expect_only(self.pg0, port_ent_pkts, self.pg1)
 
         #
         # change the flow hash config so it's only IP src,dst
@@ -2121,7 +2102,7 @@ class TestIP6LoadBalance(VppTestCase):
                                             [self.pg1, self.pg2])
         self.send_and_expect_load_balancing(self.pg0, src_mpls_pkts,
                                             [self.pg1, self.pg2])
-        self.send_and_expect_one_itf(self.pg0, port_ip_pkts, self.pg2)
+        self.send_and_expect_only(self.pg0, port_ip_pkts, self.pg2)
 
         #
         # change the flow hash config back to defaults
@@ -2206,7 +2187,7 @@ class TestIP6LoadBalance(VppTestCase):
         # inject the packet on pg0 - expect load-balancing across all 4 paths
         #
         self.vapi.cli("clear trace")
-        self.send_and_expect_one_itf(self.pg0, port_pkts, self.pg3)
+        self.send_and_expect_only(self.pg0, port_pkts, self.pg3)
 
 
 class IP6PuntSetup(object):
@@ -2459,19 +2440,19 @@ class TestIP6PuntHandoff(IP6PuntSetup, VppTestCase):
         ip_punt_redirect.remove_vpp_config()
 
 
-class TestIPDeag(VppTestCase):
+class TestIP6Deag(VppTestCase):
     """ IPv6 Deaggregate Routes """
 
     @classmethod
     def setUpClass(cls):
-        super(TestIPDeag, cls).setUpClass()
+        super(TestIP6Deag, cls).setUpClass()
 
     @classmethod
     def tearDownClass(cls):
-        super(TestIPDeag, cls).tearDownClass()
+        super(TestIP6Deag, cls).tearDownClass()
 
     def setUp(self):
-        super(TestIPDeag, self).setUp()
+        super(TestIP6Deag, self).setUp()
 
         self.create_pg_interfaces(range(3))
 
@@ -2481,7 +2462,7 @@ class TestIPDeag(VppTestCase):
             i.resolve_ndp()
 
     def tearDown(self):
-        super(TestIPDeag, self).tearDown()
+        super(TestIP6Deag, self).tearDown()
         for i in self.pg_interfaces:
             i.unconfig_ip6()
             i.admin_down()
@@ -2618,12 +2599,14 @@ class TestIP6Input(VppTestCase):
                      inet6.UDP(sport=1234, dport=1234) /
                      Raw(b'\xa5' * 100))
 
-        rx = self.send_and_expect(self.pg0, p_version * NUM_PKTS, self.pg0)
-        rx = rx[0]
-        icmp = rx[ICMPv6TimeExceeded]
+        rxs = self.send_and_expect_some(self.pg0,
+                                        p_version * NUM_PKTS,
+                                        self.pg0)
 
-        # 0: "hop limit exceeded in transit",
-        self.assertEqual((icmp.type, icmp.code), (3, 0))
+        for rx in rxs:
+            icmp = rx[ICMPv6TimeExceeded]
+            # 0: "hop limit exceeded in transit",
+            self.assertEqual((icmp.type, icmp.code), (3, 0))
 
     icmpv6_data = '\x0a' * 18
     all_0s = "::"
@@ -2676,19 +2659,19 @@ class TestIP6Input(VppTestCase):
         self.pg_start()
 
 
-class TestIPReplace(VppTestCase):
+class TestIP6Replace(VppTestCase):
     """ IPv6 Table Replace """
 
     @classmethod
     def setUpClass(cls):
-        super(TestIPReplace, cls).setUpClass()
+        super(TestIP6Replace, cls).setUpClass()
 
     @classmethod
     def tearDownClass(cls):
-        super(TestIPReplace, cls).tearDownClass()
+        super(TestIP6Replace, cls).tearDownClass()
 
     def setUp(self):
-        super(TestIPReplace, self).setUp()
+        super(TestIP6Replace, self).setUp()
 
         self.create_pg_interfaces(range(4))
 
@@ -2704,7 +2687,7 @@ class TestIPReplace(VppTestCase):
             table_id += 1
 
     def tearDown(self):
-        super(TestIPReplace, self).tearDown()
+        super(TestIP6Replace, self).tearDown()
         for i in self.pg_interfaces:
             i.admin_down()
             i.unconfig_ip6()
@@ -2817,19 +2800,19 @@ class TestIPReplace(VppTestCase):
             self.assertEqual(len(t.mdump()), 5)
 
 
-class TestIP6Replace(VppTestCase):
-    """ IPv4 Interface Address Replace """
+class TestIP6AddrReplace(VppTestCase):
+    """ IPv6 Interface Address Replace """
 
     @classmethod
     def setUpClass(cls):
-        super(TestIP6Replace, cls).setUpClass()
+        super(TestIP6AddrReplace, cls).setUpClass()
 
     @classmethod
     def tearDownClass(cls):
-        super(TestIP6Replace, cls).tearDownClass()
+        super(TestIP6AddrReplace, cls).tearDownClass()
 
     def setUp(self):
-        super(TestIP6Replace, self).setUp()
+        super(TestIP6AddrReplace, self).setUp()
 
         self.create_pg_interfaces(range(4))
 
@@ -2837,7 +2820,7 @@ class TestIP6Replace(VppTestCase):
             i.admin_up()
 
     def tearDown(self):
-        super(TestIP6Replace, self).tearDown()
+        super(TestIP6AddrReplace, self).tearDown()
         for i in self.pg_interfaces:
             i.admin_down()
 
@@ -3187,6 +3170,12 @@ class TestIPv6PathMTU(VppTestCase):
         self.vapi.sw_interface_set_mtu(self.pg1.sw_if_index,
                                        [2800, 0, 0, 0])
 
+        p_6k = (Ether(dst=self.pg0.local_mac,
+                      src=self.pg0.remote_mac) /
+                IPv6(src=self.pg0.remote_ip6,
+                     dst=tun.remote_ip6) /
+                UDP(sport=1234, dport=5678) /
+                Raw(b'0xa' * 2000))
         p_2k = (Ether(dst=self.pg0.local_mac,
                       src=self.pg0.remote_mac) /
                 IPv6(src=self.pg0.remote_ip6,
@@ -3206,6 +3195,7 @@ class TestIPv6PathMTU(VppTestCase):
                           self.pg1.remote_ip6).add_vpp_config()
 
         # this is now the interface MTU frags
+        self.send_and_expect(self.pg0, [p_6k], self.pg1, n_rx=4)
         self.send_and_expect(self.pg0, [p_2k], self.pg1, n_rx=2)
         self.send_and_expect(self.pg0, [p_1k], self.pg1)
 

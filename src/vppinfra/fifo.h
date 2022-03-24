@@ -54,7 +54,7 @@ typedef struct
 always_inline clib_fifo_header_t *
 clib_fifo_header (void *f)
 {
-  return vec_header (f, sizeof (clib_fifo_header_t));
+  return vec_header (f);
 }
 
 /* Aliases. */
@@ -254,7 +254,7 @@ clib_fifo_tail_index (void *v)
 #define clib_fifo_head(v) ((v) + clib_fifo_head_index (v))
 #define clib_fifo_tail(v) ((v) + clib_fifo_tail_index (v))
 
-#define clib_fifo_free(f) vec_free_h((f),sizeof(clib_fifo_header_t))
+#define clib_fifo_free(f) vec_free ((f))
 
 always_inline uword
 clib_fifo_elt_index (void *v, uword i)

@@ -45,26 +45,20 @@
 /* Vector resize operator.  Called as needed by various macros such as
    vec_add1() when we need to allocate memory. */
 __clib_export void *
-vec_resize_allocate_memory (void *v,
-			    word length_increment,
-			    uword data_bytes,
-			    uword header_bytes, uword data_align,
-			    uword numa_id)
+vec_resize_allocate_memory (void *v, word length_increment, uword data_bytes,
+			    uword header_bytes, uword data_align)
 {
   vec_header_t *vh = _vec_find (v);
   uword old_alloc_bytes, new_alloc_bytes;
   void *old, *new;
-  void *oldheap;
 
   header_bytes = vec_header_bytes (header_bytes);
+  data_align = data_align == 0 ? 1 : data_align;
 
   data_bytes += header_bytes;
 
-  if (PREDICT_FALSE (numa_id != VEC_NUMA_UNSPECIFIED))
-    {
-      oldheap = clib_mem_get_per_cpu_heap ();
-      clib_mem_set_per_cpu_heap (clib_mem_get_per_numa_heap (numa_id));
-    }
+  /* alignment must be power of 2 */
+  ASSERT (count_set_bits (data_align) == 1);
 
   if (!v)
     {
@@ -76,11 +70,17 @@ vec_resize_allocate_memory (void *v,
       CLIB_MEM_POISON (new + data_bytes, new_alloc_bytes - data_bytes);
       v = new + header_bytes;
       _vec_len (v) = length_increment;
-      _vec_numa (v) = numa_id;
-      if (PREDICT_FALSE (numa_id != VEC_NUMA_UNSPECIFIED))
-	clib_mem_set_per_cpu_heap (oldheap);
+      ASSERT (header_bytes / VEC_HEADER_ROUND <= 255);
+      _vec_find (v)->hdr_size = header_bytes / VEC_HEADER_ROUND;
+      _vec_find (v)->log2_align = min_log2 (data_align);
       return v;
     }
+
+  ASSERT (_vec_find (v)->hdr_size * VEC_HEADER_ROUND == header_bytes);
+  header_bytes = _vec_find (v)->hdr_size * VEC_HEADER_ROUND;
+
+  ASSERT (data_align == (1 << _vec_find (v)->log2_align));
+  data_align = 1 << _vec_find (v)->log2_align;
 
   vh->len += length_increment;
   old = v - header_bytes;
@@ -94,8 +94,6 @@ vec_resize_allocate_memory (void *v,
   if (data_bytes <= old_alloc_bytes)
     {
       CLIB_MEM_UNPOISON (v, data_bytes);
-      if (PREDICT_FALSE (numa_id != VEC_NUMA_UNSPECIFIED))
-	clib_mem_set_per_cpu_heap (oldheap);
       return v;
     }
 
@@ -131,17 +129,7 @@ vec_resize_allocate_memory (void *v,
   memset (v + old_alloc_bytes, 0, new_alloc_bytes - old_alloc_bytes);
   CLIB_MEM_POISON (new + data_bytes, new_alloc_bytes - data_bytes);
 
-  _vec_numa ((v + header_bytes)) = numa_id;
-  if (PREDICT_FALSE (numa_id != VEC_NUMA_UNSPECIFIED))
-    clib_mem_set_per_cpu_heap (oldheap);
-
   return v + header_bytes;
-}
-
-__clib_export uword
-clib_mem_is_vec_h (void *v, uword header_bytes)
-{
-  return clib_mem_is_heap_object (vec_header (v, header_bytes));
 }
 
 __clib_export u32

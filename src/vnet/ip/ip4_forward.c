@@ -61,6 +61,7 @@
 #include <vnet/ip/ip4_forward.h>
 #include <vnet/interface_output.h>
 #include <vnet/classify/vnet_classify.h>
+#include <vnet/ip/reass/ip4_full_reass.h>
 
 /** @brief IPv4 lookup node.
     @node ip4-lookup
@@ -1507,9 +1508,8 @@ ip4_local_set_next_and_error (vlib_node_runtime_t * error_node,
       next_index = *next;
       if (PREDICT_TRUE (error == (u8) IP4_ERROR_UNKNOWN_PROTOCOL))
 	{
-	  vnet_feature_arc_start (arc_index,
-				  vnet_buffer (b)->sw_if_index[VLIB_RX],
-				  &next_index, b);
+	  vnet_feature_arc_start (
+	    arc_index, vnet_buffer (b)->ip.rx_sw_if_index, &next_index, b);
 	  *next = next_index;
 	}
     }
@@ -1880,7 +1880,7 @@ VLIB_REGISTER_NODE (ip4_local_node) =
     [IP_LOCAL_NEXT_PUNT] = "ip4-punt",
     [IP_LOCAL_NEXT_UDP_LOOKUP] = "ip4-udp-lookup",
     [IP_LOCAL_NEXT_ICMP] = "ip4-icmp-input",
-    [IP_LOCAL_NEXT_REASSEMBLY] = "ip4-full-reassembly",
+    [IP_LOCAL_NEXT_REASSEMBLY] = "ip4-local-full-reassembly",
   },
 };
 
@@ -2055,7 +2055,9 @@ ip4_ttl_inc (vlib_buffer_t * b, ip4_header_t * ip)
   ttl += 1;
   ip->ttl = ttl;
 
-  ASSERT (ip4_header_checksum_is_valid (ip));
+  ASSERT (ip4_header_checksum_is_valid (ip) ||
+	  (vnet_buffer (b)->oflags & VNET_BUFFER_OFFLOAD_F_IP_CKSUM) ||
+	  (vnet_buffer (b)->oflags & VNET_BUFFER_OFFLOAD_F_OUTER_IP_CKSUM));
 }
 
 /* Decrement TTL & update checksum.

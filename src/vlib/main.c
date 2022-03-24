@@ -41,6 +41,7 @@
 #include <vppinfra/format.h>
 #include <vlib/vlib.h>
 #include <vlib/threads.h>
+#include <vlib/stats/stats.h>
 #include <vppinfra/tw_timer_1t_3w_1024sl_ov.h>
 
 #include <vlib/unix/unix.h>
@@ -476,12 +477,8 @@ vlib_put_next_frame (vlib_main_t * vm,
       if (!(f->frame_flags & VLIB_FRAME_PENDING))
 	{
 	  __attribute__ ((unused)) vlib_node_t *node;
-	  vlib_node_t *next_node;
-	  vlib_node_runtime_t *next_runtime;
 
 	  node = vlib_get_node (vm, r->node_index);
-	  next_node = vlib_get_next_node (vm, r->node_index, next_index);
-	  next_runtime = vlib_node_get_runtime (vm, next_node->index);
 
 	  vec_add2 (nm->pending_frames, p, 1);
 
@@ -490,18 +487,6 @@ vlib_put_next_frame (vlib_main_t * vm,
 	  p->next_frame_index = nf - nm->next_frames;
 	  nf->flags |= VLIB_FRAME_PENDING;
 	  f->frame_flags |= VLIB_FRAME_PENDING;
-
-	  /*
-	   * If we're going to dispatch this frame on another thread,
-	   * force allocation of a new frame. Otherwise, we create
-	   * a dangling frame reference. Each thread has its own copy of
-	   * the next_frames vector.
-	   */
-	  if (0 && r->thread_index != next_runtime->thread_index)
-	    {
-	      nf->frame = NULL;
-	      nf->flags &= ~(VLIB_FRAME_PENDING | VLIB_FRAME_IS_ALLOCATED);
-	    }
 	}
 
       /* Copy trace flag from next_frame and from runtime. */
@@ -1826,7 +1811,6 @@ placeholder_queue_signal_callback (vlib_main_t * vm)
 }
 
 #define foreach_weak_reference_stub             \
-_(vlib_map_stat_segment_init)                   \
 _(vpe_api_init)                                 \
 _(vlibmemory_init)                              \
 _(map_api_segment_init)
@@ -1887,7 +1871,13 @@ vlib_main (vlib_main_t * volatile vm, unformat_input_t * input)
       goto done;
     }
 
-  if ((error = vlib_map_stat_segment_init (vm)))
+  if ((error = vlib_log_init (vm)))
+    {
+      clib_error_report (error);
+      goto done;
+    }
+
+  if ((error = vlib_stats_init (vm)))
     {
       clib_error_report (error);
       goto done;

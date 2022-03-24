@@ -23,6 +23,7 @@
 
 #include <vnet/session/application_interface.h>
 #include <vnet/session/application.h>
+#include <http/http_buffer.h>
 
 #define HTTP_DEBUG 0
 
@@ -82,7 +83,8 @@ typedef enum http_msg_type_
   _ (TEXT_HTML, "text/html")                                                  \
   _ (TEXT_CSS, "text/css")                                                    \
   _ (TEXT_JS, "text/javascript")                                              \
-  _ (TEXT_JSON, "application/json")
+  _ (APP_JSON, "application/json")                                            \
+  _ (APP_OCTET_STREAM, "application/octet-stream")
 
 typedef enum http_content_type_
 {
@@ -94,6 +96,7 @@ typedef enum http_content_type_
 #define foreach_http_status_code                                              \
   _ (200, OK, "200 OK")                                                       \
   _ (400, BAD_REQUEST, "400 Bad Request")                                     \
+  _ (404, NOT_FOUND, "404 Not Found")                                         \
   _ (405, METHOD_NOT_ALLOWED, "405 Method Not Allowed")                       \
   _ (500, INTERNAL_ERROR, "500 Internal Server Error")
 
@@ -105,11 +108,16 @@ typedef enum http_status_code_
     HTTP_N_STATUS
 } http_status_code_t;
 
+typedef enum http_msg_data_type_
+{
+  HTTP_MSG_DATA_INLINE,
+  HTTP_MSG_DATA_PTR
+} http_msg_data_type_t;
+
 typedef struct http_msg_data_
 {
-  http_content_type_t content_type;
-  u32 len;
-  u32 offset;
+  http_msg_data_type_t type;
+  u64 len;
   u8 data[0];
 } http_msg_data_t;
 
@@ -121,17 +129,9 @@ typedef struct http_msg_
     http_req_method_t method_type;
     http_status_code_t code;
   };
+  http_content_type_t content_type;
   http_msg_data_t data;
 } http_msg_t;
-
-typedef struct http_buffer_
-{
-  svm_fifo_t *src;
-  svm_fifo_seg_t *segs;
-  u32 len;
-  u32 cur_seg;
-  u32 offset;
-} http_buffer_t;
 
 typedef struct http_tc_
 {
@@ -166,7 +166,7 @@ typedef struct http_worker_
 typedef struct http_main_
 {
   http_worker_t *wrk;
-  http_conn_t *listener_ctx_pool;
+  http_conn_t *listener_pool;
   u32 app_index;
 
   clib_timebase_t timebase;
@@ -180,6 +180,7 @@ typedef struct http_main_
    * Config
    */
   u64 first_seg_size;
+  u64 add_seg_size;
   u32 fifo_size;
 } http_main_t;
 

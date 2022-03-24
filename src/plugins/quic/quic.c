@@ -1441,7 +1441,8 @@ quic_proto_on_close (u32 ctx_index, u32 thread_index)
 }
 
 static u32
-quic_start_listen (u32 quic_listen_session_index, transport_endpoint_t * tep)
+quic_start_listen (u32 quic_listen_session_index,
+		   transport_endpoint_cfg_t *tep)
 {
   vnet_listen_args_t _bargs, *args = &_bargs;
   transport_endpt_crypto_cfg_t *ccfg;
@@ -2962,7 +2963,7 @@ quic_config_fn (vlib_main_t * vm, unformat_input_t * input)
 
   while (unformat_check_input (line_input) != UNFORMAT_END_OF_INPUT)
     {
-      if (unformat (input, "fifo-size %U", unformat_memory_size, &tmp))
+      if (unformat (line_input, "fifo-size %U", unformat_memory_size, &tmp))
 	{
 	  if (tmp >= 0x100000000ULL)
 	    {
@@ -2973,9 +2974,9 @@ quic_config_fn (vlib_main_t * vm, unformat_input_t * input)
 	    }
 	  qm->udp_fifo_size = tmp;
 	}
-      else if (unformat (input, "conn-timeout %u", &i))
+      else if (unformat (line_input, "conn-timeout %u", &i))
 	qm->connection_timeout = i;
-      else if (unformat (input, "fifo-prealloc %u", &i))
+      else if (unformat (line_input, "fifo-prealloc %u", &i))
 	qm->udp_fifo_prealloc = i;
       else
 	{

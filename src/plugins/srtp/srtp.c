@@ -238,6 +238,7 @@ srtp_ctx_write (srtp_tc_t *ctx, session_t *app_session,
   us = session_get_from_handle (ctx->srtp_session_handle);
   to_deq = svm_fifo_max_dequeue_cons (app_session->tx_fifo);
   mq = session_main_get_vpp_event_queue (us->thread_index);
+  sp->bytes_dequeued = to_deq;
 
   while (to_deq > 0)
     {
@@ -295,6 +296,9 @@ done:
       srtp_disconnect_transport (ctx);
       session_transport_closed_notify (&ctx->connection);
     }
+
+  ASSERT (sp->bytes_dequeued >= to_deq);
+  sp->bytes_dequeued -= to_deq;
 
   return n_wrote > 0 ? clib_max (n_wrote / TRANSPORT_PACER_MIN_MSS, 1) : 0;
 }
@@ -649,6 +653,7 @@ srtp_connect (transport_endpoint_cfg_t *tep)
   ctx->parent_app_api_context = sep->opaque;
   ctx->udp_is_ip4 = sep->is_ip4;
   ctx->srtp_ctx_handle = ctx_index;
+  ctx->c_flags |= TRANSPORT_CONNECTION_F_NO_LOOKUP;
 
   srtp_init_policy (ctx, (transport_endpt_cfg_srtp_t *) sep->ext_cfg->data);
 
@@ -702,7 +707,7 @@ srtp_disconnect (u32 ctx_handle, u32 thread_index)
 }
 
 static u32
-srtp_start_listen (u32 app_listener_index, transport_endpoint_t *tep)
+srtp_start_listen (u32 app_listener_index, transport_endpoint_cfg_t *tep)
 {
   vnet_listen_args_t _bargs, *args = &_bargs;
   session_handle_t udp_al_handle;
@@ -745,6 +750,8 @@ srtp_start_listen (u32 app_listener_index, transport_endpoint_t *tep)
   lctx->srtp_session_handle = udp_al_handle;
   lctx->app_session_handle = listen_session_get_handle (app_listener);
   lctx->udp_is_ip4 = sep->is_ip4;
+  lctx->c_s_index = app_listener_index;
+  lctx->c_flags |= TRANSPORT_CONNECTION_F_NO_LOOKUP;
 
   srtp_init_policy (lctx, (transport_endpt_cfg_srtp_t *) sep->ext_cfg->data);
 
@@ -812,7 +819,6 @@ srtp_custom_tx_callback (void *session, transport_send_params_t *sp)
 		     SESSION_STATE_TRANSPORT_CLOSED))
     return 0;
 
-  sp->flags = 0;
   ctx = srtp_ctx_get_w_thread (app_session->connection_index,
 			       app_session->thread_index);
   if (PREDICT_FALSE (ctx->is_migrated))

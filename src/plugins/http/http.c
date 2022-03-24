@@ -19,6 +19,8 @@
 
 static http_main_t http_main;
 
+#define HTTP_FIFO_THRESH (16 << 10)
+
 const char *http_status_code_str[] = {
 #define _(c, s, str) str,
   foreach_http_status_code
@@ -29,6 +31,11 @@ const char *http_content_type_str[] = {
 #define _(s, str) str,
   foreach_http_content_type
 #undef _
+};
+
+const http_buffer_type_t msg_to_buf_type[] = {
+  [HTTP_MSG_DATA_INLINE] = HTTP_BUFFER_FIFO,
+  [HTTP_MSG_DATA_PTR] = HTTP_BUFFER_PTR,
 };
 
 static inline http_worker_t *
@@ -69,17 +76,27 @@ static u32
 http_listener_alloc (void)
 {
   http_main_t *hm = &http_main;
-  http_conn_t *ctx;
+  http_conn_t *lhc;
 
-  pool_get_zero (hm->listener_ctx_pool, ctx);
-  ctx->c_c_index = ctx - hm->listener_ctx_pool;
-  return ctx->c_c_index;
+  pool_get_zero (hm->listener_pool, lhc);
+  lhc->c_c_index = lhc - hm->listener_pool;
+  return lhc->c_c_index;
 }
 
 http_conn_t *
-http_listener_get (u32 ctx_index)
+http_listener_get (u32 lhc_index)
 {
-  return pool_elt_at_index (http_main.listener_ctx_pool, ctx_index);
+  return pool_elt_at_index (http_main.listener_pool, lhc_index);
+}
+
+void
+http_listener_free (http_conn_t *lhc)
+{
+  http_main_t *hm = &http_main;
+
+  if (CLIB_DEBUG)
+    memset (lhc, 0xfc, sizeof (*lhc));
+  pool_put (hm->listener_pool, lhc);
 }
 
 void
@@ -94,59 +111,6 @@ http_disconnect_transport (http_conn_t *hc)
 
   if (vnet_disconnect_session (&a))
     clib_warning ("disconnect returned");
-}
-
-static void
-http_buffer_init (http_buffer_t *hb, svm_fifo_t *f, u32 data_len)
-{
-  hb->len = data_len;
-  hb->offset = 0;
-  hb->cur_seg = 0;
-  hb->src = f;
-  hb->segs = 0;
-}
-
-static void
-http_buffer_free (http_buffer_t *hb)
-{
-  hb->src = 0;
-  vec_free (hb->segs);
-}
-
-svm_fifo_seg_t *
-http_buffer_get_segs (http_buffer_t *hb, u32 max_len, u32 *n_segs)
-{
-  u32 _n_segs = 5;
-  int len;
-
-  max_len = clib_max (hb->len - hb->offset, max_len);
-
-  vec_validate (hb->segs, _n_segs);
-
-  len = svm_fifo_segments (hb->src, 0, hb->segs, &_n_segs, max_len);
-  if (len < 0)
-    return 0;
-
-  *n_segs = _n_segs;
-
-  HTTP_DBG (1, "available to send %u n_segs %u", len, *n_segs);
-
-  return hb->segs;
-}
-
-void
-http_buffer_drain (http_buffer_t *hb, u32 len)
-{
-  hb->offset += len;
-  svm_fifo_dequeue_drop (hb->src, len);
-  HTTP_DBG (1, "drained %u len %u offset %u", len, hb->len, hb->offset);
-}
-
-static inline u8
-http_buffer_is_drained (http_buffer_t *hb)
-{
-  ASSERT (hb->offset <= hb->len);
-  return (hb->offset == hb->len);
 }
 
 static void
@@ -174,7 +138,7 @@ http_ts_accept_callback (session_t *ts)
   session_t *ts_listener, *as, *asl;
   app_worker_t *app_wrk;
   http_conn_t *lhc, *hc;
-  u32 hc_index;
+  u32 hc_index, thresh;
   int rv;
 
   ts_listener = listen_session_get_from_handle (ts->listener_handle);
@@ -234,6 +198,14 @@ http_ts_accept_callback (session_t *ts)
       return rv;
     }
 
+  /* Avoid enqueuing small chunks of data on transport tx notifications. If
+   * the fifo is small (under 16K) we set the threshold to it's size, meaning
+   * a notification will be given when the fifo empties.
+   */
+  ts = session_get_from_handle (hc->h_tc_session_handle);
+  thresh = clib_min (svm_fifo_size (ts->tx_fifo), HTTP_FIFO_THRESH);
+  svm_fifo_set_deq_thresh (ts->tx_fifo, thresh);
+
   http_conn_timer_start (hc);
 
   return 0;
@@ -257,6 +229,7 @@ http_ts_disconnect_callback (session_t *ts)
   if (hc->state < HTTP_CONN_STATE_TRANSPORT_CLOSED)
     hc->state = HTTP_CONN_STATE_TRANSPORT_CLOSED;
 
+  /* Nothing more to rx, propagate to app */
   if (!svm_fifo_max_dequeue_cons (ts->rx_fifo))
     session_transport_closing_notify (&hc->connection);
 }
@@ -264,15 +237,16 @@ http_ts_disconnect_callback (session_t *ts)
 static void
 http_ts_reset_callback (session_t *ts)
 {
-  http_conn_t *ctx;
+  http_conn_t *hc;
 
-  ctx = http_conn_get_w_thread (ts->opaque, ts->thread_index);
+  hc = http_conn_get_w_thread (ts->opaque, ts->thread_index);
 
-  if (ctx->state < HTTP_CONN_STATE_TRANSPORT_CLOSED)
-    ctx->state = HTTP_CONN_STATE_TRANSPORT_CLOSED;
+  hc->state = HTTP_CONN_STATE_CLOSED;
+  http_buffer_free (&hc->tx_buf);
+  hc->req_state = HTTP_REQ_STATE_WAIT_METHOD;
+  session_transport_reset_notify (&hc->connection);
 
-  if (!svm_fifo_max_dequeue_cons (ts->rx_fifo))
-    session_transport_reset_notify (&ctx->connection);
+  http_disconnect_transport (hc);
 }
 
 /**
@@ -293,7 +267,7 @@ static const char *http_response_template = "HTTP/1.1 200 OK\r\n"
 					    "Expires: %U GMT\r\n"
 					    "Server: VPP Static\r\n"
 					    "Content-Type: %s\r\n"
-					    "Content-Length: %d\r\n\r\n";
+					    "Content-Length: %lu\r\n\r\n";
 
 static u32
 send_data (http_conn_t *hc, u8 *data, u32 length, u32 offset)
@@ -418,13 +392,13 @@ state_wait_method (http_conn_t *hc, transport_send_params_t *sp)
 	  goto error;
 	}
 
-      len = i - hc->rx_buf_offset;
+      len = i - hc->rx_buf_offset - 1;
     }
   else if ((i = v_find_index (hc->rx_buf, 0, "POST ")) >= 0)
     {
       hc->method = HTTP_REQ_POST;
       hc->rx_buf_offset = i + 6;
-      len = vec_len (hc->rx_buf) - hc->rx_buf_offset;
+      len = vec_len (hc->rx_buf) - hc->rx_buf_offset - 1;
     }
   else
     {
@@ -437,9 +411,9 @@ state_wait_method (http_conn_t *hc, transport_send_params_t *sp)
 
   msg.type = HTTP_MSG_REQUEST;
   msg.method_type = hc->method;
-  msg.data.content_type = HTTP_CONTENT_TEXT_HTML;
+  msg.content_type = HTTP_CONTENT_TEXT_HTML;
+  msg.data.type = HTTP_MSG_DATA_INLINE;
   msg.data.len = len;
-  msg.data.offset = 0;
 
   svm_fifo_seg_t segs[2] = { { (u8 *) &msg, sizeof (msg) }, { buf, len } };
 
@@ -491,7 +465,7 @@ state_wait_app (http_conn_t *hc, transport_send_params_t *sp)
   rv = svm_fifo_dequeue (as->tx_fifo, sizeof (msg), (u8 *) &msg);
   ASSERT (rv == sizeof (msg));
 
-  if (msg.type != HTTP_MSG_REPLY)
+  if (msg.type != HTTP_MSG_REPLY || msg.data.type > HTTP_MSG_DATA_PTR)
     {
       clib_warning ("unexpected msg type from app %u", msg.type);
       ec = HTTP_STATUS_INTERNAL_ERROR;
@@ -504,7 +478,8 @@ state_wait_app (http_conn_t *hc, transport_send_params_t *sp)
       goto error;
     }
 
-  http_buffer_init (&hc->tx_buf, as->tx_fifo, msg.data.len);
+  http_buffer_init (&hc->tx_buf, msg_to_buf_type[msg.data.type], as->tx_fifo,
+		    msg.data.len);
 
   /*
    * Add headers. For now:
@@ -520,7 +495,7 @@ state_wait_app (http_conn_t *hc, transport_send_params_t *sp)
 		   /* Expires */
 		   format_clib_timebase_time, now + 600.0,
 		   /* Content type */
-		   http_content_type_str[msg.data.content_type],
+		   http_content_type_str[msg.content_type],
 		   /* Length */
 		   msg.data.len);
 
@@ -535,6 +510,9 @@ state_wait_app (http_conn_t *hc, transport_send_params_t *sp)
 
   /* Start sending the actual data */
   hc->req_state = HTTP_REQ_STATE_SEND_MORE_DATA;
+
+  ASSERT (sp->max_burst_size >= offset);
+  sp->max_burst_size -= offset;
 
   return 1;
 
@@ -558,6 +536,7 @@ state_send_more_data (http_conn_t *hc, transport_send_params_t *sp)
   session_t *ts;
   int sent = 0;
 
+  max_send = clib_min (max_send, sp->max_burst_size);
   ts = session_get_from_handle (hc->h_tc_session_handle);
   if ((seg = http_buffer_get_segs (hb, max_send, &n_segs)))
     sent = svm_fifo_enqueue_segments (ts->tx_fifo, seg, n_segs,
@@ -565,14 +544,9 @@ state_send_more_data (http_conn_t *hc, transport_send_params_t *sp)
 
   if (sent > 0)
     {
-      http_buffer_drain (hb, sent);
-
       /* Ask scheduler to notify app of deq event if needed */
-      sp->max_burst_size = sent;
-    }
-  else
-    {
-      sp->max_burst_size = 0;
+      sp->bytes_dequeued += http_buffer_drain (hb, sent);
+      sp->max_burst_size -= sent;
     }
 
   /* Not finished sending all data */
@@ -581,7 +555,7 @@ state_send_more_data (http_conn_t *hc, transport_send_params_t *sp)
       if (sent && svm_fifo_set_event (ts->tx_fifo))
 	session_send_io_evt_to_thread (ts->tx_fifo, SESSION_IO_EVT_TX);
 
-      if (svm_fifo_max_enqueue (ts->tx_fifo) < 16 << 10)
+      if (svm_fifo_max_enqueue (ts->tx_fifo) < HTTP_FIFO_THRESH)
 	{
 	  /* Deschedule http session and wait for deq notification if
 	   * underlying ts tx fifo almost full */
@@ -717,12 +691,10 @@ static session_cb_vft_t http_app_cb_vft = {
 static clib_error_t *
 http_transport_enable (vlib_main_t *vm, u8 is_en)
 {
-  u32 add_segment_size = 256 << 20, first_seg_size = 32 << 20;
   vnet_app_detach_args_t _da, *da = &_da;
   vnet_app_attach_args_t _a, *a = &_a;
   u64 options[APP_OPTIONS_N_OPTIONS];
   http_main_t *hm = &http_main;
-  u32 fifo_size = 128 << 12;
 
   if (!is_en)
     {
@@ -734,9 +706,6 @@ http_transport_enable (vlib_main_t *vm, u8 is_en)
 
   vec_validate (hm->wrk, vlib_num_workers ());
 
-  first_seg_size = hm->first_seg_size ? hm->first_seg_size : first_seg_size;
-  fifo_size = hm->fifo_size ? hm->fifo_size : fifo_size;
-
   clib_memset (a, 0, sizeof (*a));
   clib_memset (options, 0, sizeof (options));
 
@@ -744,10 +713,10 @@ http_transport_enable (vlib_main_t *vm, u8 is_en)
   a->api_client_index = APP_INVALID_INDEX;
   a->options = options;
   a->name = format (0, "http");
-  a->options[APP_OPTIONS_SEGMENT_SIZE] = first_seg_size;
-  a->options[APP_OPTIONS_ADD_SEGMENT_SIZE] = add_segment_size;
-  a->options[APP_OPTIONS_RX_FIFO_SIZE] = fifo_size;
-  a->options[APP_OPTIONS_TX_FIFO_SIZE] = fifo_size;
+  a->options[APP_OPTIONS_SEGMENT_SIZE] = hm->first_seg_size;
+  a->options[APP_OPTIONS_ADD_SEGMENT_SIZE] = hm->add_seg_size;
+  a->options[APP_OPTIONS_RX_FIFO_SIZE] = hm->fifo_size;
+  a->options[APP_OPTIONS_TX_FIFO_SIZE] = hm->fifo_size;
   a->options[APP_OPTIONS_FLAGS] = APP_OPTIONS_FLAGS_IS_BUILTIN;
   a->options[APP_OPTIONS_FLAGS] |= APP_OPTIONS_FLAGS_USE_GLOBAL_SCOPE;
   a->options[APP_OPTIONS_FLAGS] |= APP_OPTIONS_FLAGS_IS_TRANSPORT_APP;
@@ -773,10 +742,10 @@ http_transport_connect (transport_endpoint_cfg_t *tep)
 }
 
 static u32
-http_start_listen (u32 app_listener_index, transport_endpoint_t *tep)
+http_start_listen (u32 app_listener_index, transport_endpoint_cfg_t *tep)
 {
   vnet_listen_args_t _args = {}, *args = &_args;
-  session_t *tc_listener, *app_listener;
+  session_t *ts_listener, *app_listener;
   http_main_t *hm = &http_main;
   session_endpoint_cfg_t *sep;
   app_worker_t *app_wrk;
@@ -806,16 +775,39 @@ http_start_listen (u32 app_listener_index, transport_endpoint_t *tep)
   /* Grab transport connection listener and link to http listener */
   lhc->h_tc_session_handle = args->handle;
   al = app_listener_get_w_handle (lhc->h_tc_session_handle);
-  tc_listener = app_listener_get_session (al);
-  tc_listener->opaque = lhc_index;
+  ts_listener = app_listener_get_session (al);
+  ts_listener->opaque = lhc_index;
 
   /* Grab application listener and link to http listener */
   app_listener = listen_session_get (app_listener_index);
   lhc->h_pa_wrk_index = sep->app_wrk_index;
   lhc->h_pa_session_handle = listen_session_get_handle (app_listener);
+  lhc->c_s_index = app_listener_index;
   lhc->c_flags |= TRANSPORT_CONNECTION_F_NO_LOOKUP;
 
   return lhc_index;
+}
+
+static u32
+http_stop_listen (u32 listener_index)
+{
+  http_conn_t *lhc;
+  int rv;
+
+  lhc = http_listener_get (listener_index);
+
+  vnet_unlisten_args_t a = {
+    .handle = lhc->h_tc_session_handle,
+    .app_index = http_main.app_index,
+    .wrk_map_index = 0 /* default wrk */
+  };
+
+  if ((rv = vnet_unlisten (&a)))
+    clib_warning ("unlisten returned %d", rv);
+
+  http_listener_free (lhc);
+
+  return 0;
 }
 
 static void
@@ -860,25 +852,44 @@ static int
 http_app_tx_callback (void *session, transport_send_params_t *sp)
 {
   session_t *as = (session_t *) session;
+  u32 max_burst_sz, sent;
   http_conn_t *hc;
-
-  sp->flags = 0;
 
   hc = http_conn_get_w_thread (as->connection_index, as->thread_index);
   if (hc->req_state < HTTP_REQ_STATE_WAIT_APP)
     {
-      clib_warning ("app data in req state %u", hc->req_state);
+      if (hc->state != HTTP_CONN_STATE_CLOSED)
+	clib_warning ("app data req state %u session state %u", hc->req_state,
+		      hc->state);
+      svm_fifo_dequeue_drop_all (as->tx_fifo);
       return 0;
     }
 
+  max_burst_sz = sp->max_burst_size * TRANSPORT_PACER_MIN_MSS;
+  sp->max_burst_size = max_burst_sz;
+
   http_req_run_state_machine (hc, sp);
 
-  if (hc->state == HTTP_CONN_STATE_CLOSED)
+  if (hc->state == HTTP_CONN_STATE_APP_CLOSED)
     {
-      if (!svm_fifo_max_dequeue_cons (as->rx_fifo))
+      if (!svm_fifo_max_dequeue_cons (as->tx_fifo))
 	http_disconnect_transport (hc);
     }
-  return 0;
+
+  sent = max_burst_sz - sp->max_burst_size;
+
+  return sent > 0 ? clib_max (sent / TRANSPORT_PACER_MIN_MSS, 1) : 0;
+}
+
+static void
+http_transport_get_endpoint (u32 hc_index, u32 thread_index,
+			     transport_endpoint_t *tep, u8 is_lcl)
+{
+  http_conn_t *hc = http_conn_get_w_thread (hc_index, thread_index);
+  session_t *ts;
+
+  ts = session_get_from_handle (hc->h_tc_session_handle);
+  session_get_endpoint (ts, tep, is_lcl);
 }
 
 static u8 *
@@ -982,10 +993,12 @@ static const transport_proto_vft_t http_proto = {
   .enable = http_transport_enable,
   .connect = http_transport_connect,
   .start_listen = http_start_listen,
+  .stop_listen = http_stop_listen,
   .close = http_transport_close,
   .custom_tx = http_app_tx_callback,
   .get_connection = http_transport_get_connection,
   .get_listener = http_transport_get_listener,
+  .get_transport_endpoint = http_transport_get_endpoint,
   .format_connection = format_http_transport_connection,
   .format_listener = format_http_transport_listener,
   .transport_options = {
@@ -999,14 +1012,59 @@ static const transport_proto_vft_t http_proto = {
 static clib_error_t *
 http_transport_init (vlib_main_t *vm)
 {
+  http_main_t *hm = &http_main;
+
   transport_register_protocol (TRANSPORT_PROTO_HTTP, &http_proto,
 			       FIB_PROTOCOL_IP4, ~0);
   transport_register_protocol (TRANSPORT_PROTO_HTTP, &http_proto,
 			       FIB_PROTOCOL_IP6, ~0);
+
+  /* Default values, configurable via startup conf */
+  hm->add_seg_size = 256 << 20;
+  hm->first_seg_size = 32 << 20;
+  hm->fifo_size = 512 << 10;
+
   return 0;
 }
 
 VLIB_INIT_FUNCTION (http_transport_init);
+
+static clib_error_t *
+http_config_fn (vlib_main_t *vm, unformat_input_t *input)
+{
+  http_main_t *hm = &http_main;
+  uword mem_sz;
+
+  while (unformat_check_input (input) != UNFORMAT_END_OF_INPUT)
+    {
+      if (unformat (input, "first-segment-size %U", unformat_memory_size,
+		    &mem_sz))
+	{
+	  hm->first_seg_size = clib_max (mem_sz, 1 << 20);
+	  if (hm->first_seg_size != mem_sz)
+	    clib_warning ("first seg size too small %u", mem_sz);
+	}
+      else if (unformat (input, "add-segment-size %U", unformat_memory_size,
+			 &mem_sz))
+	{
+	  hm->add_seg_size = clib_max (mem_sz, 1 << 20);
+	  if (hm->add_seg_size != mem_sz)
+	    clib_warning ("add seg size too small %u", mem_sz);
+	}
+      else if (unformat (input, "fifo-size %U", unformat_memory_size, &mem_sz))
+	{
+	  hm->fifo_size = clib_clamp (mem_sz, 4 << 10, 2 << 30);
+	  if (hm->fifo_size != mem_sz)
+	    clib_warning ("invalid fifo size %lu", mem_sz);
+	}
+      else
+	return clib_error_return (0, "unknown input `%U'",
+				  format_unformat_error, input);
+    }
+  return 0;
+}
+
+VLIB_EARLY_CONFIG_FUNCTION (http_config_fn, "http");
 
 VLIB_PLUGIN_REGISTER () = {
   .version = VPP_BUILD_VER,

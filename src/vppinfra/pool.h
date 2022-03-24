@@ -61,21 +61,17 @@ typedef struct
   /** Maximum size of the pool, in elements */
   u32 max_elts;
 
-  /** mmap segment info: base + length */
-  u8 *mmap_base;
-  u64 mmap_size;
-
 } pool_header_t;
 
 /** Align pool header so that pointers are naturally aligned. */
-#define pool_aligned_header_bytes \
-  vec_aligned_header_bytes (sizeof (pool_header_t), sizeof (void *))
+#define pool_aligned_header_bytes                                             \
+  round_pow2 (sizeof (pool_header_t), sizeof (void *))
 
 /** Get pool header from user pool pointer */
 always_inline pool_header_t *
 pool_header (void *v)
 {
-  return vec_aligned_header (v, sizeof (pool_header_t), sizeof (void *));
+  return vec_header (v);
 }
 
 extern void _pool_init_fixed (void **, u32, u32);
@@ -162,88 +158,70 @@ pool_header_bytes (void *v)
 /** Local variable naming macro. */
 #define _pool_var(v) _pool_##v
 
-/** Queries whether pool has at least N_FREE free elements. */
-always_inline uword
-pool_free_elts (void *v)
-{
-  pool_header_t *p = pool_header (v);
-  uword n_free = 0;
+/** Number of elements that can fit into pool with current allocation */
+#define pool_max_len(P) vec_max_len (P)
 
-  if (v)
-    {
-      n_free += vec_len (p->free_indices);
-
-      /*
-       * Space left at end of vector?
-       * Fixed-size pools have max_elts set non-zero,
-       */
-      if (p->max_elts == 0)
-	n_free += vec_capacity (v, sizeof (p[0])) - vec_len (v);
-    }
-
-  return n_free;
-}
+/** Number of free elements in pool */
+#define pool_free_elts(P)                                                     \
+  ({                                                                          \
+    pool_header_t *_pool_var (p) = pool_header (P);                           \
+    uword n_free = 0;                                                         \
+    if (P)                                                                    \
+      {                                                                       \
+	n_free += vec_len (_pool_var (p)->free_indices);                      \
+	/* Fixed-size pools have max_elts set non-zero */                     \
+	if (_pool_var (p)->max_elts == 0)                                     \
+	  n_free += pool_max_len (P) - vec_len (P);                           \
+      }                                                                       \
+    n_free;                                                                   \
+  })
 
 /** Allocate an object E from a pool P (general version).
 
    First search free list.  If nothing is free extend vector of objects.
 */
-#define _pool_get_aligned_internal_numa(P,E,A,Z,N)                      \
-do {                                                                    \
-  pool_header_t * _pool_var (p) = pool_header (P);                      \
-  uword _pool_var (l);                                                  \
-                                                                        \
-  STATIC_ASSERT(A==0 || ((A % sizeof(P[0]))==0)                         \
-                || ((sizeof(P[0]) % A) == 0),                           \
-                "Pool aligned alloc of incorrectly sized object");      \
-  _pool_var (l) = 0;                                                    \
-  if (P)                                                                \
-    _pool_var (l) = vec_len (_pool_var (p)->free_indices);              \
-                                                                        \
-  if (_pool_var (l) > 0)                                                \
-    {                                                                   \
-      /* Return free element from free list. */                         \
-      uword _pool_var (i) =                                             \
-        _pool_var (p)->free_indices[_pool_var (l) - 1];                 \
-      (E) = (P) + _pool_var (i);                                        \
-      _pool_var (p)->free_bitmap =                                      \
-	clib_bitmap_andnoti_notrim (_pool_var (p)->free_bitmap,         \
-	                             _pool_var (i));                    \
-      _vec_len (_pool_var (p)->free_indices) = _pool_var (l) - 1;       \
-      CLIB_MEM_UNPOISON((E), sizeof((E)[0]));                           \
-    }                                                                   \
-  else                                                                  \
-    {                                                                   \
-      /* fixed-size, preallocated pools cannot expand */                \
-      if ((P) && _pool_var(p)->max_elts)                                \
-        {                                                               \
-          clib_warning ("can't expand fixed-size pool");                \
-          os_out_of_memory();                                           \
-        }                                                               \
-      /* Nothing on free list, make a new element and return it. */     \
-      P = _vec_resize_numa (P,                                          \
-		       /* length_increment */ 1,                        \
-		       /* new size */ (vec_len (P) + 1) * sizeof (P[0]), \
-		       pool_aligned_header_bytes,                       \
-                       /* align */ (A),                                 \
-                       /* numa */ (N));                                 \
-      E = vec_end (P) - 1;                                              \
-    }                                                                   \
-  if (Z)                                                                \
-    memset(E, 0, sizeof(*E));                                           \
-} while (0)
-
-#define pool_get_aligned_zero_numa(P,E,A,Z,S) \
-  _pool_get_aligned_internal_numa(P,E,A,Z,S)
-
-#define pool_get_aligned_numa(P,E,A,S) \
-  _pool_get_aligned_internal_numa(P,E,A,0/*zero*/,S)
-
-#define pool_get_numa(P,E,S) \
-  _pool_get_aligned_internal_numa(P,E,0/*align*/,0/*zero*/,S)
-
-#define _pool_get_aligned_internal(P,E,A,Z) \
-  _pool_get_aligned_internal_numa(P,E,A,Z,VEC_NUMA_UNSPECIFIED)
+#define _pool_get_aligned_internal(P, E, A, Z)                                \
+  do                                                                          \
+    {                                                                         \
+      pool_header_t *_pool_var (p) = pool_header (P);                         \
+      uword _pool_var (l);                                                    \
+                                                                              \
+      STATIC_ASSERT (A == 0 || ((A % sizeof (P[0])) == 0) ||                  \
+		       ((sizeof (P[0]) % A) == 0),                            \
+		     "Pool aligned alloc of incorrectly sized object");       \
+      _pool_var (l) = 0;                                                      \
+      if (P)                                                                  \
+	_pool_var (l) = vec_len (_pool_var (p)->free_indices);                \
+                                                                              \
+      if (_pool_var (l) > 0)                                                  \
+	{                                                                     \
+	  /* Return free element from free list. */                           \
+	  uword _pool_var (i) =                                               \
+	    _pool_var (p)->free_indices[_pool_var (l) - 1];                   \
+	  (E) = (P) + _pool_var (i);                                          \
+	  _pool_var (p)->free_bitmap = clib_bitmap_andnoti_notrim (           \
+	    _pool_var (p)->free_bitmap, _pool_var (i));                       \
+	  _vec_len (_pool_var (p)->free_indices) = _pool_var (l) - 1;         \
+	  CLIB_MEM_UNPOISON ((E), sizeof ((E)[0]));                           \
+	}                                                                     \
+      else                                                                    \
+	{                                                                     \
+	  /* fixed-size, preallocated pools cannot expand */                  \
+	  if ((P) && _pool_var (p)->max_elts)                                 \
+	    {                                                                 \
+	      clib_warning ("can't expand fixed-size pool");                  \
+	      os_out_of_memory ();                                            \
+	    }                                                                 \
+	  /* Nothing on free list, make a new element and return it. */       \
+	  P = _vec_resize (P, /* length_increment */ 1,                       \
+			   /* new size */ (vec_len (P) + 1) * sizeof (P[0]),  \
+			   pool_aligned_header_bytes, /* align */ (A));       \
+	  E = vec_end (P) - 1;                                                \
+	}                                                                     \
+      if (Z)                                                                  \
+	memset (E, 0, sizeof (*E));                                           \
+    }                                                                         \
+  while (0)
 
 /** Allocate an object E from a pool P with alignment A */
 #define pool_get_aligned(P,E,A) _pool_get_aligned_internal(P,E,A,0)
@@ -257,57 +235,46 @@ do {                                                                    \
 /** Allocate an object E from a pool P and zero it */
 #define pool_get_zero(P,E) pool_get_aligned_zero(P,E,0)
 
-/** See if pool_get will expand the pool or not */
-#define pool_get_aligned_will_expand(P,YESNO,A)                         \
-do {                                                                    \
-  pool_header_t * _pool_var (p) = pool_header (P);                      \
-  uword _pool_var (l);                                                  \
-                                                                        \
-  _pool_var (l) = 0;                                                    \
-  if (P)                                                                \
-    {                                                                   \
-      if (_pool_var (p)->max_elts)                                      \
-        _pool_var (l) = _pool_var (p)->max_elts;			\
-      else								\
-        _pool_var (l) = vec_len (_pool_var (p)->free_indices);          \
-    }                                                                   \
-                                                                        \
-  /* Free elements, certainly won't expand */                           \
-  if (_pool_var (l) > 0)                                                \
-      YESNO=0;                                                          \
-  else                                                                  \
-    {                                                                   \
-      /* Nothing on free list, make a new element and return it. */     \
-      YESNO = _vec_resize_will_expand                                   \
-        (P,                                                             \
-         /* length_increment */ 1,                                      \
-         /* new size */ (vec_len (P) + 1) * sizeof (P[0]),              \
-         pool_aligned_header_bytes,                                     \
-         /* align */ (A));                                              \
-    }                                                                   \
-} while (0)
+always_inline int
+_pool_get_will_expand (void *p, uword elt_size)
+{
+  pool_header_t *ph;
+  uword len;
 
-/** See if pool_put will expand free_bitmap or free_indices or not */
-#define pool_put_will_expand(P, E, YESNO)                                     \
-  do                                                                          \
-    {                                                                         \
-      pool_header_t *_pool_var (p) = pool_header (P);                         \
-                                                                              \
-      uword _pool_var (i) = (E) - (P);                                        \
-      /* free_bitmap or free_indices may expand. */                           \
-      YESNO =                                                                 \
-	clib_bitmap_will_expand (_pool_var (p)->free_bitmap, _pool_var (i));  \
-                                                                              \
-      YESNO += _vec_resize_will_expand (                                      \
-	_pool_var (p)->free_indices, 1,                                       \
-	(vec_len (_pool_var (p)->free_indices) + 1) *                         \
-	  sizeof (_pool_var (p)->free_indices[0]),                            \
-	0, 0);                                                                \
-    }                                                                         \
-  while (0)
+  if (p == 0)
+    return 1;
 
-/** Tell the caller if pool get will expand the pool */
-#define pool_get_will_expand(P,YESNO) pool_get_aligned_will_expand(P,YESNO,0)
+  ph = pool_header (p);
+
+  if (ph->max_elts)
+    len = ph->max_elts;
+  else
+    len = vec_len (ph->free_indices);
+
+  /* Free elements, certainly won't expand */
+  if (len > 0)
+    return 0;
+
+  return _vec_resize_will_expand (p, 1, elt_size);
+}
+
+#define pool_get_will_expand(P) _pool_get_will_expand (P, sizeof ((P)[0]))
+
+always_inline int
+_pool_put_will_expand (void *p, uword index, uword elt_size)
+{
+  pool_header_t *ph = pool_header (p);
+
+  if (clib_bitmap_will_expand (ph->free_bitmap, index))
+    return 1;
+
+  if (vec_resize_will_expand (ph->free_indices, 1))
+    return 1;
+
+  return 0;
+}
+
+#define pool_put_will_expand(P, E) _pool_put_will_expand (P, (E) - (P), sizeof ((P)[0])
 
 /** Use free bitmap to query whether given element is free. */
 #define pool_is_free(P,E)						\
@@ -434,19 +401,8 @@ _pool_free (void *v)
     return v;
   clib_bitmap_free (p->free_bitmap);
 
-  if (p->max_elts)
-    {
-      int rv;
-
-      rv = munmap (p->mmap_base, p->mmap_size);
-      if (rv)
-	clib_unix_warning ("munmap");
-    }
-  else
-    {
-      vec_free (p->free_indices);
-      vec_free_h (v, pool_aligned_header_bytes);
-    }
+  vec_free (p->free_indices);
+  vec_free (v);
   return 0;
 }
 
