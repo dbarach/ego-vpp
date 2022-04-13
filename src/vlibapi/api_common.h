@@ -150,24 +150,24 @@ typedef struct msgbuf_
   u8 data[0];			 /**< actual message begins here  */
 } msgbuf_t;
 
-CLIB_NOSANITIZE_ADDR static inline void
+__clib_nosanitize_addr static inline void
 VL_MSG_API_UNPOISON (const void *a)
 {
   const msgbuf_t *m = &((const msgbuf_t *) a)[-1];
-  CLIB_MEM_UNPOISON (m, sizeof (*m) + ntohl (m->data_len));
+  clib_mem_unpoison (m, sizeof (*m) + ntohl (m->data_len));
 }
 
-CLIB_NOSANITIZE_ADDR static inline void
-VL_MSG_API_SVM_QUEUE_UNPOISON (const svm_queue_t * q)
+__clib_nosanitize_addr static inline void
+VL_MSG_API_SVM_QUEUE_UNPOISON (const svm_queue_t *q)
 {
-  CLIB_MEM_UNPOISON (q, sizeof (*q) + q->elsize * q->maxsize);
+  clib_mem_unpoison (q, sizeof (*q) + q->elsize * q->maxsize);
 }
 
 static inline void
 VL_MSG_API_POISON (const void *a)
 {
   const msgbuf_t *m = &((const msgbuf_t *) a)[-1];
-  CLIB_MEM_POISON (m, sizeof (*m) + ntohl (m->data_len));
+  clib_mem_poison (m, sizeof (*m) + ntohl (m->data_len));
 }
 
 /* api_shared.c prototypes */
@@ -402,7 +402,6 @@ typedef struct api_main_t
 } api_main_t;
 
 extern __thread api_main_t *my_api_main;
-extern api_main_t api_global_main;
 
 always_inline api_main_t *
 vlibapi_get_main (void)

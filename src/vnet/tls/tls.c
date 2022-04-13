@@ -210,13 +210,16 @@ tls_notify_app_accept (tls_ctx_t * ctx)
 int
 tls_notify_app_connected (tls_ctx_t * ctx, session_error_t err)
 {
+  u32 parent_app_api_ctx;
   session_t *app_session;
   app_worker_t *app_wrk;
 
   app_wrk = app_worker_get_if_valid (ctx->parent_app_wrk_index);
   if (!app_wrk)
     {
-      tls_disconnect_transport (ctx);
+      if (ctx->tls_type == TRANSPORT_PROTO_TLS)
+	session_free (session_get (ctx->c_s_index, ctx->c_thread_index));
+      ctx->no_app_session = 1;
       return -1;
     }
 
@@ -255,16 +258,17 @@ tls_notify_app_connected (tls_ctx_t * ctx, session_error_t err)
     goto failed;
 
   app_session->session_state = SESSION_STATE_READY;
-  if (app_worker_connect_notify (app_wrk, app_session,
-				 SESSION_E_NONE, ctx->parent_app_api_context))
+  parent_app_api_ctx = ctx->parent_app_api_context;
+  ctx->app_session_handle = session_handle (app_session);
+
+  if (app_worker_connect_notify (app_wrk, app_session, SESSION_E_NONE,
+				 parent_app_api_ctx))
     {
       TLS_DBG (1, "failed to notify app");
       app_session->session_state = SESSION_STATE_CONNECTING;
       tls_disconnect (ctx->tls_ctx_handle, vlib_get_thread_index ());
       return -1;
     }
-
-  ctx->app_session_handle = session_handle (app_session);
 
   return 0;
 
@@ -396,6 +400,12 @@ u8
 tls_ctx_handshake_is_over (tls_ctx_t * ctx)
 {
   return tls_vfts[ctx->tls_ctx_engine].ctx_handshake_is_over (ctx);
+}
+
+int
+tls_reinit_ca_chain (crypto_engine_type_t tls_engine_id)
+{
+  return tls_vfts[tls_engine_id].ctx_reinit_cachain ();
 }
 
 void
@@ -1379,7 +1389,7 @@ tls_config_fn (vlib_main_t * vm, unformat_input_t * input)
   return 0;
 }
 
-VLIB_EARLY_CONFIG_FUNCTION (tls_config_fn, "tls");
+VLIB_CONFIG_FUNCTION (tls_config_fn, "tls");
 
 tls_main_t *
 vnet_tls_get_main (void)

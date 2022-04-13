@@ -14,6 +14,7 @@
 cmake_minimum_required(VERSION 3.13)
 
 set(CMAKE_C_COMPILER_NAMES
+  clang-14
   clang-13
   clang-12
   clang-11
@@ -133,7 +134,6 @@ set(VPP_SANITIZE_ADDR_OPTIONS
 
 if (VPP_ENABLE_SANITIZE_ADDR)
   add_compile_options(-fsanitize=address)
-  add_compile_definitions(CLIB_SANITIZE_ADDR)
   add_link_options(-fsanitize=address)
 endif (VPP_ENABLE_SANITIZE_ADDR)
 
@@ -267,7 +267,7 @@ pr("VPP version" ${VPP_VERSION})
 pr("VPP library version" ${VPP_LIB_VERSION})
 pr("GIT toplevel dir" ${VPP_GIT_TOPLEVEL_DIR})
 pr("Build type" ${CMAKE_BUILD_TYPE})
-pr("C compiler" ${CMAKE_C_COMPILER})
+pr("C compiler" "${CMAKE_C_COMPILER} (${CMAKE_C_COMPILER_ID} ${CMAKE_C_COMPILER_VERSION})")
 pr("C flags" ${CMAKE_C_FLAGS}${CMAKE_C_FLAGS_${CMAKE_BUILD_TYPE_UC}})
 pr("Linker flags (apps)" ${CMAKE_EXE_LINKER_FLAGS} ${CMAKE_EXE_LINKER_FLAGS_${CMAKE_BUILD_TYPE_UC}})
 pr("Linker flags (libs)" ${CMAKE_SHARED_LINKER_FLAGS} ${CMAKE_SHARED_LINKER_FLAGS_${CMAKE_BUILD_TYPE_UC}})

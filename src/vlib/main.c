@@ -81,7 +81,7 @@ vlib_frame_alloc_to_node (vlib_main_t * vm, u32 to_node_index,
     {
       /* Allocate from end of free list. */
       f = fs->free_frames[l - 1];
-      _vec_len (fs->free_frames) = l - 1;
+      vec_set_len (fs->free_frames, l - 1);
     }
   else
     {
@@ -208,6 +208,7 @@ vlib_frame_free (vlib_main_t * vm, vlib_node_runtime_t * r, vlib_frame_t * f)
     }
 
   f->frame_flags &= ~(VLIB_FRAME_IS_ALLOCATED | VLIB_FRAME_NO_APPEND);
+  f->flags = 0;
 
   vec_add1 (fs->free_frames, f);
   ASSERT (fs->n_alloc_frames > 0);
@@ -1163,6 +1164,7 @@ dispatch_pending_node (vlib_main_t * vm, uword pending_frame_index,
 	  /* no new frame has been assigned to this node, use the saved one */
 	  nf->frame = restore_frame;
 	  f->n_vectors = 0;
+	  f->flags = 0;
 	}
       else
 	{
@@ -1458,7 +1460,7 @@ vlib_main_or_worker_loop (vlib_main_t * vm, int is_main)
   if (is_main)
     {
       vec_resize (nm->pending_frames, 32);
-      _vec_len (nm->pending_frames) = 0;
+      vec_set_len (nm->pending_frames, 0);
     }
 
   /* Mark time of main loop start. */
@@ -1584,7 +1586,7 @@ vlib_main_or_worker_loop (vlib_main_t * vm, int is_main)
       for (i = 0; i < _vec_len (nm->pending_frames); i++)
 	cpu_time_now = dispatch_pending_node (vm, i, cpu_time_now);
       /* Reset pending vector for next iteration. */
-      _vec_len (nm->pending_frames) = 0;
+      vec_set_len (nm->pending_frames, 0);
 
       if (is_main)
 	{
@@ -1670,7 +1672,7 @@ vlib_main_or_worker_loop (vlib_main_t * vm, int is_main)
 			dispatch_suspended_process (vm, di, cpu_time_now);
 		    }
 		}
-	      _vec_len (nm->data_from_advancing_timing_wheel) = 0;
+	      vec_set_len (nm->data_from_advancing_timing_wheel, 0);
 	    }
 	}
       vlib_increment_main_loop_counter (vm);
@@ -1946,7 +1948,7 @@ vlib_main (vlib_main_t * volatile vm, unformat_input_t * input)
 					     CLIB_CACHE_LINE_BYTES);
 
   vec_validate (nm->data_from_advancing_timing_wheel, 10);
-  _vec_len (nm->data_from_advancing_timing_wheel) = 0;
+  vec_set_len (nm->data_from_advancing_timing_wheel, 0);
 
   /* Create the process timing wheel */
   TW (tw_timer_wheel_init) ((TWT (tw_timer_wheel) *) nm->timing_wheel,
@@ -1955,9 +1957,9 @@ vlib_main (vlib_main_t * volatile vm, unformat_input_t * input)
 			    ~0 /* max expirations per call */ );
 
   vec_validate (vm->pending_rpc_requests, 0);
-  _vec_len (vm->pending_rpc_requests) = 0;
+  vec_set_len (vm->pending_rpc_requests, 0);
   vec_validate (vm->processing_rpc_requests, 0);
-  _vec_len (vm->processing_rpc_requests) = 0;
+  vec_set_len (vm->processing_rpc_requests, 0);
 
   /* Default params for the buffer allocator fault injector, if configured */
   if (VLIB_BUFFER_ALLOC_FAULT_INJECTOR > 0)

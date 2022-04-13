@@ -38,19 +38,20 @@
 #include <vppinfra/pool.h>
 
 __clib_export void
-_pool_init_fixed (void **pool_ptr, u32 elt_size, u32 max_elts)
+_pool_init_fixed (void **pool_ptr, uword elt_size, uword max_elts, uword align)
 {
   uword *b;
   pool_header_t *ph;
   u8 *v;
   u32 i;
+  vec_attr_t va = { .elt_sz = elt_size,
+		    .align = align,
+		    .hdr_sz = sizeof (pool_header_t) };
 
   ASSERT (elt_size);
   ASSERT (max_elts);
 
-  v =
-    vec_resize_allocate_memory (0, max_elts, elt_size * max_elts,
-				sizeof (pool_header_t), CLIB_CACHE_LINE_BYTES);
+  v = _vec_alloc_internal (max_elts, &va);
 
   ph = pool_header (v);
   ph->max_elts = max_elts;

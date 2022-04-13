@@ -329,7 +329,7 @@ read_request (http_conn_t *hc)
   if (svm_fifo_is_empty (ts->rx_fifo))
     svm_fifo_unset_event (ts->rx_fifo);
 
-  _vec_len (hc->rx_buf) = cursize + n_read;
+  vec_set_len (hc->rx_buf, cursize + n_read);
   return 0;
 }
 
@@ -1064,7 +1064,7 @@ http_config_fn (vlib_main_t *vm, unformat_input_t *input)
   return 0;
 }
 
-VLIB_EARLY_CONFIG_FUNCTION (http_config_fn, "http");
+VLIB_CONFIG_FUNCTION (http_config_fn, "http");
 
 VLIB_PLUGIN_REGISTER () = {
   .version = VPP_BUILD_VER,

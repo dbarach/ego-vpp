@@ -128,6 +128,42 @@ format_ip_flow_hash_config (u8 * s, va_list * args)
   return s;
 }
 
+uword
+unformat_ip_flow_hash_config (unformat_input_t *input, va_list *args)
+{
+  flow_hash_config_t *flow_hash_config = va_arg (*args, flow_hash_config_t *);
+  uword start_index = unformat_check_input (input);
+  int matched_once = 0;
+
+  if (unformat (input, "default"))
+    {
+      *flow_hash_config = IP_FLOW_HASH_DEFAULT;
+      return 1;
+    }
+  while (!unformat_is_eof (input) &&
+	 !is_white_space (unformat_peek_input (input)))
+    {
+      if (unformat (input, "%_,"))
+	;
+#define _(a, b)                                                               \
+  else if (unformat (input, "%_" #a))                                         \
+  {                                                                           \
+    *flow_hash_config |= b;                                                   \
+    matched_once = 1;                                                         \
+  }
+      foreach_flow_hash_bit_v1
+#undef _
+	else
+      {
+	/* Roll back to our start */
+	input->index = start_index;
+	return 0;
+      }
+    }
+
+  return matched_once;
+}
+
 u8 *
 format_ip_adjacency_packet_data (u8 * s, va_list * args)
 {
@@ -552,7 +588,13 @@ VLIB_CLI_COMMAND (vlib_cli_show_ip6_command, static) = {
 /* *INDENT-OFF* */
 VLIB_CLI_COMMAND (ip_route_command, static) = {
   .path = "ip route",
-  .short_help = "ip route [add|del] [count <n>] <dst-ip-addr>/<width> [table <table-id>] via [next-hop-address] [next-hop-interface] [next-hop-table <value>] [weight <value>] [preference <value>] [udp-encap-id <value>] [ip4-lookup-in-table <value>] [ip6-lookup-in-table <value>] [mpls-lookup-in-table <value>] [resolve-via-host] [resolve-via-connected] [rx-ip4 <interface>] [out-labels <value value value>]",
+  .short_help = "ip route [add|del] [count <n>] <dst-ip-addr>/<width> [table "
+		"<table-id>] via [next-hop-address] [next-hop-interface] "
+		"[next-hop-table <value>] [weight <value>] [preference "
+		"<value>] [udp-encap <value>] [ip4-lookup-in-table <value>] "
+		"[ip6-lookup-in-table <value>] [mpls-lookup-in-table <value>] "
+		"[resolve-via-host] [resolve-via-connected] [rx-ip4 "
+		"<interface>] [out-labels <value value value>]",
   .function = vnet_ip_route_cmd,
   .is_mp_safe = 1,
 };

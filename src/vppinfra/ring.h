@@ -37,12 +37,11 @@ clib_ring_new_inline (void **p, u32 elt_bytes, u32 size, u32 align)
 {
   void *v;
   clib_ring_header_t *h;
+  vec_attr_t va = { .elt_sz = elt_bytes,
+		    .hdr_sz = sizeof (clib_ring_header_t),
+		    .align = align };
 
-  v = _vec_resize ((void *) 0,
-		   /* length increment */ size,
-		   /* data bytes */ elt_bytes * size,
-		   /* header bytes */ sizeof (h[0]),
-		   /* data align */ align);
+  v = _vec_alloc_internal (size, &va);
 
   h = clib_ring_header (v);
   h->next = 0;

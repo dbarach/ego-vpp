@@ -604,7 +604,7 @@ vlib_process_get_events (vlib_main_t * vm, uword ** data_vector)
   l = _vec_len (p->pending_event_data_by_type_index[t]);
   if (data_vector)
     vec_add (*data_vector, p->pending_event_data_by_type_index[t], l);
-  _vec_len (p->pending_event_data_by_type_index[t]) = 0;
+  vec_set_len (p->pending_event_data_by_type_index[t], 0);
 
   et = pool_elt_at_index (p->event_type_pool, t);
 
@@ -628,7 +628,7 @@ vlib_process_get_events_helper (vlib_process_t * p, uword t,
   l = _vec_len (p->pending_event_data_by_type_index[t]);
   if (data_vector)
     vec_add (*data_vector, p->pending_event_data_by_type_index[t], l);
-  _vec_len (p->pending_event_data_by_type_index[t]) = 0;
+  vec_set_len (p->pending_event_data_by_type_index[t], 0);
 
   vlib_process_maybe_free_event_type (p, t);
 
@@ -835,7 +835,8 @@ vlib_process_signal_event_helper (vlib_node_main_t * nm,
 				  uword n_data_elts, uword n_data_elt_bytes)
 {
   uword p_flags, add_to_pending, delete_from_wheel;
-  void *data_to_be_written_by_caller;
+  u8 *data_to_be_written_by_caller;
+  vec_attr_t va = { .elt_sz = n_data_elt_bytes };
 
   ASSERT (n->type == VLIB_NODE_TYPE_PROCESS);
 
@@ -845,7 +846,7 @@ vlib_process_signal_event_helper (vlib_node_main_t * nm,
 
   /* Resize data vector and return caller's data to be written. */
   {
-    void *data_vec = p->pending_event_data_by_type_index[t];
+    u8 *data_vec = p->pending_event_data_by_type_index[t];
     uword l;
 
     if (!data_vec && vec_len (nm->recycled_event_data_vectors))
@@ -856,11 +857,7 @@ vlib_process_signal_event_helper (vlib_node_main_t * nm,
 
     l = vec_len (data_vec);
 
-    data_vec = _vec_resize (data_vec,
-			    /* length_increment */ n_data_elts,
-			    /* total size after increment */
-			    (l + n_data_elts) * n_data_elt_bytes,
-			    /* header_bytes */ 0, /* data_align */ 0);
+    data_vec = _vec_realloc_internal (data_vec, l + n_data_elts, &va);
 
     p->pending_event_data_by_type_index[t] = data_vec;
     data_to_be_written_by_caller = data_vec + l * n_data_elt_bytes;
@@ -1211,7 +1208,8 @@ void vlib_node_rename (vlib_main_t * vm, u32 node_index, char *fmt, ...);
 /* Register new packet processing node.  Nodes can be registered
    dynamically via this call or statically via the VLIB_REGISTER_NODE
    macro. */
-u32 vlib_register_node (vlib_main_t * vm, vlib_node_registration_t * r);
+u32 vlib_register_node (vlib_main_t *vm, vlib_node_registration_t *r,
+			char *fmt, ...);
 
 /* Register all node function variants */
 void vlib_register_all_node_march_variants (vlib_main_t *vm);

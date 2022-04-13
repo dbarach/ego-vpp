@@ -106,20 +106,21 @@ vlib_stats_create_counter (vlib_stats_entry_t *e)
 {
   vlib_stats_segment_t *sm = vlib_stats_get_segment ();
   void *oldheap;
-  u32 index = ~0;
-  int i;
+  u32 index;
 
   oldheap = clib_mem_set_heap (sm->heap);
-  vec_foreach_index_backwards (i, sm->directory_vector)
-    if (sm->directory_vector[i].type == STAT_DIR_TYPE_EMPTY)
-      {
-	index = i;
-	break;
-      }
 
-  index = index == ~0 ? vec_len (sm->directory_vector) : index;
+  if (sm->dir_vector_first_free_elt != CLIB_U32_MAX)
+    {
+      index = sm->dir_vector_first_free_elt;
+      sm->dir_vector_first_free_elt = sm->directory_vector[index].index;
+    }
+  else
+    {
+      index = vec_len (sm->directory_vector);
+      vec_validate (sm->directory_vector, index);
+    }
 
-  vec_validate (sm->directory_vector, index);
   sm->directory_vector[index] = *e;
 
   clib_mem_set_heap (oldheap);
@@ -183,6 +184,9 @@ vlib_stats_remove_entry (u32 entry_index)
 
   memset (e, 0, sizeof (*e));
   e->type = STAT_DIR_TYPE_EMPTY;
+
+  e->value = sm->dir_vector_first_free_elt;
+  sm->dir_vector_first_free_elt = entry_index;
 }
 
 static void
@@ -241,64 +245,6 @@ vlib_stats_add_gauge (char *fmt, ...)
   name = va_format (0, fmt, &va);
   va_end (va);
   return vlib_stats_new_entry_internal (STAT_DIR_TYPE_SCALAR_INDEX, name);
-}
-
-void
-vlib_stats_register_error_index (u64 *em_vec, u64 index, char *fmt, ...)
-{
-  vlib_stats_segment_t *sm = vlib_stats_get_segment ();
-  vlib_stats_shared_header_t *shared_header = sm->shared_header;
-  vlib_stats_entry_t e = {};
-  va_list va;
-  u8 *name;
-
-  va_start (va, fmt);
-  name = va_format (0, fmt, &va);
-  va_end (va);
-
-  ASSERT (shared_header);
-
-  vlib_stats_segment_lock ();
-  u32 vector_index = vlib_stats_find_entry_index ("%v", name);
-
-  if (vector_index == STAT_SEGMENT_INDEX_INVALID)
-    {
-      vec_add1 (name, 0);
-      vlib_stats_set_entry_name (&e, (char *) name);
-      e.type = STAT_DIR_TYPE_ERROR_INDEX;
-      e.index = index;
-      vector_index = vlib_stats_create_counter (&e);
-
-      /* Warn clients to refresh any pointers they might be holding */
-      shared_header->directory_vector = sm->directory_vector;
-    }
-
-  vlib_stats_segment_unlock ();
-  vec_free (name);
-}
-
-void
-vlib_stats_update_error_vector (u64 *error_vector, u32 thread_index, int lock)
-{
-  vlib_stats_segment_t *sm = vlib_stats_get_segment ();
-  vlib_stats_shared_header_t *shared_header = sm->shared_header;
-  void *oldheap = clib_mem_set_heap (sm->heap);
-
-  ASSERT (shared_header);
-
-  if (lock)
-    vlib_stats_segment_lock ();
-
-  /* Reset the client hash table pointer, since it WILL change! */
-  vec_validate (sm->error_vector, thread_index);
-  sm->error_vector[thread_index] = error_vector;
-
-  shared_header->error_vector = sm->error_vector;
-  shared_header->directory_vector = sm->directory_vector;
-
-  if (lock)
-    vlib_stats_segment_unlock ();
-  clib_mem_set_heap (oldheap);
 }
 
 void
@@ -408,7 +354,7 @@ vlib_stats_validate_will_expand_internal (u32 entry_index, va_list *va)
       u32 idx1 = va_arg (*va, u32);
       u64 **data = e->data;
 
-      if (idx0 >= vec_max_len (data))
+      if (idx0 >= vec_len (data))
 	goto done;
 
       for (u32 i = 0; i <= idx0; i++)
@@ -423,7 +369,7 @@ vlib_stats_validate_will_expand_internal (u32 entry_index, va_list *va)
 
       va_end (*va);
 
-      if (idx0 >= vec_max_len (data))
+      if (idx0 >= vec_len (data))
 	goto done;
 
       for (u32 i = 0; i <= idx0; i++)

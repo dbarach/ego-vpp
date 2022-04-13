@@ -261,7 +261,7 @@ clib_mem_vm_create_fd (clib_mem_page_sz_t log2_page_size, char *fmt, ...)
 
   /* memfd_create maximum string size is 249 chars without trailing zero */
   if (vec_len (s) > 249)
-    _vec_len (s) = 249;
+    vec_set_len (s, 249);
   vec_add1 (s, 0);
 
   /* memfd_create introduced in kernel 3.17, we don't support older kernels */
@@ -455,7 +455,7 @@ clib_mem_vm_map_internal (void *base, clib_mem_page_sz_t log2_page_sz,
   else
     mm->first_map = hdr;
 
-  CLIB_MEM_UNPOISON (hdr, sys_page_sz);
+  clib_mem_unpoison (hdr, sys_page_sz);
   hdr->next = 0;
   hdr->prev = mm->last_map;
   snprintf (hdr->name, CLIB_VM_MAP_HDR_NAME_MAX_LEN - 1, "%s", (char *) name);
@@ -470,7 +470,7 @@ clib_mem_vm_map_internal (void *base, clib_mem_page_sz_t log2_page_sz,
 
   map_unlock ();
 
-  CLIB_MEM_UNPOISON (base, size);
+  clib_mem_unpoison (base, size);
   return base;
 }
 

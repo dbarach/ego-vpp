@@ -274,7 +274,7 @@ typedef struct vlib_node_t
   u32 runtime_index;
 
   /* Runtime data for this node. */
-  void *runtime_data;
+  u8 *runtime_data;
 
   /* Node flags. */
   u16 flags;
@@ -503,6 +503,8 @@ typedef struct vlib_node_runtime_t
 					  zero before first run of this
 					  node. */
 
+  CLIB_ALIGN_MARK (runtime_data_pad, 8);
+
   u8 runtime_data[0];			/**< Function dependent
 					  node-runtime data. This data is
 					  thread local, and it is not
@@ -571,7 +573,7 @@ typedef struct
   u32 n_suspends;
 
   /* Vectors of pending event data indexed by event type index. */
-  void **pending_event_data_by_type_index;
+  u8 **pending_event_data_by_type_index;
 
   /* Bitmap of event type-indices with non-empty vectors. */
   uword *non_empty_event_type_bitmap;

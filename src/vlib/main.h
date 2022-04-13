@@ -154,15 +154,6 @@ typedef struct vlib_main_t
   /* Error marker to use when exiting main loop. */
   clib_error_t *main_loop_error;
 
-  /* Start of the heap. */
-  void *heap_base;
-
-  /* Truncated version, to create frame indices */
-  void *heap_aligned_base;
-
-  /* Size of the heap */
-  uword heap_size;
-
   /* buffer main structure. */
   vlib_buffer_main_t *buffer_main;
 
@@ -220,7 +211,6 @@ typedef struct vlib_main_t
   volatile u32 queue_signal_pending;
   volatile u32 api_queue_nonempty;
   void (*queue_signal_callback) (struct vlib_main_t *);
-  u8 **argv;
 
   /* Top of (worker) dispatch loop callback */
   void (**volatile worker_thread_main_loop_callbacks)
@@ -282,6 +272,12 @@ typedef struct vlib_global_main_t
 
   /* Name for e.g. syslog. */
   char *name;
+
+  /* full path to main executable */
+  char *exec_path;
+
+  /* command line arguments */
+  u8 **argv;
 
   /* post-mortem callbacks */
   void (**post_mortem_callbacks) (void);

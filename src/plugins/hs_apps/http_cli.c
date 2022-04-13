@@ -221,7 +221,7 @@ hcs_cli_process (vlib_main_t *vm, vlib_node_runtime_t *rt, vlib_frame_t *f)
       else if (request[i] == ' ')
 	{
 	  /* vlib_cli_input is vector-based, no need for a NULL */
-	  _vec_len (request) = i;
+	  vec_set_len (request, i);
 	  break;
 	}
       i++;
@@ -262,7 +262,6 @@ alloc_cli_process (hcs_cli_args_t *args)
   vlib_main_t *vm = hcm->vlib_main;
   hcs_cli_args_t **save_args;
   vlib_node_t *n;
-  char *name;
   uword l;
 
   l = vec_len (hcm->free_http_cli_process_node_indices);
@@ -270,7 +269,7 @@ alloc_cli_process (hcs_cli_args_t *args)
     {
       n = vlib_get_node (vm, hcm->free_http_cli_process_node_indices[l - 1]);
       vlib_node_set_state (vm, n->index, VLIB_NODE_STATE_POLLING);
-      _vec_len (hcm->free_http_cli_process_node_indices) = l - 1;
+      vec_set_len (hcm->free_http_cli_process_node_indices, l - 1);
     }
   else
     {
@@ -281,10 +280,7 @@ alloc_cli_process (hcs_cli_args_t *args)
 	.runtime_data_bytes = sizeof (void *),
       };
 
-      name = (char *) format (0, "http-cli-%d", l);
-      r.name = name;
-      vlib_register_node (vm, &r);
-      vec_free (name);
+      vlib_register_node (vm, &r, "http-cli-%d", l);
 
       n = vlib_get_node (vm, r.index);
     }

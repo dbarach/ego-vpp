@@ -98,7 +98,7 @@ do_one_file (vat_main_t * vam)
 	    rv = write (1, "exec# ", 6);
 	}
 
-      _vec_len (vam->inbuf) = 4096;
+      vec_set_len (vam->inbuf, 4096);
 
       if (vam->do_exit ||
 	  fgets ((char *) vam->inbuf, vec_len (vam->inbuf), vam->ifp) == 0)
@@ -267,6 +267,7 @@ setup_signal_handlers (void)
 	  /* these signals take the default action */
 	case SIGABRT:
 	case SIGKILL:
+	case SIGCONT:
 	case SIGSTOP:
 	case SIGUSR1:
 	case SIGUSR2:

@@ -43,8 +43,8 @@
 
 #define DEBUG_MESSAGE_BUFFER_OVERRUN 0
 
-CLIB_NOSANITIZE_ADDR static inline void *
-vl_msg_api_alloc_internal (svm_region_t * vlib_rp, int nbytes, int pool,
+__clib_nosanitize_addr static inline void *
+vl_msg_api_alloc_internal (svm_region_t *vlib_rp, int nbytes, int pool,
 			   int may_return_null)
 {
   int i;
@@ -545,8 +545,8 @@ vl_map_shmem (const char *region_name, int is_vlib)
   if (strstr (region_name, vpe_api_region_suffix))
     {
       u8 *root_path = format (0, "%s", region_name);
-      _vec_len (root_path) = (vec_len (root_path) -
-			      strlen (vpe_api_region_suffix));
+      vec_set_len (root_path,
+		   vec_len (root_path) - strlen (vpe_api_region_suffix));
       vec_terminate_c_string (root_path);
       a->root_path = (const char *) root_path;
       am->root_path = (const char *) root_path;

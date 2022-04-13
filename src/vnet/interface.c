@@ -163,7 +163,7 @@ serialize_vnet_interface_state (serialize_main_t * m, va_list * va)
   vec_serialize (m, sts, serialize_vec_vnet_sw_hw_interface_state);
 
   if (sts)
-    _vec_len (sts) = 0;
+    vec_set_len (sts, 0);
 
   /* *INDENT-OFF* */
   pool_foreach (hif, im->hw_interfaces)  {
@@ -874,7 +874,6 @@ vnet_register_interface (vnet_main_t * vnm,
   vnet_feature_config_main_t *fcm;
   vnet_config_main_t *cm;
   u32 hw_index, i;
-  char *tx_node_name = NULL, *output_node_name = NULL;
   vlib_node_t *if_out_node =
     vlib_get_node (vm, vnet_interface_output_node.index);
 
@@ -926,9 +925,6 @@ vnet_register_interface (vnet_main_t * vnm,
   if (dev_class->tx_function == 0 && dev_class->tx_fn_registrations == 0)
     goto no_output_nodes;	/* No output/tx nodes to create */
 
-  tx_node_name = (char *) format (0, "%v-tx", hw->name);
-  output_node_name = (char *) format (0, "%v-output", hw->name);
-
   /* If we have previously deleted interface nodes, re-use them. */
   if (vec_len (im->deleted_hw_interface_nodes) > 0)
     {
@@ -941,8 +937,8 @@ vnet_register_interface (vnet_main_t * vnm,
       hw->tx_node_index = hn->tx_node_index;
       hw->output_node_index = hn->output_node_index;
 
-      vlib_node_rename (vm, hw->tx_node_index, "%v", tx_node_name);
-      vlib_node_rename (vm, hw->output_node_index, "%v", output_node_name);
+      vlib_node_rename (vm, hw->tx_node_index, "%v-tx", hw->name);
+      vlib_node_rename (vm, hw->output_node_index, "%v-output", hw->name);
 
       foreach_vlib_main ()
 	{
@@ -996,7 +992,7 @@ vnet_register_interface (vnet_main_t * vnm,
 					  VLIB_NODE_RUNTIME_PERF_RESET);
 	}
 
-      _vec_len (im->deleted_hw_interface_nodes) -= 1;
+      vec_dec_len (im->deleted_hw_interface_nodes, 1);
     }
   else
     {
@@ -1016,7 +1012,6 @@ vnet_register_interface (vnet_main_t * vnm,
       r.vector_size = sizeof (u32);
 
       r.flags = VLIB_NODE_FLAG_IS_OUTPUT;
-      r.name = tx_node_name;
       if (dev_class->tx_fn_registrations)
 	{
 	  r.function = 0;
@@ -1025,14 +1020,13 @@ vnet_register_interface (vnet_main_t * vnm,
       else
 	r.function = dev_class->tx_function;
 
-      hw->tx_node_index = vlib_register_node (vm, &r);
+      hw->tx_node_index = vlib_register_node (vm, &r, "%v-tx", hw->name);
 
       vlib_node_add_named_next_with_slot (vm, hw->tx_node_index,
 					  "error-drop",
 					  VNET_INTERFACE_TX_NEXT_DROP);
 
       r.flags = 0;
-      r.name = output_node_name;
       r.format_trace = format_vnet_interface_output_trace;
       if (if_out_node->node_fn_registrations)
 	{
@@ -1052,7 +1046,8 @@ vnet_register_interface (vnet_main_t * vnm,
 	r.n_errors = ARRAY_LEN (e);
 	r.error_strings = e;
       }
-      hw->output_node_index = vlib_register_node (vm, &r);
+      hw->output_node_index =
+	vlib_register_node (vm, &r, "%v-output", hw->name);
 
       vlib_node_add_named_next_with_slot (vm, hw->output_node_index,
 					  "error-drop",
@@ -1095,9 +1090,6 @@ no_output_nodes:
 				      VNET_INTERFACE_SET_FLAGS_HELPER_IS_CREATE);
   vnet_hw_interface_set_flags_helper (vnm, hw_index, /* flags */ 0,
 				      VNET_INTERFACE_SET_FLAGS_HELPER_IS_CREATE);
-  vec_free (tx_node_name);
-  vec_free (output_node_name);
-
   return hw_index;
 }
 
@@ -1159,6 +1151,8 @@ vnet_delete_hw_interface (vnet_main_t * vnm, u32 hw_if_index)
 			"interface-%d-output-deleted", hw_if_index);
       vlib_node_rename (vm, hw->tx_node_index, "interface-%d-tx-deleted",
 			hw_if_index);
+      vlib_unregister_errors (vm, hw->output_node_index);
+      vlib_unregister_errors (vm, hw->tx_node_index);
       vec_add2 (im->deleted_hw_interface_nodes, dn, 1);
       dn->tx_node_index = hw->tx_node_index;
       dn->output_node_index = hw->output_node_index;

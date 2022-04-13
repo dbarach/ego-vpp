@@ -211,6 +211,8 @@ dump_call_stats (uword * stats)
   ({                                                                          \
     elt_type *_v (v) = NULL;                                                  \
     uword _v (l) = (len);                                                     \
+    vec_attr_t _v (attr) = { .hdr_sz = (hdr_bytes),                           \
+			     .elt_sz = sizeof (elt_type) };                   \
     uword _v (h) = (hdr_bytes);                                               \
     u8 *_v (hdr);                                                             \
                                                                               \
@@ -221,8 +223,7 @@ dump_call_stats (uword * stats)
     if (_v (l) == ~0)                                                         \
       _v (l) = bounded_random_u32 (&(seed), 0, MAX_VEC_LEN);                  \
                                                                               \
-    _v (v) =                                                                  \
-      _vec_resize (NULL, _v (l), _v (l) * sizeof (elt_type), _v (h), 0);      \
+    _v (v) = _vec_alloc_internal (_v (l), &_v (attr));                        \
     fill_with_random_data (_v (v), vec_bytes (_v (v)), (seed));               \
                                                                               \
     /* Fill header with random data as well. */                               \
@@ -677,7 +678,7 @@ validate_vec_init_h (uword num_elts, uword hdr_bytes)
   uword len;
   elt_t *new;
 
-  new = vec_new_ha (elt_t, num_elts, hdr_bytes, 0);
+  new = vec_new_generic (elt_t, num_elts, hdr_bytes, 0, 0);
   len = vec_len (new);
 
   ASSERT (len == num_elts);

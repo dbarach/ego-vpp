@@ -265,7 +265,7 @@ lcp_router_link_mtu (struct rtnl_link *rl, u32 sw_if_index)
   hw = vnet_get_sup_hw_interface (vnm, sw_if_index);
 
   /* If HW interface, try to change hw link */
-  if ((sw->type == sw->sup_sw_if_index) &&
+  if ((sw->sw_if_index == sw->sup_sw_if_index) &&
       (hw->hw_class_index == ethernet_hw_interface_class.index))
     vnet_hw_interface_set_mtu (vnm, hw->hw_if_index, mtu);
   else
@@ -307,7 +307,8 @@ lcp_router_link_addr (struct rtnl_link *rl, lcp_itf_pair_t *lip)
 					  lip->lip_phy_adjs.adj_index[AF_IP6]);
 }
 
-static void lcp_router_table_flush (lcp_router_table_t *nlt, u32 sw_if_index,
+static void lcp_router_table_flush (lcp_router_table_t *nlt,
+				    u32 *sw_if_index_to_bool,
 				    fib_source_t source);
 
 static void
@@ -366,10 +367,18 @@ lcp_router_link_add (struct rtnl_link *rl, void *ctx)
 	      if (fib_index == nlt->nlt_fib_index &&
 		  FIB_PROTOCOL_IP4 == nlt->nlt_proto)
 		{
-		  lcp_router_table_flush (nlt, lip->lip_phy_sw_if_index,
+		  u32 *sw_if_index_to_bool = NULL;
+
+		  vec_validate_init_empty (sw_if_index_to_bool,
+					   lip->lip_phy_sw_if_index, false);
+		  sw_if_index_to_bool[lip->lip_phy_sw_if_index] = true;
+
+		  lcp_router_table_flush (nlt, sw_if_index_to_bool,
 					  lcp_rt_fib_src);
-		  lcp_router_table_flush (nlt, lip->lip_phy_sw_if_index,
+		  lcp_router_table_flush (nlt, sw_if_index_to_bool,
 					  lcp_rt_fib_src_dynamic);
+
+		  vec_free (sw_if_index_to_bool);
 		  break;
 		}
 	    }
@@ -467,6 +476,101 @@ lcp_router_link_sync_end (void)
 {
   LCP_ROUTER_INFO ("End synchronization of interface configurations");
 }
+
+static clib_error_t *
+lcp_router_link_up_down (vnet_main_t *vnm, u32 hw_if_index, u32 flags)
+{
+  vnet_hw_interface_t *hi;
+  index_t lipi;
+
+  hi = vnet_get_hw_interface_or_null (vnm, hw_if_index);
+  if (!hi)
+    return 0;
+
+  lipi = lcp_itf_pair_find_by_phy (hi->sw_if_index);
+  if (lipi == INDEX_INVALID)
+    return 0;
+
+  /* When the link goes down on an interface, the kernel processes routes which
+   * resolve through that interface depending on how they were created:
+   *   - Legacy Route API: the kernel retains the routes and marks them as
+   *     "linkdown";
+   *   - Nexthop API: the kernel removes the next-hop objects and the routes
+   *     which reference them.
+   *
+   * For IPv4 routes created with Nexthop API, the kernel will not send any
+   * explicit RTM_DELROUTE messages about removing them. In order to
+   * synchronize with the kernel, affected routes need to be manually removed
+   * from the FIB.
+   *
+   * The behavior is different for IPv6 routes created with Nexthop API. The
+   * kernel will send explicit RTM_DELROUTE messages about IPv6 routes being
+   * removed.
+   */
+  if (!(flags & VNET_HW_INTERFACE_FLAG_LINK_UP) &&
+      (lcp_get_del_static_on_link_down () ||
+       lcp_get_del_dynamic_on_link_down ()))
+    {
+      u32 fib_index;
+      u32 **fib_index_to_sw_if_index_to_bool = NULL;
+      u32 id, sw_if_index;
+      lcp_router_table_t *nlt;
+
+      fib_index = fib_table_get_index_for_sw_if_index (FIB_PROTOCOL_IP4,
+						       hi->sw_if_index);
+
+      vec_validate_init_empty (fib_index_to_sw_if_index_to_bool, fib_index,
+			       NULL);
+      vec_validate_init_empty (fib_index_to_sw_if_index_to_bool[fib_index],
+			       hi->sw_if_index, false);
+      fib_index_to_sw_if_index_to_bool[fib_index][hi->sw_if_index] = true;
+
+      /* clang-format off */
+      hash_foreach (id, sw_if_index, hi->sub_interface_sw_if_index_by_id,
+      ({
+	fib_index = fib_table_get_index_for_sw_if_index (FIB_PROTOCOL_IP4,
+							 sw_if_index);
+	vec_validate_init_empty (fib_index_to_sw_if_index_to_bool, fib_index,
+				 NULL);
+	vec_validate_init_empty (fib_index_to_sw_if_index_to_bool[fib_index],
+				 sw_if_index, false);
+	fib_index_to_sw_if_index_to_bool[fib_index][sw_if_index] = true;
+      }));
+      /* clang-format on */
+
+      vec_foreach_index (fib_index, fib_index_to_sw_if_index_to_bool)
+	{
+	  u32 *sw_if_index_to_bool;
+
+	  sw_if_index_to_bool = fib_index_to_sw_if_index_to_bool[fib_index];
+	  if (NULL == sw_if_index_to_bool)
+	    continue;
+
+	  pool_foreach (nlt, lcp_router_table_pool)
+	    {
+	      if (fib_index == nlt->nlt_fib_index &&
+		  FIB_PROTOCOL_IP4 == nlt->nlt_proto)
+		{
+		  if (lcp_get_del_static_on_link_down ())
+		    lcp_router_table_flush (nlt, sw_if_index_to_bool,
+					    lcp_rt_fib_src);
+		  if (lcp_get_del_dynamic_on_link_down ())
+		    lcp_router_table_flush (nlt, sw_if_index_to_bool,
+					    lcp_rt_fib_src_dynamic);
+		  break;
+		}
+	    }
+
+	  vec_free (sw_if_index_to_bool);
+	}
+
+      vec_free (fib_index_to_sw_if_index_to_bool);
+    }
+
+  return 0;
+}
+
+VNET_HW_INTERFACE_LINK_UP_DOWN_FUNCTION (lcp_router_link_up_down);
 
 static fib_protocol_t
 lcp_router_proto_k2f (uint32_t k)
@@ -1148,7 +1252,7 @@ lcp_router_route_sync_end (void)
 typedef struct lcp_router_table_flush_ctx_t_
 {
   fib_node_index_t *lrtf_entries;
-  u32 lrtf_sw_if_index;
+  u32 *lrtf_sw_if_index_to_bool;
   fib_source_t lrtf_source;
 } lcp_router_table_flush_ctx_t;
 
@@ -1156,9 +1260,13 @@ static fib_table_walk_rc_t
 lcp_router_table_flush_cb (fib_node_index_t fib_entry_index, void *arg)
 {
   lcp_router_table_flush_ctx_t *ctx = arg;
+  u32 sw_if_index;
 
-  if (fib_entry_get_resolving_interface_for_source (
-	fib_entry_index, ctx->lrtf_source) == ctx->lrtf_sw_if_index)
+  sw_if_index = fib_entry_get_resolving_interface_for_source (
+    fib_entry_index, ctx->lrtf_source);
+
+  if (sw_if_index < vec_len (ctx->lrtf_sw_if_index_to_bool) &&
+      ctx->lrtf_sw_if_index_to_bool[sw_if_index])
     {
       vec_add1 (ctx->lrtf_entries, fib_entry_index);
     }
@@ -1166,24 +1274,26 @@ lcp_router_table_flush_cb (fib_node_index_t fib_entry_index, void *arg)
 }
 
 static void
-lcp_router_table_flush (lcp_router_table_t *nlt, u32 sw_if_index,
+lcp_router_table_flush (lcp_router_table_t *nlt, u32 *sw_if_index_to_bool,
 			fib_source_t source)
 {
   fib_node_index_t *fib_entry_index;
   lcp_router_table_flush_ctx_t ctx = {
     .lrtf_entries = NULL,
-    .lrtf_sw_if_index = sw_if_index,
+    .lrtf_sw_if_index_to_bool = sw_if_index_to_bool,
     .lrtf_source = source,
   };
+
+  LCP_ROUTER_DBG (
+    "Flush table: proto %U, fib-index %u, max sw_if_index %u, source %U",
+    format_fib_protocol, nlt->nlt_proto, nlt->nlt_fib_index,
+    vec_len (sw_if_index_to_bool) - 1, format_fib_source, source);
 
   fib_table_walk (nlt->nlt_fib_index, nlt->nlt_proto,
 		  lcp_router_table_flush_cb, &ctx);
 
-  LCP_ROUTER_DBG (
-    "Flush table: proto %U, fib-index %u, resolved via %U for source %U",
-    format_fib_protocol, nlt->nlt_proto, nlt->nlt_fib_index,
-    format_vnet_sw_if_index_name, vnet_get_main (), sw_if_index,
-    format_fib_source, source);
+  LCP_ROUTER_DBG ("Flush table: entries number to delete %u",
+		  vec_len (ctx.lrtf_entries));
 
   vec_foreach (fib_entry_index, ctx.lrtf_entries)
     {

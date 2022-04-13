@@ -40,6 +40,7 @@
 #include <vlib/unix/unix.h>
 #include <vlib/unix/plugin.h>
 
+#include <limits.h>
 #include <signal.h>
 #include <sys/ucontext.h>
 #include <syslog.h>
@@ -210,6 +211,7 @@ setup_signal_handlers (unix_main_t * um)
 	{
 	  /* these signals take the default action */
 	case SIGKILL:
+	case SIGCONT:
 	case SIGSTOP:
 	case SIGUSR1:
 	case SIGUSR2:
@@ -246,14 +248,7 @@ unix_error_handler (void *arg, u8 * msg, int msg_len)
     }
   else
     {
-      char save = msg[msg_len - 1];
-
-      /* Null Terminate. */
-      msg[msg_len - 1] = 0;
-
-      syslog (LOG_ERR | LOG_DAEMON, "%s", msg);
-
-      msg[msg_len - 1] = save;
+      syslog (LOG_ERR | LOG_DAEMON, "%.*s", msg_len, msg);
     }
 }
 
@@ -266,20 +261,10 @@ vlib_unix_error_report (vlib_main_t * vm, clib_error_t * error)
     return;
 
   {
-    char save;
-    u8 *msg;
-    u32 msg_len;
-
-    msg = error->what;
-    msg_len = vec_len (msg);
-
-    /* Null Terminate. */
-    save = msg[msg_len - 1];
-    msg[msg_len - 1] = 0;
-
-    syslog (LOG_ERR | LOG_DAEMON, "%s", msg);
-
-    msg[msg_len - 1] = save;
+    u8 *msg = error->what;
+    u32 len = vec_len (msg);
+    int msg_len = (len > INT_MAX) ? INT_MAX : len;
+    syslog (LOG_ERR | LOG_DAEMON, "%.*s", msg_len, msg);
   }
 }
 
@@ -331,7 +316,7 @@ startup_config_process (vlib_main_t * vm,
 	  n = read (fd, buf + l, 4096);
 	  if (n > 0)
 	    {
-	      _vec_len (buf) = l + n;
+	      vec_set_len (buf, l + n);
 	      if (n < 4096)
 		break;
 	    }
@@ -662,12 +647,13 @@ static uword
 thread0 (uword arg)
 {
   vlib_main_t *vm = (vlib_main_t *) arg;
+  vlib_global_main_t *vgm = vlib_get_global_main ();
   unformat_input_t input;
   int i;
 
   vlib_process_finish_switch_stack (vm);
 
-  unformat_init_command_line (&input, (char **) vm->argv);
+  unformat_init_command_line (&input, (char **) vgm->argv);
   i = vlib_main (vm, &input);
   unformat_free (&input);
 
@@ -690,6 +676,10 @@ vlib_thread_stack_init (uword thread_index)
   return stack;
 }
 
+#ifndef PATH_MAX
+#define PATH_MAX 4096
+#endif
+
 int
 vlib_unix_main (int argc, char *argv[])
 {
@@ -697,16 +687,27 @@ vlib_unix_main (int argc, char *argv[])
   vlib_main_t *vm = vlib_get_first_main (); /* one and only time for this! */
   unformat_input_t input;
   clib_error_t *e;
+  char buffer[PATH_MAX];
   int i;
 
   vec_validate_aligned (vgm->vlib_mains, 0, CLIB_CACHE_LINE_BYTES);
 
-  vm->argv = (u8 **) argv;
-  vgm->name = argv[0];
-  vm->heap_base = clib_mem_get_heap ();
-  vm->heap_aligned_base =
-    (void *) (((uword) vm->heap_base) & ~(CLIB_CACHE_LINE_BYTES - 1));
-  ASSERT (vm->heap_base);
+  if ((i = readlink ("/proc/self/exe", buffer, sizeof (buffer) - 1)) > 0)
+    {
+      int j;
+      buffer[i] = 0;
+      vgm->exec_path = vec_new (char, i + 1);
+      clib_memcpy_fast (vgm->exec_path, buffer, i + 1);
+      for (j = i - 1; j > 0; j--)
+	if (buffer[j - 1] == '/')
+	  break;
+      vgm->name = vec_new (char, i - j + 1);
+      clib_memcpy_fast (vgm->name, buffer + j, i - j + 1);
+    }
+  else
+    vgm->exec_path = vgm->name = argv[0];
+
+  vgm->argv = (u8 **) argv;
 
   clib_time_init (&vm->clib_time);
 
@@ -715,7 +716,7 @@ vlib_unix_main (int argc, char *argv[])
   elog_init (vlib_get_elog_main (), vgm->configured_elog_ring_size);
   elog_enable_disable (vlib_get_elog_main (), 1);
 
-  unformat_init_command_line (&input, (char **) vm->argv);
+  unformat_init_command_line (&input, (char **) vgm->argv);
   if ((e = vlib_plugin_config (vm, &input)))
     {
       clib_error_report (e);
@@ -727,7 +728,7 @@ vlib_unix_main (int argc, char *argv[])
   if (i)
     return i;
 
-  unformat_init_command_line (&input, (char **) vm->argv);
+  unformat_init_command_line (&input, (char **) vgm->argv);
   if (vgm->init_functions_called == 0)
     vgm->init_functions_called = hash_create (0, /* value bytes */ 0);
   e = vlib_call_all_config_functions (vm, &input, 1 /* early */ );
@@ -739,7 +740,7 @@ vlib_unix_main (int argc, char *argv[])
   unformat_free (&input);
 
   /* always load symbols, for signal handler and mheap memory get/put backtrace */
-  clib_elf_main_init (vgm->name);
+  clib_elf_main_init (vgm->exec_path);
 
   vec_validate (vlib_thread_stacks, 0);
   vlib_thread_stack_init (0);

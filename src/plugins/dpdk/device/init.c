@@ -24,6 +24,7 @@
 #include <vnet/vnet.h>
 #include <vnet/ethernet/ethernet.h>
 #include <vnet/interface/rx_queue_funcs.h>
+#include <vnet/interface/tx_queue_funcs.h>
 #include <dpdk/buffer.h>
 #include <dpdk/device/dpdk.h>
 #include <dpdk/cryptodev/cryptodev.h>
@@ -56,17 +57,17 @@ const struct
   const char *pfx;
 } if_name_prefixes[] = {
   /* sorted, higher speed first */
-  { ETH_LINK_SPEED_200G, "TwoHundredGigabitEthernet" },
-  { ETH_LINK_SPEED_100G, "HundredGigabitEthernet" },
-  { ETH_LINK_SPEED_56G, "FiftySixGigabitEthernet" },
-  { ETH_LINK_SPEED_50G, "FiftyGigabitEthernet" },
-  { ETH_LINK_SPEED_40G, "FortyGigabitEthernet" },
-  { ETH_LINK_SPEED_25G, "TwentyFiveGigabitEthernet" },
-  { ETH_LINK_SPEED_20G, "TwentyGigabitEthernet" },
-  { ETH_LINK_SPEED_10G, "TenGigabitEthernet" },
-  { ETH_LINK_SPEED_5G, "FiveGigabitEthernet" },
-  { ETH_LINK_SPEED_2_5G, "TwoDotFiveGigabitEthernet" },
-  { ETH_LINK_SPEED_1G, "GigabitEthernet" },
+  { RTE_ETH_LINK_SPEED_200G, "TwoHundredGigabitEthernet" },
+  { RTE_ETH_LINK_SPEED_100G, "HundredGigabitEthernet" },
+  { RTE_ETH_LINK_SPEED_56G, "FiftySixGigabitEthernet" },
+  { RTE_ETH_LINK_SPEED_50G, "FiftyGigabitEthernet" },
+  { RTE_ETH_LINK_SPEED_40G, "FortyGigabitEthernet" },
+  { RTE_ETH_LINK_SPEED_25G, "TwentyFiveGigabitEthernet" },
+  { RTE_ETH_LINK_SPEED_20G, "TwentyGigabitEthernet" },
+  { RTE_ETH_LINK_SPEED_10G, "TenGigabitEthernet" },
+  { RTE_ETH_LINK_SPEED_5G, "FiveGigabitEthernet" },
+  { RTE_ETH_LINK_SPEED_2_5G, "TwoDotFiveGigabitEthernet" },
+  { RTE_ETH_LINK_SPEED_1G, "GigabitEthernet" },
 };
 
 static clib_error_t *
@@ -247,7 +248,8 @@ dpdk_lib_init (dpdk_main_t * dm)
   dm->default_port_conf.n_tx_desc = DPDK_NB_TX_DESC_DEFAULT;
   dm->default_port_conf.n_rx_queues = 1;
   dm->default_port_conf.n_tx_queues = tm->n_vlib_mains;
-  dm->default_port_conf.rss_hf = ETH_RSS_IP | ETH_RSS_UDP | ETH_RSS_TCP;
+  dm->default_port_conf.rss_hf =
+    RTE_ETH_RSS_IP | RTE_ETH_RSS_UDP | RTE_ETH_RSS_TCP;
   dm->default_port_conf.max_lro_pkt_size = DPDK_MAX_LRO_SIZE_DEFAULT;
 
   if ((clib_mem_get_default_hugepage_size () == 2 << 20) &&
@@ -305,6 +307,7 @@ dpdk_lib_init (dpdk_main_t * dm)
 	  xd->supported_flow_actions = dr->supported_flow_actions;
 	  xd->conf.disable_rss = dr->mq_mode_none;
 	  xd->conf.disable_rx_scatter = dr->disable_rx_scatter;
+	  xd->conf.enable_rxq_int = dr->enable_rxq_int;
 	  if (dr->use_intel_phdr_cksum)
 	    dpdk_device_flag_set (xd, DPDK_DEVICE_FLAG_INTEL_PHDR_CKSUM, 1);
 	  if (dr->int_unmaskable)
@@ -398,7 +401,8 @@ dpdk_lib_init (dpdk_main_t * dm)
 #if RTE_VERSION >= RTE_VERSION_NUM(21, 11, 0, 0)
       q = di.max_rx_pktlen - di.max_mtu;
 
-      if (q < xd->driver_frame_overhead && q > 0)
+      /* attempt to protect from bogus value provided by pmd */
+      if (q < (2 * xd->driver_frame_overhead) && q > 0)
 	xd->driver_frame_overhead = q;
       dpdk_log_debug ("[%u] min_mtu: %u, max_mtu: %u, min_rx_bufsize: %u, "
 		      "max_rx_pktlen: %u, max_lro_pkt_size: %u",
@@ -425,6 +429,8 @@ dpdk_lib_init (dpdk_main_t * dm)
 	xd->conf.n_rx_desc, xd->conf.n_tx_desc);
 
       vec_validate_aligned (xd->rx_queues, xd->conf.n_rx_queues - 1,
+			    CLIB_CACHE_LINE_BYTES);
+      vec_validate_aligned (xd->tx_queues, xd->conf.n_tx_queues - 1,
 			    CLIB_CACHE_LINE_BYTES);
 
       rte_eth_macaddr_get (port_id, (void *) addr);
@@ -466,13 +472,26 @@ dpdk_lib_init (dpdk_main_t * dm)
 	      vnm, xd->hw_if_index, q, VNET_HW_IF_RXQ_THREAD_ANY);
 	  }
 
+      for (q = 0; q < xd->conf.n_tx_queues; q++)
+	{
+	  dpdk_tx_queue_t *txq = vec_elt_at_index (xd->tx_queues, q);
+	  txq->queue_index =
+	    vnet_hw_if_register_tx_queue (vnm, xd->hw_if_index, q);
+	}
+
+      for (q = 0; q < tm->n_vlib_mains; q++)
+	{
+	  u32 qi = xd->tx_queues[q % xd->conf.n_tx_queues].queue_index;
+	  vnet_hw_if_tx_queue_assign_thread (vnm, qi, q);
+	}
+
       if (devconf->tso == DPDK_DEVICE_TSO_ON)
 	{
 	  /*tcp_udp checksum must be enabled*/
 	  if (xd->conf.enable_tcp_udp_checksum == 0)
 	    dpdk_log_warn ("[%u] TCP/UDP checksum offload must be enabled",
 			   xd->port_id);
-	  else if ((di.tx_offload_capa & DEV_TX_OFFLOAD_TCP_TSO) == 0)
+	  else if ((di.tx_offload_capa & RTE_ETH_TX_OFFLOAD_TCP_TSO) == 0)
 	    dpdk_log_warn ("[%u] TSO not supported by device", xd->port_id);
 	  else
 	    xd->conf.enable_tso = 1;
@@ -920,7 +939,7 @@ dpdk_log_read_ready (clib_file_t * uf)
       n = read (uf->file_descriptor, s + len, n_try);
       if (n < 0 && errno != EAGAIN)
 	return clib_error_return_unix (0, "read");
-      _vec_len (s) = len + (n < 0 ? 0 : n);
+      vec_set_len (s, len + (n < 0 ? 0 : n));
     }
 
   unformat_init_vector (&input, s);
@@ -1144,12 +1163,8 @@ dpdk_config (vlib_main_t * vm, unformat_input_t * input)
 
       else if (unformat_skip_white_space (input))
 	;
-      else
-	{
-	  error = clib_error_return (0, "unknown input `%U'",
+      else return clib_error_return (0, "unknown input `%U'",
 				     format_unformat_error, input);
-	  goto done;
-	}
     }
 
   if (!conf->uio_driver_name)
@@ -1190,9 +1205,6 @@ dpdk_config (vlib_main_t * vm, unformat_input_t * input)
       tmp = format (0, "vpp%c", 0);
       vec_add1 (conf->eal_init_args, tmp);
     }
-
-  if (error)
-    return error;
 
   if (no_pci == 0 && geteuid () == 0)
     dpdk_bind_devices_to_uio (conf);
@@ -1260,14 +1272,15 @@ dpdk_config (vlib_main_t * vm, unformat_input_t * input)
 
   /* NULL terminate the "argv" vector, in case of stupidity */
   vec_add1 (conf->eal_init_args, 0);
-  _vec_len (conf->eal_init_args) -= 1;
+  vec_dec_len (conf->eal_init_args, 1);
 
   /* Set up DPDK eal and packet mbuf pool early. */
 
   int log_fds[2] = { 0 };
   if (pipe (log_fds) == 0)
     {
-      if (fcntl (log_fds[1], F_SETFL, O_NONBLOCK) == 0)
+      if (fcntl (log_fds[0], F_SETFL, O_NONBLOCK) == 0 &&
+	  fcntl (log_fds[1], F_SETFL, O_NONBLOCK) == 0)
 	{
 	  FILE *f = fdopen (log_fds[1], "a");
 	  if (f && rte_openlog_stream (f) == 0)
@@ -1298,6 +1311,8 @@ dpdk_config (vlib_main_t * vm, unformat_input_t * input)
   dpdk_log_notice ("EAL init args: %s", conf->eal_init_args_str);
   ret = rte_eal_init (vec_len (conf->eal_init_args),
 		      (char **) conf->eal_init_args);
+  if (ret < 0)
+    return clib_error_return (0, "rte_eal_init returned %d", ret);
 
   /* enable the AVX-512 vPMDs in DPDK */
   if (clib_cpu_supports_avx512_bitalg () &&
@@ -1314,15 +1329,11 @@ dpdk_config (vlib_main_t * vm, unformat_input_t * input)
   rmdir ((char *) huge_dir_path);
   vec_free (huge_dir_path);
 
-  if (ret < 0)
-    return clib_error_return (0, "rte_eal_init returned %d", ret);
-
   /* main thread 1st */
   if ((error = dpdk_buffer_pools_create (vm)))
     return error;
 
-done:
-  return error;
+  return 0;
 }
 
 VLIB_CONFIG_FUNCTION (dpdk_config, "dpdk");
@@ -1367,10 +1378,10 @@ dpdk_update_link_state (dpdk_device_t * xd, f64 now)
       hw_flags_chg = 1;
       switch (xd->link.link_duplex)
 	{
-	case ETH_LINK_HALF_DUPLEX:
+	case RTE_ETH_LINK_HALF_DUPLEX:
 	  hw_flags |= VNET_HW_INTERFACE_FLAG_HALF_DUPLEX;
 	  break;
-	case ETH_LINK_FULL_DUPLEX:
+	case RTE_ETH_LINK_FULL_DUPLEX:
 	  hw_flags |= VNET_HW_INTERFACE_FLAG_FULL_DUPLEX;
 	  break;
 	default:

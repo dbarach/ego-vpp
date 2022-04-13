@@ -56,6 +56,7 @@ typedef struct
   char *name;
   char *desc;
   enum vl_counter_severity_e severity;
+  u32 stats_entry_index;
 } vlib_error_desc_t;
 
 typedef struct
@@ -69,12 +70,16 @@ typedef struct
   /* Counter structures in heap. Heap index
      indexes counter vector. */
   vlib_error_desc_t *counters_heap;
+
+  /* stats segment entry index */
+  u32 stats_err_entry_index;
 } vlib_error_main_t;
 
 /* Per node error registration. */
 void vlib_register_errors (struct vlib_main_t *vm, u32 node_index,
 			   u32 n_errors, char *error_strings[],
 			   vlib_error_desc_t counters[]);
+void vlib_unregister_errors (struct vlib_main_t *vm, u32 node_index);
 
 unformat_function_t unformat_vlib_error;
 
