@@ -110,6 +110,11 @@ static clib_error_t *
 event_log_viewer_command_fn (vlib_main_t * vm,
 			  unformat_input_t * input, vlib_cli_command_t * cmd)
 {
+  if (ego_gtk_start_check())
+    {
+      vlib_cli_output (vm, "GTK startup check failure...");
+      return 0;
+    }
   vlib_cli_output (vm, "Starting the event log viewer...");
   ego_start_thread();
   return 0;
