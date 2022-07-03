@@ -21,7 +21,7 @@ build3vers := $(shell py3versions -sv)
 	dh $@ --with $(DH_WITH) --buildsystem=pybuild
 
 override_dh_strip:
-	dh_strip --dbg-package=vpp-dbg
+	echo dont dh_strip --dbg-package=vpp-dbg
 
 override_dh_install:
 	@for c in @VPP_COMPONENTS@; do \
