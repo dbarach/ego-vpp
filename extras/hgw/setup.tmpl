@@ -30,13 +30,19 @@ $(FEATURE_ADL) { bin adl_interface_enable_disable $(TRUNK) }
 $(FEATURE_ADL) { ip table 1 }
 $(FEATURE_ADL) { ip route add table 1 0.0.0.0/0 via local }
 
-$(FEATURE_NAT44) { nat44 enable users 50 user-sessions 750 sessions 63000 }
+$(FEATURE_NAT44) { nat44 forwarding enable }
+$(FEATURE_NAT44) { nat44 plugin enable sessions 63000 }
 $(FEATURE_NAT44) { nat44 add interface address $(TRUNK) }
 $(FEATURE_NAT44) { set interface nat44 in bvi0 out $(TRUNK) }
 
 $(FEATURE_NAT44) { nat44 add static mapping local 192.168.$(INSIDE_SUBNET).2 22342 external $(TRUNK) 22342 tcp }
 $(FEATURE_NAT44) { $(FEATURE_IKE_RESPONDER) { nat44 add identity mapping external $(TRUNK) udp 500 } }
 $(FEATURE_NAT44) { $(FEATURE_IKE_RESPONDER) { nat44 add identity mapping external $(TRUNK) udp 4500 } }
+$(FEATURE_NAT44) { $(FEATURE_DNS) { nat44 add static mapping local 192.168.$(INSIDE_SUBNET).2 53053 external $(TRUNK) 53053 udp } }
+$(FEATURE_NAT44) { $(FEATURE_OVPN) { nat44 add static mapping local 192.168.$(INSIDE_SUBNET).2 37979 external $(TRUNK) 37979 udp } }
+$(FEATURE_NAT44) { $(FEATURE_OVPN) { set interface feature bvi0 skipnat arc ip4-unicast } }
+$(FEATURE_NAT44) { $(FEATURE_OVPN) { ip route add 192.168.10.0/24 via 192.168.$(INSIDE_SUBNET).2 } }
+
 
 $(FEATURE_CNAT) { set cnat snat-policy none }
 $(FEATURE_CNAT) { set cnat snat-policy addr $(TRUNK) }
@@ -95,3 +101,5 @@ $(FEATURE_MACTIME) { bin mactime_enable_disable $(INSIDE_PORT1) }
 $(FEATURE_MACTIME) { bin mactime_enable_disable $(INSIDE_PORT2) }
 $(FEATURE_MACTIME) { bin mactime_enable_disable $(INSIDE_PORT3) }
 $(FEATURE_MACTIME) { bin mactime_enable_disable $(INSIDE_PORT4) }
+
+$(FEATURE_MODEM_ROUTE) { ip route add 192.168.100.1/32 via $(TRUNK) }
