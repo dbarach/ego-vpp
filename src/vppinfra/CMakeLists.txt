@@ -71,6 +71,9 @@ set(VPPINFRA_SRCS
   mhash.c
   mpcap.c
   pcap.c
+  perfmon/bundle_default.c
+  perfmon/bundle_core_power.c
+  perfmon/perfmon.c
   pmalloc.c
   pool.c
   ptclosure.c
@@ -78,7 +81,6 @@ set(VPPINFRA_SRCS
   random.c
   random_isaac.c
   rbtree.c
-  sanitizer.c
   serialize.c
   socket.c
   std-formats.c
@@ -103,7 +105,6 @@ set(VPPINFRA_SRCS
 )
 
 set(VPPINFRA_HEADERS
-  sanitizer.h
   bihash_12_4.h
   bihash_16_8.h
   bihash_24_8.h
@@ -157,6 +158,7 @@ set(VPPINFRA_HEADERS
   os.h
   pcap.h
   pcap_funcs.h
+  perfmon/perfmon.h
   pmalloc.h
   pool.h
   ptclosure.h

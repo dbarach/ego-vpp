@@ -191,16 +191,14 @@ af_packet_set_tx_queues (vlib_main_t *vm, af_packet_if_t *apif)
 static int
 create_packet_v3_sock (int host_if_index, tpacket_req3_t *rx_req,
 		       tpacket_req3_t *tx_req, int *fd, af_packet_ring_t *ring,
-		       u32 *hdrlen_ptr, u8 *is_cksum_gso_enabled,
-		       u32 fanout_id, u8 is_fanout)
+		       u32 fanout_id, u8 is_fanout,
+		       af_packet_if_flags_t *flags)
 {
   af_packet_main_t *apm = &af_packet_main;
   struct sockaddr_ll sll;
   socklen_t req_sz = sizeof (tpacket_req3_t);
   int ret;
   int ver = TPACKET_V3;
-  u32 hdrlen = 0;
-  u32 len = sizeof (hdrlen);
   u32 ring_sz = 0;
 
   if (rx_req)
@@ -241,18 +239,6 @@ create_packet_v3_sock (int host_if_index, tpacket_req3_t *rx_req,
       goto error;
     }
 
-  if (getsockopt (*fd, SOL_PACKET, PACKET_HDRLEN, &hdrlen, &len) < 0)
-    {
-      vlib_log_err (
-	apm->log_class,
-	"Failed to get packet hdr len error handling option: %s (errno %d)",
-	strerror (errno), errno);
-      ret = VNET_API_ERROR_SYSCALL_ERROR_1;
-      goto error;
-    }
-  else
-    *hdrlen_ptr = hdrlen;
-
   int opt = 1;
   if (setsockopt (*fd, SOL_PACKET, PACKET_LOSS, &opt, sizeof (opt)) < 0)
     {
@@ -264,27 +250,35 @@ create_packet_v3_sock (int host_if_index, tpacket_req3_t *rx_req,
       goto error;
     }
 
-  int opt2 = 1;
-  if (setsockopt (*fd, SOL_PACKET, PACKET_VNET_HDR, &opt2, sizeof (opt2)) < 0)
+  if (*flags & AF_PACKET_IF_FLAGS_CKSUM_GSO)
     {
-      vlib_log_debug (
-	apm->log_class,
-	"Failed to set packet vnet hdr error handling option: %s (errno %d)",
-	strerror (errno), errno);
+
+      int opt2 = 1;
+      if (setsockopt (*fd, SOL_PACKET, PACKET_VNET_HDR, &opt2, sizeof (opt2)) <
+	  0)
+	{
+	  // remove the flag
+	  *flags &= ~AF_PACKET_IF_FLAGS_CKSUM_GSO;
+	  vlib_log_debug (apm->log_class,
+			  "Failed to set packet vnet hdr error handling "
+			  "option: %s (errno %d)",
+			  strerror (errno), errno);
+	}
     }
-  else
-    *is_cksum_gso_enabled = 1;
 
 #if defined(PACKET_QDISC_BYPASS)
-  /* Introduced with Linux 3.14 so the ifdef should eventually be removed  */
-  if (setsockopt (*fd, SOL_PACKET, PACKET_QDISC_BYPASS, &opt, sizeof (opt)) <
-      0)
-    {
-      vlib_log_debug (apm->log_class,
-		      "Failed to set qdisc bypass error "
-		      "handling option: %s (errno %d)",
-		      strerror (errno), errno);
-    }
+  if (*flags & AF_PACKET_IF_FLAGS_QDISC_BYPASS)
+    /* Introduced with Linux 3.14 so the ifdef should eventually be removed  */
+    if (setsockopt (*fd, SOL_PACKET, PACKET_QDISC_BYPASS, &opt, sizeof (opt)) <
+	0)
+      {
+	// remove the flag
+	*flags &= ~AF_PACKET_IF_FLAGS_QDISC_BYPASS;
+	vlib_log_debug (apm->log_class,
+			"Failed to set qdisc bypass error "
+			"handling option: %s (errno %d)",
+			strerror (errno), errno);
+      }
 #endif
 
   if (is_fanout)
@@ -357,9 +351,7 @@ af_packet_queue_init (vlib_main_t *vm, af_packet_if_t *apif,
   u8 *ring_addr = 0;
   u32 rx_frames_per_block, tx_frames_per_block;
   u32 rx_frame_size, tx_frame_size;
-  u32 hdrlen = 0;
   u32 i = 0;
-  u8 is_cksum_gso_enabled = 0;
 
   if (rx_queue)
     {
@@ -403,9 +395,9 @@ af_packet_queue_init (vlib_main_t *vm, af_packet_if_t *apif,
 
   if (rx_queue || tx_queue)
     {
-      ret = create_packet_v3_sock (apif->host_if_index, rx_req, tx_req, &fd,
-				   &ring, &hdrlen, &is_cksum_gso_enabled,
-				   apif->dev_instance, is_fanout);
+      ret =
+	create_packet_v3_sock (apif->host_if_index, rx_req, tx_req, &fd, &ring,
+			       apif->dev_instance, is_fanout, &arg->flags);
 
       if (ret != 0)
 	goto error;
@@ -444,12 +436,6 @@ af_packet_queue_init (vlib_main_t *vm, af_packet_if_t *apif,
       tx_queue->next_tx_frame = 0;
       tx_queue->queue_id = queue_id;
       clib_spinlock_init (&tx_queue->lockp);
-    }
-
-  if (queue_id == 0)
-    {
-      apif->hdrlen = hdrlen;
-      apif->is_cksum_gso_enabled = is_cksum_gso_enabled;
     }
 
   return 0;
@@ -659,6 +645,12 @@ af_packet_create_if (af_packet_create_if_arg_t *arg)
 
   af_packet_set_rx_queues (vm, apif);
   af_packet_set_tx_queues (vm, apif);
+
+  apif->is_qdisc_bypass_enabled =
+    (arg->flags & AF_PACKET_IF_FLAGS_QDISC_BYPASS);
+
+  if (arg->flags & AF_PACKET_IF_FLAGS_CKSUM_GSO)
+    apif->is_cksum_gso_enabled = 1;
 
   if (apif->is_cksum_gso_enabled)
     caps |= VNET_HW_IF_CAP_TCP_GSO | VNET_HW_IF_CAP_TX_IP4_CKSUM |
