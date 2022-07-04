@@ -192,6 +192,7 @@ vl_api_memclnt_create_t_handler (vl_api_memclnt_create_t * mp)
 
   regp->name = format (0, "%s", mp->name);
   vec_add1 (regp->name, 0);
+  regp->keepalive = true;
 
   if (am->serialized_message_table_in_shmem == 0)
     am->serialized_message_table_in_shmem =
@@ -215,6 +216,87 @@ vl_api_memclnt_create_t_handler (vl_api_memclnt_create_t * mp)
   rp->message_table = pointer_to_uword (msg_table);
 
   vl_msg_api_send_shmem (q, (u8 *) & rp);
+}
+
+void
+vl_api_memclnt_create_v2_t_handler (vl_api_memclnt_create_v2_t *mp)
+{
+  vl_api_registration_t **regpp;
+  vl_api_registration_t *regp;
+  vl_api_memclnt_create_v2_reply_t *rp;
+  svm_queue_t *q;
+  int rv = 0;
+  void *oldheap;
+  api_main_t *am = vlibapi_get_main ();
+  u8 *msg_table;
+
+  /*
+   * This is tortured. Maintain a vlib-address-space private
+   * pool of client registrations. We use the shared-memory virtual
+   * address of client structure as a handle, to allow direct
+   * manipulation of context quota vbls from the client library.
+   *
+   * This scheme causes trouble w/ API message trace replay, since
+   * some random VA from clib_mem_alloc() certainly won't
+   * occur in the Linux sim. The (very) few places
+   * that care need to use the pool index.
+   *
+   * Putting the registration object(s) into a pool in shared memory and
+   * using the pool index as a handle seems like a great idea.
+   * Unfortunately, each and every reference to that pool would need
+   * to be protected by a mutex:
+   *
+   *     Client                      VLIB
+   *     ------                      ----
+   *     convert pool index to
+   *     pointer.
+   *     <deschedule>
+   *                                 expand pool
+   *                                 <deschedule>
+   *     kaboom!
+   */
+
+  pool_get (am->vl_clients, regpp);
+
+  oldheap = vl_msg_push_heap ();
+  *regpp = clib_mem_alloc (sizeof (vl_api_registration_t));
+
+  regp = *regpp;
+  clib_memset (regp, 0, sizeof (*regp));
+  regp->registration_type = REGISTRATION_TYPE_SHMEM;
+  regp->vl_api_registration_pool_index = regpp - am->vl_clients;
+  regp->vlib_rp = am->vlib_rp;
+  regp->shmem_hdr = am->shmem_hdr;
+  regp->clib_file_index = am->shmem_hdr->clib_file_index;
+
+  q = regp->vl_input_queue = (svm_queue_t *) (uword) mp->input_queue;
+  VL_MSG_API_SVM_QUEUE_UNPOISON (q);
+
+  regp->name = format (0, "%s", mp->name);
+  vec_add1 (regp->name, 0);
+  regp->keepalive = mp->keepalive;
+
+  if (am->serialized_message_table_in_shmem == 0)
+    am->serialized_message_table_in_shmem =
+      vl_api_serialize_message_table (am, 0);
+
+  if (am->vlib_rp != am->vlib_primary_rp)
+    msg_table = vl_api_serialize_message_table (am, 0);
+  else
+    msg_table = am->serialized_message_table_in_shmem;
+
+  vl_msg_pop_heap (oldheap);
+
+  rp = vl_msg_api_alloc (sizeof (*rp));
+  rp->_vl_msg_id = ntohs (VL_API_MEMCLNT_CREATE_V2_REPLY);
+  rp->handle = (uword) regp;
+  rp->index = vl_msg_api_handle_from_index_and_epoch (
+    regp->vl_api_registration_pool_index, am->shmem_hdr->application_restarts);
+  rp->context = mp->context;
+  rp->response = ntohl (rv);
+  rp->message_table = pointer_to_uword (msg_table);
+
+  vl_msg_api_send_shmem (q, (u8 *) &rp);
 }
 
 void
@@ -399,6 +481,7 @@ vl_api_memclnt_keepalive_t_handler (vl_api_memclnt_keepalive_t * mp)
 
 #define foreach_vlib_api_msg                                                  \
   _ (MEMCLNT_CREATE, memclnt_create, 0)                                       \
+  _ (MEMCLNT_CREATE_V2, memclnt_create_v2, 0)                                 \
   _ (MEMCLNT_DELETE, memclnt_delete, 0)                                       \
   _ (MEMCLNT_KEEPALIVE, memclnt_keepalive, 0)                                 \
   _ (MEMCLNT_KEEPALIVE_REPLY, memclnt_keepalive_reply, 0)
@@ -449,9 +532,9 @@ vl_mem_api_init (const char *region_name)
    * special-case freeing of memclnt_delete messages, so we can
    * simply munmap pairwise / private API segments...
    */
-  am->message_bounce[VL_API_MEMCLNT_DELETE] = 1;
-  am->is_mp_safe[VL_API_MEMCLNT_KEEPALIVE_REPLY] = 1;
-  am->is_mp_safe[VL_API_MEMCLNT_KEEPALIVE] = 1;
+  am->msg_data[VL_API_MEMCLNT_DELETE].bounce = 1;
+  vl_api_set_msg_thread_safe (am, VL_API_MEMCLNT_KEEPALIVE_REPLY, 1);
+  vl_api_set_msg_thread_safe (am, VL_API_MEMCLNT_KEEPALIVE, 1);
 
   vlib_set_queue_signal_callback (vm, memclnt_queue_callback);
 
@@ -578,8 +661,10 @@ vl_mem_api_dead_client_scan (api_main_t * am, vl_shmem_hdr_t * shm, f64 now)
 
   /* *INDENT-OFF* */
   pool_foreach (regpp, am->vl_clients)  {
+      if (!(*regpp)->keepalive)
+	continue;
       vl_mem_send_client_keepalive_w_reg (am, now, regpp, &dead_indices,
-                                          &confused_indices);
+					  &confused_indices);
   }
   /* *INDENT-ON* */
 
@@ -683,6 +768,7 @@ vl_mem_api_handler_with_vm_node (api_main_t *am, svm_region_t *vlib_rp,
 				 vlib_node_runtime_t *node, u8 is_private)
 {
   u16 id = clib_net_to_host_u16 (*((u16 *) the_msg));
+  vl_api_msg_data_t *m = vl_api_get_msg_data (am, id);
   u8 *(*handler) (void *, void *, void *);
   u8 *(*print_fp) (void *, void *);
   svm_region_t *old_vlib_rp;
@@ -700,23 +786,23 @@ vl_mem_api_handler_with_vm_node (api_main_t *am, svm_region_t *vlib_rp,
 	u32 c;
       } * ed;
       ed = ELOG_DATA (am->elog_main, e);
-      if (id < vec_len (am->msg_names) && am->msg_names[id])
-	ed->c = elog_string (am->elog_main, (char *) am->msg_names[id]);
+      if (m && m->name)
+	ed->c = elog_string (am->elog_main, (char *) m->name);
       else
 	ed->c = elog_string (am->elog_main, "BOGUS");
     }
 
-  if (id < vec_len (am->msg_handlers) && am->msg_handlers[id])
+  if (m && m->handler)
     {
-      handler = (void *) am->msg_handlers[id];
+      handler = (void *) m->handler;
 
       if (PREDICT_FALSE (am->rx_trace && am->rx_trace->enabled))
 	vl_msg_api_trace (am, am->rx_trace, the_msg);
 
       if (PREDICT_FALSE (am->msg_print_flag))
 	{
-	  fformat (stdout, "[%d]: %s\n", id, am->msg_names[id]);
-	  print_fp = (void *) am->msg_print_handlers[id];
+	  fformat (stdout, "[%d]: %s\n", id, m->name);
+	  print_fp = (void *) am->msg_data[id].print_handler;
 	  if (print_fp == 0)
 	    {
 	      fformat (stdout, "  [no registered print fn for msg %d]\n", id);
@@ -726,11 +812,11 @@ vl_mem_api_handler_with_vm_node (api_main_t *am, svm_region_t *vlib_rp,
 	      (*print_fp) (the_msg, vm);
 	    }
 	}
-      is_mp_safe = am->is_mp_safe[id];
+      is_mp_safe = am->msg_data[id].is_mp_safe;
 
       if (!is_mp_safe)
 	{
-	  vl_msg_api_barrier_trace_context (am->msg_names[id]);
+	  vl_msg_api_barrier_trace_context (am->msg_data[id].name);
 	  vl_msg_api_barrier_sync ();
 	}
       if (is_private)
@@ -744,10 +830,10 @@ vl_mem_api_handler_with_vm_node (api_main_t *am, svm_region_t *vlib_rp,
       if (PREDICT_FALSE (vl_mem_api_fuzz_hook != 0))
 	(*vl_mem_api_fuzz_hook) (id, the_msg);
 
-      if (am->is_autoendian[id])
+      if (m->is_autoendian)
 	{
 	  void (*endian_fp) (void *);
-	  endian_fp = am->msg_endian_handlers[id];
+	  endian_fp = am->msg_data[id].endian_handler;
 	  (*endian_fp) (the_msg);
 	}
       if (PREDICT_FALSE (vec_len (am->perf_counter_cbs) != 0))
@@ -774,7 +860,7 @@ vl_mem_api_handler_with_vm_node (api_main_t *am, svm_region_t *vlib_rp,
    * Special-case, so we can e.g. bounce messages off the vnet
    * main thread without copying them...
    */
-  if (id >= vec_len (am->message_bounce) || !(am->message_bounce[id]))
+  if (!m || !m->bounce)
     {
       if (is_private)
 	{
@@ -807,8 +893,8 @@ vl_mem_api_handler_with_vm_node (api_main_t *am, svm_region_t *vlib_rp,
 	u32 c;
       } * ed;
       ed = ELOG_DATA (am->elog_main, e);
-      if (id < vec_len (am->msg_names) && am->msg_names[id])
-	ed->c = elog_string (am->elog_main, (char *) am->msg_names[id]);
+      if (m && m->name)
+	ed->c = elog_string (am->elog_main, (char *) m->name);
       else
 	ed->c = elog_string (am->elog_main, "BOGUS");
       ed->barrier = is_mp_safe;

@@ -667,7 +667,7 @@ send_classify_session_details (vl_api_registration_t * reg,
 {
   vl_api_classify_session_details_t *rmp;
 
-  rmp = vl_msg_api_alloc (sizeof (*rmp));
+  rmp = vl_msg_api_alloc (sizeof (*rmp) + match_length);
   clib_memset (rmp, 0, sizeof (*rmp));
   rmp->_vl_msg_id =
     ntohs (REPLY_MSG_ID_BASE + VL_API_CLASSIFY_SESSION_DETAILS);
@@ -966,9 +966,10 @@ classify_api_hookup (vlib_main_t * vm)
   /*
    * Trace space for classifier mask+match
    */
-  am->api_trace_cfg[VL_API_CLASSIFY_ADD_DEL_TABLE].size += 5 * sizeof (u32x4);
-  am->api_trace_cfg[VL_API_CLASSIFY_ADD_DEL_SESSION].size +=
-    5 * sizeof (u32x4);
+  vl_api_increase_msg_trace_size (am, VL_API_CLASSIFY_ADD_DEL_TABLE,
+				  5 * sizeof (u32x4));
+  vl_api_increase_msg_trace_size (am, VL_API_CLASSIFY_ADD_DEL_SESSION,
+				  5 * sizeof (u32x4));
 
   /*
    * Set up the (msg_name, crc, message-id) table

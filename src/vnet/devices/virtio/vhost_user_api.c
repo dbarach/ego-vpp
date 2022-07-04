@@ -168,6 +168,7 @@ vl_api_create_vhost_user_if_v2_t_handler (vl_api_create_vhost_user_if_v2_t *
   if (mp->use_custom_mac)
     mac_address_decode (mp->mac_address, (mac_address_t *) args.hwaddr);
 
+  args.use_custom_mac = mp->use_custom_mac;
   args.is_server = mp->is_server;
   args.sock_filename = (char *) mp->sock_filename;
   args.renumber = mp->renumber;
@@ -329,8 +330,8 @@ vhost_user_api_hookup (vlib_main_t * vm)
 {
   api_main_t *am = vlibapi_get_main ();
   /* Mark CREATE_VHOST_USER_IF as mp safe */
-  am->is_mp_safe[VL_API_CREATE_VHOST_USER_IF] = 1;
-  am->is_mp_safe[VL_API_CREATE_VHOST_USER_IF_V2] = 1;
+  vl_api_set_msg_thread_safe (am, VL_API_CREATE_VHOST_USER_IF, 1);
+  vl_api_set_msg_thread_safe (am, VL_API_CREATE_VHOST_USER_IF_V2, 1);
 
   /*
    * Set up the (msg_name, crc, message-id) table

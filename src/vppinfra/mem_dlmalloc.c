@@ -287,13 +287,12 @@ clib_mem_destroy (void)
 {
   mheap_trace_main_t *tm = &mheap_trace_main;
   clib_mem_heap_t *heap = clib_mem_get_heap ();
-  void *base = mspace_least_addr (heap->mspace);
 
   if (tm->enabled && heap->mspace == tm->current_traced_mheap)
     tm->enabled = 0;
 
   destroy_mspace (heap->mspace);
-  clib_mem_vm_unmap (base);
+  clib_mem_vm_unmap (heap);
 }
 
 __clib_export u8 *
@@ -699,6 +698,11 @@ clib_mem_heap_realloc_aligned (void *heap, void *p, uword new_size,
       mspace_realloc_in_place (h->mspace, p, new_size))
     {
       clib_mem_unpoison (p, new_size);
+      if (PREDICT_FALSE (h->flags & CLIB_MEM_HEAP_F_TRACED))
+	{
+	  mheap_put_trace (pointer_to_uword (p), old_alloc_size);
+	  mheap_get_trace (pointer_to_uword (p), clib_mem_size (p));
+	}
     }
   else
     {

@@ -289,10 +289,17 @@ vcl_session_transport_attr (vcl_worker_t *wrk, vcl_session_t *s, u8 is_get,
   f64 timeout;
 
   ASSERT (!wrk->session_attr_op);
+  mq = s->vpp_evt_q;
+  if (PREDICT_FALSE (!mq))
+    {
+      /* FIXME: attribute should be stored and sent once session is
+       * bound/connected to vpp */
+      return 0;
+    }
+
   wrk->session_attr_op = 1;
   wrk->session_attr_op_rv = -1;
 
-  mq = s->vpp_evt_q;
   app_alloc_ctrl_evt_to_vpp (mq, app_evt, SESSION_CTRL_EVT_TRANSPORT_ATTR);
   mp = (session_transport_attr_msg_t *) app_evt->evt->data;
   memset (mp, 0, sizeof (*mp));
@@ -790,7 +797,8 @@ vppcom_session_disconnect (u32 session_handle)
   if (session->listener_index != VCL_INVALID_SESSION_INDEX)
     {
       listen_session = vcl_session_get (wrk, session->listener_index);
-      listen_session->n_accepted_sessions--;
+      if (listen_session)
+	listen_session->n_accepted_sessions--;
     }
 
   return VPPCOM_OK;

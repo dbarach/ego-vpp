@@ -120,7 +120,7 @@ format_vnet_hw_interface_link_speed (u8 * s, va_list * args)
 {
   u32 link_speed = va_arg (*args, u32);
 
-  if (link_speed == 0)
+  if (link_speed == 0 || link_speed == UINT32_MAX)
     return format (s, "unknown");
 
   if (link_speed >= 1000000)
@@ -602,9 +602,9 @@ format_vnet_buffer_opaque (u8 * s, va_list * args)
 
   s = format (s,
 	      "l2_classify.table_index: %d, l2_classify.opaque_index: %d, "
-	      "l2_classify.hash: 0x%llx",
-	      o->l2_classify.table_index,
-	      o->l2_classify.opaque_index, o->l2_classify.hash);
+	      "l2_classify.hash: 0x%lx",
+	      o->l2_classify.table_index, o->l2_classify.opaque_index,
+	      o->l2_classify.hash);
   vec_add1 (s, '\n');
 
   s = format (s, "policer.index: %d", o->policer.index);

@@ -820,6 +820,14 @@ start_workers (vlib_main_t * vm)
 	}
     }
   vlib_worker_thread_barrier_sync (vm);
+  {
+    clib_error_t *err;
+    err = vlib_call_init_exit_functions (
+      vm, &vgm->num_workers_change_function_registrations, 1 /* call_once */,
+      1 /* is_global */);
+    if (err)
+      clib_error_report (err);
+  }
   vlib_worker_thread_barrier_release (vm);
   return 0;
 }
@@ -1587,12 +1595,18 @@ VLIB_REGISTER_THREAD (worker_thread_reg, static) = {
 };
 /* *INDENT-ON* */
 
+extern clib_march_fn_registration
+  *vlib_frame_queue_dequeue_with_aux_fn_march_fn_registrations;
+extern clib_march_fn_registration
+  *vlib_frame_queue_dequeue_fn_march_fn_registrations;
 u32
 vlib_frame_queue_main_init (u32 node_index, u32 frame_queue_nelts)
 {
   vlib_thread_main_t *tm = vlib_get_thread_main ();
+  vlib_main_t *vm = vlib_get_main ();
   vlib_frame_queue_main_t *fqm;
   vlib_frame_queue_t *fq;
+  vlib_node_t *node;
   int i;
   u32 num_threads;
 
@@ -1603,6 +1617,19 @@ vlib_frame_queue_main_init (u32 node_index, u32 frame_queue_nelts)
   ASSERT (frame_queue_nelts >= 8 + num_threads);
 
   vec_add2 (tm->frame_queue_mains, fqm, 1);
+
+  node = vlib_get_node (vm, fqm->node_index);
+  ASSERT (node);
+  if (node->aux_offset)
+    {
+      fqm->frame_queue_dequeue_fn =
+	CLIB_MARCH_FN_VOID_POINTER (vlib_frame_queue_dequeue_with_aux_fn);
+    }
+  else
+    {
+      fqm->frame_queue_dequeue_fn =
+	CLIB_MARCH_FN_VOID_POINTER (vlib_frame_queue_dequeue_fn);
+    }
 
   fqm->node_index = node_index;
   fqm->frame_queue_nelts = frame_queue_nelts;

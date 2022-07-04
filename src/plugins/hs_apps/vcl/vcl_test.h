@@ -65,7 +65,9 @@
 #define VCL_TEST_CFG_TXBUF_SIZE_DEF  	8192
 #define VCL_TEST_CFG_RXBUF_SIZE_DEF  	(64*VCL_TEST_CFG_TXBUF_SIZE_DEF)
 #define VCL_TEST_CFG_BUF_SIZE_MIN    	128
-#define VCL_TEST_CFG_MAX_TEST_SESS	512
+#define VCL_TEST_CFG_MAX_TEST_SESS	((uint32_t) 1e6)
+#define VCL_TEST_CFG_MAX_SELECT_SESS	512
+#define VCL_TEST_CFG_INIT_TEST_SESS	512
 #define VCL_TEST_CFG_MAX_EPOLL_EVENTS 	16
 
 #define VCL_TEST_CTRL_LISTENER		(~0 - 1)
@@ -125,9 +127,10 @@ typedef struct
 
 typedef struct vcl_test_session
 {
-  uint8_t is_alloc;
-  uint8_t is_open;
   uint8_t is_done;
+  uint8_t is_alloc : 1;
+  uint8_t is_open : 1;
+  uint8_t noblk_connect : 1;
   int fd;
   int (*read) (struct vcl_test_session *ts, void *buf, uint32_t buflen);
   int (*write) (struct vcl_test_session *ts, void *buf, uint32_t buflen);
@@ -139,6 +142,7 @@ typedef struct vcl_test_session
   vcl_test_stats_t stats;
   vcl_test_stats_t old_stats;
   int session_index;
+  struct vcl_test_session *next;
   vppcom_endpt_t endpt;
   uint8_t ip[16];
   vppcom_data_segment_t ds[2];

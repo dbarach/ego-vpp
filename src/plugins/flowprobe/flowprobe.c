@@ -46,23 +46,46 @@ uword flowprobe_walker_process (vlib_main_t * vm, vlib_node_runtime_t * rt,
 
 /* Define the per-interface configurable features */
 /* *INDENT-OFF* */
-VNET_FEATURE_INIT (flow_perpacket_ip4, static) =
-{
+VNET_FEATURE_INIT (flowprobe_input_ip4_unicast, static) = {
+  .arc_name = "ip4-unicast",
+  .node_name = "flowprobe-input-ip4",
+  .runs_before = VNET_FEATURES ("ip4-lookup"),
+};
+VNET_FEATURE_INIT (flowprobe_input_ip4_multicast, static) = {
+  .arc_name = "ip4-multicast",
+  .node_name = "flowprobe-input-ip4",
+  .runs_before = VNET_FEATURES ("ip4-mfib-forward-lookup"),
+};
+VNET_FEATURE_INIT (flowprobe_input_ip6_unicast, static) = {
+  .arc_name = "ip6-unicast",
+  .node_name = "flowprobe-input-ip6",
+  .runs_before = VNET_FEATURES ("ip6-lookup"),
+};
+VNET_FEATURE_INIT (flowprobe_input_ip6_multicast, static) = {
+  .arc_name = "ip6-multicast",
+  .node_name = "flowprobe-input-ip6",
+  .runs_before = VNET_FEATURES ("ip6-mfib-forward-lookup"),
+};
+VNET_FEATURE_INIT (flowprobe_input_l2, static) = {
+  .arc_name = "device-input",
+  .node_name = "flowprobe-input-l2",
+  .runs_before = VNET_FEATURES ("ethernet-input"),
+};
+VNET_FEATURE_INIT (flowprobe_output_ip4, static) = {
   .arc_name = "ip4-output",
-  .node_name = "flowprobe-ip4",
+  .node_name = "flowprobe-output-ip4",
   .runs_before = VNET_FEATURES ("interface-output"),
 };
 
-VNET_FEATURE_INIT (flow_perpacket_ip6, static) =
-{
+VNET_FEATURE_INIT (flowprobe_output_ip6, static) = {
   .arc_name = "ip6-output",
-  .node_name = "flowprobe-ip6",
+  .node_name = "flowprobe-output-ip6",
   .runs_before = VNET_FEATURES ("interface-output"),
 };
 
-VNET_FEATURE_INIT (flow_perpacket_l2, static) = {
+VNET_FEATURE_INIT (flowprobe_output_l2, static) = {
   .arc_name = "interface-output",
-  .node_name = "flowprobe-l2",
+  .node_name = "flowprobe-output-l2",
   .runs_before = VNET_FEATURES ("interface-output-arc-end"),
 };
 /* *INDENT-ON* */
@@ -143,7 +166,7 @@ flowprobe_template_l2_fields (ipfix_field_specifier_t * f)
 static inline ipfix_field_specifier_t *
 flowprobe_template_common_fields (ipfix_field_specifier_t * f)
 {
-#define flowprobe_template_common_field_count() 5
+#define flowprobe_template_common_field_count() 6
   /* ingressInterface, TLV type 10, u32 */
   f->e_id_length = ipfix_e_id_length (0 /* enterprise */ ,
 				      ingressInterface, 4);
@@ -152,6 +175,10 @@ flowprobe_template_common_fields (ipfix_field_specifier_t * f)
   /* egressInterface, TLV type 14, u32 */
   f->e_id_length = ipfix_e_id_length (0 /* enterprise */ ,
 				      egressInterface, 4);
+  f++;
+
+  /* flowDirection, TLV type 61, u8 */
+  f->e_id_length = ipfix_e_id_length (0 /* enterprise */, flowDirection, 1);
   f++;
 
   /* packetDeltaCount, TLV type 2, u64 */
@@ -483,6 +510,7 @@ validate_feature_on_interface (flowprobe_main_t * fm, u32 sw_if_index,
 			       u8 which)
 {
   vec_validate_init_empty (fm->flow_per_interface, sw_if_index, ~0);
+  vec_validate_init_empty (fm->direction_per_interface, sw_if_index, ~0);
 
   if (fm->flow_per_interface[sw_if_index] == (u8) ~ 0)
     return -1;
@@ -496,13 +524,15 @@ validate_feature_on_interface (flowprobe_main_t * fm, u32 sw_if_index,
  * @brief configure / deconfigure the IPFIX flow-per-packet
  * @param fm flowprobe_main_t * fm
  * @param sw_if_index u32 the desired interface
+ * @param which u8 the desired datapath
+ * @param direction u8 the desired direction
  * @param is_add int 1 to enable the feature, 0 to disable it
  * @returns 0 if successful, non-zero otherwise
  */
 
 static int
-flowprobe_tx_interface_add_del_feature (flowprobe_main_t * fm,
-					u32 sw_if_index, u8 which, int is_add)
+flowprobe_interface_add_del_feature (flowprobe_main_t *fm, u32 sw_if_index,
+				     u8 which, u8 direction, int is_add)
 {
   vlib_main_t *vm = vlib_get_main ();
   int rv = 0;
@@ -510,6 +540,7 @@ flowprobe_tx_interface_add_del_feature (flowprobe_main_t * fm,
   flowprobe_record_t flags = fm->record;
 
   fm->flow_per_interface[sw_if_index] = (is_add) ? which : (u8) ~ 0;
+  fm->direction_per_interface[sw_if_index] = (is_add) ? direction : (u8) ~0;
   fm->template_per_flow[which] += (is_add) ? 1 : -1;
   if (is_add && fm->template_per_flow[which] > 1)
     template_id = fm->template_reports[flags];
@@ -574,15 +605,39 @@ flowprobe_tx_interface_add_del_feature (flowprobe_main_t * fm,
       fm->template_reports[flags] = (is_add) ? template_id : 0;
     }
 
-  if (which == FLOW_VARIANT_IP4)
-    vnet_feature_enable_disable ("ip4-output", "flowprobe-ip4",
-				 sw_if_index, is_add, 0, 0);
-  else if (which == FLOW_VARIANT_IP6)
-    vnet_feature_enable_disable ("ip6-output", "flowprobe-ip6",
-				 sw_if_index, is_add, 0, 0);
-  else if (which == FLOW_VARIANT_L2)
-    vnet_feature_enable_disable ("interface-output", "flowprobe-l2",
-				 sw_if_index, is_add, 0, 0);
+  if (direction == FLOW_DIRECTION_RX || direction == FLOW_DIRECTION_BOTH)
+    {
+      if (which == FLOW_VARIANT_IP4)
+	{
+	  vnet_feature_enable_disable ("ip4-unicast", "flowprobe-input-ip4",
+				       sw_if_index, is_add, 0, 0);
+	  vnet_feature_enable_disable ("ip4-multicast", "flowprobe-input-ip4",
+				       sw_if_index, is_add, 0, 0);
+	}
+      else if (which == FLOW_VARIANT_IP6)
+	{
+	  vnet_feature_enable_disable ("ip6-unicast", "flowprobe-input-ip6",
+				       sw_if_index, is_add, 0, 0);
+	  vnet_feature_enable_disable ("ip6-multicast", "flowprobe-input-ip6",
+				       sw_if_index, is_add, 0, 0);
+	}
+      else if (which == FLOW_VARIANT_L2)
+	vnet_feature_enable_disable ("device-input", "flowprobe-input-l2",
+				     sw_if_index, is_add, 0, 0);
+    }
+
+  if (direction == FLOW_DIRECTION_TX || direction == FLOW_DIRECTION_BOTH)
+    {
+      if (which == FLOW_VARIANT_IP4)
+	vnet_feature_enable_disable ("ip4-output", "flowprobe-output-ip4",
+				     sw_if_index, is_add, 0, 0);
+      else if (which == FLOW_VARIANT_IP6)
+	vnet_feature_enable_disable ("ip6-output", "flowprobe-output-ip6",
+				     sw_if_index, is_add, 0, 0);
+      else if (which == FLOW_VARIANT_L2)
+	vnet_feature_enable_disable ("interface-output", "flowprobe-output-l2",
+				     sw_if_index, is_add, 0, 0);
+    }
 
   /* Stateful flow collection */
   if (is_add && !fm->initialized)
@@ -623,13 +678,174 @@ void vl_api_flowprobe_tx_interface_add_del_t_handler
       goto out;
     }
 
-  rv = flowprobe_tx_interface_add_del_feature
-    (fm, sw_if_index, mp->which, mp->is_add);
+  rv = flowprobe_interface_add_del_feature (fm, sw_if_index, mp->which,
+					    FLOW_DIRECTION_TX, mp->is_add);
 
 out:
   BAD_SW_IF_INDEX_LABEL;
 
   REPLY_MACRO (VL_API_FLOWPROBE_TX_INTERFACE_ADD_DEL_REPLY);
+}
+
+void
+vl_api_flowprobe_interface_add_del_t_handler (
+  vl_api_flowprobe_interface_add_del_t *mp)
+{
+  flowprobe_main_t *fm = &flowprobe_main;
+  vl_api_flowprobe_interface_add_del_reply_t *rmp;
+  u32 sw_if_index;
+  u8 which;
+  u8 direction;
+  bool is_add;
+  int rv = 0;
+
+  VALIDATE_SW_IF_INDEX (mp);
+
+  sw_if_index = ntohl (mp->sw_if_index);
+  is_add = mp->is_add;
+
+  if (mp->which == FLOWPROBE_WHICH_IP4)
+    which = FLOW_VARIANT_IP4;
+  else if (mp->which == FLOWPROBE_WHICH_IP6)
+    which = FLOW_VARIANT_IP6;
+  else if (mp->which == FLOWPROBE_WHICH_L2)
+    which = FLOW_VARIANT_L2;
+  else
+    {
+      clib_warning ("Invalid value of which");
+      rv = VNET_API_ERROR_INVALID_VALUE;
+      goto out;
+    }
+
+  if (mp->direction == FLOWPROBE_DIRECTION_RX)
+    direction = FLOW_DIRECTION_RX;
+  else if (mp->direction == FLOWPROBE_DIRECTION_TX)
+    direction = FLOW_DIRECTION_TX;
+  else if (mp->direction == FLOWPROBE_DIRECTION_BOTH)
+    direction = FLOW_DIRECTION_BOTH;
+  else
+    {
+      clib_warning ("Invalid value of direction");
+      rv = VNET_API_ERROR_INVALID_VALUE;
+      goto out;
+    }
+
+  if (fm->record == 0)
+    {
+      clib_warning ("Please specify flowprobe params record first");
+      rv = VNET_API_ERROR_CANNOT_ENABLE_DISABLE_FEATURE;
+      goto out;
+    }
+
+  rv = validate_feature_on_interface (fm, sw_if_index, which);
+  if (rv == 1)
+    {
+      if (is_add)
+	{
+	  clib_warning ("Variant is already enabled for given interface");
+	  rv = VNET_API_ERROR_ENTRY_ALREADY_EXISTS;
+	  goto out;
+	}
+    }
+  else if (rv == 0)
+    {
+      clib_warning ("Interface has different variant enabled");
+      rv = VNET_API_ERROR_ENTRY_ALREADY_EXISTS;
+      goto out;
+    }
+  else if (rv == -1)
+    {
+      if (!is_add)
+	{
+	  clib_warning ("Interface has no variant enabled");
+	  rv = VNET_API_ERROR_NO_SUCH_ENTRY;
+	  goto out;
+	}
+    }
+
+  rv = flowprobe_interface_add_del_feature (fm, sw_if_index, which, direction,
+					    is_add);
+
+out:
+  BAD_SW_IF_INDEX_LABEL;
+
+  REPLY_MACRO (VL_API_FLOWPROBE_INTERFACE_ADD_DEL_REPLY);
+}
+
+static void
+send_flowprobe_interface_details (u32 sw_if_index, u8 which, u8 direction,
+				  vl_api_registration_t *reg, u32 context)
+{
+  flowprobe_main_t *fm = &flowprobe_main;
+  vl_api_flowprobe_interface_details_t *rmp = 0;
+
+  rmp = vl_msg_api_alloc (sizeof (*rmp));
+  if (!rmp)
+    return;
+  clib_memset (rmp, 0, sizeof (*rmp));
+  rmp->_vl_msg_id =
+    ntohs (VL_API_FLOWPROBE_INTERFACE_DETAILS + REPLY_MSG_ID_BASE);
+  rmp->context = context;
+
+  rmp->sw_if_index = htonl (sw_if_index);
+
+  if (which == FLOW_VARIANT_IP4)
+    rmp->which = FLOWPROBE_WHICH_IP4;
+  else if (which == FLOW_VARIANT_IP6)
+    rmp->which = FLOWPROBE_WHICH_IP6;
+  else if (which == FLOW_VARIANT_L2)
+    rmp->which = FLOWPROBE_WHICH_L2;
+  else
+    ASSERT (0);
+
+  if (direction == FLOW_DIRECTION_RX)
+    rmp->direction = FLOWPROBE_DIRECTION_RX;
+  else if (direction == FLOW_DIRECTION_TX)
+    rmp->direction = FLOWPROBE_DIRECTION_TX;
+  else if (direction == FLOW_DIRECTION_BOTH)
+    rmp->direction = FLOWPROBE_DIRECTION_BOTH;
+  else
+    ASSERT (0);
+
+  vl_api_send_msg (reg, (u8 *) rmp);
+}
+
+static void
+vl_api_flowprobe_interface_dump_t_handler (
+  vl_api_flowprobe_interface_dump_t *mp)
+{
+  flowprobe_main_t *fm = &flowprobe_main;
+  vl_api_registration_t *reg;
+  u32 sw_if_index;
+
+  reg = vl_api_client_index_to_registration (mp->client_index);
+  if (!reg)
+    return;
+
+  sw_if_index = ntohl (mp->sw_if_index);
+
+  if (sw_if_index == ~0)
+    {
+      u8 *which;
+
+      vec_foreach (which, fm->flow_per_interface)
+	{
+	  if (*which == (u8) ~0)
+	    continue;
+
+	  sw_if_index = which - fm->flow_per_interface;
+	  send_flowprobe_interface_details (
+	    sw_if_index, *which, fm->direction_per_interface[sw_if_index], reg,
+	    mp->context);
+	}
+    }
+  else if (vec_len (fm->flow_per_interface) > sw_if_index &&
+	   fm->flow_per_interface[sw_if_index] != (u8) ~0)
+    {
+      send_flowprobe_interface_details (
+	sw_if_index, fm->flow_per_interface[sw_if_index],
+	fm->direction_per_interface[sw_if_index], reg, mp->context);
+    }
 }
 
 #define vec_neg_search(v,E)         \
@@ -652,7 +868,7 @@ flowprobe_params (flowprobe_main_t * fm, u8 record_l2,
   flowprobe_record_t flags = 0;
 
   if (vec_neg_search (fm->flow_per_interface, (u8) ~ 0) != ~0)
-    return ~0;
+    return VNET_API_ERROR_UNSUPPORTED;
 
   if (record_l2)
     flags |= FLOW_RECORD_L2;
@@ -692,6 +908,65 @@ vl_api_flowprobe_params_t_handler (vl_api_flowprobe_params_t * mp)
   REPLY_MACRO (VL_API_FLOWPROBE_PARAMS_REPLY);
 }
 
+void
+vl_api_flowprobe_set_params_t_handler (vl_api_flowprobe_set_params_t *mp)
+{
+  flowprobe_main_t *fm = &flowprobe_main;
+  vl_api_flowprobe_set_params_reply_t *rmp;
+  bool record_l2, record_l3, record_l4;
+  u32 active_timer;
+  u32 passive_timer;
+  int rv = 0;
+
+  record_l2 = (mp->record_flags & FLOWPROBE_RECORD_FLAG_L2);
+  record_l3 = (mp->record_flags & FLOWPROBE_RECORD_FLAG_L3);
+  record_l4 = (mp->record_flags & FLOWPROBE_RECORD_FLAG_L4);
+
+  active_timer = clib_net_to_host_u32 (mp->active_timer);
+  passive_timer = clib_net_to_host_u32 (mp->passive_timer);
+
+  if (passive_timer > 0 && active_timer > passive_timer)
+    {
+      clib_warning ("Passive timer must be greater than active timer");
+      rv = VNET_API_ERROR_INVALID_VALUE;
+      goto out;
+    }
+
+  rv = flowprobe_params (fm, record_l2, record_l3, record_l4, active_timer,
+			 passive_timer);
+  if (rv == VNET_API_ERROR_UNSUPPORTED)
+    clib_warning (
+      "Cannot change params when feature is enabled on some interfaces");
+
+out:
+  REPLY_MACRO (VL_API_FLOWPROBE_SET_PARAMS_REPLY);
+}
+
+void
+vl_api_flowprobe_get_params_t_handler (vl_api_flowprobe_get_params_t *mp)
+{
+  flowprobe_main_t *fm = &flowprobe_main;
+  vl_api_flowprobe_get_params_reply_t *rmp;
+  u8 record_flags = 0;
+  int rv = 0;
+
+  if (fm->record & FLOW_RECORD_L2)
+    record_flags |= FLOWPROBE_RECORD_FLAG_L2;
+  if (fm->record & FLOW_RECORD_L3)
+    record_flags |= FLOWPROBE_RECORD_FLAG_L3;
+  if (fm->record & FLOW_RECORD_L4)
+    record_flags |= FLOWPROBE_RECORD_FLAG_L4;
+
+  // clang-format off
+  REPLY_MACRO2 (VL_API_FLOWPROBE_GET_PARAMS_REPLY,
+  ({
+    rmp->record_flags = record_flags;
+    rmp->active_timer = htonl (fm->active_timer);
+    rmp->passive_timer = htonl (fm->passive_timer);
+  }));
+  // clang-format on
+}
+
 /* *INDENT-OFF* */
 VLIB_PLUGIN_REGISTER () = {
     .version = VPP_BUILD_VER,
@@ -700,9 +975,24 @@ VLIB_PLUGIN_REGISTER () = {
 /* *INDENT-ON* */
 
 u8 *
+format_flowprobe_direction (u8 *s, va_list *args)
+{
+  u8 *direction = va_arg (*args, u8 *);
+  if (*direction == FLOW_DIRECTION_RX)
+    s = format (s, "rx");
+  else if (*direction == FLOW_DIRECTION_TX)
+    s = format (s, "tx");
+  else if (*direction == FLOW_DIRECTION_BOTH)
+    s = format (s, "rx tx");
+
+  return s;
+}
+
+u8 *
 format_flowprobe_entry (u8 * s, va_list * args)
 {
   flowprobe_entry_t *e = va_arg (*args, flowprobe_entry_t *);
+  s = format (s, " %U", format_flowprobe_direction, &e->key.direction);
   s = format (s, " %d/%d", e->key.rx_sw_if_index, e->key.tx_sw_if_index);
 
   s = format (s, " %U %U", format_ethernet_address, &e->key.src_mac,
@@ -799,14 +1089,15 @@ flowprobe_show_stats_fn (vlib_main_t * vm,
 }
 
 static clib_error_t *
-flowprobe_tx_interface_add_del_feature_command_fn (vlib_main_t * vm,
-						   unformat_input_t * input,
-						   vlib_cli_command_t * cmd)
+flowprobe_interface_add_del_feature_command_fn (vlib_main_t *vm,
+						unformat_input_t *input,
+						vlib_cli_command_t *cmd)
 {
   flowprobe_main_t *fm = &flowprobe_main;
   u32 sw_if_index = ~0;
   int is_add = 1;
   u8 which = FLOW_VARIANT_IP4;
+  flowprobe_direction_t direction = FLOW_DIRECTION_TX;
   int rv;
 
   while (unformat_check_input (input) != UNFORMAT_END_OF_INPUT)
@@ -821,6 +1112,12 @@ flowprobe_tx_interface_add_del_feature_command_fn (vlib_main_t * vm,
 	which = FLOW_VARIANT_IP6;
       else if (unformat (input, "l2"))
 	which = FLOW_VARIANT_L2;
+      else if (unformat (input, "rx"))
+	direction = FLOW_DIRECTION_RX;
+      else if (unformat (input, "tx"))
+	direction = FLOW_DIRECTION_TX;
+      else if (unformat (input, "both"))
+	direction = FLOW_DIRECTION_BOTH;
       else
 	break;
     }
@@ -842,9 +1139,16 @@ flowprobe_tx_interface_add_del_feature_command_fn (vlib_main_t * vm,
   else if (rv == 0)
     return clib_error_return (0,
 			      "Interface has enable different datapath ...");
+  else if (rv == -1)
+    {
+      if (!is_add)
+	{
+	  return clib_error_return (0, "Interface has no datapath enabled");
+	}
+    }
 
-  rv =
-    flowprobe_tx_interface_add_del_feature (fm, sw_if_index, which, is_add);
+  rv = flowprobe_interface_add_del_feature (fm, sw_if_index, which, direction,
+					    is_add);
   switch (rv)
     {
     case 0:
@@ -881,9 +1185,10 @@ flowprobe_show_feature_command_fn (vlib_main_t * vm,
       continue;
 
     sw_if_index = which - fm->flow_per_interface;
-    vlib_cli_output (vm, " %U %U", format_vnet_sw_if_index_name,
+    vlib_cli_output (vm, " %U %U %U", format_vnet_sw_if_index_name,
 		     vnet_get_main (), sw_if_index, format_flowprobe_feature,
-		     which);
+		     which, format_flowprobe_direction,
+		     &fm->direction_per_interface[sw_if_index]);
   }
   return 0;
 }
@@ -962,16 +1267,16 @@ flowprobe_show_params_command_fn (vlib_main_t * vm,
 ?*/
 /* *INDENT-OFF* */
 VLIB_CLI_COMMAND (flowprobe_enable_disable_command, static) = {
-    .path = "flowprobe feature add-del",
-    .short_help =
-    "flowprobe feature add-del <interface-name> <l2|ip4|ip6> disable",
-    .function = flowprobe_tx_interface_add_del_feature_command_fn,
+  .path = "flowprobe feature add-del",
+  .short_help = "flowprobe feature add-del <interface-name> [(l2|ip4|ip6)] "
+		"[(rx|tx|both)] [disable]",
+  .function = flowprobe_interface_add_del_feature_command_fn,
 };
 VLIB_CLI_COMMAND (flowprobe_params_command, static) = {
-    .path = "flowprobe params",
-    .short_help =
-    "flowprobe params record <[l2] [l3] [l4]> [active <timer> passive <timer>]",
-    .function = flowprobe_params_command_fn,
+  .path = "flowprobe params",
+  .short_help = "flowprobe params record [l2] [l3] [l4] [active <timer>] "
+		"[passive <timer>]",
+  .function = flowprobe_params_command_fn,
 };
 
 VLIB_CLI_COMMAND (flowprobe_show_feature_command, static) = {

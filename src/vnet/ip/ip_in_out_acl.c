@@ -32,11 +32,26 @@ format_ip_in_out_acl_trace (u8 * s, u32 is_output, va_list * args)
   CLIB_UNUSED (vlib_main_t * vm) = va_arg (*args, vlib_main_t *);
   CLIB_UNUSED (vlib_node_t * node) = va_arg (*args, vlib_node_t *);
   ip_in_out_acl_trace_t *t = va_arg (*args, ip_in_out_acl_trace_t *);
+  const vnet_classify_main_t *vcm = &vnet_classify_main;
+  const u32 indent = format_get_indent (s);
+  vnet_classify_table_t *table;
+  vnet_classify_entry_t *e;
 
-  s = format (s, "%s: sw_if_index %d, next_index %d, table %d, offset %d",
-	      is_output ? "OUTACL" : "INACL",
-	      t->sw_if_index, t->next_index, t->table_index, t->offset);
-  return s;
+  s =
+    format (s, "%s: sw_if_index %d, next_index %d, table_index %d, offset %d",
+	    is_output ? "OUTACL" : "INACL", t->sw_if_index, t->next_index,
+	    t->table_index, t->offset);
+
+  if (pool_is_free_index (vcm->tables, t->table_index))
+    return format (s, "\n%Uno table", format_white_space, indent + 4);
+
+  if (~0 == t->offset)
+    return format (s, "\n%Uno match", format_white_space, indent + 4);
+
+  table = vnet_classify_table_get (t->table_index);
+  e = vnet_classify_get_entry (table, t->offset);
+  return format (s, "\n%U%U", format_white_space, indent + 4,
+		 format_classify_entry, table, e);
 }
 
 static u8 *
@@ -115,7 +130,7 @@ ip_in_out_acl_inline_trace (
   u32 sw_if_index[4];
   u32 table_index[4];
   vnet_classify_table_t *t[4] = { 0, 0 };
-  u64 hash[4];
+  u32 hash[4];
 
   /* calculate hashes for b[0] & b[1] */
   if (n_left >= 2)
@@ -147,16 +162,16 @@ ip_in_out_acl_inline_trace (
       if (is_output)
 	{
 	  /* Save the rewrite length, since we are using the l2_classify struct */
-	  vnet_buffer (b[0])->l2_classify.pad.l2_len =
+	  vnet_buffer (b[0])->l2.l2_len =
 	    vnet_buffer (b[0])->ip.save_rewrite_length;
 	  /* advance the match pointer so the matching happens on IP header */
-	  h[2] += vnet_buffer (b[0])->l2_classify.pad.l2_len;
+	  h[2] += vnet_buffer (b[0])->l2.l2_len;
 
 	  /* Save the rewrite length, since we are using the l2_classify struct */
-	  vnet_buffer (b[1])->l2_classify.pad.l2_len =
+	  vnet_buffer (b[1])->l2.l2_len =
 	    vnet_buffer (b[1])->ip.save_rewrite_length;
 	  /* advance the match pointer so the matching happens on IP header */
-	  h[3] += vnet_buffer (b[1])->l2_classify.pad.l2_len;
+	  h[3] += vnet_buffer (b[1])->l2.l2_len;
 	}
 
       hash[2] = vnet_classify_hash_packet_inline (t[2], (u8 *) h[2]);
@@ -237,16 +252,16 @@ ip_in_out_acl_inline_trace (
 	  if (is_output)
 	    {
 	      /* Save the rewrite length, since we are using the l2_classify struct */
-	      vnet_buffer (b[2])->l2_classify.pad.l2_len =
+	      vnet_buffer (b[2])->l2.l2_len =
 		vnet_buffer (b[2])->ip.save_rewrite_length;
 	      /* advance the match pointer so the matching happens on IP header */
-	      h[2] += vnet_buffer (b[2])->l2_classify.pad.l2_len;
+	      h[2] += vnet_buffer (b[2])->l2.l2_len;
 
 	      /* Save the rewrite length, since we are using the l2_classify struct */
-	      vnet_buffer (b[3])->l2_classify.pad.l2_len =
+	      vnet_buffer (b[3])->l2.l2_len =
 		vnet_buffer (b[3])->ip.save_rewrite_length;
 	      /* advance the match pointer so the matching happens on IP header */
-	      h[3] += vnet_buffer (b[3])->l2_classify.pad.l2_len;
+	      h[3] += vnet_buffer (b[3])->l2.l2_len;
 	    }
 
 	  hash[2] = vnet_classify_hash_packet_inline (t[2], (u8 *) h[2]);
@@ -336,7 +351,7 @@ ip_in_out_acl_inline_trace (
 
 		  /* advance the match pointer so the matching happens on IP header */
 		  if (is_output)
-		    h[0] += vnet_buffer (b[0])->l2_classify.pad.l2_len;
+		    h[0] += vnet_buffer (b[0])->l2.l2_len;
 
 		  hash[0] =
 		    vnet_classify_hash_packet_inline (t[0], (u8 *) h[0]);
@@ -443,7 +458,7 @@ ip_in_out_acl_inline_trace (
 
 		  /* advance the match pointer so the matching happens on IP header */
 		  if (is_output)
-		    h[1] += vnet_buffer (b[1])->l2_classify.pad.l2_len;
+		    h[1] += vnet_buffer (b[1])->l2.l2_len;
 
 		  hash[1] =
 		    vnet_classify_hash_packet_inline (t[1], (u8 *) h[1]);
@@ -496,7 +511,7 @@ ip_in_out_acl_inline_trace (
 	  _t->sw_if_index =
 	    ~0 == way ? 0 : vnet_buffer (b[0])->sw_if_index[way];
 	  _t->next_index = _next[0];
-	  _t->table_index = t[0] ? t[0] - tables : ~0;
+	  _t->table_index = table_index[0];
 	  _t->offset = (e[0]
 			&& t[0]) ? vnet_classify_get_offset (t[0], e[0]) : ~0;
 	}
@@ -508,7 +523,7 @@ ip_in_out_acl_inline_trace (
 	  _t->sw_if_index =
 	    ~0 == way ? 0 : vnet_buffer (b[1])->sw_if_index[way];
 	  _t->next_index = _next[1];
-	  _t->table_index = t[1] ? t[1] - tables : ~0;
+	  _t->table_index = table_index[1];
 	  _t->offset = (e[1]
 			&& t[1]) ? vnet_classify_get_offset (t[1], e[1]) : ~0;
 	}
@@ -542,7 +557,7 @@ ip_in_out_acl_inline_trace (
       vnet_classify_table_t *t0 = 0;
       vnet_classify_entry_t *e0 = 0;
       u32 next0 = ACL_NEXT_INDEX_DENY;
-      u64 hash0;
+      u32 hash0;
 
       sw_if_index0 = ~0 == way ? 0 : vnet_buffer (b[0])->sw_if_index[way];
       table_index0 = table_index_by_sw_if_index[sw_if_index0];
@@ -558,10 +573,10 @@ ip_in_out_acl_inline_trace (
       if (is_output)
 	{
 	  /* Save the rewrite length, since we are using the l2_classify struct */
-	  vnet_buffer (b[0])->l2_classify.pad.l2_len =
+	  vnet_buffer (b[0])->l2.l2_len =
 	    vnet_buffer (b[0])->ip.save_rewrite_length;
 	  /* advance the match pointer so the matching happens on IP header */
-	  h0 += vnet_buffer (b[0])->l2_classify.pad.l2_len;
+	  h0 += vnet_buffer (b[0])->l2.l2_len;
 	}
 
       vnet_buffer (b[0])->l2_classify.hash =
@@ -587,7 +602,7 @@ ip_in_out_acl_inline_trace (
 
 	  /* advance the match pointer so the matching happens on IP header */
 	  if (is_output)
-	    h0 += vnet_buffer (b[0])->l2_classify.pad.l2_len;
+	    h0 += vnet_buffer (b[0])->l2.l2_len;
 
 	  e0 = vnet_classify_find_entry_inline (t0, (u8 *) h0, hash0, now);
 	  if (e0)
@@ -645,7 +660,7 @@ ip_in_out_acl_inline_trace (
 
 		  /* advance the match pointer so the matching happens on IP header */
 		  if (is_output)
-		    h0 += vnet_buffer (b[0])->l2_classify.pad.l2_len;
+		    h0 += vnet_buffer (b[0])->l2.l2_len;
 
 		  hash0 = vnet_classify_hash_packet_inline (t0, (u8 *) h0);
 		  e0 = vnet_classify_find_entry_inline
@@ -694,7 +709,7 @@ ip_in_out_acl_inline_trace (
 	  t->sw_if_index =
 	    ~0 == way ? 0 : vnet_buffer (b[0])->sw_if_index[way];
 	  t->next_index = next0;
-	  t->table_index = t0 - tables;
+	  t->table_index = table_index0;
 	  t->offset = (e0 && t0) ? vnet_classify_get_offset (t0, e0) : ~0;
 	}
 

@@ -356,6 +356,16 @@ vlib_buffer_enqueue_to_next (vlib_main_t * vm, vlib_node_runtime_t * node,
 }
 
 static_always_inline void
+vlib_buffer_enqueue_to_next_with_aux (vlib_main_t *vm,
+				      vlib_node_runtime_t *node, u32 *buffers,
+				      u32 *aux_data, u16 *nexts, uword count)
+{
+  vlib_buffer_enqueue_to_next_with_aux_fn_t *fn;
+  fn = vlib_buffer_func_main.buffer_enqueue_to_next_with_aux_fn;
+  (fn) (vm, node, buffers, aux_data, nexts, count);
+}
+
+static_always_inline void
 vlib_buffer_enqueue_to_next_vec (vlib_main_t *vm, vlib_node_runtime_t *node,
 				 u32 **buffers, u16 **nexts, uword count)
 {
@@ -379,6 +389,17 @@ vlib_buffer_enqueue_to_single_next (vlib_main_t * vm,
   (fn) (vm, node, buffers, next_index, count);
 }
 
+static_always_inline void
+vlib_buffer_enqueue_to_single_next_with_aux (vlib_main_t *vm,
+					     vlib_node_runtime_t *node,
+					     u32 *buffers, u32 *aux_data,
+					     u16 next_index, u32 count)
+{
+  vlib_buffer_enqueue_to_single_next_with_aux_fn_t *fn;
+  fn = vlib_buffer_func_main.buffer_enqueue_to_single_next_with_aux_fn;
+  (fn) (vm, node, buffers, aux_data, next_index, count);
+}
+
 static_always_inline u32
 vlib_buffer_enqueue_to_thread (vlib_main_t *vm, vlib_node_runtime_t *node,
 			       u32 frame_queue_index, u32 *buffer_indices,
@@ -389,6 +410,20 @@ vlib_buffer_enqueue_to_thread (vlib_main_t *vm, vlib_node_runtime_t *node,
   fn = vlib_buffer_func_main.buffer_enqueue_to_thread_fn;
   return (fn) (vm, node, frame_queue_index, buffer_indices, thread_indices,
 	       n_packets, drop_on_congestion);
+}
+
+static_always_inline u32
+vlib_buffer_enqueue_to_thread_with_aux (vlib_main_t *vm,
+					vlib_node_runtime_t *node,
+					u32 frame_queue_index,
+					u32 *buffer_indices, u32 *aux,
+					u16 *thread_indices, u32 n_packets,
+					int drop_on_congestion)
+{
+  vlib_buffer_enqueue_to_thread_with_aux_fn_t *fn;
+  fn = vlib_buffer_func_main.buffer_enqueue_to_thread_with_aux_fn;
+  return (fn) (vm, node, frame_queue_index, buffer_indices, aux,
+	       thread_indices, n_packets, drop_on_congestion);
 }
 
 #endif /* included_vlib_buffer_node_h */

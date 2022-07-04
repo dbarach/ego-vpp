@@ -26,6 +26,7 @@
 #include <vnet/ipsec/ah.h>
 #include <vnet/ipsec/ipsec_tun.h>
 #include <vnet/ipsec/ipsec_itf.h>
+#include <vnet/ipsec/ipsec_spd_fp_lookup.h>
 
 /* Flow cache is sized for 1 million flows with a load factor of .25.
  */
@@ -36,8 +37,55 @@
 #define IPSEC4_SPD_DEFAULT_HASH_NUM_BUCKETS (1 << 22)
 
 ipsec_main_t ipsec_main;
+
 esp_async_post_next_t esp_encrypt_async_next;
 esp_async_post_next_t esp_decrypt_async_next;
+
+clib_error_t *
+ipsec_register_next_header (vlib_main_t *vm, u8 next_header,
+			    const char *next_node)
+{
+  ipsec_main_t *im = &ipsec_main;
+  const vlib_node_t *node = vlib_get_node_by_name (vm, (u8 *) next_node);
+  /* -post nodes (eg. esp4-decrypt-post) are siblings of non-post nodes (eg.
+   * esp4-decrypt) and will therefore have the same next index */
+  const vlib_node_t *esp_decrypt_nodes[] = {
+    vlib_get_node (vm, im->esp4_decrypt_node_index),
+    vlib_get_node (vm, im->esp6_decrypt_node_index),
+    vlib_get_node (vm, im->esp4_decrypt_tun_node_index),
+    vlib_get_node (vm, im->esp6_decrypt_tun_node_index),
+  };
+  uword slot, max;
+  int i;
+
+  /* looks for a next_index value that we can use for all esp decrypt nodes to
+   * avoid maintaining different next index arrays... */
+
+  slot = vlib_node_get_next (vm, esp_decrypt_nodes[0]->index, node->index);
+  max = vec_len (esp_decrypt_nodes[0]->next_nodes);
+  for (i = 1; i < ARRAY_LEN (esp_decrypt_nodes); i++)
+    {
+      /* if next node already exists, check it shares the same next_index */
+      if (slot !=
+	  vlib_node_get_next (vm, esp_decrypt_nodes[i]->index, node->index))
+	return clib_error_return (
+	  0, "next node already exists with different next index");
+      /* compute a suitable slot from the max of all nodes next index */
+      max = clib_max (max, vec_len (esp_decrypt_nodes[i]->next_nodes));
+    }
+
+  if (~0 == slot)
+    {
+      /* next node not there yet, add it using the computed max */
+      slot = max;
+      for (i = 0; i < ARRAY_LEN (esp_decrypt_nodes); i++)
+	vlib_node_add_next_with_slot (vm, esp_decrypt_nodes[i]->index,
+				      node->index, slot);
+    }
+
+  im->next_header_registrations[next_header] = slot;
+  return 0;
+}
 
 static clib_error_t *
 ipsec_check_ah_support (ipsec_sa_t * sa)
@@ -435,6 +483,9 @@ ipsec_init (vlib_main_t * vm)
   if ((error = vlib_call_init_function (vm, ipsec_cli_init)))
     return error;
 
+  im->fp_spd_is_enabled = 0;
+  im->fp_lookup_hash_buckets = IPSEC_FP_HASH_LOOKUP_HASH_BUCKETS;
+
   vec_validate (im->crypto_algs, IPSEC_CRYPTO_N_ALG - 1);
 
   a = im->crypto_algs + IPSEC_CRYPTO_ALG_NONE;
@@ -570,6 +621,9 @@ ipsec_init (vlib_main_t * vm)
   im->input_epoch_count = 0;
   im->ipsec4_in_spd_hash_num_buckets = IPSEC4_SPD_DEFAULT_HASH_NUM_BUCKETS;
 
+  vec_validate_init_empty_aligned (im->next_header_registrations, 255, ~0,
+				   CLIB_CACHE_LINE_BYTES);
+
   return 0;
 }
 
@@ -583,11 +637,26 @@ ipsec_config (vlib_main_t *vm, unformat_input_t *input)
 
   u32 ipsec4_out_spd_hash_num_buckets;
   u32 ipsec4_in_spd_hash_num_buckets;
+  u32 ipsec_spd_fp_num_buckets;
 
   while (unformat_check_input (input) != UNFORMAT_END_OF_INPUT)
     {
-      if (unformat (input, "ipv4-outbound-spd-flow-cache on"))
-	im->output_flow_cache_flag = 1;
+      if (unformat (input, "ipv4-outbound-spd-fast-path on"))
+	{
+	  im->fp_spd_is_enabled = 1;
+	  im->output_flow_cache_flag = 0;
+	}
+      else if (unformat (input, "ipv4-outbound-spd-fast-path off"))
+	im->fp_spd_is_enabled = 0;
+      else if (unformat (input, "spd-fast-path-num-buckets %d",
+			 &ipsec_spd_fp_num_buckets))
+	{
+	  /* Number of bihash buckets is power of 2 >= input */
+	  im->fp_lookup_hash_buckets = 1ULL
+				       << max_log2 (ipsec_spd_fp_num_buckets);
+	}
+      else if (unformat (input, "ipv4-outbound-spd-flow-cache on"))
+	im->output_flow_cache_flag = im->fp_spd_is_enabled ? 0 : 1;
       else if (unformat (input, "ipv4-outbound-spd-flow-cache off"))
 	im->output_flow_cache_flag = 0;
       else if (unformat (input, "ipv4-outbound-spd-hash-buckets %d",

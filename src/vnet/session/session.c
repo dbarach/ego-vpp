@@ -21,6 +21,7 @@
 #include <vnet/session/application.h>
 #include <vnet/dpo/load_balance.h>
 #include <vnet/fib/ip4_fib.h>
+#include <vlib/stats/stats.h>
 
 session_main_t session_main;
 
@@ -36,8 +37,7 @@ session_send_evt_to_thread (void *data, void *args, u32 thread_index,
   mq = wrk->vpp_event_queue;
   if (PREDICT_FALSE (svm_msg_q_lock (mq)))
     return -1;
-  if (PREDICT_FALSE (svm_msg_q_is_full (mq)
-		     || svm_msg_q_ring_is_full (mq, SESSION_MQ_IO_EVT_RING)))
+  if (PREDICT_FALSE (svm_msg_q_or_ring_is_full (mq, SESSION_MQ_IO_EVT_RING)))
     {
       svm_msg_q_unlock (mq);
       return -2;
@@ -1312,6 +1312,7 @@ session_dgram_accept (transport_connection_t * tc, u32 listener_index,
     }
 
   session_lookup_add_connection (tc, session_handle (s));
+  s->session_state = SESSION_STATE_ACCEPTING;
 
   app_wrk = app_worker_get (s->app_wrk_index);
   if ((rv = app_worker_accept_notify (app_wrk, s)))
@@ -1684,7 +1685,7 @@ session_vpp_wrk_mqs_alloc (session_main_t *smm)
    * if larger than minimum size.
    */
   mqs_seg_size = svm_msg_q_size_to_alloc (cfg) * vec_len (smm->wrk);
-  mqs_seg_size = mqs_seg_size + (32 << 10);
+  mqs_seg_size = mqs_seg_size + (1 << 20);
   mqs_seg_size = clib_max (mqs_seg_size, smm->wrk_mqs_segment_size);
 
   mqs_seg->ssvm.ssvm_size = mqs_seg_size;
@@ -1857,6 +1858,44 @@ session_queue_run_on_main_thread (vlib_main_t * vm)
   vlib_node_set_interrupt_pending (vm, session_queue_node.index);
 }
 
+static void
+session_stats_collector_fn (vlib_stats_collector_data_t *d)
+{
+  u32 i, n_workers, n_wrk_sessions, n_sessions = 0;
+  session_main_t *smm = &session_main;
+  session_worker_t *wrk;
+  counter_t **counters;
+  counter_t *cb;
+
+  n_workers = vec_len (smm->wrk);
+  vlib_stats_validate (d->entry_index, 0, n_workers - 1);
+  counters = d->entry->data;
+  cb = counters[0];
+
+  for (i = 0; i < vec_len (smm->wrk); i++)
+    {
+      wrk = session_main_get_worker (i);
+      n_wrk_sessions = pool_elts (wrk->sessions);
+      cb[i] = n_wrk_sessions;
+      n_sessions += n_wrk_sessions;
+    }
+
+  vlib_stats_set_gauge (d->private_data, n_sessions);
+}
+
+static void
+session_stats_collector_init (void)
+{
+  vlib_stats_collector_reg_t reg = {};
+
+  reg.entry_index =
+    vlib_stats_add_counter_vector ("/sys/session/sessions_per_worker");
+  reg.private_data = vlib_stats_add_gauge ("/sys/session/sessions_total");
+  reg.collect_fn = session_stats_collector_fn;
+  vlib_stats_register_collector_fn (&reg);
+  vlib_stats_validate (reg.entry_index, 0, vlib_get_n_threads ());
+}
+
 static clib_error_t *
 session_manager_main_enable (vlib_main_t * vm)
 {
@@ -1929,6 +1968,7 @@ session_manager_main_enable (vlib_main_t * vm)
   session_lookup_init ();
   app_namespaces_init ();
   transport_init ();
+  session_stats_collector_init ();
   smm->is_initialized = 1;
 
 done:
@@ -2059,6 +2099,9 @@ session_config_fn (vlib_main_t * vm, unformat_input_t * input)
 	  else
 	    clib_warning ("event queue length %d too small, ignored", nitems);
 	}
+      else if (unformat (input, "wrk-mqs-segment-size %U",
+			 unformat_memory_size, &smm->wrk_mqs_segment_size))
+	;
       else if (unformat (input, "preallocated-sessions %d",
 			 &smm->preallocated_sessions))
 	;
@@ -2135,7 +2178,7 @@ session_config_fn (vlib_main_t * vm, unformat_input_t * input)
       else if (unformat (input, "segment-baseva 0x%lx", &tmp))
 	;
       else if (unformat (input, "evt_qs_seg_size %U", unformat_memory_size,
-			 &tmp))
+			 &smm->wrk_mqs_segment_size))
 	;
       else if (unformat (input, "event-queue-length %d", &nitems))
 	{
