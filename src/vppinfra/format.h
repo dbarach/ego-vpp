@@ -98,6 +98,7 @@ _(format_hex_bytes_no_wrap);
 _(format_white_space);
 _(format_f64);
 _(format_time_interval);
+_ (format_duration);
 
 #ifdef CLIB_UNIX
 /* Unix specific formats. */
@@ -197,6 +198,22 @@ always_inline void
 unformat_put_input (unformat_input_t * input)
 {
   input->index -= 1;
+}
+
+always_inline uword
+is_white_space (uword c)
+{
+  switch (c)
+    {
+    case ' ':
+    case '\t':
+    case '\n':
+    case '\r':
+      return 1;
+
+    default:
+      return 0;
+    }
 }
 
 /* Peek current input character without advancing. */

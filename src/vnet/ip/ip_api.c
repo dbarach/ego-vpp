@@ -1237,7 +1237,7 @@ vl_api_ip_dump_t_handler (vl_api_ip_dump_t * mp)
 
   /* Gather interfaces. */
   sorted_sis = vec_new (vnet_sw_interface_t, pool_elts (im->sw_interfaces));
-  _vec_len (sorted_sis) = 0;
+  vec_set_len (sorted_sis, 0);
   /* *INDENT-OFF* */
   pool_foreach (si, im->sw_interfaces)
    {
@@ -1873,6 +1873,30 @@ void
     }
 
   REPLY_MACRO (VL_API_IP_REASSEMBLY_ENABLE_DISABLE_REPLY);
+}
+
+void
+vl_api_ip_local_reass_enable_disable_t_handler (
+  vl_api_ip_local_reass_enable_disable_t *mp)
+{
+  vl_api_ip_local_reass_enable_disable_reply_t *rmp;
+  int rv = 0;
+
+  ip4_local_full_reass_enable_disable (mp->enable_ip4);
+  ip6_local_full_reass_enable_disable (mp->enable_ip6);
+
+  REPLY_MACRO (VL_API_IP_LOCAL_REASS_ENABLE_DISABLE_REPLY);
+}
+
+void
+vl_api_ip_local_reass_get_t_handler (vl_api_ip_local_reass_get_t *mp)
+{
+  vl_api_ip_local_reass_get_reply_t *rmp;
+  int rv = 0;
+  REPLY_MACRO2 (VL_API_IP_LOCAL_REASS_GET, {
+    rmp->ip4_is_enabled = ip4_local_full_reass_enabled ();
+    rmp->ip6_is_enabled = ip6_local_full_reass_enabled ();
+  });
 }
 
 static walk_rc_t

@@ -29,7 +29,8 @@
 #include <vppinfra/vec.h>
 #include <vppinfra/lock.h>
 #include <stdatomic.h>
-#include <vpp/stats/stat_segment.h>
+#include <vlib/vlib.h>
+#include <vlib/stats/stats.h>
 #include <vpp-api/client/stat_client.h>
 
 stat_client_main_t stat_client_main;
@@ -81,8 +82,8 @@ recv_fd (int sock)
   return fd;
 }
 
-static stat_segment_directory_entry_t *
-get_stat_vector_r (stat_client_main_t * sm)
+static vlib_stats_entry_t *
+get_stat_vector_r (stat_client_main_t *sm)
 {
   ASSERT (sm->shared_header);
   return stat_segment_adjust (sm,
@@ -172,7 +173,7 @@ double
 stat_segment_heartbeat_r (stat_client_main_t * sm)
 {
   stat_segment_access_t sa;
-  stat_segment_directory_entry_t *ep;
+  vlib_stats_entry_t *ep;
 
   /* Has directory been updated? */
   if (sm->shared_header->epoch != sm->current_epoch)
@@ -223,14 +224,13 @@ stat_vec_combined_init (vlib_counter_t c)
  * threads), otherwise copy out all values.
  */
 static stat_segment_data_t
-copy_data (stat_segment_directory_entry_t *ep, u32 index2, char *name,
+copy_data (vlib_stats_entry_t *ep, u32 index2, char *name,
 	   stat_client_main_t *sm)
 {
   stat_segment_data_t result = { 0 };
   int i;
   vlib_counter_t **combined_c;	/* Combined counter */
   counter_t **simple_c;		/* Simple counter */
-  uint64_t *error_vector;
 
   assert (sm->shared_header);
 
@@ -270,18 +270,6 @@ copy_data (stat_segment_directory_entry_t *ep, u32 index2, char *name,
 	}
       break;
 
-    case STAT_DIR_TYPE_ERROR_INDEX:
-      /* Gather errors from all threads into a vector */
-      error_vector =
-	stat_segment_adjust (sm, (void *) sm->shared_header->error_vector);
-      vec_validate (result.error_vector, vec_len (error_vector) - 1);
-      for (i = 0; i < vec_len (error_vector); i++)
-	{
-	  counter_t *cb = stat_segment_adjust (sm, (void *) error_vector[i]);
-	  result.error_vector[i] = cb[ep->index];
-	}
-      break;
-
     case STAT_DIR_TYPE_NAME_VECTOR:
       {
 	uint8_t **name_vector = stat_segment_adjust (sm, ep->data);
@@ -297,7 +285,7 @@ copy_data (stat_segment_directory_entry_t *ep, u32 index2, char *name,
     case STAT_DIR_TYPE_SYMLINK:
       /* Gather info from all threads into a vector */
       {
-	stat_segment_directory_entry_t *ep2;
+	vlib_stats_entry_t *ep2;
 	ep2 = vec_elt_at_index (sm->directory_vector, ep->index1);
 	return copy_data (ep2, ep->index2, ep->name, sm);
       }
@@ -334,10 +322,8 @@ stat_segment_data_free (stat_segment_data_t * res)
 	    vec_free (res[i].name_vector[j]);
 	  vec_free (res[i].name_vector);
 	  break;
-	case STAT_DIR_TYPE_ERROR_INDEX:
-	  vec_free (res[i].error_vector);
-	  break;
 	case STAT_DIR_TYPE_SCALAR_INDEX:
+	case STAT_DIR_TYPE_EMPTY:
 	  break;
 	default:
 	  assert (0);
@@ -369,7 +355,7 @@ stat_segment_ls_r (uint8_t ** patterns, stat_client_main_t * sm)
   if (stat_segment_access_start (&sa, sm))
     return 0;
 
-  stat_segment_directory_entry_t *counter_vec = get_stat_vector_r (sm);
+  vlib_stats_entry_t *counter_vec = get_stat_vector_r (sm);
   for (j = 0; j < vec_len (counter_vec); j++)
     {
       for (i = 0; i < vec_len (patterns); i++)
@@ -412,7 +398,7 @@ stat_segment_data_t *
 stat_segment_dump_r (uint32_t * stats, stat_client_main_t * sm)
 {
   int i;
-  stat_segment_directory_entry_t *ep;
+  vlib_stats_entry_t *ep;
   stat_segment_data_t *res = 0;
   stat_segment_access_t sa;
 
@@ -473,7 +459,7 @@ stat_segment_string_vector (uint8_t ** string_vector, const char *string)
 stat_segment_data_t *
 stat_segment_dump_entry_r (uint32_t index, stat_client_main_t * sm)
 {
-  stat_segment_directory_entry_t *ep;
+  vlib_stats_entry_t *ep;
   stat_segment_data_t *res = 0;
   stat_segment_access_t sa;
 
@@ -503,9 +489,9 @@ stat_segment_dump_entry (uint32_t index)
 char *
 stat_segment_index_to_name_r (uint32_t index, stat_client_main_t * sm)
 {
-  stat_segment_directory_entry_t *ep;
+  vlib_stats_entry_t *ep;
   stat_segment_access_t sa;
-  stat_segment_directory_entry_t *vec;
+  vlib_stats_entry_t *vec;
 
   /* Has directory been update? */
   if (sm->shared_header->epoch != sm->current_epoch)

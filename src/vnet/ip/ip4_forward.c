@@ -61,6 +61,7 @@
 #include <vnet/ip/ip4_forward.h>
 #include <vnet/interface_output.h>
 #include <vnet/classify/vnet_classify.h>
+#include <vnet/ip/reass/ip4_full_reass.h>
 
 /** @brief IPv4 lookup node.
     @node ip4-lookup
@@ -1507,9 +1508,8 @@ ip4_local_set_next_and_error (vlib_node_runtime_t * error_node,
       next_index = *next;
       if (PREDICT_TRUE (error == (u8) IP4_ERROR_UNKNOWN_PROTOCOL))
 	{
-	  vnet_feature_arc_start (arc_index,
-				  vnet_buffer (b)->sw_if_index[VLIB_RX],
-				  &next_index, b);
+	  vnet_feature_arc_start (
+	    arc_index, vnet_buffer (b)->ip.rx_sw_if_index, &next_index, b);
 	  *next = next_index;
 	}
     }
@@ -1517,7 +1517,9 @@ ip4_local_set_next_and_error (vlib_node_runtime_t * error_node,
 
 typedef struct
 {
+  /* The src and fib-index together determine if packet n is the same as n-1 */
   ip4_address_t src;
+  u32 fib_index;
   u32 lbi;
   u8 error;
   u8 first;
@@ -1551,7 +1553,8 @@ ip4_local_check_src (vlib_buffer_t *b, ip4_header_t *ip0,
    * vnet_buffer()->ip.adj_index[VLIB_TX] will be set to the index of the
    *  adjacency for the source address (the remote sender's address)
    */
-  if (PREDICT_TRUE (last_check->src.as_u32 != ip0->src_address.as_u32) ||
+  if (PREDICT_TRUE ((last_check->src.as_u32 != ip0->src_address.as_u32)) ||
+      (last_check->fib_index != vnet_buffer (b)->ip.fib_index) ||
       last_check->first)
     {
       lbi0 = ip4_fib_forwarding_lookup (vnet_buffer (b)->ip.fib_index,
@@ -1587,6 +1590,7 @@ ip4_local_check_src (vlib_buffer_t *b, ip4_header_t *ip0,
       last_check->lbi = lbi0;
       last_check->error = *error0;
       last_check->first = 0;
+      last_check->fib_index = vnet_buffer (b)->ip.fib_index;
     }
   else
     {
@@ -1620,6 +1624,9 @@ ip4_local_check_src_x2 (vlib_buffer_t **b, ip4_header_t **ip,
     vnet_buffer (b[1])->sw_if_index[VLIB_TX] != ~0 ?
     vnet_buffer (b[1])->sw_if_index[VLIB_TX] :
     vnet_buffer (b[1])->ip.fib_index;
+
+  not_last_hit |= vnet_buffer (b[0])->ip.fib_index ^ last_check->fib_index;
+  not_last_hit |= vnet_buffer (b[1])->ip.fib_index ^ last_check->fib_index;
 
   if (is_receive_dpo)
     {
@@ -1683,6 +1690,7 @@ ip4_local_check_src_x2 (vlib_buffer_t **b, ip4_header_t **ip,
       last_check->lbi = lbi[1];
       last_check->error = error[1];
       last_check->first = 0;
+      last_check->fib_index = vnet_buffer (b[1])->ip.fib_index;
     }
   else
     {
@@ -1752,10 +1760,11 @@ ip4_local_inline (vlib_main_t *vm, vlib_node_runtime_t *node,
      * member to make sure the .lbi is initialised for the first
      * packet.
      */
-    .src = {.as_u32 = 0},
+    .src = { .as_u32 = 0 },
     .lbi = ~0,
     .error = IP4_ERROR_UNKNOWN_PROTOCOL,
     .first = 1,
+    .fib_index = 0,
   };
 
   from = vlib_frame_vector_args (frame);
@@ -1880,7 +1889,7 @@ VLIB_REGISTER_NODE (ip4_local_node) =
     [IP_LOCAL_NEXT_PUNT] = "ip4-punt",
     [IP_LOCAL_NEXT_UDP_LOOKUP] = "ip4-udp-lookup",
     [IP_LOCAL_NEXT_ICMP] = "ip4-icmp-input",
-    [IP_LOCAL_NEXT_REASSEMBLY] = "ip4-full-reassembly",
+    [IP_LOCAL_NEXT_REASSEMBLY] = "ip4-local-full-reassembly",
   },
 };
 
@@ -2055,7 +2064,9 @@ ip4_ttl_inc (vlib_buffer_t * b, ip4_header_t * ip)
   ttl += 1;
   ip->ttl = ttl;
 
-  ASSERT (ip4_header_checksum_is_valid (ip));
+  ASSERT (ip4_header_checksum_is_valid (ip) ||
+	  (vnet_buffer (b)->oflags & VNET_BUFFER_OFFLOAD_F_IP_CKSUM) ||
+	  (vnet_buffer (b)->oflags & VNET_BUFFER_OFFLOAD_F_OUTER_IP_CKSUM));
 }
 
 /* Decrement TTL & update checksum.

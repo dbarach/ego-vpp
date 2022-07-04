@@ -28,6 +28,11 @@ M:	Dave Barach <vpp@barachs.net>
 F:	build-root/Makefile
 F:	build-data/
 
+VNET
+I:	vnet
+M:	Damjan Marion <damarion@cisco.com>
+F:	src/vnet/error.*
+
 VNET Link Bonding
 I:	bonding
 M:	Steven Luong <sluong@cisco.com>
@@ -36,7 +41,6 @@ F:	src/vnet/bonding/
 Sphinx Documents
 I:	docs
 M:	John DeNisco <jdenisco@cisco.com>
-M:	Ray Kinsella <raykinsella78@gmail.com>
 F:	docs/
 
 Infrastructure Library
@@ -80,7 +84,7 @@ F:	src/vlibmemory/
 
 VNET Bidirectional Forwarding Detection (BFD)
 I:	bfd
-M:	Klement Sekera <ksekera@cisco.com>
+M:	Klement Sekera <klement.sekera@gmail.com>
 F:	src/vnet/bfd/
 
 VNET Classifier
@@ -380,7 +384,7 @@ Plugin - NAT
 I:	nat
 M:	Ole Troan <ot@cisco.com>
 M:  Filip Varga <fivarga@cisco.com>
-M:  Klement Sekera <ksekera@cisco.com>
+M:  Klement Sekera <klement.sekera@gmail.com>
 F:	src/plugins/nat/
 
 Plugin - PNAT Static match and rewrite engine
@@ -420,6 +424,7 @@ F:	src/plugins/flowprobe/
 Plugin - http_static
 I:	http_static
 M:	Dave Barach <vpp@barachs.net>
+M:	Florin Coras <fcoras@cisco.com>
 F:	src/plugins/http_static/
 
 Plugin - builtinurl
@@ -459,7 +464,7 @@ F:	src/plugins/lisp/
 
 Plugin - Link Layer Discovery Protocol (LLDP)
 I:	lldp
-M:	Klement Sekera <ksekera@cisco.com>
+M:	Klement Sekera <klement.sekera@gmail.com>
 F:	src/plugins/lldp/
 
 Plugin - memif device driver
@@ -475,6 +480,7 @@ F:	src/plugins/marvell/
 Plugin - performance counter
 I:	perfmon
 M:	Damjan Marion <damarion@cisco.com>
+M:	Ray Kinsella <mdr@ashroe.eu>
 F:	src/plugins/perfmon/
 
 Plugin - PPPoE
@@ -560,7 +566,7 @@ F:	src/plugins/unittest/
 
 Test Infrastructure
 I:	tests
-M:	Klement Sekera <ksekera@cisco.com>
+M:	Klement Sekera <klement.sekera@gmail.com>
 M:	Paul Vinciguerra <pvinci@vinciconsulting.com>
 F:	test/
 
@@ -767,6 +773,16 @@ Plugin - HSI
 I:	hsi
 M:	Florin Coras <fcoras@cisco.com>
 F:	src/plugins/hsi/
+
+Plugin - HTTP
+I:	http
+M:	Florin Coras <fcoras@cisco.com>
+F:	src/plugins/http
+
+Plugin - Prom
+I:	prom
+M:	Florin Coras <fcoras@cisco.com>
+F:	src/plugins/prom
 
 cJSON
 I:	cjson

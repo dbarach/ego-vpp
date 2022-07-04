@@ -38,6 +38,7 @@
  */
 
 #include <vlib/vlib.h>
+#include <vlib/stats/stats.h>
 #include <vlib/unix/unix.h>
 #include <vppinfra/callback.h>
 #include <vppinfra/cpu.h>
@@ -616,7 +617,7 @@ vlib_cli_dispatch_sub_commands (vlib_main_t * vm,
 		      vec_add1 (c_error->what, 0);
 		      ed->err = elog_string (vlib_get_elog_main (),
 					     (char *) c_error->what);
-		      _vec_len (c_error->what) -= 1;
+		      vec_dec_len (c_error->what, 1);
 		    }
 		  else
 		    ed->err = elog_string (vlib_get_elog_main (), "OK");
@@ -753,13 +754,6 @@ vl_msg_pop_heap (void *oldheap)
 {
 }
 
-void *vlib_stats_push_heap (void *) __attribute__ ((weak));
-void *
-vlib_stats_push_heap (void *notused)
-{
-  return 0;
-}
-
 static clib_error_t *
 show_memory_usage (vlib_main_t * vm,
 		   unformat_input_t * input, vlib_cli_command_t * cmd)
@@ -820,14 +814,14 @@ show_memory_usage (vlib_main_t * vm,
     }
   if (stats_segment)
     {
-      void *oldheap = vlib_stats_push_heap (0);
+      void *oldheap = vlib_stats_set_heap (0);
       was_enabled = clib_mem_trace_enable_disable (0);
       u8 *s_in_svm = format (0, "%U\n", format_clib_mem_heap, 0, 1);
       if (oldheap)
 	clib_mem_set_heap (oldheap);
       u8 *s = vec_dup (s_in_svm);
 
-      oldheap = vlib_stats_push_heap (0);
+      oldheap = vlib_stats_set_heap (0);
       vec_free (s_in_svm);
       if (oldheap)
 	{
@@ -1038,7 +1032,7 @@ enable_disable_memory_trace (vlib_main_t * vm,
   /* Stats segment */
   if (stats_segment)
     {
-      oldheap = vlib_stats_push_heap (0);
+      oldheap = vlib_stats_set_heap ();
       current_traced_heap = clib_mem_get_heap ();
       clib_mem_trace (stats_segment);
       /* We don't want to call vlib_stats_pop_heap... */
@@ -1103,7 +1097,7 @@ restart_cmd_fn (vlib_main_t * vm, unformat_input_t * input,
   /* *INDENT-ON* */
 
   /* Exec ourself */
-  execve (vgm->name, (char **) vm->argv, environ);
+  execve (vgm->name, (char **) vgm->argv, environ);
 
   return 0;
 }
@@ -1185,7 +1179,7 @@ vlib_cli_normalize_path (char *input, char **result)
 
   /* Remove any extra space at end. */
   if (l > 0 && s[l - 1] == ' ')
-    _vec_len (s) -= 1;
+    vec_dec_len (s, 1);
 
   *result = s;
   return index_of_last_space;

@@ -115,11 +115,10 @@ u32
 tls_ctx_half_open_alloc (void)
 {
   tls_main_t *tm = &tls_main;
-  u8 will_expand = 0;
+  u8 will_expand = pool_get_will_expand (tm->half_open_ctx_pool);
   tls_ctx_t *ctx;
   u32 ctx_index;
 
-  pool_get_aligned_will_expand (tm->half_open_ctx_pool, will_expand, 0);
   if (PREDICT_FALSE (will_expand && vlib_num_workers ()))
     {
       clib_rwlock_writer_lock (&tm->half_open_rwlock);
@@ -365,7 +364,7 @@ tls_ctx_write (tls_ctx_t * ctx, session_t * app_session,
 
   sp->max_burst_size = sp->max_burst_size * TRANSPORT_PACER_MIN_MSS;
   n_wrote = tls_vfts[ctx->tls_ctx_engine].ctx_write (ctx, app_session, sp);
-  sp->max_burst_size = n_wrote;
+  sp->bytes_dequeued = n_wrote;
   return n_wrote > 0 ? clib_max (n_wrote / TRANSPORT_PACER_MIN_MSS, 1) : 0;
 }
 
@@ -397,6 +396,22 @@ u8
 tls_ctx_handshake_is_over (tls_ctx_t * ctx)
 {
   return tls_vfts[ctx->tls_ctx_engine].ctx_handshake_is_over (ctx);
+}
+
+int
+tls_reinit_ca_chain (crypto_engine_type_t tls_engine_id)
+{
+  return tls_vfts[tls_engine_id].ctx_reinit_cachain ();
+}
+
+void
+tls_notify_app_io_error (tls_ctx_t *ctx)
+{
+  ASSERT (tls_ctx_handshake_is_over (ctx));
+
+  session_transport_reset_notify (&ctx->connection);
+  session_transport_closed_notify (&ctx->connection);
+  tls_disconnect_transport (ctx);
 }
 
 void
@@ -513,6 +528,11 @@ tls_app_rx_callback (session_t * tls_session)
     return 0;
 
   ctx = tls_ctx_get (tls_session->opaque);
+  if (PREDICT_FALSE (ctx->no_app_session))
+    {
+      TLS_DBG (1, "Local App closed");
+      return 0;
+    }
   tls_ctx_read (ctx, tls_session);
   return 0;
 }
@@ -773,7 +793,7 @@ tls_disconnect (u32 ctx_handle, u32 thread_index)
 }
 
 u32
-tls_start_listen (u32 app_listener_index, transport_endpoint_t * tep)
+tls_start_listen (u32 app_listener_index, transport_endpoint_cfg_t *tep)
 {
   vnet_listen_args_t _bargs, *args = &_bargs;
   transport_endpt_crypto_cfg_t *ccfg;
@@ -834,6 +854,7 @@ tls_start_listen (u32 app_listener_index, transport_endpoint_t * tep)
   lctx->tls_ctx_engine = engine_type;
   lctx->tls_type = sep->transport_proto;
   lctx->ckpair_index = ccfg->ckpair_index;
+  lctx->c_s_index = app_listener_index;
   lctx->c_flags |= TRANSPORT_CONNECTION_F_NO_LOOKUP;
 
   if (tls_vfts[engine_type].ctx_start_listen (lctx))
@@ -942,7 +963,6 @@ tls_custom_tx_callback (void *session, transport_send_params_t * sp)
 		     >= SESSION_STATE_TRANSPORT_CLOSED))
     return 0;
 
-  sp->flags = 0;
   ctx = tls_ctx_get (app_session->connection_index);
   return tls_ctx_write (ctx, app_session, sp);
 }

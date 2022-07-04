@@ -7,6 +7,7 @@ import unittest
 import scapy.compat
 from scapy.contrib.mpls import MPLS
 from scapy.layers.inet import IP, UDP, TCP, ICMP, icmptypes, icmpcodes
+from scapy.layers.inet6 import IPv6
 from scapy.layers.l2 import Ether, Dot1Q, ARP
 from scapy.packet import Raw
 from six import moves
@@ -1118,24 +1119,6 @@ class TestIPLoadBalance(VppTestCase):
             i.admin_down()
         super(TestIPLoadBalance, self).tearDown()
 
-    def send_and_expect_load_balancing(self, input, pkts, outputs):
-        self.vapi.cli("clear trace")
-        input.add_stream(pkts)
-        self.pg_enable_capture(self.pg_interfaces)
-        self.pg_start()
-        rxs = []
-        for oo in outputs:
-            rx = oo._get_capture(1)
-            self.assertNotEqual(0, len(rx))
-            rxs.append(rx)
-        return rxs
-
-    def send_and_expect_one_itf(self, input, pkts, itf):
-        input.add_stream(pkts)
-        self.pg_enable_capture(self.pg_interfaces)
-        self.pg_start()
-        rx = itf.get_capture(len(pkts))
-
     def total_len(self, rxs):
         n = 0
         for rx in rxs:
@@ -1243,7 +1226,7 @@ class TestIPLoadBalance(VppTestCase):
         self.send_and_expect_load_balancing(self.pg0, src_mpls_pkts,
                                             [self.pg1, self.pg2])
 
-        self.send_and_expect_one_itf(self.pg0, port_ip_pkts, self.pg2)
+        self.send_and_expect_only(self.pg0, port_ip_pkts, self.pg2)
 
         #
         # change the flow hash config back to defaults
@@ -1367,7 +1350,7 @@ class TestIPLoadBalance(VppTestCase):
         # inject the packet on pg0 - rx only on via routes output interface
         #
         self.vapi.cli("clear trace")
-        self.send_and_expect_one_itf(self.pg0, port_pkts, self.pg3)
+        self.send_and_expect_only(self.pg0, port_pkts, self.pg3)
 
         #
         # Add a LB route in the presence of a down link - expect no
@@ -1390,7 +1373,7 @@ class TestIPLoadBalance(VppTestCase):
                              UDP(sport=1234, dport=1234 + ii) /
                              Raw(b'\xa5' * 100))
 
-        self.send_and_expect_one_itf(self.pg0, port_pkts, self.pg4)
+        self.send_and_expect_only(self.pg0, port_pkts, self.pg4)
 
         # bring the link back up
         self.pg3.link_up()
@@ -1472,6 +1455,20 @@ class IPPuntSetup(object):
                     'af': af_ip4,
                     'protocol': udp_proto,
                     'port': 1234,
+                }
+            }
+        }
+
+        self.vapi.set_punt(is_add=1, punt=punt_udp)
+
+        af_ip6 = VppEnum.vl_api_address_family_t.ADDRESS_IP6
+        punt_udp = {
+            'type': pt_l4,
+            'punt': {
+                'l4': {
+                    'af': af_ip6,
+                    'protocol': udp_proto,
+                    'port': 1236,
                 }
             }
         }
@@ -1586,6 +1583,172 @@ class TestIPPunt(IPPuntSetup, VppTestCase):
         ip_punt_redirect.add_vpp_config()
         self.send_and_expect(self.pg0, pkts, self.pg1)
         ip_punt_redirect.remove_vpp_config()
+
+    def test_ip_punt_vrf(self):
+        """ IP punt/local with VRFs """
+
+        # use a punt redirect to test if for-us  packets are accepted
+        pkts = self.pkt * 1025
+
+        vlans_pg0 = [VppDot1QSubint(self, self.pg0, v)
+                     for v in range(100, 104)]
+        vlans_pg1 = [VppDot1QSubint(self, self.pg1, v)
+                     for v in range(100, 104)]
+        tbl4 = [VppIpTable(self, v).add_vpp_config()
+                for v in range(100, 104)]
+        tbl6 = [VppIpTable(self, v, True).add_vpp_config()
+                for v in range(100, 104)]
+
+        for v in vlans_pg0 + vlans_pg1:
+            v.admin_up()
+            v.set_table_ip4(v.vlan)
+            v.set_table_ip6(v.vlan)
+            v.config_ip4()
+            v.config_ip6()
+            v.resolve_arp()
+            v.resolve_ndp()
+
+        [VppIpPuntRedirect
+         (self,
+          vlans_pg0[i].sw_if_index,
+          vlans_pg1[i].sw_if_index,
+          vlans_pg1[i].remote_ip4).add_vpp_config()
+         for i in range(4)]
+        [VppIpPuntRedirect
+         (self,
+          vlans_pg0[i].sw_if_index,
+          vlans_pg1[i].sw_if_index,
+          vlans_pg1[i].remote_ip6).add_vpp_config()
+         for i in range(4)]
+
+        pkts = [(Ether(src=self.pg0.remote_mac,
+                       dst=self.pg0.local_mac) /
+                 Dot1Q(vlan=i.vlan) /
+                 IP(src=i.remote_ip4,
+                    dst=i.local_ip4) /
+                 UDP(sport=1234, dport=1234) /
+                 Raw(b'\xa5' * 100))
+                for i in vlans_pg0]
+
+        self.send_and_expect(self.pg0, pkts, self.pg1)
+
+        #
+        # IPv4
+        #
+
+        # we reject packets for source addresses in the wrong vlan/VRF
+        pkts = [(Ether(src=self.pg0.remote_mac,
+                       dst=self.pg0.local_mac) /
+                 Dot1Q(vlan=i.vlan) /
+                 IP(src="1.1.1.1",
+                    dst=i.local_ip4) /
+                 UDP(sport=1234, dport=1234) /
+                 Raw(b'\xa5' * 100))
+                for i in vlans_pg0]
+        # single and dual loop
+        self.send_and_assert_no_replies(self.pg0, [pkts[0]])
+        self.send_and_assert_no_replies(self.pg0, pkts)
+
+        self.assert_error_counter_equal(
+            "/err/ip4-local/ip4 source lookup miss",
+            len(pkts) + 1)
+
+        # using the same source in different tables, should reject
+        # for the table that the source is not present in
+        # the first packet in the stream is drop
+        pkts = [(Ether(src=self.pg0.remote_mac,
+                       dst=self.pg0.local_mac) /
+                 Dot1Q(vlan=i.vlan) /
+                 IP(src=vlans_pg0[0].remote_ip4,
+                    dst=i.local_ip4) /
+                 UDP(sport=1234, dport=1234) /
+                 Raw(b'\xa5' * 100))
+                for i in vlans_pg0]
+        # single loop accept and drop
+        # followed by both in the same frame/loop
+        self.send_and_expect(self.pg0, [pkts[0]], self.pg1)
+        self.send_and_assert_no_replies(self.pg0, [pkts[1]])
+        self.send_and_expect(self.pg0, pkts * 4, self.pg1, n_rx=4)
+
+        # using the same source in different tables, should reject
+        # for the table that the source is not present in
+        # the first packet in the stream is accept
+        pkts = [(Ether(src=self.pg0.remote_mac,
+                       dst=self.pg0.local_mac) /
+                 Dot1Q(vlan=i.vlan) /
+                 IP(src=vlans_pg0[3].remote_ip4,
+                    dst=i.local_ip4) /
+                 UDP(sport=1234, dport=1234) /
+                 Raw(b'\xa5' * 100))
+                for i in vlans_pg0]
+
+        # single loop accept and drop
+        # followed by both in the same frame/loop
+        self.send_and_expect(self.pg0, [pkts[3]], self.pg1)
+        self.send_and_assert_no_replies(self.pg0, [pkts[1]])
+        self.send_and_expect(self.pg0, pkts * 4, self.pg1, n_rx=4)
+
+        #
+        # IPv6
+        #
+
+        # we reject packets for source addresses in the wrong vlan/VRF
+        pkts = [(Ether(src=self.pg0.remote_mac,
+                       dst=self.pg0.local_mac) /
+                 Dot1Q(vlan=i.vlan) /
+                 IPv6(src="1::1",
+                      dst=i.local_ip6) /
+                 UDP(sport=1236, dport=1236) /
+                 Raw(b'\xa5' * 100))
+                for i in vlans_pg0]
+        # single and dual loop
+        self.send_and_assert_no_replies(self.pg0, [pkts[0]])
+        self.send_and_assert_no_replies(self.pg0, pkts)
+
+        self.assert_error_counter_equal(
+            "/err/ip6-input/ip6 source lookup miss",
+            len(pkts) + 1)
+
+        # using the same source in different tables, should reject
+        # for the table that the source is not present in
+        # the first packet in the stream is drop
+        pkts = [(Ether(src=self.pg0.remote_mac,
+                       dst=self.pg0.local_mac) /
+                 Dot1Q(vlan=i.vlan) /
+                 IPv6(src=vlans_pg0[0].remote_ip6,
+                      dst=i.local_ip6) /
+                 UDP(sport=1236, dport=1236) /
+                 Raw(b'\xa5' * 100))
+                for i in vlans_pg0]
+        # single loop accept and drop
+        # followed by both in the same frame/loop
+        self.send_and_expect(self.pg0, [pkts[0]], self.pg1)
+        self.send_and_assert_no_replies(self.pg0, [pkts[1]])
+        self.send_and_expect(self.pg0, pkts * 4, self.pg1, n_rx=4)
+
+        # using the same source in different tables, should reject
+        # for the table that the source is not present in
+        # the first packet in the stream is accept
+        pkts = [(Ether(src=self.pg0.remote_mac,
+                       dst=self.pg0.local_mac) /
+                 Dot1Q(vlan=i.vlan) /
+                 IPv6(src=vlans_pg0[3].remote_ip6,
+                      dst=i.local_ip6) /
+                 UDP(sport=1236, dport=1236) /
+                 Raw(b'\xa5' * 100))
+                for i in vlans_pg0]
+
+        # single loop accept and drop
+        # followed by both in the same frame/loop
+        self.send_and_expect(self.pg0, [pkts[3]], self.pg1)
+        self.send_and_assert_no_replies(self.pg0, [pkts[1]])
+        self.send_and_expect(self.pg0, pkts * 4, self.pg1, n_rx=4)
+
+        for v in vlans_pg0 + vlans_pg1:
+            v.unconfig_ip4()
+            v.unconfig_ip6()
+            v.set_table_ip4(0)
+            v.set_table_ip6(0)
 
     def test_ip_punt_dump(self):
         """ IP4 punt redirect dump"""
@@ -1965,16 +2128,15 @@ class TestIPInput(VppTestCase):
                  UDP(sport=1234, dport=1234) /
                  Raw(b'\xa5' * 100))
 
-        rx = self.send_and_expect(self.pg0, p_ttl * NUM_PKTS, self.pg0)
+        rxs = self.send_and_expect_some(self.pg0, p_ttl * NUM_PKTS, self.pg0)
 
-        rx = rx[0]
-        icmp = rx[ICMP]
-
-        self.assertEqual(icmptypes[icmp.type], "time-exceeded")
-        self.assertEqual(icmpcodes[icmp.type][icmp.code],
-                         "ttl-zero-during-transit")
-        self.assertEqual(icmp.src, self.pg0.remote_ip4)
-        self.assertEqual(icmp.dst, self.pg1.remote_ip4)
+        for rx in rxs:
+            icmp = rx[ICMP]
+            self.assertEqual(icmptypes[icmp.type], "time-exceeded")
+            self.assertEqual(icmpcodes[icmp.type][icmp.code],
+                             "ttl-zero-during-transit")
+            self.assertEqual(icmp.src, self.pg0.remote_ip4)
+            self.assertEqual(icmp.dst, self.pg1.remote_ip4)
 
         #
         # MTU exceeded
@@ -1989,15 +2151,16 @@ class TestIPInput(VppTestCase):
 
         self.vapi.sw_interface_set_mtu(self.pg1.sw_if_index, [1500, 0, 0, 0])
 
-        rx = self.send_and_expect(self.pg0, p_mtu * NUM_PKTS, self.pg0)
-        rx = rx[0]
-        icmp = rx[ICMP]
+        rxs = self.send_and_expect_some(self.pg0, p_mtu * NUM_PKTS, self.pg0)
 
-        self.assertEqual(icmptypes[icmp.type], "dest-unreach")
-        self.assertEqual(icmpcodes[icmp.type][icmp.code],
-                         "fragmentation-needed")
-        self.assertEqual(icmp.src, self.pg0.remote_ip4)
-        self.assertEqual(icmp.dst, self.pg1.remote_ip4)
+        for rx in rxs:
+            icmp = rx[ICMP]
+            self.assertEqual(icmptypes[icmp.type], "dest-unreach")
+            self.assertEqual(icmpcodes[icmp.type][icmp.code],
+                             "fragmentation-needed")
+            self.assertEqual(icmp.nexthopmtu, 1500)
+            self.assertEqual(icmp.src, self.pg0.remote_ip4)
+            self.assertEqual(icmp.dst, self.pg1.remote_ip4)
 
         self.vapi.sw_interface_set_mtu(self.pg1.sw_if_index, [2500, 0, 0, 0])
         rx = self.send_and_expect(self.pg0, p_mtu * NUM_PKTS, self.pg1)

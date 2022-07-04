@@ -109,6 +109,7 @@ wireguard_if_send_details (index_t wgii, void *data)
 	       local->l_public, NOISE_PUBLIC_KEY_LEN);
   rmp->interface.sw_if_index = htonl (wgi->sw_if_index);
   rmp->interface.port = htons (wgi->port);
+  rmp->interface.user_instance = htonl (wgi->user_instance);
   ip_address_encode2 (&wgi->src_ip, &rmp->interface.src_ip);
 
   rmp->context = ctx->context;
@@ -137,7 +138,15 @@ vl_api_wireguard_interface_dump_t_handler (vl_api_wireguard_interface_dump_t *
     .show_private_key = mp->show_private_key,
   };
 
-  wg_if_walk (wireguard_if_send_details, &ctx);
+  u32 sw_if_index = ntohl (mp->sw_if_index);
+  if (sw_if_index == ~0)
+    wg_if_walk (wireguard_if_send_details, &ctx);
+  else
+    {
+      index_t wgii = wg_if_find_by_sw_if_index (sw_if_index);
+      if (wgii != INDEX_INVALID)
+	wireguard_if_send_details (wgii, &ctx);
+    }
 }
 
 static void
@@ -219,6 +228,7 @@ wg_api_send_peers_details (index_t peeri, void *data)
   rmp->_vl_msg_id = htons (VL_API_WIREGUARD_PEERS_DETAILS +
 			   wg_main.msg_id_base);
 
+  rmp->peer.peer_index = htonl (peeri);
   rmp->peer.flags = peer->flags;
   clib_memcpy (rmp->peer.public_key,
 	       peer->remote.r_public, NOISE_PUBLIC_KEY_LEN);
@@ -227,6 +237,8 @@ wg_api_send_peers_details (index_t peeri, void *data)
   rmp->peer.port = htons (peer->dst.port);
   rmp->peer.n_allowed_ips = n_allowed_ips;
   rmp->peer.sw_if_index = htonl (peer->wg_sw_if_index);
+  rmp->peer.persistent_keepalive = htons (peer->persistent_keepalive_interval);
+  rmp->peer.table_id = htonl (peer->table_id);
 
   int ii;
   for (ii = 0; ii < n_allowed_ips; ii++)
@@ -363,6 +375,18 @@ wg_api_peer_event (index_t peeri, wg_peer_flags flags)
 	  wg_api_send_peer_event (rp, peeri, flags);
 	}
     };
+}
+
+static void
+vl_api_wg_set_async_mode_t_handler (vl_api_wg_set_async_mode_t *mp)
+{
+  wg_main_t *wmp = &wg_main;
+  vl_api_wg_set_async_mode_reply_t *rmp;
+  int rv = 0;
+
+  wg_set_async_mode (mp->async_enable);
+
+  REPLY_MACRO (VL_API_WG_SET_ASYNC_MODE_REPLY);
 }
 
 /* set tup the API message handling tables */

@@ -310,7 +310,7 @@ always_inline u32
 vnet_hw_interface_get_mtu (vnet_main_t * vnm, u32 hw_if_index)
 {
   vnet_hw_interface_t *hw = vnet_get_hw_interface (vnm, hw_if_index);
-  return hw->max_packet_bytes;
+  return hw->max_frame_size - hw->frame_overhead;
 }
 
 always_inline u32
@@ -430,8 +430,13 @@ clib_error_t *set_hw_interface_rx_placement (u32 hw_if_index, u32 queue_id,
 /* Set tx-queue placement on the interface */
 int set_hw_interface_tx_queue (u32 hw_if_index, u32 queue_id, uword *bitmap);
 
+/* Set the Max Frame Size on the HW interface */
+clib_error_t *vnet_hw_interface_set_max_frame_size (vnet_main_t *vnm,
+						    u32 hw_if_index,
+						    u32 max_frame_size);
 /* Set the MTU on the HW interface */
-void vnet_hw_interface_set_mtu (vnet_main_t * vnm, u32 hw_if_index, u32 mtu);
+clib_error_t *vnet_hw_interface_set_mtu (vnet_main_t *vnm, u32 hw_if_index,
+					 u32 mtu);
 
 /* Set the MTU on the SW interface */
 void vnet_sw_interface_set_mtu (vnet_main_t * vnm, u32 sw_if_index, u32 mtu);
@@ -541,6 +546,7 @@ pcap_add_buffer (pcap_main_t *pm, struct vlib_main_t *vm, u32 buffer_index,
 
   if (PREDICT_TRUE (pm->n_packets_captured < pm->n_packets_to_capture))
     {
+      time_now += vm->clib_time.init_reference_time;
       clib_spinlock_lock_if_init (&pm->lock);
       d = pcap_add_packet (pm, time_now, n_left, n);
       while (1)

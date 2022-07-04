@@ -21,6 +21,7 @@
 #include <vlib/unix/unix.h>
 #include <vlib/log.h>
 
+#include <vnet/vnet.h>
 #include <vnet/ethernet/ethernet.h>
 #include <vnet/interface/rx_queue_funcs.h>
 #include <dpdk/buffer.h>
@@ -43,41 +44,69 @@
 
 #include <dpdk/device/dpdk_priv.h>
 
-#define ETHER_MAX_LEN   1518  /**< Maximum frame len, including CRC. */
-
 dpdk_main_t dpdk_main;
 dpdk_config_main_t dpdk_config_main;
 
 #define LINK_STATE_ELOGS	0
 
-/* Port configuration, mildly modified Intel app values */
-
-static dpdk_port_type_t
-port_type_from_speed_capa (struct rte_eth_dev_info *dev_info)
+/* dev_info.speed_capa -> interface name mapppings */
+const struct
 {
+  u32 link_speed;
+  const char *pfx;
+} if_name_prefixes[] = {
+  /* sorted, higher speed first */
+  { ETH_LINK_SPEED_200G, "TwoHundredGigabitEthernet" },
+  { ETH_LINK_SPEED_100G, "HundredGigabitEthernet" },
+  { ETH_LINK_SPEED_56G, "FiftySixGigabitEthernet" },
+  { ETH_LINK_SPEED_50G, "FiftyGigabitEthernet" },
+  { ETH_LINK_SPEED_40G, "FortyGigabitEthernet" },
+  { ETH_LINK_SPEED_25G, "TwentyFiveGigabitEthernet" },
+  { ETH_LINK_SPEED_20G, "TwentyGigabitEthernet" },
+  { ETH_LINK_SPEED_10G, "TenGigabitEthernet" },
+  { ETH_LINK_SPEED_5G, "FiveGigabitEthernet" },
+  { ETH_LINK_SPEED_2_5G, "TwoDotFiveGigabitEthernet" },
+  { ETH_LINK_SPEED_1G, "GigabitEthernet" },
+};
 
-  if (dev_info->speed_capa & ETH_LINK_SPEED_100G)
-    return VNET_DPDK_PORT_TYPE_ETH_100G;
-  else if (dev_info->speed_capa & ETH_LINK_SPEED_56G)
-    return VNET_DPDK_PORT_TYPE_ETH_56G;
-  else if (dev_info->speed_capa & ETH_LINK_SPEED_50G)
-    return VNET_DPDK_PORT_TYPE_ETH_50G;
-  else if (dev_info->speed_capa & ETH_LINK_SPEED_40G)
-    return VNET_DPDK_PORT_TYPE_ETH_40G;
-  else if (dev_info->speed_capa & ETH_LINK_SPEED_25G)
-    return VNET_DPDK_PORT_TYPE_ETH_25G;
-  else if (dev_info->speed_capa & ETH_LINK_SPEED_20G)
-    return VNET_DPDK_PORT_TYPE_ETH_20G;
-  else if (dev_info->speed_capa & ETH_LINK_SPEED_10G)
-    return VNET_DPDK_PORT_TYPE_ETH_10G;
-  else if (dev_info->speed_capa & ETH_LINK_SPEED_5G)
-    return VNET_DPDK_PORT_TYPE_ETH_5G;
-  else if (dev_info->speed_capa & ETH_LINK_SPEED_2_5G)
-    return VNET_DPDK_PORT_TYPE_ETH_2_5G;
-  else if (dev_info->speed_capa & ETH_LINK_SPEED_1G)
-    return VNET_DPDK_PORT_TYPE_ETH_1G;
+static clib_error_t *
+dpdk_set_max_frame_size (vnet_main_t *vnm, vnet_hw_interface_t *hi,
+			 u32 frame_size)
+{
+  dpdk_main_t *dm = &dpdk_main;
+  dpdk_device_t *xd = vec_elt_at_index (dm->devices, hi->dev_instance);
+  int rv;
+  u32 mtu;
 
-  return VNET_DPDK_PORT_TYPE_UNKNOWN;
+  mtu = frame_size - xd->driver_frame_overhead;
+
+  rv = rte_eth_dev_set_mtu (xd->port_id, mtu);
+
+  if (rv < 0)
+    {
+      dpdk_log_err ("[%u] rte_eth_dev_set_mtu failed (mtu %u, rv %d)",
+		    xd->port_id, mtu, rv);
+      switch (rv)
+	{
+	case -ENOTSUP:
+	  return vnet_error (VNET_ERR_UNSUPPORTED,
+			     "dpdk driver doesn't support MTU change");
+	case -EBUSY:
+	  return vnet_error (VNET_ERR_BUSY, "port is running");
+	case -EINVAL:
+	  return vnet_error (VNET_ERR_INVALID_VALUE, "invalid MTU");
+	default:
+	  return vnet_error (VNET_ERR_BUG,
+			     "unexpected return value %d returned from "
+			     "rte_eth_dev_set_mtu(...)",
+			     rv);
+	}
+    }
+  else
+    dpdk_log_debug ("[%u] max_frame_size set to %u by setting MTU to %u",
+		    xd->port_id, frame_size, mtu);
+
+  return 0;
 }
 
 static u32
@@ -96,15 +125,6 @@ dpdk_flag_change (vnet_main_t * vnm, vnet_hw_interface_t * hi, u32 flags)
     case ETHERNET_INTERFACE_FLAG_ACCEPT_ALL:
       dpdk_device_flag_set (xd, DPDK_DEVICE_FLAG_PROMISC, 1);
       break;
-    case ETHERNET_INTERFACE_FLAG_MTU:
-      if (xd->flags & DPDK_DEVICE_FLAG_ADMIN_UP)
-	rte_eth_dev_stop (xd->port_id);
-      rte_eth_dev_set_mtu (xd->port_id, hi->max_packet_bytes);
-      if (xd->flags & DPDK_DEVICE_FLAG_ADMIN_UP)
-	rte_eth_dev_start (xd->port_id);
-      dpdk_log_debug ("[%u] mtu changed to %u", xd->port_id,
-		      hi->max_packet_bytes);
-      return 0;
     default:
       return ~0;
     }
@@ -161,31 +181,53 @@ check_l3cache ()
   return 0;
 }
 
+static dpdk_device_config_t *
+dpdk_find_startup_config (struct rte_eth_dev_info *di)
+{
+  dpdk_main_t *dm = &dpdk_main;
+  struct rte_pci_device *pci_dev;
+  struct rte_vmbus_device *vmbus_dev;
+  vlib_pci_addr_t pci_addr;
+  vlib_vmbus_addr_t vmbus_addr;
+  uword *p = 0;
+
+  if ((pci_dev = dpdk_get_pci_device (di)))
+    {
+      pci_addr.domain = pci_dev->addr.domain;
+      pci_addr.bus = pci_dev->addr.bus;
+      pci_addr.slot = pci_dev->addr.devid;
+      pci_addr.function = pci_dev->addr.function;
+      p =
+	hash_get (dm->conf->device_config_index_by_pci_addr, pci_addr.as_u32);
+    }
+
+  if ((vmbus_dev = dpdk_get_vmbus_device (di)))
+    {
+      unformat_input_t input_vmbus;
+      unformat_init_string (&input_vmbus, di->device->name,
+			    strlen (di->device->name));
+      if (unformat (&input_vmbus, "%U", unformat_vlib_vmbus_addr, &vmbus_addr))
+	p = mhash_get (&dm->conf->device_config_index_by_vmbus_addr,
+		       &vmbus_addr);
+      unformat_free (&input_vmbus);
+    }
+
+  if (p)
+    return pool_elt_at_index (dm->conf->dev_confs, p[0]);
+  return &dm->conf->default_devconf;
+}
+
 static clib_error_t *
 dpdk_lib_init (dpdk_main_t * dm)
 {
   vnet_main_t *vnm = vnet_get_main ();
-  u32 nports;
   u16 port_id;
-  vlib_main_t *vm = vlib_get_main ();
   vlib_thread_main_t *tm = vlib_get_thread_main ();
   vnet_device_main_t *vdm = &vnet_device_main;
   vnet_sw_interface_t *sw;
   vnet_hw_interface_t *hi;
   dpdk_device_t *xd;
-  vlib_pci_addr_t last_pci_addr;
-  u32 last_pci_addr_port = 0;
-  last_pci_addr.as_u32 = ~0;
-
-  nports = rte_eth_dev_count_avail ();
-
-  if (nports < 1)
-    {
-      dpdk_log_notice ("DPDK drivers found no Ethernet devices...");
-    }
-
-  if (CLIB_DEBUG > 0)
-    dpdk_log_notice ("DPDK drivers found %d ports...", nports);
+  char *if_num_fmt;
 
   /* vlib_buffer_t template */
   vec_validate_aligned (dm->per_thread_data, tm->n_vlib_mains - 1,
@@ -196,6 +238,9 @@ dpdk_lib_init (dpdk_main_t * dm)
       clib_memset (&ptd->buffer_template, 0, sizeof (vlib_buffer_t));
       vnet_buffer (&ptd->buffer_template)->sw_if_index[VLIB_TX] = (u32) ~ 0;
     }
+
+  if_num_fmt =
+    dm->conf->interface_name_format_decimal ? "%d/%d/%d" : "%x/%x/%x";
 
   /* device config defaults */
   dm->default_port_conf.n_rx_desc = DPDK_NB_RX_DESC_DEFAULT;
@@ -212,124 +257,120 @@ dpdk_lib_init (dpdk_main_t * dm)
   RTE_ETH_FOREACH_DEV (port_id)
     {
       u8 addr[6];
+      int rv, q;
       struct rte_eth_dev_info di;
-      struct rte_pci_device *pci_dev;
-      struct rte_vmbus_device *vmbus_dev;
-      dpdk_portid_t next_port_id;
       dpdk_device_config_t *devconf = 0;
       vnet_eth_interface_registration_t eir = {};
-      vlib_pci_addr_t pci_addr;
-      vlib_vmbus_addr_t vmbus_addr;
-      uword *p = 0;
+      dpdk_driver_t *dr;
 
       if (!rte_eth_dev_is_valid_port (port_id))
 	continue;
 
-      rte_eth_dev_info_get (port_id, &di);
+      if ((rv = rte_eth_dev_info_get (port_id, &di)) != 0)
+	{
+	  dpdk_log_warn ("[%u] failed to get device info. skipping device.",
+			 port_id);
+	  continue;
+	}
 
       if (di.device == 0)
 	{
-	  dpdk_log_notice ("DPDK bug: missing device info. Skipping %s device",
+	  dpdk_log_warn ("[%u] missing device info. Skipping '%s' device",
+			 port_id, di.driver_name);
+	  continue;
+	}
+
+      devconf = dpdk_find_startup_config (&di);
+
+      /* If device is blacklisted, we should skip it */
+      if (devconf->is_blacklisted)
+	{
+	  dpdk_log_notice ("[%d] Device %s blacklisted. Skipping...", port_id,
 			   di.driver_name);
 	  continue;
 	}
 
-      pci_dev = dpdk_get_pci_device (&di);
-
-      if (pci_dev)
-	{
-	  pci_addr.domain = pci_dev->addr.domain;
-	  pci_addr.bus = pci_dev->addr.bus;
-	  pci_addr.slot = pci_dev->addr.devid;
-	  pci_addr.function = pci_dev->addr.function;
-	  p = hash_get (dm->conf->device_config_index_by_pci_addr,
-			pci_addr.as_u32);
-	}
-
-      vmbus_dev = dpdk_get_vmbus_device (&di);
-
-      if (vmbus_dev)
-	{
-	  unformat_input_t input_vmbus;
-	  unformat_init_string (&input_vmbus, di.device->name,
-				strlen (di.device->name));
-	  if (unformat (&input_vmbus, "%U", unformat_vlib_vmbus_addr,
-			&vmbus_addr))
-	    {
-	      p = mhash_get (&dm->conf->device_config_index_by_vmbus_addr,
-			     &vmbus_addr);
-	    }
-	  unformat_free (&input_vmbus);
-	}
-
-      if (p)
-	{
-	  devconf = pool_elt_at_index (dm->conf->dev_confs, p[0]);
-	  /* If device is blacklisted, we should skip it */
-	  if (devconf->is_blacklisted)
-	    {
-	      continue;
-	    }
-	}
-      else
-	devconf = &dm->conf->default_devconf;
-
-      /* Create vnet interface */
       vec_add2_aligned (dm->devices, xd, 1, CLIB_CACHE_LINE_BYTES);
-      xd->cpu_socket = (i8) rte_eth_dev_socket_id (port_id);
+      xd->port_id = port_id;
+      xd->device_index = xd - dm->devices;
+      xd->per_interface_next_index = ~0;
+
       clib_memcpy (&xd->conf, &dm->default_port_conf,
 		   sizeof (dpdk_port_conf_t));
 
-      if (p)
+      /* find driver datea for this PMD */
+      if ((dr = dpdk_driver_find (di.driver_name, &xd->if_desc)))
+	{
+	  xd->driver = dr;
+	  xd->supported_flow_actions = dr->supported_flow_actions;
+	  xd->conf.disable_rss = dr->mq_mode_none;
+	  xd->conf.disable_rx_scatter = dr->disable_rx_scatter;
+	  xd->conf.enable_rxq_int = dr->enable_rxq_int;
+	  if (dr->use_intel_phdr_cksum)
+	    dpdk_device_flag_set (xd, DPDK_DEVICE_FLAG_INTEL_PHDR_CKSUM, 1);
+	  if (dr->int_unmaskable)
+	    dpdk_device_flag_set (xd, DPDK_DEVICE_FLAG_INT_UNMASKABLE, 1);
+	}
+      else
+	dpdk_log_warn ("[%u] unknown driver '%s'", port_id, di.driver_name);
+
+      if (devconf->name)
 	{
 	  xd->name = devconf->name;
 	}
-
-      /* Handle representor devices that share the same PCI ID */
-      if (di.switch_info.domain_id != RTE_ETH_DEV_SWITCH_DOMAIN_ID_INVALID)
+      else
 	{
-	  if (di.switch_info.port_id != (uint16_t) -1)
-	    xd->interface_name_suffix =
-	      format (0, "%d", di.switch_info.port_id);
-	}
-      /* Handle interface naming for devices with multiple ports sharing same
-       * PCI ID */
-      else if (pci_dev && ((next_port_id = rte_eth_find_next (port_id + 1)) !=
-			   RTE_MAX_ETHPORTS))
-	{
-	  struct rte_eth_dev_info next_di = { 0 };
-	  struct rte_pci_device *next_pci_dev;
-	  rte_eth_dev_info_get (next_port_id, &next_di);
-	  next_pci_dev = next_di.device ? RTE_DEV_TO_PCI (next_di.device) : 0;
-	  if (next_pci_dev && pci_addr.as_u32 != last_pci_addr.as_u32 &&
-	      memcmp (&pci_dev->addr, &next_pci_dev->addr,
-		      sizeof (struct rte_pci_addr)) == 0)
+	  struct rte_pci_device *pci_dev;
+	  if (dr && dr->interface_name_prefix)
 	    {
-	      xd->interface_name_suffix = format (0, "0");
-	      last_pci_addr.as_u32 = pci_addr.as_u32;
-	      last_pci_addr_port = port_id;
-	    }
-	  else if (pci_addr.as_u32 == last_pci_addr.as_u32)
-	    {
-	      xd->interface_name_suffix =
-		format (0, "%u", port_id - last_pci_addr_port);
+	      /* prefix override by driver */
+	      xd->name = format (xd->name, "%s", dr->interface_name_prefix);
 	    }
 	  else
 	    {
-	      last_pci_addr.as_u32 = ~0;
-	    }
-	}
-      else
-	last_pci_addr.as_u32 = ~0;
+	      /* interface name prefix from speed_capa */
+	      u64 mask = ~((if_name_prefixes[0].link_speed << 1) - 1);
 
-      if (devconf->max_lro_pkt_size)
-	xd->conf.max_lro_pkt_size = devconf->max_lro_pkt_size;
+	      if (di.speed_capa & mask)
+		dpdk_log_warn ("[%u] unknown speed capability 0x%x reported",
+			       xd->port_id, di.speed_capa & mask);
+
+	      for (int i = 0; i < ARRAY_LEN (if_name_prefixes); i++)
+		if (if_name_prefixes[i].link_speed & di.speed_capa)
+		  {
+		    xd->name =
+		      format (xd->name, "%s", if_name_prefixes[i].pfx);
+		    break;
+		  }
+	      if (xd->name == 0)
+		xd->name = format (xd->name, "Ethernet");
+	    }
+
+	  if (dr && dr->interface_number_from_port_id)
+	    xd->name = format (xd->name, "%u", port_id);
+	  else if ((pci_dev = dpdk_get_pci_device (&di)))
+	    xd->name = format (xd->name, if_num_fmt, pci_dev->addr.bus,
+			       pci_dev->addr.devid, pci_dev->addr.function);
+	  else
+	    xd->name = format (xd->name, "%u", port_id);
+	}
+
+      /* Handle representor devices that share the same PCI ID */
+      if ((di.switch_info.domain_id != RTE_ETH_DEV_SWITCH_DOMAIN_ID_INVALID) &&
+	  (di.switch_info.port_id != (uint16_t) -1))
+	xd->name = format (xd->name, "/%d", di.switch_info.port_id);
+
+      /* number of RX and TX queues */
+      if (devconf->num_tx_queues > 0)
+	{
+	  if (di.max_tx_queues < devconf->num_tx_queues)
+	    dpdk_log_warn ("[%u] Configured number of TX queues (%u) is "
+			   "bigger than maximum supported (%u)",
+			   port_id, devconf->num_tx_queues, di.max_tx_queues);
+	  xd->conf.n_tx_queues = devconf->num_tx_queues;
+	}
 
       xd->conf.n_tx_queues = clib_min (di.max_tx_queues, xd->conf.n_tx_queues);
-
-      if (devconf->num_tx_queues > 0 &&
-	  devconf->num_tx_queues < xd->conf.n_tx_queues)
-	xd->conf.n_tx_queues = devconf->num_tx_queues;
 
       if (devconf->num_rx_queues > 1 &&
 	  di.max_rx_queues >= devconf->num_rx_queues)
@@ -346,186 +387,67 @@ dpdk_lib_init (dpdk_main_t * dm)
 			       format_dpdk_rss_hf_name, unsupported_bits);
 	    }
 	  xd->conf.rss_hf &= di.flow_type_rss_offloads;
+	  dpdk_log_debug ("[%u] rss_hf: %U", port_id, format_dpdk_rss_hf_name,
+			  xd->conf.rss_hf);
 	}
 
+#ifndef RTE_VLAN_HLEN
+#define RTE_VLAN_HLEN 4
+#endif
+      xd->driver_frame_overhead =
+	RTE_ETHER_HDR_LEN + 2 * RTE_VLAN_HLEN + RTE_ETHER_CRC_LEN;
+#if RTE_VERSION >= RTE_VERSION_NUM(21, 11, 0, 0)
+      q = di.max_rx_pktlen - di.max_mtu;
+
+      if (q < xd->driver_frame_overhead && q > 0)
+	xd->driver_frame_overhead = q;
+      dpdk_log_debug ("[%u] min_mtu: %u, max_mtu: %u, min_rx_bufsize: %u, "
+		      "max_rx_pktlen: %u, max_lro_pkt_size: %u",
+		      xd->port_id, di.min_mtu, di.max_mtu, di.min_rx_bufsize,
+		      di.max_rx_pktlen, di.max_lro_pkt_size);
+#endif
+      dpdk_log_debug ("[%u] driver frame overhead is %u", port_id,
+		      xd->driver_frame_overhead);
+
+      /* number of RX and TX tescriptors */
       if (devconf->num_rx_desc)
 	xd->conf.n_rx_desc = devconf->num_rx_desc;
+      else if (dr && dr->n_rx_desc)
+	xd->conf.n_rx_desc = dr->n_rx_desc;
 
       if (devconf->num_tx_desc)
 	xd->conf.n_tx_desc = devconf->num_tx_desc;
+      else if (dr && dr->n_tx_desc)
+	xd->conf.n_tx_desc = dr->n_tx_desc;
+
+      dpdk_log_debug (
+	"[%u] n_rx_queues: %u n_tx_queues: %u n_rx_desc: %u n_tx_desc: %u",
+	port_id, xd->conf.n_rx_queues, xd->conf.n_tx_queues,
+	xd->conf.n_rx_desc, xd->conf.n_tx_desc);
 
       vec_validate_aligned (xd->rx_queues, xd->conf.n_rx_queues - 1,
 			    CLIB_CACHE_LINE_BYTES);
 
-      /* workaround for drivers not setting driver_name */
-      if ((!di.driver_name) && (pci_dev))
-	di.driver_name = pci_dev->driver->driver.name;
+      rte_eth_macaddr_get (port_id, (void *) addr);
 
-      ASSERT (di.driver_name);
-
-      if (!xd->pmd)
-	{
-
-#define _(s, f)                                                               \
-  else if (di.driver_name && !strcmp (di.driver_name, s)) xd->pmd =           \
-    VNET_DPDK_PMD_##f;
-	  if (0)
-	    ;
-	  foreach_dpdk_pmd
-#undef _
-	    else xd->pmd = VNET_DPDK_PMD_UNKNOWN;
-
-	  xd->port_type = VNET_DPDK_PORT_TYPE_UNKNOWN;
-
-	  switch (xd->pmd)
-	    {
-	      /* Drivers with valid speed_capa set */
-	    case VNET_DPDK_PMD_I40E:
-	      dpdk_device_flag_set (xd, DPDK_DEVICE_FLAG_INT_UNMASKABLE, 1);
-	      /* fall through */
-	    case VNET_DPDK_PMD_E1000EM:
-	    case VNET_DPDK_PMD_IGB:
-	    case VNET_DPDK_PMD_IGC:
-	    case VNET_DPDK_PMD_IXGBE:
-	    case VNET_DPDK_PMD_ICE:
-	      xd->supported_flow_actions =
-		VNET_FLOW_ACTION_MARK | VNET_FLOW_ACTION_REDIRECT_TO_NODE |
-		VNET_FLOW_ACTION_REDIRECT_TO_QUEUE |
-		VNET_FLOW_ACTION_BUFFER_ADVANCE | VNET_FLOW_ACTION_COUNT |
-		VNET_FLOW_ACTION_DROP | VNET_FLOW_ACTION_RSS;
-	      dpdk_device_flag_set (xd, DPDK_DEVICE_FLAG_INTEL_PHDR_CKSUM, 1);
-	      xd->conf.enable_rxq_int = 1;
-	      /* fall through */
-	    case VNET_DPDK_PMD_MLX5:
-	    case VNET_DPDK_PMD_CXGBE:
-	    case VNET_DPDK_PMD_MLX4:
-	    case VNET_DPDK_PMD_QEDE:
-	    case VNET_DPDK_PMD_BNXT:
-	    case VNET_DPDK_PMD_ENIC:
-	      xd->port_type = port_type_from_speed_capa (&di);
-	      break;
-
-	      /* SR-IOV VFs */
-	    case VNET_DPDK_PMD_I40EVF:
-	      dpdk_device_flag_set (xd, DPDK_DEVICE_FLAG_INT_UNMASKABLE, 1);
-	      /* fall through */
-	    case VNET_DPDK_PMD_IGBVF:
-	    case VNET_DPDK_PMD_IXGBEVF:
-	      xd->port_type = VNET_DPDK_PORT_TYPE_ETH_VF;
-	      dpdk_device_flag_set (xd, DPDK_DEVICE_FLAG_INTEL_PHDR_CKSUM, 1);
-	      /* DPDK bug in multiqueue... */
-	      /* xd->port_conf.intr_conf.rxq = 1; */
-	      break;
-
-	      /* iAVF */
-	    case VNET_DPDK_PMD_IAVF:
-	      dpdk_device_flag_set (xd, DPDK_DEVICE_FLAG_INT_UNMASKABLE, 1);
-	      dpdk_device_flag_set (xd, DPDK_DEVICE_FLAG_INTEL_PHDR_CKSUM, 1);
-	      xd->port_type = VNET_DPDK_PORT_TYPE_ETH_VF;
-	      xd->supported_flow_actions =
-		VNET_FLOW_ACTION_MARK | VNET_FLOW_ACTION_REDIRECT_TO_NODE |
-		VNET_FLOW_ACTION_REDIRECT_TO_QUEUE |
-		VNET_FLOW_ACTION_BUFFER_ADVANCE | VNET_FLOW_ACTION_COUNT |
-		VNET_FLOW_ACTION_DROP | VNET_FLOW_ACTION_RSS;
-	      /* DPDK bug in multiqueue... */
-	      /* xd->port_conf.intr_conf.rxq = 1; */
-	      break;
-
-	    case VNET_DPDK_PMD_THUNDERX:
-	      xd->port_type = VNET_DPDK_PORT_TYPE_ETH_VF;
-	      break;
-
-	    case VNET_DPDK_PMD_ENA:
-	      xd->port_type = VNET_DPDK_PORT_TYPE_ETH_VF;
-	      xd->conf.disable_rx_scatter = 1;
-	      xd->conf.enable_rxq_int = 1;
-	      break;
-
-	    case VNET_DPDK_PMD_DPAA2:
-	      xd->port_type = VNET_DPDK_PORT_TYPE_ETH_10G;
-	      break;
-
-	      /* Intel Red Rock Canyon */
-	    case VNET_DPDK_PMD_FM10K:
-	      xd->port_type = VNET_DPDK_PORT_TYPE_ETH_SWITCH;
-	      break;
-
-	      /* virtio */
-	    case VNET_DPDK_PMD_VIRTIO:
-	      xd->conf.disable_rss = 1;
-	      xd->port_type = VNET_DPDK_PORT_TYPE_ETH_1G;
-	      xd->conf.n_rx_desc = DPDK_NB_RX_DESC_VIRTIO;
-	      xd->conf.n_tx_desc = DPDK_NB_TX_DESC_VIRTIO;
-	      xd->conf.enable_rxq_int = 1;
-	      break;
-
-	      /* vmxnet3 */
-	    case VNET_DPDK_PMD_VMXNET3:
-	      xd->port_type = VNET_DPDK_PORT_TYPE_ETH_1G;
-	      break;
-
-	    case VNET_DPDK_PMD_AF_PACKET:
-	      xd->port_type = VNET_DPDK_PORT_TYPE_AF_PACKET;
-	      break;
-
-	    case VNET_DPDK_PMD_VIRTIO_USER:
-	      xd->port_type = VNET_DPDK_PORT_TYPE_VIRTIO_USER;
-	      break;
-
-	    case VNET_DPDK_PMD_VHOST_ETHER:
-	      xd->port_type = VNET_DPDK_PORT_TYPE_VHOST_ETHER;
-	      break;
-
-	    case VNET_DPDK_PMD_LIOVF_ETHER:
-	      xd->port_type = VNET_DPDK_PORT_TYPE_ETH_VF;
-	      break;
-
-	    case VNET_DPDK_PMD_FAILSAFE:
-	      xd->port_type = VNET_DPDK_PORT_TYPE_FAILSAFE;
-	      xd->conf.enable_lsc_int = 1;
-	      break;
-
-	    case VNET_DPDK_PMD_NETVSC:
-	      {
-		xd->port_type = VNET_DPDK_PORT_TYPE_ETH_VF;
-	      }
-	      break;
-
-	    default:
-	      xd->port_type = VNET_DPDK_PORT_TYPE_UNKNOWN;
-	    }
-	}
-
-      if (xd->pmd == VNET_DPDK_PMD_AF_PACKET)
-	{
-	  f64 now = vlib_time_now (vm);
-	  u32 rnd;
-	  rnd = (u32) (now * 1e6);
-	  rnd = random_u32 (&rnd);
-	  clib_memcpy (addr + 2, &rnd, sizeof (rnd));
-	  addr[0] = 2;
-	  addr[1] = 0xfe;
-	}
-      else
-	rte_eth_macaddr_get (port_id, (void *) addr);
-
-      xd->port_id = port_id;
-      xd->device_index = xd - dm->devices;
-      xd->per_interface_next_index = ~0;
-
-      /* assign interface to input thread */
-      int q;
-
+      /* create interface */
       eir.dev_class_index = dpdk_device_class.index;
       eir.dev_instance = xd->device_index;
       eir.address = addr;
       eir.cb.flag_change = dpdk_flag_change;
+      eir.cb.set_max_frame_size = dpdk_set_max_frame_size;
       xd->hw_if_index = vnet_eth_register_interface (vnm, &eir);
-
+      hi = vnet_get_hw_interface (vnm, xd->hw_if_index);
+      hi->numa_node = xd->cpu_socket = (i8) rte_eth_dev_socket_id (port_id);
       sw = vnet_get_hw_sw_interface (vnm, xd->hw_if_index);
       xd->sw_if_index = sw->sw_if_index;
-      vnet_hw_if_set_input_node (vnm, xd->hw_if_index, dpdk_input_node.index);
+      dpdk_log_debug ("[%u] interface %s created", port_id, hi->name);
 
+      ethernet_set_flags (vnm, xd->hw_if_index,
+			  ETHERNET_INTERFACE_FLAG_DEFAULT_L3);
+
+      /* assign worker threads */
+      vnet_hw_if_set_input_node (vnm, xd->hw_if_index, dpdk_input_node.index);
       if (devconf->workers)
 	{
 	  int j;
@@ -545,20 +467,6 @@ dpdk_lib_init (dpdk_main_t * dm)
 	      vnm, xd->hw_if_index, q, VNET_HW_IF_RXQ_THREAD_ANY);
 	  }
 
-
-      /*Get vnet hardware interface */
-      hi = vnet_get_hw_interface (vnm, xd->hw_if_index);
-
-      if (hi)
-	{
-	  hi->numa_node = xd->cpu_socket;
-
-	  /* Indicate ability to support L3 DMAC filtering and
-	   * initialize interface to L3 non-promisc mode */
-	  ethernet_set_flags (vnm, xd->hw_if_index,
-			      ETHERNET_INTERFACE_FLAG_DEFAULT_L3);
-	}
-
       if (devconf->tso == DPDK_DEVICE_TSO_ON)
 	{
 	  /*tcp_udp checksum must be enabled*/
@@ -571,21 +479,21 @@ dpdk_lib_init (dpdk_main_t * dm)
 	    xd->conf.enable_tso = 1;
 	}
 
+      if (devconf->max_lro_pkt_size)
+	xd->conf.max_lro_pkt_size = devconf->max_lro_pkt_size;
+
       dpdk_device_setup (xd);
 
       /* rss queues should be configured after dpdk_device_setup() */
-      if ((hi != NULL) && (devconf->rss_queues != NULL))
+      if (devconf->rss_queues)
 	{
 	  if (vnet_hw_interface_set_rss_queues (vnet_get_main (), hi,
 						devconf->rss_queues))
-	    {
-	      clib_warning ("%s: Failed to set rss queues", hi->name);
-	    }
+	    dpdk_log_warn ("[%u] Failed to set rss queues", port_id);
 	}
 
       if (vec_len (xd->errors))
-	dpdk_log_err ("setup failed for device %U. Errors:\n  %U",
-		      format_dpdk_device_name, port_id,
+	dpdk_log_err ("[%u] setup failed Errors:\n  %U", port_id,
 		      format_dpdk_device_errors, xd);
     }
 
@@ -944,7 +852,7 @@ dpdk_device_config (dpdk_config_main_t *conf, void *addr,
 	;
       else if (unformat (input, "num-tx-desc %u", &devconf->num_tx_desc))
 	;
-      else if (unformat (input, "name %s", &devconf->name))
+      else if (unformat (input, "name %v", &devconf->name))
 	;
       else if (unformat (input, "workers %U", unformat_bitmap_list,
 			 &devconf->workers))
@@ -1013,7 +921,7 @@ dpdk_log_read_ready (clib_file_t * uf)
       n = read (uf->file_descriptor, s + len, n_try);
       if (n < 0 && errno != EAGAIN)
 	return clib_error_return_unix (0, "read");
-      _vec_len (s) = len + (n < 0 ? 0 : n);
+      vec_set_len (s, len + (n < 0 ? 0 : n));
     }
 
   unformat_init_vector (&input, s);
@@ -1062,6 +970,8 @@ dpdk_config (vlib_main_t * vm, unformat_input_t * input)
   u8 *socket_mem = 0;
   u8 *huge_dir_path = 0;
   u32 vendor, device, domain, bus, func;
+  void *fmt_func;
+  void *fmt_addr;
 
   huge_dir_path =
     format (0, "%s/hugepages%c", vlib_unix_get_runtime_dir (), 0);
@@ -1235,12 +1145,8 @@ dpdk_config (vlib_main_t * vm, unformat_input_t * input)
 
       else if (unformat_skip_white_space (input))
 	;
-      else
-	{
-	  error = clib_error_return (0, "unknown input `%U'",
+      else return clib_error_return (0, "unknown input `%U'",
 				     format_unformat_error, input);
-	  goto done;
-	}
     }
 
   if (!conf->uio_driver_name)
@@ -1282,9 +1188,6 @@ dpdk_config (vlib_main_t * vm, unformat_input_t * input)
       vec_add1 (conf->eal_init_args, tmp);
     }
 
-  if (error)
-    return error;
-
   if (no_pci == 0 && geteuid () == 0)
     dpdk_bind_devices_to_uio (conf);
 
@@ -1309,31 +1212,39 @@ dpdk_config (vlib_main_t * vm, unformat_input_t * input)
       /* copy rss_queues config from default device */
       _ (rss_queues)
 
-      /* add DPDK EAL whitelist/blacklist entry */
-      if (num_whitelisted > 0 && devconf->is_blacklisted == 0 &&
-	  devconf->dev_addr_type == VNET_DEV_ADDR_PCI)
-    {
-	  tmp = format (0, "-a%c", 0);
-	  vec_add1 (conf->eal_init_args, tmp);
-	  if (devconf->devargs)
+      /* assume that default is PCI */
+      fmt_func = format_vlib_pci_addr;
+    fmt_addr = &devconf->pci_addr;
+
+    if (devconf->dev_addr_type == VNET_DEV_ADDR_VMBUS)
+      {
+	fmt_func = format_vlib_vmbus_addr;
+	fmt_addr = &devconf->vmbus_addr;
+      }
+
+    /* add DPDK EAL whitelist/blacklist entry */
+    if (num_whitelisted > 0 && devconf->is_blacklisted == 0)
+      {
+	tmp = format (0, "-a%c", 0);
+	vec_add1 (conf->eal_init_args, tmp);
+	if (devconf->devargs)
 	  {
-	    tmp = format (0, "%U,%s%c", format_vlib_pci_addr,
-			  &devconf->pci_addr, devconf->devargs, 0);
+	    tmp =
+	      format (0, "%U,%s%c", fmt_func, fmt_addr, devconf->devargs, 0);
 	  }
 	  else
 	  {
-	    tmp = format (0, "%U%c", format_vlib_pci_addr, &devconf->pci_addr, 0);
+	    tmp = format (0, "%U%c", fmt_func, fmt_addr, 0);
 	  }
 	  vec_add1 (conf->eal_init_args, tmp);
-    }
-    else if (num_whitelisted == 0 && devconf->is_blacklisted != 0 &&
-	     devconf->dev_addr_type == VNET_DEV_ADDR_PCI)
-    {
-	  tmp = format (0, "-b%c", 0);
-	  vec_add1 (conf->eal_init_args, tmp);
-	  tmp = format (0, "%U%c", format_vlib_pci_addr, &devconf->pci_addr, 0);
-	  vec_add1 (conf->eal_init_args, tmp);
-    }
+      }
+    else if (num_whitelisted == 0 && devconf->is_blacklisted != 0)
+      {
+	tmp = format (0, "-b%c", 0);
+	vec_add1 (conf->eal_init_args, tmp);
+	tmp = format (0, "%U%c", fmt_func, fmt_addr, 0);
+	vec_add1 (conf->eal_init_args, tmp);
+      }
   }
 
 #undef _
@@ -1343,14 +1254,15 @@ dpdk_config (vlib_main_t * vm, unformat_input_t * input)
 
   /* NULL terminate the "argv" vector, in case of stupidity */
   vec_add1 (conf->eal_init_args, 0);
-  _vec_len (conf->eal_init_args) -= 1;
+  vec_dec_len (conf->eal_init_args, 1);
 
   /* Set up DPDK eal and packet mbuf pool early. */
 
   int log_fds[2] = { 0 };
   if (pipe (log_fds) == 0)
     {
-      if (fcntl (log_fds[1], F_SETFL, O_NONBLOCK) == 0)
+      if (fcntl (log_fds[0], F_SETFL, O_NONBLOCK) == 0 &&
+	  fcntl (log_fds[1], F_SETFL, O_NONBLOCK) == 0)
 	{
 	  FILE *f = fdopen (log_fds[1], "a");
 	  if (f && rte_openlog_stream (f) == 0)
@@ -1381,6 +1293,8 @@ dpdk_config (vlib_main_t * vm, unformat_input_t * input)
   dpdk_log_notice ("EAL init args: %s", conf->eal_init_args_str);
   ret = rte_eal_init (vec_len (conf->eal_init_args),
 		      (char **) conf->eal_init_args);
+  if (ret < 0)
+    return clib_error_return (0, "rte_eal_init returned %d", ret);
 
   /* enable the AVX-512 vPMDs in DPDK */
   if (clib_cpu_supports_avx512_bitalg () &&
@@ -1397,15 +1311,11 @@ dpdk_config (vlib_main_t * vm, unformat_input_t * input)
   rmdir ((char *) huge_dir_path);
   vec_free (huge_dir_path);
 
-  if (ret < 0)
-    return clib_error_return (0, "rte_eal_init returned %d", ret);
-
   /* main thread 1st */
   if ((error = dpdk_buffer_pools_create (vm)))
     return error;
 
-done:
-  return error;
+  return 0;
 }
 
 VLIB_CONFIG_FUNCTION (dpdk_config, "dpdk");

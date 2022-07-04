@@ -57,6 +57,10 @@ format_intel_core_config (u8 *s, va_list *args)
   if ((v = (config >> 24) & 0xff))
     s = format (s, ", cmask=0x%02x", v);
 
+  /* show the raw config, for convenience sake */
+  if (!((config >> 16) & 0xffff))
+    s = format (s, ", raw=r%x", config & 0xffff);
+
   return s;
 }
 
@@ -73,11 +77,30 @@ intel_core_init (vlib_main_t *vm, perfmon_source_t *src)
   return 0;
 }
 
+perfmon_event_type_t
+intel_core_get_event_type (u32 event)
+{
+  u64 config = events[event].config;
+  u8 eventcode = (config & 0xFF);
+  u8 umask = ((config >> 8) & 0xFF);
+
+  if (!eventcode) /* is fixed or pseudo */
+    {
+      if (umask >= 0x80) /* is pseudo */
+	return PERFMON_EVENT_TYPE_PSEUDO;
+      else /* is fixed */
+	return PERFMON_EVENT_TYPE_FIXED;
+    }
+  else
+    return PERFMON_EVENT_TYPE_GENERAL;
+}
+
 PERFMON_REGISTER_SOURCE (intel_core) = {
   .name = "intel-core",
   .description = "intel arch core events",
   .events = events,
   .n_events = ARRAY_LEN (events),
   .init_fn = intel_core_init,
+  .get_event_type = intel_core_get_event_type,
   .format_config = format_intel_core_config,
 };

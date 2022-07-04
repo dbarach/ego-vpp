@@ -413,12 +413,9 @@ icmp6_router_solicitation (vlib_main_t * vm,
 
 		  radv_info = ip6_ra_get_itf (sw_if_index0);
 
-		  error0 = ((!radv_info) ?
-			    ICMP6_ERROR_ROUTER_SOLICITATION_RADV_NOT_CONFIG :
-			    error0);
-		  error0 = radv_info->send_radv == 0 ?
-			     ICMP6_ERROR_ROUTER_SOLICITATION_RADV_NOT_CONFIG :
-			     error0;
+		  error0 = ((!radv_info || 0 == radv_info->send_radv) ?
+			      ICMP6_ERROR_ROUTER_SOLICITATION_RADV_NOT_CONFIG :
+			      error0);
 		  if (error0 == ICMP6_ERROR_NONE)
 		    {
 		      f64 now = vlib_time_now (vm);
@@ -1393,9 +1390,6 @@ ip6_ra_link_enable (u32 sw_if_index)
   radv_info->initial_adverts_count = MAX_INITIAL_RTR_ADVERTISEMENTS;
   radv_info->initial_adverts_sent = radv_info->initial_adverts_count - 1;
   radv_info->initial_adverts_interval = MAX_INITIAL_RTR_ADVERT_INTERVAL;
-
-  /* deafult is to send */
-  radv_info->send_radv = 1;
 
   /* fill in delegate for this interface that will be needed later */
   radv_info->adv_link_mtu =

@@ -41,6 +41,7 @@
 #include <vppinfra/format.h>
 #include <vlib/vlib.h>
 #include <vlib/threads.h>
+#include <vlib/stats/stats.h>
 #include <vppinfra/tw_timer_1t_3w_1024sl_ov.h>
 
 #include <vlib/unix/unix.h>
@@ -80,7 +81,7 @@ vlib_frame_alloc_to_node (vlib_main_t * vm, u32 to_node_index,
     {
       /* Allocate from end of free list. */
       f = fs->free_frames[l - 1];
-      _vec_len (fs->free_frames) = l - 1;
+      vec_set_len (fs->free_frames, l - 1);
     }
   else
     {
@@ -476,12 +477,8 @@ vlib_put_next_frame (vlib_main_t * vm,
       if (!(f->frame_flags & VLIB_FRAME_PENDING))
 	{
 	  __attribute__ ((unused)) vlib_node_t *node;
-	  vlib_node_t *next_node;
-	  vlib_node_runtime_t *next_runtime;
 
 	  node = vlib_get_node (vm, r->node_index);
-	  next_node = vlib_get_next_node (vm, r->node_index, next_index);
-	  next_runtime = vlib_node_get_runtime (vm, next_node->index);
 
 	  vec_add2 (nm->pending_frames, p, 1);
 
@@ -490,18 +487,6 @@ vlib_put_next_frame (vlib_main_t * vm,
 	  p->next_frame_index = nf - nm->next_frames;
 	  nf->flags |= VLIB_FRAME_PENDING;
 	  f->frame_flags |= VLIB_FRAME_PENDING;
-
-	  /*
-	   * If we're going to dispatch this frame on another thread,
-	   * force allocation of a new frame. Otherwise, we create
-	   * a dangling frame reference. Each thread has its own copy of
-	   * the next_frames vector.
-	   */
-	  if (0 && r->thread_index != next_runtime->thread_index)
-	    {
-	      nf->frame = NULL;
-	      nf->flags &= ~(VLIB_FRAME_PENDING | VLIB_FRAME_IS_ALLOCATED);
-	    }
 	}
 
       /* Copy trace flag from next_frame and from runtime. */
@@ -1473,7 +1458,7 @@ vlib_main_or_worker_loop (vlib_main_t * vm, int is_main)
   if (is_main)
     {
       vec_resize (nm->pending_frames, 32);
-      _vec_len (nm->pending_frames) = 0;
+      vec_set_len (nm->pending_frames, 0);
     }
 
   /* Mark time of main loop start. */
@@ -1599,7 +1584,7 @@ vlib_main_or_worker_loop (vlib_main_t * vm, int is_main)
       for (i = 0; i < _vec_len (nm->pending_frames); i++)
 	cpu_time_now = dispatch_pending_node (vm, i, cpu_time_now);
       /* Reset pending vector for next iteration. */
-      _vec_len (nm->pending_frames) = 0;
+      vec_set_len (nm->pending_frames, 0);
 
       if (is_main)
 	{
@@ -1685,7 +1670,7 @@ vlib_main_or_worker_loop (vlib_main_t * vm, int is_main)
 			dispatch_suspended_process (vm, di, cpu_time_now);
 		    }
 		}
-	      _vec_len (nm->data_from_advancing_timing_wheel) = 0;
+	      vec_set_len (nm->data_from_advancing_timing_wheel, 0);
 	    }
 	}
       vlib_increment_main_loop_counter (vm);
@@ -1826,7 +1811,6 @@ placeholder_queue_signal_callback (vlib_main_t * vm)
 }
 
 #define foreach_weak_reference_stub             \
-_(vlib_map_stat_segment_init)                   \
 _(vpe_api_init)                                 \
 _(vlibmemory_init)                              \
 _(map_api_segment_init)
@@ -1887,7 +1871,13 @@ vlib_main (vlib_main_t * volatile vm, unformat_input_t * input)
       goto done;
     }
 
-  if ((error = vlib_map_stat_segment_init (vm)))
+  if ((error = vlib_log_init (vm)))
+    {
+      clib_error_report (error);
+      goto done;
+    }
+
+  if ((error = vlib_stats_init (vm)))
     {
       clib_error_report (error);
       goto done;
@@ -1956,7 +1946,7 @@ vlib_main (vlib_main_t * volatile vm, unformat_input_t * input)
 					     CLIB_CACHE_LINE_BYTES);
 
   vec_validate (nm->data_from_advancing_timing_wheel, 10);
-  _vec_len (nm->data_from_advancing_timing_wheel) = 0;
+  vec_set_len (nm->data_from_advancing_timing_wheel, 0);
 
   /* Create the process timing wheel */
   TW (tw_timer_wheel_init) ((TWT (tw_timer_wheel) *) nm->timing_wheel,
@@ -1965,9 +1955,9 @@ vlib_main (vlib_main_t * volatile vm, unformat_input_t * input)
 			    ~0 /* max expirations per call */ );
 
   vec_validate (vm->pending_rpc_requests, 0);
-  _vec_len (vm->pending_rpc_requests) = 0;
+  vec_set_len (vm->pending_rpc_requests, 0);
   vec_validate (vm->processing_rpc_requests, 0);
-  _vec_len (vm->processing_rpc_requests) = 0;
+  vec_set_len (vm->processing_rpc_requests, 0);
 
   /* Default params for the buffer allocator fault injector, if configured */
   if (VLIB_BUFFER_ALLOC_FAULT_INJECTOR > 0)

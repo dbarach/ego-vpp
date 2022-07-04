@@ -16,8 +16,6 @@
 #define DPDK_NB_RX_DESC_DEFAULT   1024
 #define DPDK_NB_TX_DESC_DEFAULT   1024
 #define DPDK_MAX_LRO_SIZE_DEFAULT 65536
-#define DPDK_NB_RX_DESC_VIRTIO    256
-#define DPDK_NB_TX_DESC_VIRTIO    256
 
 /* These args appear by themselves */
 #define foreach_eal_double_hyphen_predicate_arg \
@@ -65,11 +63,11 @@ dpdk_get_xstats (dpdk_device_t * xd)
   ret = rte_eth_xstats_get (xd->port_id, xd->xstats, len);
   if (ret < 0 || ret > len)
     {
-      _vec_len (xd->xstats) = 0;
+      vec_set_len (xd->xstats, 0);
       return;
     }
 
-  _vec_len (xd->xstats) = len;
+  vec_set_len (xd->xstats, len);
 }
 
 #define DPDK_UPDATE_COUNTER(vnm, tidx, xd, stat, cnt)                         \

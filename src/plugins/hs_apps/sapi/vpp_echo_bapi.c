@@ -103,6 +103,19 @@ echo_send_del_cert_key (echo_main_t * em)
   vl_msg_api_send_shmem (em->vl_input_queue, (u8 *) & bmp);
 }
 
+int
+echo_bapi_recv_fd (echo_main_t *em, int *fds, int n_fds)
+{
+  clib_error_t *err;
+  err = vl_socket_client_recv_fd_msg (fds, n_fds, 5);
+  if (err)
+    {
+      clib_error_report (err);
+      return -1;
+    }
+  return 0;
+}
+
 static u8
 echo_transport_needs_crypto (transport_proto_t proto)
 {
@@ -265,11 +278,11 @@ echo_segment_lookup (u64 segment_handle)
   clib_spinlock_lock (&em->segment_handles_lock);
   segment_idxp = hash_get (em->shared_segment_handles, segment_handle);
   clib_spinlock_unlock (&em->segment_handles_lock);
-  if (!segment_idxp)
-    return ~0;
+  if (segment_idxp)
+    return ((u32) *segment_idxp);
 
   ECHO_LOG (2, "Segment not mapped (0x%lx)", segment_handle);
-  return ((u32) *segment_idxp);
+  return ~0;
 }
 
 void

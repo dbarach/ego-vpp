@@ -55,11 +55,10 @@ index_t
 fib_urpf_list_alloc_and_lock (void)
 {
     fib_urpf_list_t *urpf;
-    u8 need_barrier_sync = 0;
+    u8 need_barrier_sync = pool_get_will_expand (fib_urpf_list_pool);
     vlib_main_t *vm = vlib_get_main();
     ASSERT (vm->thread_index == 0);
 
-    pool_get_will_expand (fib_urpf_list_pool, need_barrier_sync );
     if (need_barrier_sync)
         vlib_worker_thread_barrier_sync (vm);
 
@@ -174,7 +173,7 @@ fib_urpf_list_bake (index_t ui)
           if (urpf->furpf_itfs[i] != urpf->furpf_itfs[j])
             urpf->furpf_itfs[++i] = urpf->furpf_itfs[j];
         /* set the length of the vector to the number of unique itfs */
-        _vec_len(urpf->furpf_itfs) = i+1;
+        vec_set_len (urpf->furpf_itfs, i+1);
       }
 
     urpf->furpf_flags |= FIB_URPF_LIST_BAKED;

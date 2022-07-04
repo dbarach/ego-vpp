@@ -67,6 +67,16 @@ af_xdp_mac_change (vnet_hw_interface_t * hw, const u8 * old, const u8 * new)
   return 0;
 }
 
+static clib_error_t *
+af_xdp_set_max_frame_size (vnet_main_t *vnm, vnet_hw_interface_t *hw,
+			   u32 frame_size)
+{
+  af_xdp_main_t *am = &af_xdp_main;
+  af_xdp_device_t *ad = vec_elt_at_index (am->devices, hw->dev_instance);
+  af_xdp_log (VLIB_LOG_LEVEL_ERR, ad, "set mtu not supported yet");
+  return vnet_error (VNET_ERR_UNSUPPORTED, 0);
+}
+
 static u32
 af_xdp_flag_change (vnet_main_t * vnm, vnet_hw_interface_t * hw, u32 flags)
 {
@@ -81,9 +91,6 @@ af_xdp_flag_change (vnet_main_t * vnm, vnet_hw_interface_t * hw, u32 flags)
     case ETHERNET_INTERFACE_FLAG_ACCEPT_ALL:
       af_xdp_log (VLIB_LOG_LEVEL_ERR, ad,
 		  "set promiscuous not supported yet");
-      return ~0;
-    case ETHERNET_INTERFACE_FLAG_MTU:
-      af_xdp_log (VLIB_LOG_LEVEL_ERR, ad, "set mtu not supported yet");
       return ~0;
     }
 
@@ -205,10 +212,7 @@ af_xdp_load_program (af_xdp_create_if_args_t * args, af_xdp_device_t * ad)
       goto err0;
     }
 
-#ifndef XDP_FLAGS_REPLACE
-#define XDP_FLAGS_REPLACE 0
-#endif
-  if (bpf_set_link_xdp_fd (ad->linux_ifindex, fd, XDP_FLAGS_REPLACE))
+  if (bpf_set_link_xdp_fd (ad->linux_ifindex, fd, 0))
     {
       args->rv = VNET_API_ERROR_SYSCALL_ERROR_6;
       args->error =
@@ -651,6 +655,7 @@ af_xdp_create_if (vlib_main_t * vm, af_xdp_create_if_args_t * args)
   eir.dev_instance = ad->dev_instance;
   eir.address = ad->hwaddr;
   eir.cb.flag_change = af_xdp_flag_change;
+  eir.cb.set_max_frame_size = af_xdp_set_max_frame_size;
   ad->hw_if_index = vnet_eth_register_interface (vnm, &eir);
 
   sw = vnet_get_hw_sw_interface (vnm, ad->hw_if_index);

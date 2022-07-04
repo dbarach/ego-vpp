@@ -333,6 +333,8 @@ vnet_crypto_update_cm_dequeue_handlers (void)
   for (i = 0; i < VNET_CRYPTO_ASYNC_OP_N_IDS; i++)
     {
       otd = cm->async_opt_data + i;
+      if (otd->active_engine_index_async == ~0)
+	continue;
       e = cm->engines + otd->active_engine_index_async;
       if (!e->dequeue_handler)
 	continue;
@@ -344,6 +346,8 @@ vnet_crypto_update_cm_dequeue_handlers (void)
   vec_foreach (ei, active_engines)
     {
       if (ei[0] == last_ei)
+	continue;
+      if (ei[0] == ~0)
 	continue;
 
       e = cm->engines + ei[0];
@@ -427,8 +431,7 @@ vnet_crypto_key_add (vlib_main_t * vm, vnet_crypto_alg_t alg, u8 * data,
   if (!vnet_crypto_key_len_check (alg, length))
     return ~0;
 
-  pool_get_aligned_will_expand (cm->keys, need_barrier_sync,
-				CLIB_CACHE_LINE_BYTES);
+  need_barrier_sync = pool_get_will_expand (cm->keys);
   /* If the cm->keys will expand, stop the parade. */
   if (need_barrier_sync)
     vlib_worker_thread_barrier_sync (vm);

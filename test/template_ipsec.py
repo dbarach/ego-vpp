@@ -282,7 +282,8 @@ class TemplateIpsec(VppTestCase):
 
 class IpsecTcp(object):
     def verify_tcp_checksum(self):
-        self.vapi.cli("test http server")
+        # start http cli server listener on http://0.0.0.0:80
+        self.vapi.cli("http cli server")
         p = self.params[socket.AF_INET]
         send = (Ether(src=self.tun_if.remote_mac, dst=self.tun_if.local_mac) /
                 p.scapy_tun_sa.encrypt(IP(src=p.remote_tun_if_host,
@@ -1292,10 +1293,13 @@ class IpsecTun4(object):
         self.verify_counters4(p, count)
 
     def verify_keepalive(self, p):
+        # the sizeof Raw is calculated to pad to the minimum ehternet
+        # frame size of 64 btyes
         pkt = (Ether(src=self.tun_if.remote_mac, dst=self.tun_if.local_mac) /
                IP(src=p.remote_tun_if_host, dst=self.tun_if.local_ip4) /
                UDP(sport=333, dport=4500) /
-               Raw(b'\xff'))
+               Raw(b'\xff') /
+               Padding(0 * 21))
         self.send_and_assert_no_replies(self.tun_if, pkt*31)
         self.assert_error_counter_equal(
             '/err/%s/NAT Keepalive' % self.tun4_input_node, 31)
@@ -1307,6 +1311,15 @@ class IpsecTun4(object):
         self.send_and_assert_no_replies(self.tun_if, pkt*31)
         self.assert_error_counter_equal(
             '/err/%s/Too Short' % self.tun4_input_node, 31)
+
+        pkt = (Ether(src=self.tun_if.remote_mac, dst=self.tun_if.local_mac) /
+               IP(src=p.remote_tun_if_host, dst=self.tun_if.local_ip4) /
+               UDP(sport=333, dport=4500) /
+               Raw(b'\xfe') /
+               Padding(0 * 21))
+        self.send_and_assert_no_replies(self.tun_if, pkt*31)
+        self.assert_error_counter_equal(
+            '/err/%s/Too Short' % self.tun4_input_node, 62)
 
 
 class IpsecTun4Tests(IpsecTun4):
@@ -1375,7 +1388,17 @@ class IpsecTun6(object):
                     pass
                 raise
 
-    def verify_drop_tun_66(self, p_in, count=1, payload_size=64):
+    def verify_drop_tun_tx_66(self, p_in, count=1, payload_size=64):
+        self.vapi.cli("clear errors")
+        self.vapi.cli("clear ipsec sa")
+
+        send_pkts = self.gen_pkts6(p_in, self.pg1, src=self.pg1.remote_ip6,
+                                   dst=p_in.remote_tun_if_host, count=count,
+                                   payload_size=payload_size)
+        self.send_and_assert_no_replies(self.tun_if, send_pkts)
+        self.logger.info(self.vapi.cli("sh punt stats"))
+
+    def verify_drop_tun_rx_66(self, p_in, count=1, payload_size=64):
         self.vapi.cli("clear errors")
         self.vapi.cli("clear ipsec sa")
 
@@ -1385,7 +1408,12 @@ class IpsecTun6(object):
                                            dst=self.pg1.remote_ip6,
                                            count=count)
         self.send_and_assert_no_replies(self.tun_if, send_pkts)
-        self.logger.info(self.vapi.cli("sh punt stats"))
+
+    def verify_drop_tun_66(self, p_in, count=1, payload_size=64):
+        self.verify_drop_tun_tx_66(p_in, count=count,
+                                   payload_size=payload_size)
+        self.verify_drop_tun_rx_66(p_in, count=count,
+                                   payload_size=payload_size)
 
     def verify_tun_66(self, p_in, p_out=None, count=1, payload_size=64):
         self.vapi.cli("clear errors")
@@ -1577,19 +1605,14 @@ class IpsecTun46Tests(IpsecTun4Tests, IpsecTun6Tests):
     pass
 
 
-class SpdFlowCacheTemplate(VppTestCase):
+class IPSecIPv4Fwd(VppTestCase):
+    """ Test IPSec by capturing and verifying IPv4 forwarded pkts """
     @classmethod
     def setUpConstants(cls):
-        super(SpdFlowCacheTemplate, cls).setUpConstants()
-        # Override this method with required cmdline parameters e.g.
-        # cls.vpp_cmdline.extend(["ipsec", "{",
-        #                         "ipv4-outbound-spd-flow-cache on",
-        #                         "}"])
-        # cls.logger.info("VPP modified cmdline is %s" % " "
-        #                 .join(cls.vpp_cmdline))
+        super(IPSecIPv4Fwd, cls).setUpConstants()
 
     def setUp(self):
-        super(SpdFlowCacheTemplate, self).setUp()
+        super(IPSecIPv4Fwd, self).setUp()
         # store SPD objects so we can remove configs on tear down
         self.spd_objs = []
         self.spd_policies = []
@@ -1607,7 +1630,7 @@ class SpdFlowCacheTemplate(VppTestCase):
         for pg in self.pg_interfaces:
             pg.unconfig_ip4()
             pg.admin_down()
-        super(SpdFlowCacheTemplate, self).tearDown()
+        super(IPSecIPv4Fwd, self).tearDown()
 
     def create_interfaces(self, num_ifs=2):
         # create interfaces pg0 ... pg<num_ifs>
@@ -1744,6 +1767,24 @@ class SpdFlowCacheTemplate(VppTestCase):
             "Policy %s matched: %d pkts", str(spdEntry), matched_pkts)
         self.assert_equal(pkt_count, matched_pkts)
 
+
+class SpdFlowCacheTemplate(IPSecIPv4Fwd):
+    @classmethod
+    def setUpConstants(cls):
+        super(SpdFlowCacheTemplate, cls).setUpConstants()
+        # Override this method with required cmdline parameters e.g.
+        # cls.vpp_cmdline.extend(["ipsec", "{",
+        #                         "ipv4-outbound-spd-flow-cache on",
+        #                         "}"])
+        # cls.logger.info("VPP modified cmdline is %s" % " "
+        #                 .join(cls.vpp_cmdline))
+
+    def setUp(self):
+        super(SpdFlowCacheTemplate, self).setUp()
+
+    def tearDown(self):
+        super(SpdFlowCacheTemplate, self).tearDown()
+
     def get_spd_flow_cache_entries(self):
         """ 'show ipsec spd' output:
         ip4-outbound-spd-flow-cache-entries: 0
@@ -1780,7 +1821,6 @@ class SpdFlowCacheTemplate(VppTestCase):
         else:
             self.logger.info("\ncrc32 NOT supported:\n" + cpu_info)
             return False
-
 
 if __name__ == '__main__':
     unittest.main(testRunner=VppTestRunner)

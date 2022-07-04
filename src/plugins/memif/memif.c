@@ -50,6 +50,14 @@ memif_eth_flag_change (vnet_main_t * vnm, vnet_hw_interface_t * hi, u32 flags)
   return 0;
 }
 
+static clib_error_t *
+memif_eth_set_max_frame_size (vnet_main_t *vnm, vnet_hw_interface_t *hi,
+			      u32 flags)
+{
+  /* nothing for now */
+  return 0;
+}
+
 static void
 memif_queue_intfd_close (memif_queue_t * mq)
 {
@@ -240,6 +248,7 @@ memif_connect (memif_if_t * mif)
   u32 n_txqs = 0, n_threads = vlib_get_n_threads ();
   clib_error_t *err = NULL;
   u8 max_log2_ring_sz = 0;
+  int with_barrier = 0;
 
   memif_log_debug (mif, "connect %u", mif->dev_instance);
 
@@ -269,6 +278,13 @@ memif_connect (memif_if_t * mif)
 
   template.read_function = memif_int_fd_read_ready;
   template.write_function = memif_int_fd_write_ready;
+
+  with_barrier = 1;
+  if (vlib_worker_thread_barrier_held ())
+    with_barrier = 0;
+
+  if (with_barrier)
+    vlib_worker_thread_barrier_sync (vm);
 
   /* *INDENT-OFF* */
   vec_foreach_index (i, mif->tx_queues)
@@ -351,13 +367,6 @@ memif_connect (memif_if_t * mif)
   if (1 << max_log2_ring_sz > vec_len (mm->per_thread_data[0].desc_data))
     {
       memif_per_thread_data_t *ptd;
-      int with_barrier = 1;
-
-      if (vlib_worker_thread_barrier_held ())
-	with_barrier = 0;
-
-      if (with_barrier)
-	vlib_worker_thread_barrier_sync (vm);
 
       vec_foreach (ptd, mm->per_thread_data)
 	{
@@ -368,9 +377,9 @@ memif_connect (memif_if_t * mif)
 	  vec_validate_aligned (ptd->desc_status, pow2_mask (max_log2_ring_sz),
 				CLIB_CACHE_LINE_BYTES);
 	}
-      if (with_barrier)
-	vlib_worker_thread_barrier_release (vm);
     }
+  if (with_barrier)
+    vlib_worker_thread_barrier_release (vm);
 
   mif->flags &= ~MEMIF_IF_FLAG_CONNECTING;
   mif->flags |= MEMIF_IF_FLAG_CONNECTED;
@@ -380,6 +389,8 @@ memif_connect (memif_if_t * mif)
   return 0;
 
 error:
+  if (with_barrier)
+    vlib_worker_thread_barrier_release (vm);
   memif_log_err (mif, "%U", format_clib_error, err);
   return err;
 }
@@ -873,6 +884,7 @@ memif_delete_if (vlib_main_t * vm, memif_if_t * mif)
 	}
     }
 
+  vec_free (mif->local_disc_string);
   clib_memset (mif, 0, sizeof (*mif));
   pool_put (mm->interfaces, mif);
 
@@ -979,8 +991,6 @@ memif_create_if (vlib_main_t * vm, memif_create_if_args_t * args)
 	  bt->total_length_not_including_first_buffer = 0;
 	  vnet_buffer (bt)->sw_if_index[VLIB_TX] = (u32) ~ 0;
 
-	  /* initially prealloc copy_ops so we can use
-	     _vec_len instead of vec_elen */
 	  vec_validate_aligned (ptd->copy_ops, 0, CLIB_CACHE_LINE_BYTES);
 	  vec_reset_length (ptd->copy_ops);
 	  vec_validate_aligned (ptd->buffers, 0, CLIB_CACHE_LINE_BYTES);
@@ -1017,6 +1027,7 @@ memif_create_if (vlib_main_t * vm, memif_create_if_args_t * args)
       eir.dev_instance = mif->dev_instance;
       eir.address = args->hw_addr;
       eir.cb.flag_change = memif_eth_flag_change;
+      eir.cb.set_max_frame_size = memif_eth_set_max_frame_size;
       mif->hw_if_index = vnet_eth_register_interface (vnm, &eir);
     }
   else if (mif->mode == MEMIF_INTERFACE_MODE_IP)

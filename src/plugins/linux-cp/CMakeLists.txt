@@ -12,9 +12,15 @@
 # limitations under the License.
 
 vpp_find_path(LIBNL3_INCLUDE_DIR NAMES libnl3/netlink/route/link/vlan.h)
+vpp_find_path(LIBMNL_INCLUDE_DIR NAMES libmnl/libmnl.h)
 
 if (NOT LIBNL3_INCLUDE_DIR)
   message(WARNING "-- libnl3 headers not found - linux-cp plugin disabled")
+  return()
+endif()
+
+if (NOT LIBMNL_INCLUDE_DIR)
+  message(WARNING "-- libmnl headers not found - linux-cp plugin disabled")
   return()
 endif()
 
@@ -56,6 +62,15 @@ add_vpp_plugin(linux_cp
 add_vpp_plugin(linux_cp_unittest
   SOURCES
   test/lcp_unittest.c
+
+  LINK_LIBRARIES
+  lcp
+)
+
+add_vpp_plugin(linux_nl
+  SOURCES
+  lcp_router.c
+  lcp_nl.c
 
   LINK_LIBRARIES
   lcp

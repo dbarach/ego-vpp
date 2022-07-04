@@ -12,6 +12,7 @@
  * See the License for the specific language governing permissions and
  * limitations under the License.
  */
+
 /**
  * @brief The NAT inline functions
  */
@@ -124,13 +125,13 @@ nat_get_icmp_session_lookup_values (vlib_buffer_t *b, ip4_header_t *ip0,
 				    u16 *lookup_dport, u8 *lookup_protocol)
 {
   icmp46_header_t *icmp0;
-  icmp_echo_header_t *echo0, *inner_echo0 = 0;
+  nat_icmp_echo_header_t *echo0, *inner_echo0 = 0;
   ip4_header_t *inner_ip0 = 0;
   void *l4_header = 0;
   icmp46_header_t *inner_icmp0;
 
   icmp0 = (icmp46_header_t *) ip4_next_header (ip0);
-  echo0 = (icmp_echo_header_t *) (icmp0 + 1);
+  echo0 = (nat_icmp_echo_header_t *) (icmp0 + 1);
 
   // avoid warning about unused variables in caller by setting to bogus values
   *lookup_sport = 0;
@@ -156,20 +157,40 @@ nat_get_icmp_session_lookup_values (vlib_buffer_t *b, ip4_header_t *ip0,
 	{
 	case IP_PROTOCOL_ICMP:
 	  inner_icmp0 = (icmp46_header_t *) l4_header;
-	  inner_echo0 = (icmp_echo_header_t *) (inner_icmp0 + 1);
+	  inner_echo0 = (nat_icmp_echo_header_t *) (inner_icmp0 + 1);
 	  *lookup_sport = inner_echo0->identifier;
 	  *lookup_dport = inner_echo0->identifier;
 	  break;
 	case IP_PROTOCOL_UDP:
 	case IP_PROTOCOL_TCP:
-	  *lookup_sport = ((tcp_udp_header_t *) l4_header)->dst_port;
-	  *lookup_dport = ((tcp_udp_header_t *) l4_header)->src_port;
+	  *lookup_sport = ((nat_tcp_udp_header_t *) l4_header)->dst_port;
+	  *lookup_dport = ((nat_tcp_udp_header_t *) l4_header)->src_port;
 	  break;
 	default:
 	  return NAT_IN2OUT_ED_ERROR_UNSUPPORTED_PROTOCOL;
 	}
     }
   return 0;
+}
+
+always_inline int
+nat44_ed_tcp_is_established (nat44_ed_tcp_state_e state)
+{
+  static int lookup[] = {
+    [NAT44_ED_TCP_STATE_CLOSED] = 0,
+    [NAT44_ED_TCP_STATE_SYN_I2O] = 0,
+    [NAT44_ED_TCP_STATE_SYN_O2I] = 0,
+    [NAT44_ED_TCP_STATE_ESTABLISHED] = 1,
+    [NAT44_ED_TCP_STATE_FIN_I2O] = 1,
+    [NAT44_ED_TCP_STATE_FIN_O2I] = 1,
+    [NAT44_ED_TCP_STATE_RST_TRANS] = 0,
+    [NAT44_ED_TCP_STATE_FIN_TRANS] = 0,
+    [NAT44_ED_TCP_STATE_FIN_REOPEN_SYN_I2O] = 0,
+    [NAT44_ED_TCP_STATE_FIN_REOPEN_SYN_O2I] = 0,
+    [NAT44_ED_TCP_N_STATE] = 0,
+  };
+  ASSERT (state <= ARRAY_LEN (lookup));
+  return lookup[state];
 }
 
 always_inline u32
@@ -185,9 +206,7 @@ nat44_session_get_timeout (snat_main_t *sm, snat_session_t *s)
       return sm->timeouts.udp;
     case IP_PROTOCOL_TCP:
       {
-	if (NAT44_ED_TCP_STATE_ESTABLISHED == s->tcp_state ||
-	    NAT44_ED_TCP_STATE_FIN_I2O == s->tcp_state ||
-	    NAT44_ED_TCP_STATE_FIN_O2I == s->tcp_state)
+	if (nat44_ed_tcp_is_established (s->tcp_state))
 	  return sm->timeouts.tcp.established;
 	else
 	  return sm->timeouts.tcp.transitory;
@@ -948,7 +967,7 @@ nat44_set_tcp_session_state (snat_main_t *sm, f64 now, snat_session_t *ses,
 
   if (old_state != ses->tcp_state)
     {
-      if (NAT44_ED_TCP_STATE_ESTABLISHED == ses->tcp_state)
+      if (nat44_ed_tcp_is_established (ses->tcp_state))
 	{
 	  if (NAT44_ED_TCP_STATE_FIN_REOPEN_SYN_I2O == old_state ||
 	      NAT44_ED_TCP_STATE_FIN_REOPEN_SYN_O2I == old_state)
@@ -959,6 +978,12 @@ nat44_set_tcp_session_state (snat_main_t *sm, f64 now, snat_session_t *ses,
 	}
       else
 	{
+	  if (NAT44_ED_TCP_STATE_ESTABLISHED == old_state)
+	    { // need to update last heard otherwise session might get
+	      // immediately timed out if it has been idle longer than
+	      // transitory timeout
+	      ses->last_heard = now;
+	    }
 	  ses->lru_head_index = tsm->tcp_trans_lru_head_index;
 	}
       ses->last_lru_update = now;

@@ -45,7 +45,6 @@
 #include <vppinfra/vec.h>
 #include <vppinfra/random.h>
 #include <vppinfra/error.h>
-#include <vppinfra/bitops.h>	/* for count_set_bits */
 
 typedef uword clib_bitmap_t;
 
@@ -143,7 +142,7 @@ _clib_bitmap_remove_trailing_zeros (uword * a)
       for (i = _vec_len (a) - 1; i >= 0; i--)
 	if (a[i] != 0)
 	  break;
-      _vec_len (a) = i + 1;
+      vec_set_len (a, i + 1);
     }
   return a;
 }
@@ -209,9 +208,7 @@ clib_bitmap_set (uword * ai, uword i, uword value)
 always_inline u8
 clib_bitmap_will_expand (uword *ai, uword i)
 {
-  uword i0 = i / BITS (ai[0]);
-  return _vec_resize_will_expand (ai, 1, i0 * sizeof (ai[0]), 0,
-				  sizeof (uword));
+  return (i / BITS (ai[0])) < vec_max_len (ai);
 }
 
 /** Gets the ith bit value from a bitmap
@@ -521,29 +518,32 @@ always_inline uword *clib_bitmap_or (uword * ai, uword * bi);
 always_inline uword *clib_bitmap_xor (uword * ai, uword * bi);
 
 /* ALU function definition macro for functions taking two bitmaps. */
-#define _(name, body, check_zero)				\
-always_inline uword *						\
-clib_bitmap_##name (uword * ai, uword * bi)			\
-{								\
-  uword i, a, b, bi_len, n_trailing_zeros;			\
-								\
-  n_trailing_zeros = 0;						\
-  bi_len = vec_len (bi);					\
-  if (bi_len > 0)						\
-    clib_bitmap_vec_validate (ai, bi_len - 1);			\
-  for (i = 0; i < vec_len (ai); i++)				\
-    {								\
-      a = ai[i];						\
-      b = i < bi_len ? bi[i] : 0;				\
-      do { body; } while (0);					\
-      ai[i] = a;						\
-      if (check_zero)						\
-	n_trailing_zeros = a ? 0 : (n_trailing_zeros + 1);	\
-    }								\
-  if (check_zero)						\
-    _vec_len (ai) -= n_trailing_zeros;				\
-  return ai;							\
-}
+#define _(name, body, check_zero)                                             \
+  always_inline uword *clib_bitmap_##name (uword *ai, uword *bi)              \
+  {                                                                           \
+    uword i, a, b, bi_len, n_trailing_zeros;                                  \
+                                                                              \
+    n_trailing_zeros = 0;                                                     \
+    bi_len = vec_len (bi);                                                    \
+    if (bi_len > 0)                                                           \
+      clib_bitmap_vec_validate (ai, bi_len - 1);                              \
+    for (i = 0; i < vec_len (ai); i++)                                        \
+      {                                                                       \
+	a = ai[i];                                                            \
+	b = i < bi_len ? bi[i] : 0;                                           \
+	do                                                                    \
+	  {                                                                   \
+	    body;                                                             \
+	  }                                                                   \
+	while (0);                                                            \
+	ai[i] = a;                                                            \
+	if (check_zero)                                                       \
+	  n_trailing_zeros = a ? 0 : (n_trailing_zeros + 1);                  \
+      }                                                                       \
+    if (check_zero)                                                           \
+      vec_dec_len (ai, n_trailing_zeros);                                     \
+    return ai;                                                                \
+  }
 
 /* ALU functions: */
 /* *INDENT-OFF* */

@@ -431,7 +431,7 @@ vppcom_cfg_read_file (char *conf_fname)
 	      u32 nsid_vec_len = vec_len (vcl_cfg->namespace_id);
 	      if (nsid_vec_len > max_nsid_vec_len)
 		{
-		  _vec_len (vcl_cfg->namespace_id) = max_nsid_vec_len;
+		  vec_set_len (vcl_cfg->namespace_id, max_nsid_vec_len);
 		  VCFG_DBG (0, "VCL<%d>: configured namespace_id is too long,"
 			    " truncated to %d characters!",
 			    getpid (), max_nsid_vec_len);
@@ -590,6 +590,13 @@ vppcom_cfg (vppcom_cfg_t * vcl_cfg)
       vcm->cfg.vpp_app_socket_api = format (0, "%s%c", env_var_str, 0);
       VCFG_DBG (0, "VCL<%d>: configured app-socket-api (%s)", getpid (),
 		vcl_cfg->vpp_app_socket_api);
+    }
+  env_var_str = getenv (VPPCOM_ENV_APP_USE_MQ_EVENTFD);
+  if (env_var_str)
+    {
+      vcm->cfg.use_mq_eventfd = 1;
+      VCFG_DBG (0, "VCL<%d>: configured " VPPCOM_ENV_APP_USE_MQ_EVENTFD,
+		getpid ());
     }
 }
 

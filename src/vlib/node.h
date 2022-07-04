@@ -149,7 +149,8 @@ typedef struct _vlib_node_registration
   u8 protocol_hint;
 
   /* Size of scalar and vector arguments in bytes. */
-  u8 scalar_size, vector_size, aux_size;
+  u8 vector_size, aux_size;
+  u16 scalar_size;
 
   /* Number of error codes used by this node. */
   u16 n_errors;
@@ -273,7 +274,7 @@ typedef struct vlib_node_t
   u32 runtime_index;
 
   /* Runtime data for this node. */
-  void *runtime_data;
+  u8 *runtime_data;
 
   /* Node flags. */
   u16 flags;
@@ -502,7 +503,7 @@ typedef struct vlib_node_runtime_t
 					  zero before first run of this
 					  node. */
 
-  u16 thread_index;			/**< thread this node runs on */
+  CLIB_ALIGN_MARK (runtime_data_pad, 8);
 
   u8 runtime_data[0];			/**< Function dependent
 					  node-runtime data. This data is
@@ -572,7 +573,7 @@ typedef struct
   u32 n_suspends;
 
   /* Vectors of pending event data indexed by event type index. */
-  void **pending_event_data_by_type_index;
+  u8 **pending_event_data_by_type_index;
 
   /* Bitmap of event type-indices with non-empty vectors. */
   uword *non_empty_event_type_bitmap;

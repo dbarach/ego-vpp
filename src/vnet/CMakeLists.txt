@@ -26,6 +26,7 @@ list(APPEND VNET_SOURCES
   config.c
   devices/devices.c
   devices/netlink.c
+  error.c
   flow/flow.c
   flow/flow_cli.c
   flow/flow_api.c
@@ -40,6 +41,7 @@ list(APPEND VNET_SOURCES
   interface/tx_queue.c
   interface/runtime.c
   interface/monitor.c
+  interface/stats.c
   interface_stats.c
   misc.c
 )
@@ -52,6 +54,7 @@ list(APPEND VNET_MULTIARCH_SOURCES
 
 list(APPEND VNET_HEADERS
   api_errno.h
+  error.h
   buffer.h
   config.h
   devices/devices.h
@@ -677,6 +680,7 @@ list(APPEND VNET_MULTIARCH_SOURCES
 list(APPEND VNET_HEADERS
   udp/udp_error.def
   udp/udp.h
+  udp/udp_encap.h
   udp/udp_packet.h
   udp/udp_inlines.h
   udp/udp_local.h
@@ -867,6 +871,7 @@ list(APPEND VNET_SOURCES
   hash/cli.c
   hash/crc32_5tuple.c
   hash/handoff_eth.c
+  hash/hash_eth.c
 )
 
 list(APPEND VNET_HEADERS
@@ -1200,6 +1205,7 @@ list(APPEND VNET_SOURCES
 list(APPEND VNET_HEADERS
   fib/fib.h
   fib/fib_api.h
+  fib/fib_entry_track.h
   fib/ip4_fib.h
   fib/ip4_fib_8.h
   fib/ip4_fib_16.h
@@ -1290,6 +1296,7 @@ list(APPEND VNET_MULTIARCH_SOURCES
 
 list(APPEND VNET_HEADERS
   dpo/load_balance.h
+  dpo/load_balance_map.h
   dpo/drop_dpo.h
   dpo/lookup_dpo.h
   dpo/punt_dpo.h

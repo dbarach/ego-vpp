@@ -134,9 +134,6 @@ typedef struct session_worker_
   /** Head of list of pending events */
   clib_llist_index_t old_head;
 
-  /** Peekers rw lock */
-  clib_rwlock_t peekers_rw_locks;
-
   /** Vector of buffers to be sent */
   u32 *pending_tx_buffers;
 
@@ -155,6 +152,9 @@ typedef struct session_worker_
   /** Main thread loops in poll mode without a connect */
   u32 no_connect_loops;
 
+  /** List head for first worker evts pending handling on main */
+  clib_llist_index_t evts_pending_main;
+
 #if SESSION_DEBUG
   /** last event poll time by thread */
   clib_time_type_t last_event_poll;
@@ -171,10 +171,15 @@ extern session_fifo_rx_fn session_tx_fifo_dequeue_internal;
 
 u8 session_node_lookup_fifo_event (svm_fifo_t * f, session_event_t * e);
 
+typedef void (*session_update_time_fn) (f64 time_now, u8 thread_index);
+
 typedef struct session_main_
 {
   /** Worker contexts */
   session_worker_t *wrk;
+
+  /** Vector of transport update time functions */
+  session_update_time_fn *update_time_fns;
 
   /** Event queues memfd segment */
   fifo_segment_t wrk_mqs_segment;
@@ -194,6 +199,15 @@ typedef struct session_main_
   u32 transport_cl_thread;
 
   transport_proto_t last_transport_proto_type;
+
+  /** Number of workers at pool realloc barrier */
+  volatile u32 pool_realloc_at_barrier;
+
+  /** Number of workers doing reallocs */
+  volatile u32 pool_realloc_doing_work;
+
+  /** Lock to synchronize parallel forced reallocs */
+  clib_spinlock_t pool_realloc_lock;
 
   /*
    * Config parameters
@@ -372,37 +386,9 @@ session_get_from_handle_if_valid (session_handle_t handle)
 u64 session_segment_handle (session_t * s);
 
 /**
- * Acquires a lock that blocks a session pool from expanding.
+ * Get session from handle and avoid pool validation if no same thread
  *
- * This is typically used for safely peeking into other threads'
- * pools in order to clone elements. Lock should be dropped as soon
- * as possible by calling @ref session_pool_remove_peeker.
- *
- * NOTE: Avoid using pool_elt_at_index while the lock is held because
- * it may lead to free elt bitmap expansion/contraction!
- */
-always_inline void
-session_pool_add_peeker (u32 thread_index)
-{
-  session_worker_t *wrk = &session_main.wrk[thread_index];
-  if (thread_index == vlib_get_thread_index ())
-    return;
-  clib_rwlock_reader_lock (&wrk->peekers_rw_locks);
-}
-
-always_inline void
-session_pool_remove_peeker (u32 thread_index)
-{
-  session_worker_t *wrk = &session_main.wrk[thread_index];
-  if (thread_index == vlib_get_thread_index ())
-    return;
-  clib_rwlock_reader_unlock (&wrk->peekers_rw_locks);
-}
-
-/**
- * Get session from handle and 'lock' pool resize if not in same thread
- *
- * Caller should drop the peek 'lock' as soon as possible.
+ * Peekers are fine because pool grows with barrier (see @ref session_alloc)
  */
 always_inline session_t *
 session_get_from_handle_safe (u64 handle)
@@ -417,36 +403,24 @@ session_get_from_handle_safe (u64 handle)
     }
   else
     {
-      session_pool_add_peeker (thread_index);
-      /* Don't use pool_elt_at index. See @ref session_pool_add_peeker */
+      /* Don't use pool_elt_at index to avoid pool bitmap reallocs */
       return wrk->sessions + session_index_from_handle (handle);
     }
-}
-
-always_inline u32
-session_get_index (session_t * s)
-{
-  return (s - session_main.wrk[s->thread_index].sessions);
 }
 
 always_inline session_t *
 session_clone_safe (u32 session_index, u32 thread_index)
 {
+  u32 current_thread_index = vlib_get_thread_index (), new_index;
   session_t *old_s, *new_s;
-  u32 current_thread_index = vlib_get_thread_index ();
 
-  /* If during the memcpy pool is reallocated AND the memory allocator
-   * decides to give the old chunk of memory to somebody in a hurry to
-   * scribble something on it, we have a problem. So add this thread as
-   * a session pool peeker.
-   */
-  session_pool_add_peeker (thread_index);
   new_s = session_alloc (current_thread_index);
+  new_index = new_s->session_index;
+  /* Session pools are reallocated with barrier (see @ref session_alloc) */
   old_s = session_main.wrk[thread_index].sessions + session_index;
   clib_memcpy_fast (new_s, old_s, sizeof (*new_s));
-  session_pool_remove_peeker (thread_index);
   new_s->thread_index = current_thread_index;
-  new_s->session_index = session_get_index (new_s);
+  new_s->session_index = new_index;
   return new_s;
 }
 
@@ -528,6 +502,7 @@ void session_register_transport (transport_proto_t transport_proto,
 				 const transport_proto_vft_t * vft, u8 is_ip4,
 				 u32 output_node);
 transport_proto_t session_add_transport_proto (void);
+void session_register_update_time_fn (session_update_time_fn fn, u8 is_add);
 int session_tx_fifo_peek_bytes (transport_connection_t * tc, u8 * buffer,
 				u32 offset, u32 max_bytes);
 u32 session_tx_fifo_dequeue_drop (transport_connection_t * tc, u32 max_bytes);
@@ -670,6 +645,17 @@ ho_session_alloc (void)
   s = session_alloc (0);
   s->session_state = SESSION_STATE_CONNECTING;
   s->flags |= SESSION_F_HALF_OPEN;
+  /* Not ideal. Half-opens are only allocated from main with worker barrier
+   * but can be cleaned up, i.e., session_half_open_free, from main without
+   * a barrier. In debug images, the free_bitmap can grow while workers peek
+   * the sessions pool, e.g., session_half_open_migrate_notify, and as a
+   * result crash while validating the session. To avoid this, grow the bitmap
+   * now. */
+  if (CLIB_DEBUG)
+    {
+      session_t *sp = session_main.wrk[0].sessions;
+      clib_bitmap_validate (pool_header (sp)->free_bitmap, s->session_index);
+    }
   return s;
 }
 
@@ -763,9 +749,108 @@ void session_wrk_enable_adaptive_mode (session_worker_t *wrk);
 fifo_segment_t *session_main_get_wrk_mqs_segment (void);
 void session_node_enable_disable (u8 is_en);
 clib_error_t *vnet_session_enable_disable (vlib_main_t * vm, u8 is_en);
+void session_wrk_handle_evts_main_rpc ();
 
 session_t *session_alloc_for_connection (transport_connection_t * tc);
 session_t *session_alloc_for_half_open (transport_connection_t *tc);
+
+typedef void (pool_safe_realloc_rpc_fn) (void *rpc_args);
+
+typedef struct
+{
+  u8 ph[STRUCT_OFFSET_OF (pool_header_t, max_elts) + 4];
+  u32 flag;
+} pool_safe_realloc_header_t;
+
+STATIC_ASSERT_SIZEOF (pool_safe_realloc_header_t, sizeof (pool_header_t));
+
+#define POOL_REALLOC_SAFE_ELT_THRESH 32
+
+#define pool_realloc_flag(PH)                                                 \
+  ((pool_safe_realloc_header_t *) pool_header (PH))->flag
+
+typedef struct pool_realloc_rpc_args_
+{
+  void **pool;
+  uword elt_size;
+  uword align;
+} pool_realloc_rpc_args_t;
+
+always_inline void
+pool_program_safe_realloc_rpc (void *args)
+{
+  vlib_main_t *vm = vlib_get_main ();
+  u32 free_elts, max_elts, n_alloc;
+  pool_realloc_rpc_args_t *pra;
+
+  ASSERT (vlib_get_thread_index () == 0);
+  pra = (pool_realloc_rpc_args_t *) args;
+
+  vlib_worker_thread_barrier_sync (vm);
+
+  free_elts = _pool_free_elts (*pra->pool, pra->elt_size);
+  if (free_elts < POOL_REALLOC_SAFE_ELT_THRESH)
+    {
+      max_elts = _vec_max_len (*pra->pool, pra->elt_size);
+      n_alloc = clib_max (2 * max_elts, POOL_REALLOC_SAFE_ELT_THRESH);
+      _pool_alloc (pra->pool, free_elts + n_alloc, pra->align, 0,
+		   pra->elt_size);
+    }
+  pool_realloc_flag (*pra->pool) = 0;
+  clib_mem_free (args);
+
+  vlib_worker_thread_barrier_release (vm);
+}
+
+always_inline void
+pool_program_safe_realloc (void **p, u32 elt_size, u32 align)
+{
+  pool_realloc_rpc_args_t *pra;
+
+  /* Reuse pad as a realloc flag */
+  if (pool_realloc_flag (*p))
+    return;
+
+  pra = clib_mem_alloc (sizeof (*pra));
+  pra->pool = p;
+  pra->elt_size = elt_size;
+  pra->align = align;
+  pool_realloc_flag (*p) = 1;
+
+  session_send_rpc_evt_to_thread (0 /* thread index */,
+				  pool_program_safe_realloc_rpc, pra);
+}
+
+#define pool_needs_realloc(P)                                                 \
+  ((!P) ||                                                                    \
+   (vec_len (pool_header (P)->free_indices) < POOL_REALLOC_SAFE_ELT_THRESH && \
+    pool_free_elts (P) < POOL_REALLOC_SAFE_ELT_THRESH))
+
+#define pool_get_aligned_safe(P, E, align)                                    \
+  do                                                                          \
+    {                                                                         \
+      if (PREDICT_FALSE (pool_needs_realloc (P)))                             \
+	{                                                                     \
+	  if (PREDICT_FALSE (!(P)))                                           \
+	    {                                                                 \
+	      pool_alloc_aligned (P, POOL_REALLOC_SAFE_ELT_THRESH, align);    \
+	    }                                                                 \
+	  else if (PREDICT_FALSE (!pool_free_elts (P)))                       \
+	    {                                                                 \
+	      vlib_workers_sync ();                                           \
+	      pool_alloc_aligned (P, pool_max_len (P), align);                \
+	      vlib_workers_continue ();                                       \
+	      ALWAYS_ASSERT (pool_free_elts (P) > 0);                         \
+	    }                                                                 \
+	  else                                                                \
+	    {                                                                 \
+	      pool_program_safe_realloc ((void **) &(P), sizeof ((P)[0]),     \
+					 _vec_align (P, align));              \
+	    }                                                                 \
+	}                                                                     \
+      pool_get_aligned (P, E, align);                                         \
+    }                                                                         \
+  while (0)
 
 #endif /* __included_session_h__ */
 

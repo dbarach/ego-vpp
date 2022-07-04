@@ -38,8 +38,8 @@
 #ifndef included_sparse_vec_h
 #define included_sparse_vec_h
 
+#include <vppinfra/clib.h>
 #include <vppinfra/vec.h>
-#include <vppinfra/bitops.h>
 
 /* Sparsely indexed vectors.  Basic idea taken from Hacker's delight.
    Eliot added ranges. */
@@ -59,7 +59,7 @@ typedef struct
 always_inline sparse_vec_header_t *
 sparse_vec_header (void *v)
 {
-  return vec_header (v, sizeof (sparse_vec_header_t));
+  return vec_header (v);
 }
 
 /* Index 0 is always used to mark indices that are not valid in
@@ -76,14 +76,12 @@ sparse_vec_new (uword elt_bytes, uword sparse_index_bits)
 
   ASSERT (sparse_index_bits <= 16);
 
-  v = _vec_resize ((void *) 0,
-		   /* length increment */ 8,
-		   /* data bytes */ 8 * elt_bytes,
-		   /* header bytes */ sizeof (h[0]),
-		   /* data align */ 0);
+  v = _vec_realloc (0, /* data bytes */ 8, elt_bytes,
+		    /* header bytes */ sizeof (h[0]), /* data align */ 0,
+		    /* heap */ 0);
 
   /* Make space for invalid entry (entry 0). */
-  _vec_len (v) = 1;
+  _vec_find (v)->len = 1;
 
   h = sparse_vec_header (v);
 
@@ -223,7 +221,16 @@ sparse_vec_index2 (void *v,
   *i1_return = is_member1 + d1;
 }
 
-#define sparse_vec_free(v) vec_free(v)
+#define sparse_vec_free(V)                                                    \
+  do                                                                          \
+    {                                                                         \
+      if (V)                                                                  \
+	{                                                                     \
+	  clib_mem_free (sparse_vec_header (V));                              \
+	  V = 0;                                                              \
+	}                                                                     \
+    }                                                                         \
+  while (0)
 
 #define sparse_vec_elt_at_index(v,i) \
   vec_elt_at_index ((v), sparse_vec_index ((v), (i)))

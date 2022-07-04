@@ -1257,8 +1257,38 @@ vcl_api_attach (void)
 }
 
 static void
+vcl_api_retry_attach (vcl_worker_t *wrk)
+{
+  vcl_session_t *s;
+
+  if (vcl_api_attach ())
+    return;
+
+  /* Treat listeners as configuration that needs to be re-added to vpp */
+  pool_foreach (s, wrk->sessions)
+    {
+      if (s->flags & VCL_SESSION_F_IS_VEP)
+	continue;
+      if (s->session_state == VCL_STATE_LISTEN_NO_MQ)
+	vppcom_session_listen (vcl_session_handle (s), 10);
+      else
+	VDBG (0, "internal error: unexpected state %d", s->session_state);
+    }
+}
+
+static void
+vcl_api_handle_disconnect (vcl_worker_t *wrk)
+{
+  wrk->api_client_handle = ~0;
+  vcl_worker_detach_sessions (wrk);
+}
+
+static void
 vcl_api_detach (vcl_worker_t * wrk)
 {
+  if (wrk->api_client_handle == ~0)
+    return;
+
   vcl_send_app_detach (wrk);
 
   if (vcm->cfg.vpp_app_socket_api)
@@ -1301,7 +1331,10 @@ vppcom_app_create (const char *app_name)
   vcl_worker_alloc_and_init ();
 
   if ((rv = vcl_api_attach ()))
-    return rv;
+    {
+      vppcom_app_destroy ();
+      return rv;
+    }
 
   VDBG (0, "app_name '%s', my_client_index %d (0x%x)", app_name,
 	vcm->workers[0].api_client_handle, vcm->workers[0].api_client_handle);
@@ -1331,6 +1364,7 @@ vppcom_app_destroy (void)
 
   vcl_api_detach (current_wrk);
   vcl_worker_cleanup (current_wrk, 0 /* notify vpp */ );
+  vcl_set_worker_index (~0);
 
   vcl_elog_stop (vcm);
 
@@ -2084,7 +2118,7 @@ vppcom_session_read_segments (uint32_t session_handle,
     }
 
   n_read = svm_fifo_segments (rx_fifo, s->rx_bytes_pending,
-			      (svm_fifo_seg_t *) ds, n_segments, max_bytes);
+			      (svm_fifo_seg_t *) ds, &n_segments, max_bytes);
   if (n_read < 0)
     return VPPCOM_EAGAIN;
 
@@ -2468,11 +2502,23 @@ vppcom_select_eventfd (vcl_worker_t * wrk, int n_bits,
   int n_mq_evts, i;
   u64 buf;
 
+  if (PREDICT_FALSE (wrk->api_client_handle == ~0))
+    {
+      vcl_api_retry_attach (wrk);
+      return 0;
+    }
+
   vec_validate (wrk->mq_events, pool_elts (wrk->mq_evt_conns));
   n_mq_evts = epoll_wait (wrk->mqs_epfd, wrk->mq_events,
 			  vec_len (wrk->mq_events), time_to_wait);
   for (i = 0; i < n_mq_evts; i++)
     {
+      if (PREDICT_FALSE (wrk->mq_events[i].data.u32 == ~0))
+	{
+	  vcl_api_handle_disconnect (wrk);
+	  continue;
+	}
+
       mqc = vcl_mq_evt_conn_get (wrk, wrk->mq_events[i].data.u32);
       n_read = read (mqc->mq_fd, &buf, sizeof (buf));
       vcl_select_handle_mq (wrk, mqc->mq, n_bits, read_map, write_map,
@@ -3189,6 +3235,12 @@ vppcom_epoll_wait_eventfd (vcl_worker_t *wrk, struct epoll_event *events,
   double end = -1;
   u64 buf;
 
+  if (PREDICT_FALSE (wrk->api_client_handle == ~0))
+    {
+      vcl_api_retry_attach (wrk);
+      return n_evts;
+    }
+
   vec_validate (wrk->mq_events, pool_elts (wrk->mq_evt_conns));
   if (!n_evts)
     {
@@ -3208,6 +3260,13 @@ vppcom_epoll_wait_eventfd (vcl_worker_t *wrk, struct epoll_event *events,
 
       for (i = 0; i < n_mq_evts; i++)
 	{
+	  if (PREDICT_FALSE (wrk->mq_events[i].data.u32 == ~0))
+	    {
+	      /* api socket was closed */
+	      vcl_api_handle_disconnect (wrk);
+	      continue;
+	    }
+
 	  mqc = vcl_mq_evt_conn_get (wrk, wrk->mq_events[i].data.u32);
 	  n_read = read (mqc->mq_fd, &buf, sizeof (buf));
 	  vcl_epoll_wait_handle_mq (wrk, mqc->mq, events, maxevents, 0,

@@ -325,9 +325,41 @@ perfmon_stop (vlib_main_t *vm)
 }
 
 static_always_inline u8
+is_enough_counters (perfmon_bundle_t *b)
+{
+  u8 bl[PERFMON_EVENT_TYPE_MAX];
+  u8 cpu[PERFMON_EVENT_TYPE_MAX];
+
+  clib_memset (&bl, 0, sizeof (bl));
+  clib_memset (&cpu, 0, sizeof (cpu));
+
+  /* how many does this uarch support */
+  if (!clib_get_pmu_counter_count (&cpu[PERFMON_EVENT_TYPE_FIXED],
+				   &cpu[PERFMON_EVENT_TYPE_GENERAL]))
+    return 0;
+
+  /* how many does the bundle require */
+  for (u16 i = 0; i < b->n_events; i++)
+    {
+      /* if source allows us to identify events, otherwise assume general */
+      if (b->src->get_event_type)
+	bl[b->src->get_event_type (b->events[i])]++;
+      else
+	bl[PERFMON_EVENT_TYPE_GENERAL]++;
+    }
+
+  /* consciously ignoring pseudo events here */
+  return cpu[PERFMON_EVENT_TYPE_GENERAL] >= bl[PERFMON_EVENT_TYPE_GENERAL] &&
+	 cpu[PERFMON_EVENT_TYPE_FIXED] >= bl[PERFMON_EVENT_TYPE_FIXED];
+}
+
+static_always_inline u8
 is_bundle_supported (perfmon_bundle_t *b)
 {
   perfmon_cpu_supports_t *supports = b->cpu_supports;
+
+  if (!is_enough_counters (b))
+    return 0;
 
   if (!b->cpu_supports)
     return 1;
@@ -362,7 +394,7 @@ perfmon_init (vlib_main_t *vm)
 	}
 
       hash_set_mem (pm->source_by_name, s->name, s);
-      log_debug ("source '%s' regisrtered", s->name);
+      log_debug ("source '%s' registered", s->name);
       s = s->next;
     }
 
@@ -371,16 +403,6 @@ perfmon_init (vlib_main_t *vm)
     {
       clib_error_t *err;
       uword *p;
-
-      if (!is_bundle_supported (b))
-	{
-	  log_debug ("skipping bundle '%s' - not supported", b->name);
-	  b = b->next;
-	  continue;
-	}
-
-      if (hash_get_mem (pm->bundle_by_name, b->name) != 0)
-	clib_panic ("duplicate bundle name '%s'", b->name);
 
       if ((p = hash_get_mem (pm->source_by_name, b->source)) == 0)
 	{
@@ -391,6 +413,13 @@ perfmon_init (vlib_main_t *vm)
 	}
 
       b->src = (perfmon_source_t *) p[0];
+      if (!is_bundle_supported (b))
+	{
+	  log_debug ("skipping bundle '%s' - not supported", b->name);
+	  b = b->next;
+	  continue;
+	}
+
       if (b->init_fn && ((err = (b->init_fn) (vm, b))))
 	{
 	  log_warn ("skipping bundle '%s' - %U", b->name, format_clib_error,
@@ -400,8 +429,11 @@ perfmon_init (vlib_main_t *vm)
 	  continue;
 	}
 
+      if (hash_get_mem (pm->bundle_by_name, b->name) != 0)
+	clib_panic ("duplicate bundle name '%s'", b->name);
+
       hash_set_mem (pm->bundle_by_name, b->name, b);
-      log_debug ("bundle '%s' regisrtered", b->name);
+      log_debug ("bundle '%s' registered", b->name);
 
       b = b->next;
     }

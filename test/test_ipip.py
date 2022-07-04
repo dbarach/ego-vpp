@@ -1150,6 +1150,59 @@ class TestIPIP6(VppTestCase):
         p6_reply.id = 256
         self.validate(reass_pkt, p6_reply)
 
+    def test_ip6_mpls_frag(self):
+        """ Test fragmenting IPv6 over MPLS """
+
+        # IPv6 packets must be locally generated to be fragmented
+        # the use of tunnel encaps
+        tun_dst = VppIpRoute(
+            self, "1000::1", 128,
+            [VppRoutePath(self.pg1.remote_ip6,
+                          self.pg1.sw_if_index,
+                          labels=[VppMplsLabel(32)])]).add_vpp_config()
+
+        tun = VppIpIpTunInterface(
+            self,
+            self.pg0,
+            self.pg0.local_ip6,
+            "1000::1").add_vpp_config()
+
+        tun.admin_up()
+        tun.config_ip6()
+        tun.config_ip4()
+
+        self.vapi.sw_interface_set_mtu(self.pg1.sw_if_index,
+                                       [2000, 0, 0, 0])
+
+        p_6k = (Ether(dst=self.pg0.local_mac,
+                      src=self.pg0.remote_mac) /
+                IPv6(src=self.pg0.remote_ip6,
+                     dst=tun.remote_ip6) /
+                UDP(sport=1234, dport=5678) /
+                Raw(b'0xa' * 2000))
+        p_2k = (Ether(dst=self.pg0.local_mac,
+                      src=self.pg0.remote_mac) /
+                IPv6(src=self.pg0.remote_ip6,
+                     dst=tun.remote_ip6) /
+                UDP(sport=1234, dport=5678) /
+                Raw(b'0xa' * 1000))
+        p_1k = (Ether(dst=self.pg0.local_mac,
+                      src=self.pg0.remote_mac) /
+                IPv6(src=self.pg0.remote_ip6,
+                     dst=tun.remote_ip6) /
+                UDP(sport=1234, dport=5678) /
+                Raw(b'0xa' * 600))
+
+        # this is now the interface MTU frags
+        rxs = self.send_and_expect(self.pg0, [p_6k], self.pg1, n_rx=4)
+        self.assertEqual(rxs[0][UDP].dport, 5678)
+        for rx in rxs:
+            self.assertEqual(rx[MPLS].label, 32)
+            self.assertEqual(rx[IPv6].dst, "1000::1")
+            self.assertEqual(rx[IPv6].dst, "1000::1")
+        self.send_and_expect(self.pg0, [p_2k], self.pg1, n_rx=2)
+        self.send_and_expect(self.pg0, [p_1k], self.pg1)
+
     def test_ipip_create(self):
         """ ipip create / delete interface test """
         rv = ipip_add_tunnel(self, '1.2.3.4', '2.3.4.5')
@@ -1169,21 +1222,21 @@ class TestIPIP6(VppTestCase):
         return 'x' * len
 
 
-class TestMPLS(VppTestCase):
+class TestIPIPMPLS(VppTestCase):
     """ MPLS Test Case """
 
     @classmethod
     def setUpClass(cls):
-        super(TestMPLS, cls).setUpClass()
+        super(TestIPIPMPLS, cls).setUpClass()
         cls.create_pg_interfaces(range(2))
         cls.interfaces = list(cls.pg_interfaces)
 
     @classmethod
     def tearDownClass(cls):
-        super(TestMPLS, cls).tearDownClass()
+        super(TestIPIPMPLS, cls).tearDownClass()
 
     def setUp(self):
-        super(TestMPLS, self).setUp()
+        super(TestIPIPMPLS, self).setUp()
         for i in self.interfaces:
             i.admin_up()
             i.config_ip4()
@@ -1193,7 +1246,7 @@ class TestMPLS(VppTestCase):
             i.resolve_ndp()
 
     def tearDown(self):
-        super(TestMPLS, self).tearDown()
+        super(TestIPIPMPLS, self).tearDown()
 
         for i in self.pg_interfaces:
             i.unconfig_ip4()

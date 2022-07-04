@@ -15,8 +15,6 @@ add_vpp_library (vlibmemory
   SOURCES
   memory_api.c
   memory_shared.c
-  memory_client.c
-  socket_client.c
   socket_api.c
   memclnt_api.c
   vlib_api_cli.c
@@ -62,4 +60,7 @@ add_vat_test_library(vlib
 ##############################################################################
 add_vpp_test_library(vlibmemoryclient
   memclnt.api
+)
+add_vpp_test_library(vlibmemory
+    vlib.api
 )

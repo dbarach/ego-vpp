@@ -1276,7 +1276,7 @@ ip6_tcp_udp_icmp_bad_length (vlib_main_t * vm, vlib_buffer_t * p0)
     }
 
   n_bytes_left -= n_this_buffer;
-  n_bytes_left -= p0->total_length_not_including_first_buffer;
+  n_bytes_left -= vlib_buffer_length_in_chain (vm, p0) - p0->current_length;
 
   if (n_bytes_left == 0)
     return 0;
@@ -1513,16 +1513,16 @@ ip6_local_inline (vlib_main_t *vm, vlib_node_runtime_t *node,
 	    {
 	      u32 next32 = next[0];
 	      vnet_feature_arc_start (arc_index,
-				      vnet_buffer (b[0])->sw_if_index
-				      [VLIB_RX], &next32, b[0]);
+				      vnet_buffer (b[0])->ip.rx_sw_if_index,
+				      &next32, b[0]);
 	      next[0] = next32;
 	    }
 	  if (PREDICT_TRUE (ip6_unknown[1]))
 	    {
 	      u32 next32 = next[1];
 	      vnet_feature_arc_start (arc_index,
-				      vnet_buffer (b[1])->sw_if_index
-				      [VLIB_RX], &next32, b[1]);
+				      vnet_buffer (b[1])->ip.rx_sw_if_index,
+				      &next32, b[1]);
 	      next[1] = next32;
 	    }
 	}
@@ -1642,8 +1642,8 @@ ip6_local_inline (vlib_main_t *vm, vlib_node_runtime_t *node,
 	    {
 	      u32 next32 = next[0];
 	      vnet_feature_arc_start (arc_index,
-				      vnet_buffer (b[0])->sw_if_index
-				      [VLIB_RX], &next32, b[0]);
+				      vnet_buffer (b[0])->ip.rx_sw_if_index,
+				      &next32, b[0]);
 	      next[0] = next32;
 	    }
 	}
@@ -1677,7 +1677,7 @@ VLIB_REGISTER_NODE (ip6_local_node) =
     [IP_LOCAL_NEXT_PUNT] = "ip6-punt",
     [IP_LOCAL_NEXT_UDP_LOOKUP] = "ip6-udp-lookup",
     [IP_LOCAL_NEXT_ICMP] = "ip6-icmp-input",
-    [IP_LOCAL_NEXT_REASSEMBLY] = "ip6-full-reassembly",
+    [IP_LOCAL_NEXT_REASSEMBLY] = "ip6-local-full-reassembly",
   },
 };
 

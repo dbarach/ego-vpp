@@ -1,12 +1,12 @@
 """ test framework utilities """
 
-import abc
 import ipaddress
 import logging
 import socket
 from socket import AF_INET6
-import sys
 import os.path
+from copy import deepcopy
+from collections import UserDict
 
 import scapy.compat
 from scapy.layers.l2 import Ether
@@ -25,8 +25,12 @@ null_logger = logging.getLogger('VppTestCase.util')
 null_logger.addHandler(logging.NullHandler())
 
 
+def pr(packet):
+    return packet.__repr__()
+
+
 def ppp(headline, packet):
-    """ Return string containing the output of scapy packet.show() call. """
+    """ Return string containing headline and output of scapy packet.show() """
     return '%s\n%s\n\n%s\n' % (headline,
                                hexdump(packet, dump=True),
                                packet.show(dump=True))
@@ -452,3 +456,55 @@ def reassemble4_ether(listoffragments):
 
 def reassemble4(listoffragments):
     return reassemble4_core(listoffragments, True)
+
+
+class UnexpectedPacketError(Exception):
+    def __init__(self, packet, msg=""):
+        self.packet = packet
+        self.msg = msg
+
+    def __str__(self):
+        return f"\nUnexpected packet:\n{pr(self.packet)}{self.msg}"
+
+
+def recursive_dict_merge(dict_base, dict_update):
+    """Recursively merge base dict with update dict, return merged dict"""
+    for key in dict_update:
+        if key in dict_base:
+            if type(dict_update[key]) is dict:
+                dict_base[key] = recursive_dict_merge(dict_base[key],
+                                                      dict_update[key])
+            else:
+                dict_base[key] = dict_update[key]
+        else:
+            dict_base[key] = dict_update[key]
+    return dict_base
+
+
+class StatsDiff(UserDict):
+    """
+    Diff dictionary is a dictionary of dictionaries of interesting stats:
+
+        diff_dictionary =
+        {
+            "err" : { '/error/counter1' : 4, },
+            sw_if_index1 : { '/stat/segment/counter1' : 5,
+                             '/stat/segment/counter2' : 6,
+                           },
+            sw_if_index2 : { '/stat/segment/counter1' : 7,
+                           },
+        }
+
+    It describes a per sw-if-index diffset, where each key is stat segment
+    path and value is the expected change for that counter for sw-if-index.
+    Special case string "err" is used for error counters, which are not per
+    sw-if-index.
+    """
+
+    __slots__ = ()  # prevent setting properties to act like a dictionary
+
+    def __init__(self, data):
+        super().__init__(data)
+
+    def __or__(self, other):
+        return recursive_dict_merge(deepcopy(self.data), other)

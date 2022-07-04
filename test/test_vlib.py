@@ -4,11 +4,12 @@ import unittest
 import pexpect
 import time
 import signal
-from framework import VppTestCase, VppTestRunner, running_extended_tests
-from framework import running_gcov_tests
+from config import config
+from framework import VppTestCase, VppTestRunner
 from vpp_ip_route import VppIpTable, VppIpRoute, VppRoutePath
 
 
+@unittest.skipUnless(config.gcov, "part of code coverage tests")
 class TestVlib(VppTestCase):
     """ Vlib Unit Test Cases """
     vpp_worker_count = 1
@@ -27,7 +28,6 @@ class TestVlib(VppTestCase):
     def tearDown(self):
         super(TestVlib, self).tearDown()
 
-    @unittest.skipUnless(running_gcov_tests, "part of code coverage tests")
     def test_vlib_main_unittest(self):
         """ Vlib main.c Code Coverage Test """
 
@@ -68,7 +68,6 @@ class TestVlib(VppTestCase):
                 else:
                     self.logger.info(cmd + " FAIL retval " + str(r.retval))
 
-    @unittest.skipUnless(running_gcov_tests, "part of code coverage tests")
     def test_vlib_node_cli_unittest(self):
         """ Vlib node_cli.c Code Coverage Test """
 
@@ -113,7 +112,6 @@ class TestVlib(VppTestCase):
                 else:
                     self.logger.info(cmd + " FAIL retval " + str(r.retval))
 
-    @unittest.skipUnless(running_gcov_tests, "part of code coverage tests")
     def test_vlib_buffer_c_unittest(self):
         """ Vlib buffer.c Code Coverage Test """
 
@@ -169,7 +167,6 @@ class TestVlib(VppTestCase):
                 else:
                     self.logger.info(cmd + " FAIL retval " + str(r.retval))
 
-    @unittest.skipUnless(running_gcov_tests, "part of code coverage tests")
     def test_vlib_format_unittest(self):
         """ Vlib format.c Code Coverage Test """
 
@@ -187,11 +184,10 @@ class TestVlib(VppTestCase):
                 else:
                     self.logger.info(cmd + " FAIL retval " + str(r.retval))
 
-    @unittest.skipUnless(running_gcov_tests, "part of code coverage tests")
     def test_vlib_main_unittest(self):
         """ Private Binary API Segment Test (takes 70 seconds) """
 
-        vat_path = self.vpp_bin + '_api_test'
+        vat_path = config.vpp + '_api_test'
         vat = pexpect.spawn(vat_path, ['socket-name',
                                        self.get_api_sock_path()])
         vat.expect("vat# ", timeout=10)

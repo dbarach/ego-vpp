@@ -108,7 +108,7 @@ aes_block_store (u8 * p, u8x16 r)
 static_always_inline u8x16
 aes_byte_mask (u8x16 x, u8 n_bytes)
 {
-  return x & u8x16_is_greater (u8x16_splat (n_bytes), byte_mask_scale);
+  return x & (u8x16_splat (n_bytes) > byte_mask_scale);
 }
 
 static_always_inline u8x16
@@ -119,7 +119,10 @@ aes_load_partial (u8x16u * p, int n_bytes)
   __m128i zero = { };
   return (u8x16) _mm_mask_loadu_epi8 (zero, (1 << n_bytes) - 1, p);
 #else
-  return aes_byte_mask (CLIB_MEM_OVERFLOW_LOAD (p), n_bytes);
+  u8x16 v = {};
+  CLIB_ASSUME (n_bytes < 16);
+  clib_memcpy_fast (&v, p, n_bytes);
+  return v;
 #endif
 }
 
@@ -132,7 +135,7 @@ aes_store_partial (void *p, u8x16 r, int n_bytes)
 #ifdef __AVX512F__
   _mm_mask_storeu_epi8 (p, (1 << n_bytes) - 1, (__m128i) r);
 #else
-  u8x16 mask = u8x16_is_greater (u8x16_splat (n_bytes), byte_mask_scale);
+  u8x16 mask = u8x16_splat (n_bytes) > byte_mask_scale;
   _mm_maskmoveu_si128 ((__m128i) r, (__m128i) mask, p);
 #endif
 #endif

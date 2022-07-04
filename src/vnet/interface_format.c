@@ -369,11 +369,11 @@ format_vnet_sw_interface_cntrs (u8 * s, vnet_interface_main_t * im,
       n_printed += 2;
 
       if (n)
-	_vec_len (n) = 0;
+	vec_set_len (n, 0);
       n = format (n, "%s packets", cm->name);
       s = format (s, "%-16v%16Ld", n, vtotal.packets);
 
-      _vec_len (n) = 0;
+      vec_set_len (n, 0);
       n = format (n, "%s bytes", cm->name);
       s = format (s, "\n%U%-16v%16Ld",
 		  format_white_space, indent, n, vtotal.bytes);
@@ -699,9 +699,6 @@ format_vnet_buffer_opaque2 (u8 * s, va_list * args)
 
   s = format (s, "gso_size: %d, gso_l4_hdr_sz: %d",
 	      (u32) (o->gso_size), (u32) (o->gso_l4_hdr_sz));
-  vec_add1 (s, '\n');
-
-  s = format (s, "pg_replay_timestamp: %llu", (u32) (o->pg_replay_timestamp));
   vec_add1 (s, '\n');
 
   for (i = 0; i < vec_len (im->buffer_opaque2_format_helpers); i++)

@@ -594,7 +594,7 @@ tcp_handle_postponed_dequeues (tcp_worker_ctx_t * wrk)
 
       tc->burst_acked = 0;
     }
-  _vec_len (wrk->pending_deq_acked) = 0;
+  vec_set_len (wrk->pending_deq_acked, 0);
 }
 
 static void
@@ -629,11 +629,15 @@ tcp_update_snd_wnd (tcp_connection_t * tc, u32 seq, u32 ack, u32 snd_wnd)
 
       if (PREDICT_FALSE (tc->snd_wnd < tc->snd_mss))
 	{
-	  /* Set persist timer if not set and we just got 0 wnd */
-	  if (!tcp_timer_is_active (tc, TCP_TIMER_PERSIST)
-	      && !tcp_timer_is_active (tc, TCP_TIMER_RETRANSMIT))
+	  if (!tcp_timer_is_active (tc, TCP_TIMER_RETRANSMIT))
 	    {
 	      tcp_worker_ctx_t *wrk = tcp_get_worker (tc->c_thread_index);
+
+	      /* Set persist timer if we just got 0 wnd. If already set,
+	       * update it because some data sent with snd_wnd < snd_mss was
+	       * acked. */
+	      if (tcp_timer_is_active (tc, TCP_TIMER_PERSIST))
+		tcp_persist_timer_reset (&wrk->timer_wheel, tc);
 	      tcp_persist_timer_set (&wrk->timer_wheel, tc);
 	    }
 	}
@@ -1095,7 +1099,7 @@ tcp_handle_disconnects (tcp_worker_ctx_t * wrk)
 	  tcp_disconnect_pending_off (tc);
 	  session_transport_closing_notify (&tc->connection);
 	}
-      _vec_len (wrk->pending_disconnects) = 0;
+      vec_set_len (wrk->pending_disconnects, 0);
     }
 
   if (vec_len (wrk->pending_resets))
@@ -1108,7 +1112,7 @@ tcp_handle_disconnects (tcp_worker_ctx_t * wrk)
 	  tcp_disconnect_pending_off (tc);
 	  tcp_handle_rst (tc);
 	}
-      _vec_len (wrk->pending_resets) = 0;
+      vec_set_len (wrk->pending_resets, 0);
     }
 }
 
@@ -2653,7 +2657,6 @@ tcp46_listen_inline (vlib_main_t *vm, vlib_node_runtime_t *node,
 
   while (n_left_from > 0)
     {
-      u32 error = TCP_ERROR_NONE;
       tcp_connection_t *lc, *child;
 
       /* Flags initialized with connection state after lookup */
@@ -2668,14 +2671,14 @@ tcp46_listen_inline (vlib_main_t *vm, vlib_node_runtime_t *node,
 				   thread_index);
 	  if (tc->state != TCP_STATE_TIME_WAIT)
 	    {
-	      error = TCP_ERROR_CREATE_EXISTS;
+	      tcp_inc_counter (listen, TCP_ERROR_CREATE_EXISTS, 1);
 	      goto done;
 	    }
 
 	  if (PREDICT_FALSE (!syn_during_timewait (tc, b[0], &tw_iss)))
 	    {
 	      /* This SYN can't be accepted */
-	      error = TCP_ERROR_CREATE_EXISTS;
+	      tcp_inc_counter (listen, TCP_ERROR_CREATE_EXISTS, 1);
 	      goto done;
 	    }
 
@@ -2685,7 +2688,7 @@ tcp46_listen_inline (vlib_main_t *vm, vlib_node_runtime_t *node,
 	  /* listener was cleaned up */
 	  if (!lc)
 	    {
-	      error = TCP_ERROR_NO_LISTENER;
+	      tcp_inc_counter (listen, TCP_ERROR_NO_LISTENER, 1);
 	      goto done;
 	    }
 	}
@@ -2695,7 +2698,7 @@ tcp46_listen_inline (vlib_main_t *vm, vlib_node_runtime_t *node,
 	tcp_lookup_connection (lc->c_fib_index, b[0], thread_index, is_ip4);
       if (PREDICT_FALSE (child->state != TCP_STATE_LISTEN))
 	{
-	  error = TCP_ERROR_CREATE_EXISTS;
+	  tcp_inc_counter (listen, TCP_ERROR_CREATE_EXISTS, 1);
 	  goto done;
 	}
 
@@ -2712,7 +2715,7 @@ tcp46_listen_inline (vlib_main_t *vm, vlib_node_runtime_t *node,
 
       if (tcp_options_parse (tcp_buffer_hdr (b[0]), &child->rcv_opts, 1))
 	{
-	  error = TCP_ERROR_OPTIONS;
+	  tcp_inc_counter (listen, TCP_ERROR_OPTIONS, 1);
 	  tcp_connection_free (child);
 	  goto done;
 	}
@@ -2742,7 +2745,7 @@ tcp46_listen_inline (vlib_main_t *vm, vlib_node_runtime_t *node,
 				 lc->c_thread_index, 0 /* notify */ ))
 	{
 	  tcp_connection_cleanup (child);
-	  error = TCP_ERROR_CREATE_SESSION_FAIL;
+	  tcp_inc_counter (listen, TCP_ERROR_CREATE_SESSION_FAIL, 1);
 	  goto done;
 	}
 
@@ -2750,12 +2753,11 @@ tcp46_listen_inline (vlib_main_t *vm, vlib_node_runtime_t *node,
       child->tx_fifo_size = transport_tx_fifo_size (&child->connection);
 
       tcp_send_synack (child);
+      n_syns += 1;
 
     done:
-
       b += 1;
       n_left_from -= 1;
-      n_syns += (error == TCP_ERROR_NONE);
     }
 
   tcp_inc_counter (listen, TCP_ERROR_SYNS_RCVD, n_syns);

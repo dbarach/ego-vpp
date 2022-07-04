@@ -251,11 +251,6 @@ udp46_input_inline (vlib_main_t * vm, vlib_node_runtime_t * node,
 	  goto done;
 	}
 
-      /*
-       * If session exists pool peeker lock is taken at this point unless
-       * the session is already on the right thread or is a listener
-       */
-
       if (s0->session_state == SESSION_STATE_OPENED)
 	{
 	  u8 queue_event = 1;
@@ -273,10 +268,8 @@ udp46_input_inline (vlib_main_t * vm, vlib_node_runtime_t * node,
 		  ASSERT (s0->session_index == uc0->c_s_index);
 
 		  /*
-		   * Drop the peeker lock on pool resize and ask session
-		   * layer for a new session.
+		   * Ask session layer for a new session.
 		   */
-		  session_pool_remove_peeker (s0->thread_index);
 		  session_dgram_connect_notify (&uc0->connection,
 						s0->thread_index, &s0);
 		  queue_event = 0;
@@ -286,7 +279,6 @@ udp46_input_inline (vlib_main_t * vm, vlib_node_runtime_t * node,
 	    }
 	  udp_connection_enqueue (uc0, s0, &hdr0, thread_index, b[0],
 				  queue_event, &error0);
-	  session_pool_remove_peeker (s0->thread_index);
 	}
       else if (s0->session_state == SESSION_STATE_READY)
 	{
@@ -314,7 +306,6 @@ udp46_input_inline (vlib_main_t * vm, vlib_node_runtime_t * node,
       else
 	{
 	  error0 = UDP_ERROR_NOT_READY;
-	  session_pool_remove_peeker (s0->thread_index);
 	}
 
     done:

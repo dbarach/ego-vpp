@@ -134,6 +134,10 @@ lcp_itf_pair_show (u32 phy_sw_if_index)
   vlib_cli_output (vm, "lcp lcp-auto-subint %s\n",
 		   lcp_auto_subint () ? "on" : "off");
   vlib_cli_output (vm, "lcp lcp-sync %s\n", lcp_sync () ? "on" : "off");
+  vlib_cli_output (vm, "lcp del-static-on-link-down %s\n",
+		   lcp_get_del_static_on_link_down () ? "on" : "off");
+  vlib_cli_output (vm, "lcp del-dynamic-on-link-down %s\n",
+		   lcp_get_del_dynamic_on_link_down () ? "on" : "off");
 
   if (phy_sw_if_index == ~0)
     {
@@ -308,10 +312,13 @@ lcp_itf_pair_add (u32 host_sw_if_index, u32 phy_sw_if_index, u8 *host_name,
     }
   else
     {
-      vnet_feature_enable_disable ("ip4-punt", "linux-cp-punt-l3", 0, 1, NULL,
-				   0);
-      vnet_feature_enable_disable ("ip6-punt", "linux-cp-punt-l3", 0, 1, NULL,
-				   0);
+      if (hash_elts (lip_db_by_vif) == 1)
+	{
+	  vnet_feature_enable_disable ("ip4-punt", "linux-cp-punt-l3", 0, 1,
+				       NULL, 0);
+	  vnet_feature_enable_disable ("ip6-punt", "linux-cp-punt-l3", 0, 1,
+				       NULL, 0);
+	}
     }
 
   /* invoke registered callbacks for pair addition */
@@ -403,7 +410,7 @@ lcp_itf_pair_del (u32 phy_sw_if_index)
   lip = lcp_itf_pair_get (lipi);
 
   LCP_ITF_PAIR_NOTICE (
-    "pair_del: host:%U phy:%U host_if:%s vif:%d ns:%s",
+    "pair_del: host:%U phy:%U host_if:%v vif:%d ns:%v",
     format_vnet_sw_if_index_name, vnet_get_main (), lip->lip_host_sw_if_index,
     format_vnet_sw_if_index_name, vnet_get_main (), lip->lip_phy_sw_if_index,
     lip->lip_host_name, lip->lip_vif_index, lip->lip_namespace);
@@ -435,12 +442,14 @@ lcp_itf_pair_del (u32 phy_sw_if_index)
     }
   else
     {
-      vnet_feature_enable_disable ("ip4-punt", "linux-cp-punt-l3", 0, 0, NULL,
-				   0);
-      vnet_feature_enable_disable ("ip6-punt", "linux-cp-punt-l3", 0, 0, NULL,
-				   0);
+      if (hash_elts (lip_db_by_vif) == 1)
+	{
+	  vnet_feature_enable_disable ("ip4-punt", "linux-cp-punt-l3", 0, 0,
+				       NULL, 0);
+	  vnet_feature_enable_disable ("ip6-punt", "linux-cp-punt-l3", 0, 0,
+				       NULL, 0);
+	}
     }
-
   lip_db_by_phy[phy_sw_if_index] = INDEX_INVALID;
   lip_db_by_host[lip->lip_host_sw_if_index] = INDEX_INVALID;
   hash_unset (lip_db_by_vif, lip->lip_vif_index);
@@ -566,6 +575,10 @@ lcp_itf_pair_config (vlib_main_t *vm, unformat_input_t *input)
 	lcp_set_auto_subint (1 /* is_auto */);
       else if (unformat (input, "lcp-sync"))
 	lcp_set_sync (1 /* is_auto */);
+      else if (unformat (input, "del-static-on-link-down"))
+	lcp_set_del_static_on_link_down (1 /* is_del */);
+      else if (unformat (input, "del-dynamic-on-link-down"))
+	lcp_set_del_dynamic_on_link_down (1 /* is_del */);
       else
 	return clib_error_return (0, "interfaces not found");
     }
@@ -754,6 +767,9 @@ lcp_itf_pair_find_by_outer_vlan (u32 sup_if_index, u16 vlan, bool dot1ad)
 
   return lip_db_by_phy[match.matched_sw_if_index];
 }
+
+static clib_error_t *lcp_itf_pair_link_up_down (vnet_main_t *vnm,
+						u32 hw_if_index, u32 flags);
 
 int
 lcp_itf_pair_create (u32 phy_sw_if_index, u8 *host_if_name,
@@ -965,6 +981,7 @@ lcp_itf_pair_create (u32 phy_sw_if_index, u8 *host_if_name,
 	.host_namespace = 0,
       };
       ethernet_interface_t *ei;
+      u32 host_sw_mtu_size;
 
       if (host_if_type == LCP_ITF_HOST_TUN)
 	args.tap_flags |= TAP_FLAG_TUN;
@@ -972,25 +989,6 @@ lcp_itf_pair_create (u32 phy_sw_if_index, u8 *host_if_name,
 	{
 	  ei = pool_elt_at_index (ethernet_main.interfaces, hw->hw_instance);
 	  mac_address_copy (&args.host_mac_addr, &ei->address.mac);
-	}
-
-      if (sw->mtu[VNET_MTU_L3])
-	{
-	  args.host_mtu_set = 1;
-	  args.host_mtu_size = sw->mtu[VNET_MTU_L3];
-	}
-
-      if (ns && ns[0] != 0)
-	args.host_namespace = ns;
-
-      vm = vlib_get_main ();
-      tap_create_if (vm, &args);
-
-      if (args.rv < 0)
-	{
-	  LCP_ITF_PAIR_ERR ("pair_create: could not create tap, retval:%d",
-			    args.rv);
-	  return args.rv;
 	}
 
       /*
@@ -1001,12 +999,28 @@ lcp_itf_pair_create (u32 phy_sw_if_index, u8 *host_if_name,
        * ensure that the tap MTU is large enough, taking the VPP interface L3
        * if it's set, and otherwise a sensible default.
        */
-      if (sw->mtu[VNET_MTU_L3])
-	vnet_sw_interface_set_mtu (vnm, args.sw_if_index,
-				   sw->mtu[VNET_MTU_L3]);
+      host_sw_mtu_size = sw->mtu[VNET_MTU_L3];
+      if (host_sw_mtu_size)
+	{
+	  args.host_mtu_set = 1;
+	  args.host_mtu_size = host_sw_mtu_size;
+	}
       else
-	vnet_sw_interface_set_mtu (vnm, args.sw_if_index,
-				   ETHERNET_MAX_PACKET_BYTES);
+	host_sw_mtu_size = ETHERNET_MAX_PACKET_BYTES;
+
+      if (ns && ns[0] != 0)
+	args.host_namespace = ns;
+
+      vm = vlib_get_main ();
+      tap_create_if (vm, &args);
+      if (args.rv < 0)
+	{
+	  LCP_ITF_PAIR_ERR ("pair_create: could not create tap, retval:%d",
+			    args.rv);
+	  return args.rv;
+	}
+
+      vnet_sw_interface_set_mtu (vnm, args.sw_if_index, host_sw_mtu_size);
 
       /*
        * get the hw and ethernet of the tap
@@ -1052,12 +1066,23 @@ lcp_itf_pair_create (u32 phy_sw_if_index, u8 *host_if_name,
    * The TAP is shared by many interfaces, always keep it up.
    * This controls whether the host can RX/TX.
    */
-
+  sw = vnet_get_sw_interface (vnm, phy_sw_if_index);
   lip = lcp_itf_pair_get (lcp_itf_pair_find_by_vif (vif_index));
   LCP_ITF_PAIR_INFO ("pair create: %U sw-flags %u hw-flags %u",
 		     format_lcp_itf_pair, lip, sw->flags, hw->flags);
   vnet_sw_interface_admin_up (vnm, host_sw_if_index);
   lcp_itf_set_link_state (lip, sw->flags & VNET_SW_INTERFACE_FLAG_ADMIN_UP);
+
+  /*
+   * Reflect current link state and link speed of the hardware interface on the
+   * TAP interface.
+   */
+  if (host_if_type == LCP_ITF_HOST_TAP &&
+      !vnet_sw_interface_is_sub (vnm, phy_sw_if_index))
+    {
+      hw = vnet_get_sup_hw_interface (vnm, phy_sw_if_index);
+      lcp_itf_pair_link_up_down (vnm, hw->hw_if_index, hw->flags);
+    }
 
   if (host_sw_if_indexp)
     *host_sw_if_indexp = host_sw_if_index;
@@ -1159,7 +1184,7 @@ lcp_itf_pair_link_up_down (vnet_main_t *vnm, u32 hw_if_index, u32 flags)
 VNET_HW_INTERFACE_LINK_UP_DOWN_FUNCTION (lcp_itf_pair_link_up_down);
 
 static clib_error_t *
-lcp_itf_pair_init (vlib_main_t *vm)
+lcp_interface_init (vlib_main_t *vm)
 {
   vlib_punt_hdl_t punt_hdl = vlib_punt_client_register ("linux-cp");
 
@@ -1178,7 +1203,7 @@ lcp_itf_pair_init (vlib_main_t *vm)
   return NULL;
 }
 
-VLIB_INIT_FUNCTION (lcp_itf_pair_init) = {
+VLIB_INIT_FUNCTION (lcp_interface_init) = {
   .runs_after = VLIB_INITS ("vnet_interface_init", "tcp_init", "udp_init"),
 };
 

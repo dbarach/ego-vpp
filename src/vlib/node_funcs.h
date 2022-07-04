@@ -604,7 +604,7 @@ vlib_process_get_events (vlib_main_t * vm, uword ** data_vector)
   l = _vec_len (p->pending_event_data_by_type_index[t]);
   if (data_vector)
     vec_add (*data_vector, p->pending_event_data_by_type_index[t], l);
-  _vec_len (p->pending_event_data_by_type_index[t]) = 0;
+  vec_set_len (p->pending_event_data_by_type_index[t], 0);
 
   et = pool_elt_at_index (p->event_type_pool, t);
 
@@ -628,7 +628,7 @@ vlib_process_get_events_helper (vlib_process_t * p, uword t,
   l = _vec_len (p->pending_event_data_by_type_index[t]);
   if (data_vector)
     vec_add (*data_vector, p->pending_event_data_by_type_index[t], l);
-  _vec_len (p->pending_event_data_by_type_index[t]) = 0;
+  vec_set_len (p->pending_event_data_by_type_index[t], 0);
 
   vlib_process_maybe_free_event_type (p, t);
 
@@ -835,7 +835,7 @@ vlib_process_signal_event_helper (vlib_node_main_t * nm,
 				  uword n_data_elts, uword n_data_elt_bytes)
 {
   uword p_flags, add_to_pending, delete_from_wheel;
-  void *data_to_be_written_by_caller;
+  u8 *data_to_be_written_by_caller;
 
   ASSERT (n->type == VLIB_NODE_TYPE_PROCESS);
 
@@ -845,7 +845,7 @@ vlib_process_signal_event_helper (vlib_node_main_t * nm,
 
   /* Resize data vector and return caller's data to be written. */
   {
-    void *data_vec = p->pending_event_data_by_type_index[t];
+    u8 *data_vec = p->pending_event_data_by_type_index[t];
     uword l;
 
     if (!data_vec && vec_len (nm->recycled_event_data_vectors))
@@ -856,11 +856,9 @@ vlib_process_signal_event_helper (vlib_node_main_t * nm,
 
     l = vec_len (data_vec);
 
-    data_vec = _vec_resize (data_vec,
-			    /* length_increment */ n_data_elts,
-			    /* total size after increment */
-			    (l + n_data_elts) * n_data_elt_bytes,
-			    /* header_bytes */ 0, /* data_align */ 0);
+    data_vec =
+      _vec_realloc (data_vec, l + n_data_elts, n_data_elt_bytes,
+		    /* header_bytes */ 0, /* data_align */ 0, /* heap */ 0);
 
     p->pending_event_data_by_type_index[t] = data_vec;
     data_to_be_written_by_caller = data_vec + l * n_data_elt_bytes;
@@ -1211,7 +1209,8 @@ void vlib_node_rename (vlib_main_t * vm, u32 node_index, char *fmt, ...);
 /* Register new packet processing node.  Nodes can be registered
    dynamically via this call or statically via the VLIB_REGISTER_NODE
    macro. */
-u32 vlib_register_node (vlib_main_t * vm, vlib_node_registration_t * r);
+u32 vlib_register_node (vlib_main_t *vm, vlib_node_registration_t *r,
+			char *fmt, ...);
 
 /* Register all node function variants */
 void vlib_register_all_node_march_variants (vlib_main_t *vm);
@@ -1278,6 +1277,99 @@ int vlib_node_set_march_variant (vlib_main_t *vm, u32 node_index,
 vlib_node_function_t *
 vlib_node_get_preferred_node_fn_variant (vlib_main_t *vm,
 					 vlib_node_fn_registration_t *regs);
+
+/*
+ * vlib_frame_bitmap functions
+ */
+
+#define VLIB_FRAME_BITMAP_N_UWORDS                                            \
+  (((VLIB_FRAME_SIZE + uword_bits - 1) & ~(uword_bits - 1)) / uword_bits)
+
+typedef uword vlib_frame_bitmap_t[VLIB_FRAME_BITMAP_N_UWORDS];
+
+static_always_inline void
+vlib_frame_bitmap_init (uword *bmp, u32 n_first_bits_set)
+{
+  u32 n_left = VLIB_FRAME_BITMAP_N_UWORDS;
+  while (n_first_bits_set >= (sizeof (uword) * 8) && n_left)
+    {
+      bmp++[0] = ~0;
+      n_first_bits_set -= sizeof (uword) * 8;
+      n_left--;
+    }
+
+  if (n_first_bits_set && n_left)
+    {
+      bmp++[0] = pow2_mask (n_first_bits_set);
+      n_left--;
+    }
+
+  while (n_left--)
+    bmp++[0] = 0;
+}
+
+static_always_inline void
+vlib_frame_bitmap_clear (uword *bmp)
+{
+  u32 n_left = VLIB_FRAME_BITMAP_N_UWORDS;
+  while (n_left--)
+    bmp++[0] = 0;
+}
+
+static_always_inline void
+vlib_frame_bitmap_xor (uword *bmp, uword *bmp2)
+{
+  u32 n_left = VLIB_FRAME_BITMAP_N_UWORDS;
+  while (n_left--)
+    bmp++[0] ^= bmp2++[0];
+}
+
+static_always_inline void
+vlib_frame_bitmap_or (uword *bmp, uword *bmp2)
+{
+  u32 n_left = VLIB_FRAME_BITMAP_N_UWORDS;
+  while (n_left--)
+    bmp++[0] |= bmp2++[0];
+}
+
+static_always_inline void
+vlib_frame_bitmap_and (uword *bmp, uword *bmp2)
+{
+  u32 n_left = VLIB_FRAME_BITMAP_N_UWORDS;
+  while (n_left--)
+    bmp++[0] &= bmp2++[0];
+}
+
+static_always_inline u32
+vlib_frame_bitmap_count_set_bits (uword *bmp)
+{
+  u32 n_left = VLIB_FRAME_BITMAP_N_UWORDS;
+  u32 count = 0;
+  while (n_left--)
+    count += count_set_bits (bmp++[0]);
+  return count;
+}
+
+static_always_inline int
+vlib_frame_bitmap_find_first_set (uword *bmp)
+{
+  uword *b = bmp;
+  while (b[0] == 0)
+    {
+      ASSERT (b - bmp < VLIB_FRAME_BITMAP_N_UWORDS);
+      b++;
+    }
+
+  return (b - bmp) * uword_bits + get_lowest_set_bit_index (b[0]);
+}
+
+#define foreach_vlib_frame_bitmap_set_bit_index(i, v)                         \
+  for (uword _off = 0; _off < ARRAY_LEN (v); _off++)                          \
+    for (uword _tmp =                                                         \
+	   (v[_off]) + 0 * (uword) (i = _off * uword_bits +                   \
+					get_lowest_set_bit_index (v[_off]));  \
+	 _tmp; i = _off * uword_bits + get_lowest_set_bit_index (             \
+					 _tmp = clear_lowest_set_bit (_tmp)))
 
 #endif /* included_vlib_node_funcs_h */
 

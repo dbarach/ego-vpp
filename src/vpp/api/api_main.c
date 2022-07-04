@@ -4,8 +4,8 @@
 
 vat_main_t vat_main;
 
-void
-vat_suspend (vlib_main_t * vm, f64 interval)
+void __clib_no_tail_calls
+vat_suspend (vlib_main_t *vm, f64 interval)
 {
   vlib_process_suspend (vm, interval);
 }
@@ -176,7 +176,7 @@ api_command_fn (vlib_main_t * vm,
   maybe_register_api_client (vam);
 
   /* vec_validated in the init routine */
-  _vec_len (vam->inbuf) = 0;
+  vec_set_len (vam->inbuf, 0);
 
   vam->input = &_input;
 

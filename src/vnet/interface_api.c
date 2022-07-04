@@ -146,6 +146,7 @@ vl_api_hw_interface_set_mtu_t_handler (vl_api_hw_interface_set_mtu_t * mp)
   u32 sw_if_index = ntohl (mp->sw_if_index);
   u16 mtu = ntohs (mp->mtu);
   ethernet_main_t *em = &ethernet_main;
+  clib_error_t *err;
   int rv = 0;
 
   VALIDATE_SW_IF_INDEX (mp);
@@ -157,7 +158,6 @@ vl_api_hw_interface_set_mtu_t_handler (vl_api_hw_interface_set_mtu_t * mp)
       goto bad_sw_if_index;
     }
 
-  vnet_hw_interface_t *hi = vnet_get_hw_interface (vnm, si->hw_if_index);
   ethernet_interface_t *eif = ethernet_get_interface (em, si->hw_if_index);
 
   if (!eif)
@@ -166,19 +166,12 @@ vl_api_hw_interface_set_mtu_t_handler (vl_api_hw_interface_set_mtu_t * mp)
       goto bad_sw_if_index;
     }
 
-  if (mtu < hi->min_supported_packet_bytes)
+  if ((err = vnet_hw_interface_set_mtu (vnm, si->hw_if_index, mtu)))
     {
-      rv = VNET_API_ERROR_INVALID_VALUE;
+      rv = vnet_api_error (err);
+      clib_error_free (err);
       goto bad_sw_if_index;
     }
-
-  if (mtu > hi->max_supported_packet_bytes)
-    {
-      rv = VNET_API_ERROR_INVALID_VALUE;
-      goto bad_sw_if_index;
-    }
-
-  vnet_hw_interface_set_mtu (vnm, si->hw_if_index, mtu);
 
   BAD_SW_IF_INDEX_LABEL;
   REPLY_MACRO (VL_API_HW_INTERFACE_SET_MTU_REPLY);
@@ -265,7 +258,7 @@ send_sw_interface_details (vpe_api_main_t * am,
   mp->link_duplex = ntohl (((hi->flags & VNET_HW_INTERFACE_FLAG_DUPLEX_MASK) >>
 			    VNET_HW_INTERFACE_FLAG_DUPLEX_SHIFT));
   mp->link_speed = ntohl (hi->link_speed);
-  mp->link_mtu = ntohs (hi->max_packet_bytes);
+  mp->link_mtu = ntohs (hi->max_frame_size - hi->frame_overhead);
   mp->mtu[VNET_MTU_L3] = ntohl (swif->mtu[VNET_MTU_L3]);
   mp->mtu[VNET_MTU_IP4] = ntohl (swif->mtu[VNET_MTU_IP4]);
   mp->mtu[VNET_MTU_IP6] = ntohl (swif->mtu[VNET_MTU_IP6]);
@@ -1221,7 +1214,7 @@ out:
 static void
 send_interface_tx_placement_details (vnet_hw_if_tx_queue_t **all_queues,
 				     u32 index, vl_api_registration_t *rp,
-				     u32 context)
+				     u32 native_context)
 {
   vnet_main_t *vnm = vnet_get_main ();
   vl_api_sw_interface_tx_placement_details_t *rmp;
@@ -1230,6 +1223,7 @@ send_interface_tx_placement_details (vnet_hw_if_tx_queue_t **all_queues,
   uword *bitmap = q[0]->threads;
   u32 hw_if_index = q[0]->hw_if_index;
   vnet_hw_interface_t *hw_if = vnet_get_hw_interface (vnm, hw_if_index);
+  u32 context = clib_host_to_net_u32 (native_context);
 
   n_bits = clib_bitmap_count_set_bits (bitmap);
   u32 n = n_bits * sizeof (u32);

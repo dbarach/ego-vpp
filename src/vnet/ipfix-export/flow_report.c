@@ -349,8 +349,8 @@ vnet_ipfix_exp_send_buffer (vlib_main_t *vm, ipfix_exporter_t *exp,
   vlib_frame_t *f;
   ipfix_set_header_t *s;
   ipfix_message_header_t *h;
-  ip4_header_t *ip4;
-  ip6_header_t *ip6;
+  ip4_header_t *ip4 = 0;
+  ip6_header_t *ip6 = 0;
   void *ip;
   udp_header_t *udp;
   int ip_len;
@@ -843,9 +843,10 @@ set_ipfix_exporter_command_fn (vlib_main_t * vm,
 		     "fib index %d, path MTU %u, "
 		     "template resend interval %us, "
 		     "udp checksum %s",
-		     format_ip4_address, exp->ipfix_collector,
-		     format_ip4_address, exp->src_address, fib_index, path_mtu,
-		     template_interval, udp_checksum ? "enabled" : "disabled");
+		     format_ip4_address, &exp->ipfix_collector.ip.ip4,
+		     format_ip4_address, &exp->src_address.ip.ip4, fib_index,
+		     path_mtu, template_interval,
+		     udp_checksum ? "enabled" : "disabled");
   else
     vlib_cli_output (vm, "IPFIX Collector is disabled");
 

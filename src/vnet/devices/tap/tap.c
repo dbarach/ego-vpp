@@ -77,6 +77,14 @@ virtio_eth_flag_change (vnet_main_t * vnm, vnet_hw_interface_t * hi,
   return 0;
 }
 
+static clib_error_t *
+virtio_eth_set_max_frame_size (vnet_main_t *vnm, vnet_hw_interface_t *hi,
+			       u32 frame_size)
+{
+  /* nothing for now */
+  return 0;
+}
+
 #define TAP_MAX_INSTANCE 1024
 
 static void
@@ -264,7 +272,7 @@ tap_create_if (vlib_main_t * vm, tap_create_if_args_t * args)
   else
     ifr.ifr_flags |= IFF_MULTI_QUEUE;
 
-  hdrsz = sizeof (virtio_net_hdr_v1_t);
+  hdrsz = sizeof (vnet_virtio_net_hdr_v1_t);
   if (args->tap_flags & TAP_FLAG_GSO)
     {
       offload = TUN_F_CSUM | TUN_F_TSO4 | TUN_F_TSO6;
@@ -569,7 +577,7 @@ tap_create_if (vlib_main_t * vm, tap_create_if_args_t * args)
       vhost_vring_addr_t addr = { 0 };
       vhost_vring_state_t state = { 0 };
       vhost_vring_file_t file = { 0 };
-      virtio_vring_t *vring;
+      vnet_virtio_vring_t *vring;
       u16 qp = i >> 1;
       int fd = vif->vhost_fds[qp];
 
@@ -587,7 +595,7 @@ tap_create_if (vlib_main_t * vm, tap_create_if_args_t * args)
 	}
 
       addr.index = state.index = file.index = vring->queue_id & 1;
-      state.num = vring->size;
+      state.num = vring->queue_size;
       virtio_log_debug (vif, "VHOST_SET_VRING_NUM fd %d index %u num %u", fd,
 			state.index, state.num);
       _IOCTL (fd, VHOST_SET_VRING_NUM, &state);
@@ -650,6 +658,7 @@ tap_create_if (vlib_main_t * vm, tap_create_if_args_t * args)
       eir.dev_instance = vif->dev_instance;
       eir.address = vif->mac_addr;
       eir.cb.flag_change = virtio_eth_flag_change;
+      eir.cb.set_max_frame_size = virtio_eth_set_max_frame_size;
       vif->hw_if_index = vnet_eth_register_interface (vnm, &eir);
     }
   else
@@ -683,12 +692,10 @@ tap_create_if (vlib_main_t * vm, tap_create_if_args_t * args)
     }
   if (vif->type == VIRTIO_IF_TYPE_TUN)
     {
-      hw->max_supported_packet_bytes = TUN_MAX_PACKET_BYTES;
-      hw->min_packet_bytes = hw->min_supported_packet_bytes =
-	TUN_MIN_PACKET_BYTES;
-      hw->max_packet_bytes =
-	args->host_mtu_size ? args->host_mtu_size : TUN_DEFAULT_PACKET_BYTES;
-      vnet_sw_interface_set_mtu (vnm, hw->sw_if_index, hw->max_packet_bytes);
+      hw->min_frame_size = TUN_MIN_PACKET_BYTES;
+      vnet_hw_interface_set_mtu (
+	vnm, hw->hw_if_index,
+	args->host_mtu_size ? args->host_mtu_size : TUN_DEFAULT_PACKET_BYTES);
     }
 
   vnet_hw_if_change_caps (vnm, vif->hw_if_index, &cc);
@@ -697,7 +704,6 @@ tap_create_if (vlib_main_t * vm, tap_create_if_args_t * args)
   virtio_vring_set_tx_queues (vm, vif);
 
   vif->per_interface_next_index = ~0;
-  vif->flags |= VIRTIO_IF_FLAG_ADMIN_UP;
   vnet_hw_interface_set_flags (vnm, vif->hw_if_index,
 			       VNET_HW_INTERFACE_FLAG_LINK_UP);
   /*
@@ -874,7 +880,7 @@ tap_dump_ifs (tap_interface_details_t ** out_tapids)
   vnet_main_t *vnm = vnet_get_main ();
   virtio_main_t *mm = &virtio_main;
   virtio_if_t *vif;
-  virtio_vring_t *vring;
+  vnet_virtio_vring_t *vring;
   vnet_hw_interface_t *hi;
   tap_interface_details_t *r_tapids = NULL;
   tap_interface_details_t *tapid = NULL;
@@ -892,9 +898,9 @@ tap_dump_ifs (tap_interface_details_t ** out_tapids)
     clib_memcpy(tapid->dev_name, hi->name,
                 MIN (ARRAY_LEN (tapid->dev_name) - 1, vec_len (hi->name)));
     vring = vec_elt_at_index (vif->rxq_vrings, RX_QUEUE_ACCESS(0));
-    tapid->rx_ring_sz = vring->size;
+    tapid->rx_ring_sz = vring->queue_size;
     vring = vec_elt_at_index (vif->txq_vrings, TX_QUEUE_ACCESS(0));
-    tapid->tx_ring_sz = vring->size;
+    tapid->tx_ring_sz = vring->queue_size;
     tapid->tap_flags = vif->tap_flags;
     clib_memcpy(&tapid->host_mac_addr, vif->host_mac_addr, 6);
     if (vif->host_if_name)

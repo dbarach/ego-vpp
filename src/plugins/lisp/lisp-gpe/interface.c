@@ -92,7 +92,6 @@ VLIB_NODE_FN (lisp_tunnel_output)
 (vlib_main_t *vm, vlib_node_runtime_t *node, vlib_frame_t *from_frame)
 {
   u32 n_left_from, next_index, *from, *to_next;
-  lisp_gpe_main_t *lgm = &lisp_gpe_main;
 
   from = vlib_frame_vector_args (from_frame);
   n_left_from = from_frame->n_vectors;
@@ -111,7 +110,6 @@ VLIB_NODE_FN (lisp_tunnel_output)
 	  const ip_adjacency_t *adj0;
 	  const dpo_id_t *dpo0;
 	  vlib_buffer_t *b0;
-	  u8 is_v4_0;
 
 	  bi0 = from[0];
 	  to_next[0] = bi0;
@@ -122,11 +120,6 @@ VLIB_NODE_FN (lisp_tunnel_output)
 
 	  b0 = vlib_get_buffer (vm, bi0);
 	  b0->flags |= VNET_BUFFER_F_LOCALLY_ORIGINATED;
-
-	  /* Fixup the checksum and len fields in the LISP tunnel encap
-	   * that was applied at the midchain node */
-	  is_v4_0 = is_v4_packet (vlib_buffer_get_current (b0));
-	  ip_udp_fixup_one (lgm->vlib_main, b0, is_v4_0);
 
 	  /* Follow the DPO on which the midchain is stacked */
 	  adj_index0 = vnet_buffer (b0)->ip.adj_index[VLIB_TX];
@@ -436,7 +429,7 @@ lisp_gpe_create_iface (lisp_gpe_main_t * lgm, u32 vni, u32 dp_table,
   if (flen > 0)
     {
       hw_if_index = lgm->free_tunnel_hw_if_indices[flen - 1];
-      _vec_len (lgm->free_tunnel_hw_if_indices) -= 1;
+      vec_dec_len (lgm->free_tunnel_hw_if_indices, 1);
 
       hi = vnet_get_hw_interface (vnm, hw_if_index);
 

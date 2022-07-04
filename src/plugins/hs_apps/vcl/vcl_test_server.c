@@ -564,6 +564,7 @@ vts_handle_ctrl_cfg (vcl_test_server_worker_t *wrk, vcl_test_cfg_t *rx_cfg,
       wrk->nfds--;
       if (wrk->nfds)
 	vts_wrk_cleanup_all (wrk);
+      vcl_server_main.ctrl = 0;
       break;
 
     default:
@@ -677,13 +678,13 @@ vts_worker_loop (void *arg)
 	   */
 	  if (ep_evts[i].events & (EPOLLHUP | EPOLLRDHUP))
 	    {
+	      if (conn == vsm->ctrl)
+		{
+		  vtinf ("ctrl session went away");
+		  vsm->ctrl = 0;
+		}
 	      vts_session_cleanup (conn);
 	      wrk->nfds--;
-	      if (!wrk->nfds)
-		{
-		  vtinf ("All client connections closed\n");
-		  goto done;
-		}
 	      continue;
 	    }
 
@@ -701,6 +702,10 @@ vts_worker_loop (void *arg)
 	      vsm->ctrl = vts_accept_ctrl (wrk, vsm->ctrl_listen_fd);
 	      continue;
 	    }
+
+	  /* at this point ctrl session must be valid */
+	  ASSERT (vsm->ctrl);
+
 	  if (ep_evts[i].data.u32 == VCL_TEST_DATA_LISTENER)
 	    {
 	      conn = vts_accept_client (wrk, wrk->listener.fd);

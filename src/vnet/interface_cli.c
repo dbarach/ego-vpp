@@ -69,33 +69,37 @@ show_or_clear_hw_interfaces (vlib_main_t * vm,
 			     vlib_cli_command_t * cmd, int is_show)
 {
   clib_error_t *error = 0;
+  unformat_input_t _line_input, *line_input = &_line_input;
   vnet_main_t *vnm = vnet_get_main ();
   vnet_interface_main_t *im = &vnm->interface_main;
   vnet_hw_interface_t *hi;
   u32 hw_if_index, *hw_if_indices = 0;
   int i, verbose = -1, show_bond = 0;
 
-  while (unformat_check_input (input) != UNFORMAT_END_OF_INPUT)
+  if (!unformat_user (input, unformat_line_input, line_input))
+    return 0;
+
+  while (unformat_check_input (line_input) != UNFORMAT_END_OF_INPUT)
     {
       /* See if user wants to show a specific interface. */
-      if (unformat
-	  (input, "%U", unformat_vnet_hw_interface, vnm, &hw_if_index))
+      if (unformat (line_input, "%U", unformat_vnet_hw_interface, vnm,
+		    &hw_if_index))
 	vec_add1 (hw_if_indices, hw_if_index);
 
       /* See if user wants to show an interface with a specific hw_if_index. */
-      else if (unformat (input, "%u", &hw_if_index))
+      else if (unformat (line_input, "%u", &hw_if_index))
 	vec_add1 (hw_if_indices, hw_if_index);
 
-      else if (unformat (input, "verbose"))
+      else if (unformat (line_input, "verbose"))
 	verbose = 1;		/* this is also the default */
 
-      else if (unformat (input, "detail"))
+      else if (unformat (line_input, "detail"))
 	verbose = 2;
 
-      else if (unformat (input, "brief"))
+      else if (unformat (line_input, "brief"))
 	verbose = 0;
 
-      else if (unformat (input, "bond"))
+      else if (unformat (line_input, "bond"))
 	{
 	  show_bond = 1;
 	  if (verbose < 0)
@@ -105,10 +109,13 @@ show_or_clear_hw_interfaces (vlib_main_t * vm,
       else
 	{
 	  error = clib_error_return (0, "unknown input `%U'",
-				     format_unformat_error, input);
+				     format_unformat_error, line_input);
+	  unformat_free (line_input);
 	  goto done;
 	}
     }
+
+  unformat_free (line_input);
 
   /* Gather interfaces. */
   if (vec_len (hw_if_indices) == 0)
@@ -408,7 +415,7 @@ show_sw_interfaces (vlib_main_t * vm,
       /* Gather interfaces. */
       sorted_sis =
 	vec_new (vnet_sw_interface_t, pool_elts (im->sw_interfaces));
-      _vec_len (sorted_sis) = 0;
+      vec_set_len (sorted_sis, 0);
       /* *INDENT-OFF* */
       pool_foreach (si, im->sw_interfaces)
        {
@@ -1158,6 +1165,7 @@ mtu_cmd (vlib_main_t * vm, unformat_input_t * input, vlib_cli_command_t * cmd)
   u32 hw_if_index, sw_if_index, mtu;
   ethernet_main_t *em = &ethernet_main;
   u32 mtus[VNET_N_MTU] = { 0, 0, 0, 0 };
+  clib_error_t *err;
 
   if (unformat (input, "%d %U", &mtu,
 		unformat_vnet_hw_interface, vnm, &hw_if_index))
@@ -1166,22 +1174,14 @@ mtu_cmd (vlib_main_t * vm, unformat_input_t * input, vlib_cli_command_t * cmd)
        * Change physical MTU on interface. Only supported for Ethernet
        * interfaces
        */
-      vnet_hw_interface_t *hi = vnet_get_hw_interface (vnm, hw_if_index);
       ethernet_interface_t *eif = ethernet_get_interface (em, hw_if_index);
 
       if (!eif)
 	return clib_error_return (0, "not supported");
 
-      if (mtu < hi->min_supported_packet_bytes)
-	return clib_error_return (0, "Invalid mtu (%d): "
-				  "must be >= min pkt bytes (%d)", mtu,
-				  hi->min_supported_packet_bytes);
-
-      if (mtu > hi->max_supported_packet_bytes)
-	return clib_error_return (0, "Invalid mtu (%d): must be <= (%d)", mtu,
-				  hi->max_supported_packet_bytes);
-
-      vnet_hw_interface_set_mtu (vnm, hw_if_index, mtu);
+      err = vnet_hw_interface_set_mtu (vnm, hw_if_index, mtu);
+      if (err)
+	return err;
       goto done;
     }
   else if (unformat (input, "packet %d %U", &mtu,
@@ -1236,7 +1236,7 @@ show_interface_sec_mac_addr_fn (vlib_main_t * vm, unformat_input_t * input,
     {
       sorted_sis =
 	vec_new (vnet_sw_interface_t, pool_elts (im->sw_interfaces));
-      _vec_len (sorted_sis) = 0;
+      vec_set_len (sorted_sis, 0);
       /* *INDENT-OFF* */
       pool_foreach (si, im->sw_interfaces)
        {
@@ -2519,6 +2519,12 @@ set_interface_tx_hash_cmd (vlib_main_t *vm, unformat_input_t *input,
   if (hw_if_index == (u32) ~0)
     {
       error = clib_error_return (0, "please specify valid interface name");
+      goto error;
+    }
+
+  if (hash_name == 0)
+    {
+      error = clib_error_return (0, "hash-name is required");
       goto error;
     }
 

@@ -98,6 +98,7 @@
 #define __clib_unused __attribute__ ((unused))
 #define __clib_weak __attribute__ ((weak))
 #define __clib_packed __attribute__ ((packed))
+#define __clib_flatten	   __attribute__ ((flatten))
 #define __clib_constructor __attribute__ ((constructor))
 #define __clib_noinline __attribute__ ((noinline))
 #ifdef __clang__
@@ -109,6 +110,12 @@
 #define __clib_section(s) __attribute__ ((section(s)))
 #define __clib_warn_unused_result __attribute__ ((warn_unused_result))
 #define __clib_export __attribute__ ((visibility("default")))
+#ifdef __clang__
+#define __clib_no_tail_calls __attribute__ ((disable_tail_calls))
+#else
+#define __clib_no_tail_calls                                                  \
+  __attribute__ ((optimize ("no-optimize-sibling-calls")))
+#endif
 
 #define never_inline __attribute__ ((__noinline__))
 
@@ -164,25 +171,7 @@
   decl __attribute ((destructor));		\
   decl
 
-/* Use __builtin_clz if available. */
-#if uword_bits == 64
-#define count_leading_zeros(x) __builtin_clzll (x)
-#define count_trailing_zeros(x) __builtin_ctzll (x)
-#else
-#define count_leading_zeros(x) __builtin_clzl (x)
-#define count_trailing_zeros(x) __builtin_ctzl (x)
-#endif
-
-#if defined (count_leading_zeros)
-always_inline uword
-clear_lowest_set_bit (uword x)
-{
-#ifdef __BMI2__
-  return _blsr_u64 (x);
-#else
-  return x ^ (1ULL << count_trailing_zeros (x));
-#endif
-}
+#include <vppinfra/bitops.h>
 
 always_inline uword
 min_log2 (uword x)
@@ -191,45 +180,6 @@ min_log2 (uword x)
   n = count_leading_zeros (x);
   return BITS (uword) - n - 1;
 }
-#else
-always_inline uword
-min_log2 (uword x)
-{
-  uword a = x, b = BITS (uword) / 2, c = 0, r = 0;
-
-  /* Reduce x to 4 bit result. */
-#define _					\
-{						\
-  c = a >> b;					\
-  if (c) a = c;					\
-  if (c) r += b;				\
-  b /= 2;					\
-}
-
-  if (BITS (uword) > 32)
-    _;
-  _;
-  _;
-  _;
-#undef _
-
-  /* Do table lookup on 4 bit partial. */
-  if (BITS (uword) > 32)
-    {
-      const u64 table = 0x3333333322221104LL;
-      uword t = (table >> (4 * a)) & 0xf;
-      r = t < 4 ? r + t : ~0;
-    }
-  else
-    {
-      const u32 table = 0x22221104;
-      uword t = (a & 8) ? 3 : ((table >> (4 * a)) & 0xf);
-      r = t < 4 ? r + t : ~0;
-    }
-
-  return r;
-}
-#endif
 
 always_inline uword
 max_log2 (uword x)
@@ -306,18 +256,6 @@ always_inline uword
 first_set (uword x)
 {
   return x & -x;
-}
-
-always_inline uword
-log2_first_set (uword x)
-{
-  uword result;
-#ifdef count_trailing_zeros
-  result = count_trailing_zeros (x);
-#else
-  result = min_log2 (first_set (x));
-#endif
-  return result;
 }
 
 always_inline f64

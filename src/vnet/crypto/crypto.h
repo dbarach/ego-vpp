@@ -82,15 +82,16 @@ typedef enum
 /** async crypto **/
 
 /* CRYPTO_ID, PRETTY_NAME, KEY_LENGTH_IN_BYTES, TAG_LEN, AAD_LEN */
-#define foreach_crypto_aead_async_alg \
-  _(AES_128_GCM, "aes-128-gcm-aad8", 16, 16, 8) \
-  _(AES_128_GCM, "aes-128-gcm-aad12", 16, 16, 12) \
-  _(AES_192_GCM, "aes-192-gcm-aad8", 24, 16, 8) \
-  _(AES_192_GCM, "aes-192-gcm-aad12", 24, 16, 12) \
-  _(AES_256_GCM, "aes-256-gcm-aad8", 32, 16, 8) \
-  _(AES_256_GCM, "aes-256-gcm-aad12", 32, 16, 12) \
-  _(CHACHA20_POLY1305, "chacha20-poly1305-aad8", 32, 16, 8) \
-  _(CHACHA20_POLY1305, "chacha20-poly1305-aad12", 32, 16, 12)
+#define foreach_crypto_aead_async_alg                                         \
+  _ (AES_128_GCM, "aes-128-gcm-aad8", 16, 16, 8)                              \
+  _ (AES_128_GCM, "aes-128-gcm-aad12", 16, 16, 12)                            \
+  _ (AES_192_GCM, "aes-192-gcm-aad8", 24, 16, 8)                              \
+  _ (AES_192_GCM, "aes-192-gcm-aad12", 24, 16, 12)                            \
+  _ (AES_256_GCM, "aes-256-gcm-aad8", 32, 16, 8)                              \
+  _ (AES_256_GCM, "aes-256-gcm-aad12", 32, 16, 12)                            \
+  _ (CHACHA20_POLY1305, "chacha20-poly1305-aad8", 32, 16, 8)                  \
+  _ (CHACHA20_POLY1305, "chacha20-poly1305-aad12", 32, 16, 12)                \
+  _ (CHACHA20_POLY1305, "chacha20-poly1305", 32, 16, 0)
 
 /* CRYPTO_ID, INTEG_ID, PRETTY_NAME, KEY_LENGTH_IN_BYTES, DIGEST_LEN */
 #define foreach_crypto_link_async_alg                                         \
@@ -597,6 +598,12 @@ vnet_crypto_async_submit_open_frame (vlib_main_t * vm,
 
   frame->state = VNET_CRYPTO_FRAME_STATE_PENDING;
   frame->enqueue_thread_index = vm->thread_index;
+
+  if (PREDICT_FALSE (cm->enqueue_handlers == NULL))
+    {
+      frame->state = VNET_CRYPTO_FRAME_STATE_ELT_ERROR;
+      return -1;
+    }
 
   int ret = (cm->enqueue_handlers[frame->op]) (vm, frame);
 

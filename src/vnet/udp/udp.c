@@ -23,7 +23,7 @@
 udp_main_t udp_main;
 
 static void
-udp_connection_register_port (vlib_main_t * vm, u16 lcl_port, u8 is_ip4)
+udp_connection_register_port (u16 lcl_port, u8 is_ip4)
 {
   udp_main_t *um = &udp_main;
   udp_dst_port_info_t *pi;
@@ -94,24 +94,10 @@ udp_connection_alloc (u32 thread_index)
 {
   udp_main_t *um = &udp_main;
   udp_connection_t *uc;
-  u32 will_expand = 0;
-  pool_get_aligned_will_expand (um->connections[thread_index], will_expand,
-				CLIB_CACHE_LINE_BYTES);
 
-  if (PREDICT_FALSE (will_expand))
-    {
-      clib_spinlock_lock_if_init (&udp_main.peekers_write_locks
-				  [thread_index]);
-      pool_get_aligned (udp_main.connections[thread_index], uc,
-			CLIB_CACHE_LINE_BYTES);
-      clib_spinlock_unlock_if_init (&udp_main.peekers_write_locks
-				    [thread_index]);
-    }
-  else
-    {
-      pool_get_aligned (um->connections[thread_index], uc,
-			CLIB_CACHE_LINE_BYTES);
-    }
+  pool_get_aligned_safe (um->connections[thread_index], uc,
+			 CLIB_CACHE_LINE_BYTES);
+
   clib_memset (uc, 0, sizeof (*uc));
   uc->c_c_index = uc - um->connections[thread_index];
   uc->c_thread_index = thread_index;
@@ -165,10 +151,9 @@ udp_default_mtu (udp_main_t * um, u8 is_ip4)
 }
 
 static u32
-udp_session_bind (u32 session_index, transport_endpoint_t * lcl)
+udp_session_bind (u32 session_index, transport_endpoint_cfg_t *lcl)
 {
   udp_main_t *um = vnet_get_udp_main ();
-  vlib_main_t *vm = vlib_get_main ();
   transport_endpoint_cfg_t *lcl_ext;
   udp_connection_t *listener;
   u16 lcl_port_ho;
@@ -209,7 +194,7 @@ udp_session_bind (u32 session_index, transport_endpoint_t * lcl)
     listener->c_flags |= TRANSPORT_CONNECTION_F_CLESS;
   clib_spinlock_init (&listener->rx_lock);
 
-  udp_connection_register_port (vm, lcl_port_ho, lcl->is_ip4);
+  udp_connection_register_port (lcl_port_ho, lcl->is_ip4);
   return listener->c_c_index;
 }
 
@@ -351,11 +336,10 @@ udp_session_send_params (transport_connection_t * tconn,
 static int
 udp_open_connection (transport_endpoint_cfg_t * rmt)
 {
-  vlib_main_t *vm = vlib_get_main ();
-  u32 thread_index = vm->thread_index;
   udp_main_t *um = &udp_main;
   ip46_address_t lcl_addr;
   udp_connection_t *uc;
+  u32 thread_index;
   u16 lcl_port;
   int rv;
 
@@ -400,7 +384,7 @@ udp_open_connection (transport_endpoint_cfg_t * rmt)
 
 conn_alloc:
 
-  udp_connection_register_port (vm, lcl_port, rmt->is_ip4);
+  udp_connection_register_port (lcl_port, rmt->is_ip4);
 
   /* We don't poll main thread if we have workers */
   thread_index = transport_cl_thread ();
@@ -506,7 +490,6 @@ udp_init (vlib_main_t * vm)
   vlib_thread_main_t *tm = vlib_get_thread_main ();
   u32 num_threads;
   ip_protocol_info_t *pi;
-  int i;
 
   /*
    * Registrations
@@ -531,16 +514,6 @@ udp_init (vlib_main_t * vm)
 
   num_threads = 1 /* main thread */  + tm->n_threads;
   vec_validate (um->connections, num_threads - 1);
-  vec_validate (um->connection_peekers, num_threads - 1);
-  vec_validate (um->peekers_readers_locks, num_threads - 1);
-  vec_validate (um->peekers_write_locks, num_threads - 1);
-
-  if (num_threads > 1)
-    for (i = 0; i < num_threads; i++)
-      {
-	clib_spinlock_init (&um->peekers_readers_locks[i]);
-	clib_spinlock_init (&um->peekers_write_locks[i]);
-      }
 
   um->local_to_input_edge[UDP_IP4] =
     vlib_node_add_next (vm, udp4_local_node.index, udp4_input_node.index);

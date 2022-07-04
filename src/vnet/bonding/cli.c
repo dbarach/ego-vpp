@@ -20,7 +20,7 @@
 #include <vlib/unix/unix.h>
 #include <vnet/ethernet/ethernet.h>
 #include <vnet/bonding/node.h>
-#include <vpp/stats/stat_segment.h>
+#include <vlib/stats/stats.h>
 
 void
 bond_disable_collecting_distributing (vlib_main_t * vm, member_if_t * mif)
@@ -323,10 +323,10 @@ bond_delete_neighbor (vlib_main_t * vm, bond_if_t * bif, member_if_t * mif)
 
   if (bif->mode == BOND_MODE_LACP)
     {
-      stat_segment_deregister_state_counter
-	(bm->stats[bif->sw_if_index][mif->sw_if_index].actor_state);
-      stat_segment_deregister_state_counter
-	(bm->stats[bif->sw_if_index][mif->sw_if_index].partner_state);
+      vlib_stats_remove_entry (
+	bm->stats[bif->sw_if_index][mif->sw_if_index].actor_state);
+      vlib_stats_remove_entry (
+	bm->stats[bif->sw_if_index][mif->sw_if_index].partner_state);
     }
 
   pool_put (bm->neighbors, mif);
@@ -407,6 +407,16 @@ bond_create_if (vlib_main_t * vm, bond_create_if_args_t * args)
   bif->lb = args->lb;
   bif->mode = args->mode;
   bif->gso = args->gso;
+
+  if (bif->lb == BOND_LB_L2)
+    bif->hash_func =
+      vnet_hash_function_from_name ("hash-eth-l2", VNET_HASH_FN_TYPE_ETHERNET);
+  else if (bif->lb == BOND_LB_L34)
+    bif->hash_func = vnet_hash_function_from_name ("hash-eth-l34",
+						   VNET_HASH_FN_TYPE_ETHERNET);
+  else if (bif->lb == BOND_LB_L23)
+    bif->hash_func = vnet_hash_function_from_name ("hash-eth-l23",
+						   VNET_HASH_FN_TYPE_ETHERNET);
 
   // Adjust requested interface id
   if (bif->id == ~0)
@@ -640,32 +650,29 @@ bond_add_member (vlib_main_t * vm, bond_add_member_args_t * args)
     }
   if (bif->mode == BOND_MODE_LACP)
     {
-      u8 *name = format (0, "/if/lacp/%u/%u/state%c", bif->sw_if_index,
-			 args->member, 0);
+      u32 actor_idx, partner_idx;
+
+      actor_idx = vlib_stats_add_gauge ("/if/lacp/%u/%u/state",
+					bif->sw_if_index, args->member);
+      if (actor_idx == ~0)
+	{
+	  args->rv = VNET_API_ERROR_INVALID_INTERFACE;
+	  return;
+	}
+
+      partner_idx = vlib_stats_add_gauge ("/if/lacp/%u/%u/partner-state",
+					  bif->sw_if_index, args->member);
+      if (partner_idx == ~0)
+	{
+	  vlib_stats_remove_entry (actor_idx);
+	  args->rv = VNET_API_ERROR_INVALID_INTERFACE;
+	  return;
+	}
 
       vec_validate (bm->stats, bif->sw_if_index);
       vec_validate (bm->stats[bif->sw_if_index], args->member);
-
-      args->error = stat_segment_register_state_counter
-	(name, &bm->stats[bif->sw_if_index][args->member].actor_state);
-      if (args->error != 0)
-	{
-	  args->rv = VNET_API_ERROR_INVALID_INTERFACE;
-	  vec_free (name);
-	  return;
-	}
-
-      vec_reset_length (name);
-      name = format (0, "/if/lacp/%u/%u/partner-state%c", bif->sw_if_index,
-		     args->member, 0);
-      args->error = stat_segment_register_state_counter
-	(name, &bm->stats[bif->sw_if_index][args->member].partner_state);
-      vec_free (name);
-      if (args->error != 0)
-	{
-	  args->rv = VNET_API_ERROR_INVALID_INTERFACE;
-	  return;
-	}
+      bm->stats[bif->sw_if_index][args->member].actor_state = actor_idx;
+      bm->stats[bif->sw_if_index][args->member].partner_state = partner_idx;
     }
 
   pool_get (bm->neighbors, mif);
