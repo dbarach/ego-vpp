@@ -26,6 +26,7 @@
 #include <vnet/ipsec/ah.h>
 #include <vnet/ipsec/ipsec_tun.h>
 #include <vnet/ipsec/ipsec_itf.h>
+#include <vnet/ipsec/ipsec_spd_fp_lookup.h>
 
 /* Flow cache is sized for 1 million flows with a load factor of .25.
  */
@@ -36,6 +37,7 @@
 #define IPSEC4_SPD_DEFAULT_HASH_NUM_BUCKETS (1 << 22)
 
 ipsec_main_t ipsec_main;
+
 esp_async_post_next_t esp_encrypt_async_next;
 esp_async_post_next_t esp_decrypt_async_next;
 
@@ -481,6 +483,11 @@ ipsec_init (vlib_main_t * vm)
   if ((error = vlib_call_init_function (vm, ipsec_cli_init)))
     return error;
 
+  im->ipv4_fp_spd_is_enabled = 0;
+  im->ipv6_fp_spd_is_enabled = 0;
+
+  im->fp_lookup_hash_buckets = IPSEC_FP_HASH_LOOKUP_HASH_BUCKETS;
+
   vec_validate (im->crypto_algs, IPSEC_CRYPTO_N_ALG - 1);
 
   a = im->crypto_algs + IPSEC_CRYPTO_ALG_NONE;
@@ -632,11 +639,32 @@ ipsec_config (vlib_main_t *vm, unformat_input_t *input)
 
   u32 ipsec4_out_spd_hash_num_buckets;
   u32 ipsec4_in_spd_hash_num_buckets;
+  u32 ipsec_spd_fp_num_buckets;
 
   while (unformat_check_input (input) != UNFORMAT_END_OF_INPUT)
     {
-      if (unformat (input, "ipv4-outbound-spd-flow-cache on"))
-	im->output_flow_cache_flag = 1;
+      if (unformat (input, "ipv6-outbound-spd-fast-path on"))
+	{
+	  im->ipv6_fp_spd_is_enabled = 1;
+	}
+      else if (unformat (input, "ipv6-outbound-spd-fast-path off"))
+	im->ipv6_fp_spd_is_enabled = 0;
+      else if (unformat (input, "ipv4-outbound-spd-fast-path on"))
+	{
+	  im->ipv4_fp_spd_is_enabled = 1;
+	  im->output_flow_cache_flag = 0;
+	}
+      else if (unformat (input, "ipv4-outbound-spd-fast-path off"))
+	im->ipv4_fp_spd_is_enabled = 0;
+      else if (unformat (input, "spd-fast-path-num-buckets %d",
+			 &ipsec_spd_fp_num_buckets))
+	{
+	  /* Number of bihash buckets is power of 2 >= input */
+	  im->fp_lookup_hash_buckets = 1ULL
+				       << max_log2 (ipsec_spd_fp_num_buckets);
+	}
+      else if (unformat (input, "ipv4-outbound-spd-flow-cache on"))
+	im->output_flow_cache_flag = im->ipv4_fp_spd_is_enabled ? 0 : 1;
       else if (unformat (input, "ipv4-outbound-spd-flow-cache off"))
 	im->output_flow_cache_flag = 0;
       else if (unformat (input, "ipv4-outbound-spd-hash-buckets %d",

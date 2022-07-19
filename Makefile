@@ -70,7 +70,7 @@ DEB_DEPENDS += python3-all python3-setuptools check
 DEB_DEPENDS += libffi-dev python3-ply
 DEB_DEPENDS += cmake ninja-build uuid-dev python3-jsonschema python3-yaml
 DEB_DEPENDS += python3-venv  # ensurepip
-DEB_DEPENDS += python3-dev   # needed for python3 -m pip install psutil
+DEB_DEPENDS += python3-dev python3-pip
 DEB_DEPENDS += libnl-3-dev libnl-route-3-dev libmnl-dev
 # DEB_DEPENDS += enchant  # for docs
 DEB_DEPENDS += python3-virtualenv
@@ -81,7 +81,14 @@ DEB_DEPENDS += nasm
 
 LIBFFI=libffi6 # works on all but 20.04 and debian-testing
 
-ifeq ($(OS_VERSION_ID),20.04)
+ifeq ($(OS_VERSION_ID),22.04)
+	DEB_DEPENDS += python3-virtualenv
+	DEB_DEPENDS += libssl-dev
+	DEB_DEPENDS += libelf-dev # for libbpf (af_xdp)
+	DEB_DEPENDS += clang clang-format-11
+	LIBFFI=libffi7
+	DEB_DEPENDS += enchant-2  # for docs
+else ifeq ($(OS_VERSION_ID),20.04)
 	DEB_DEPENDS += python3-virtualenv
 	DEB_DEPENDS += libssl-dev
 	DEB_DEPENDS += libelf-dev # for libbpf (af_xdp)
@@ -186,7 +193,7 @@ endif
 
 ifeq ($(findstring y,$(UNATTENDED)),y)
 CONFIRM=-y
-FORCE=--force-yes
+FORCE=--allow-downgrades --allow-remove-essential --allow-change-held-packages
 endif
 
 TARGETS = vpp
@@ -247,6 +254,7 @@ help:
 	@echo " docs                 - Build the Sphinx documentation"
 	@echo " docs-venv            - Build the virtual environment for the Sphinx docs"
 	@echo " docs-clean           - Remove the generated files from the Sphinx docs"
+	@echo " docs-rebuild         - Rebuild all of the Sphinx documentation"
 	@echo ""
 	@echo "Make Arguments:"
 	@echo " V=[0|1]                  - set build verbosity level"
@@ -716,7 +724,7 @@ checkstyle-python:
 	@make -C test checkstyle-python-all
 
 .PHONY: checkstyle-all
-checkstyle-all: checkstyle-commit checkstyle checkstyle-python
+checkstyle-all: checkstyle-commit checkstyle checkstyle-python docs-spell
 
 .PHONY: fixstyle
 fixstyle:

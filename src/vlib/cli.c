@@ -159,42 +159,60 @@ done:
   return match;
 }
 
-/* Get current command args */
 uword
-unformat_vlib_cli_args (unformat_input_t *i, va_list *va)
+unformat_vlib_cli_line (unformat_input_t *i, va_list *va)
 {
   unformat_input_t *result = va_arg (*va, unformat_input_t *);
-  u8 *line;
-  uword last_c;
-  u32 index = i->index;
+  u8 *line = 0;
+  uword c;
+  int skip;
+
+next_line:
+  skip = 0;
+
+  /* skip leading whitespace if any */
+  unformat_skip_white_space (i);
 
   if (unformat_is_eof (i))
+    return 0;
+
+  while ((c = unformat_get_input (i)) != UNFORMAT_END_OF_INPUT)
     {
-      unformat_init (result, 0, 0);
-      return 0;
+      if (c == '\\')
+	{
+	  c = unformat_get_input (i);
+
+	  if (c == '\n')
+	    {
+	      if (!skip)
+		vec_add1 (line, '\n');
+	      skip = 0;
+	      continue;
+	    }
+
+	  if (!skip)
+	    vec_add1 (line, '\\');
+
+	  if (c == UNFORMAT_END_OF_INPUT)
+	    break;
+
+	  if (!skip)
+	    vec_add1 (line, c);
+	  continue;
+	}
+
+      if (c == '#')
+	skip = 1;
+      else if (c == '\n')
+	break;
+
+      if (!skip)
+	vec_add1 (line, c);
     }
 
-  /* try to find last non-space character */
-  do
-    {
-      ASSERT (index > 0);
-      last_c = i->buffer[--index];
-    }
-  while (last_c == ' ');
+  if (line == 0)
+    goto next_line;
 
-  if (last_c == '\t' || last_c == '\n' || last_c == '\r' || last_c == '\f' ||
-      last_c == '}')
-    {
-      /* current command has no args */
-      unformat_init (result, 0, 0);
-      return 0;
-    }
-
-  if (!unformat_user (i, unformat_line, &line))
-    {
-      unformat_init (result, 0, 0);
-      return 0;
-    }
   unformat_init_vector (result, line);
   return 1;
 }
