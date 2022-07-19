@@ -112,7 +112,6 @@ RPM_DEPENDS += check check-devel
 RPM_DEPENDS += selinux-policy selinux-policy-devel
 RPM_DEPENDS += ninja-build
 RPM_DEPENDS += libuuid-devel
-RPM_DEPENDS += mbedtls-devel
 RPM_DEPENDS += ccache
 RPM_DEPENDS += xmlto
 RPM_DEPENDS += elfutils-libelf-devel
@@ -159,7 +158,7 @@ RPM_SUSE_BUILDTOOLS_DEPS = autoconf automake ccache check-devel chrpath
 RPM_SUSE_BUILDTOOLS_DEPS += clang cmake indent libtool make ninja python3-ply
 
 RPM_SUSE_DEVEL_DEPS = glibc-devel-static libnuma-devel libelf-devel nasm
-RPM_SUSE_DEVEL_DEPS += libopenssl-devel openssl-devel mbedtls-devel libuuid-devel
+RPM_SUSE_DEVEL_DEPS += libopenssl-devel openssl-devel libuuid-devel
 
 RPM_SUSE_PYTHON_DEPS = python-devel python3-devel python-pip python3-pip
 RPM_SUSE_PYTHON_DEPS += python-rpm-macros python3-rpm-macros
@@ -233,10 +232,10 @@ help:
 	@echo " compdb               - (re)generate compile_commands.json"
 	@echo " checkstyle           - check coding style"
 	@echo " checkstyle-commit    - check commit message format"
-	@echo " checkstyle-test      - check test framework coding style"
-	@echo " checkstyle-test-diff - check test framework coding style (only changed files)"
+	@echo " checkstyle-python    - check python coding style using 'black' formatter"
 	@echo " checkstyle-api       - check api for incompatible changes"
 	@echo " fixstyle             - fix coding style"
+	@echo " fixstyle-python      - fix python coding style using 'black' formatter"
 	@echo " doxygen              - DEPRECATED - use 'make docs'"
 	@echo " bootstrap-doxygen    - DEPRECATED"
 	@echo " wipe-doxygen         - DEPRECATED"
@@ -316,7 +315,7 @@ ifeq ($(OS_ID),rhel)
 	@sudo -E yum-config-manager --enable rhel-server-rhscl-7-rpms
 	@sudo -E yum groupinstall $(CONFIRM) $(RPM_DEPENDS_GROUPS)
 	@sudo -E yum install $(CONFIRM) $(RPM_DEPENDS)
-	@sudo -E debuginfo-install $(CONFIRM) glibc openssl-libs mbedtls-devel zlib
+	@sudo -E debuginfo-install $(CONFIRM) glibc openssl-libs zlib
 else ifeq ($(OS_ID)-$(OS_VERSION_ID),centos-8)
 	@sudo -E dnf install $(CONFIRM) dnf-plugins-core epel-release
 	@sudo -E dnf config-manager --set-enabled \
@@ -331,7 +330,7 @@ else ifeq ($(OS_ID),centos)
 else ifeq ($(OS_ID),fedora)
 	@sudo -E dnf groupinstall $(CONFIRM) $(RPM_DEPENDS_GROUPS)
 	@sudo -E dnf install $(CONFIRM) $(RPM_DEPENDS)
-	@sudo -E debuginfo-install $(CONFIRM) glibc openssl-libs mbedtls-devel zlib
+	@sudo -E debuginfo-install $(CONFIRM) glibc openssl-libs zlib
 endif
 else ifeq ($(filter opensuse-leap,$(OS_ID)),$(OS_ID))
 	@sudo -E zypper refresh
@@ -540,13 +539,17 @@ test-wipe-cov:
 test-wipe-all:
 	@make -C test wipe-all
 
+# Note: All python venv consolidated in test/Makefile, test/requirements*.txt
 .PHONY: test-checkstyle
 test-checkstyle:
-	@make -C test checkstyle
+	$(warning test-checkstyle is deprecated. Running checkstyle-python.")
+	@make -C test checkstyle-python-all
 
+# Note: All python venv consolidated in test/Makefile, test/requirements*.txt
 .PHONY: test-checkstyle-diff
 test-checkstyle-diff:
-	@make -C test checkstyle-diff
+	$(warning test-checkstyle-diff is deprecated. Running checkstyle-python.")
+	@make -C test checkstyle-python-all
 
 .PHONY: test-refresh-deps
 test-refresh-deps:
@@ -703,14 +706,26 @@ checkstyle-commit:
 	@extras/scripts/check_commit_msg.sh
 
 .PHONY: checkstyle-test
-checkstyle-test: test-checkstyle
+checkstyle-test:
+	$(warning test-checkstyle is deprecated. Running checkstyle-python.")
+	@make -C test checkstyle-python-all
+
+# Note: All python venv consolidated in test/Makefile, test/requirements*.txt
+.PHONY: checkstyle-python
+checkstyle-python:
+	@make -C test checkstyle-python-all
 
 .PHONY: checkstyle-all
-checkstyle-all: checkstyle-commit checkstyle checkstyle-test
+checkstyle-all: checkstyle-commit checkstyle checkstyle-python
 
 .PHONY: fixstyle
 fixstyle:
 	@extras/scripts/checkstyle.sh --fix
+
+# Note: All python venv consolidated in test/Makefile, test/requirements*.txt
+.PHONY: fixstyle-python
+fixstyle-python:
+	@make -C test fixstyle-python-all
 
 .PHONY: checkstyle-api
 checkstyle-api:

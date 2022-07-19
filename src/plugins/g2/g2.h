@@ -39,8 +39,8 @@ extern g2_main_t g2_main;
 
 void ego_start_thread (void);
 int ego_gtk_start_check(void);
-extern void Vpp_start_g2() asm ("ego/tools/g2.Vpp_start_g2");
-extern void OsInit() asm ("ego/runtime.OsInit");
+extern void Vpp_start_g2() asm ("tools/g2.Vpp_start_g2");
+extern void OsInit() asm ("runtime.OsInit");
 
 #endif /* __included_g2_h__ */
 
