@@ -161,8 +161,12 @@ tcptrack_show_command_fn (vlib_main_t * vm,
   int verbose = 0;
   int detail = 0;
   f64 now = vlib_time_now(vm);
-  u32 in_order_pkts=0, out_of_order_pkts=0;
+  u32 in_order_pkts __attribute__((unused));
+  u32 out_of_order_pkts __attribute__((unused));
   int i;
+
+  in_order_pkts=0;
+  out_of_order_pkts=0;
 
   if (unformat (input, "verbose %d", &verbose))
     ;
