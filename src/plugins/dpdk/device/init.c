@@ -402,7 +402,8 @@ dpdk_lib_init (dpdk_main_t * dm)
       q = di.max_rx_pktlen - di.max_mtu;
 
       /* attempt to protect from bogus value provided by pmd */
-      if (q < (2 * xd->driver_frame_overhead) && q > 0)
+      if (q < (2 * xd->driver_frame_overhead) && q > 0 &&
+	  di.max_mtu != UINT16_MAX)
 	xd->driver_frame_overhead = q;
       dpdk_log_debug ("[%u] min_mtu: %u, max_mtu: %u, min_rx_bufsize: %u, "
 		      "max_rx_pktlen: %u, max_lro_pkt_size: %u",
@@ -621,9 +622,11 @@ dpdk_bind_devices_to_uio (dpdk_config_main_t * conf)
     else if (d->vendor_id == 0x8086 && d->device_class == PCI_CLASS_NETWORK_ETHERNET)
       ;
     /* all Intel QAT devices VFs */
-    else if (d->vendor_id == 0x8086 && d->device_class == PCI_CLASS_PROCESSOR_CO &&
-        (d->device_id == 0x0443 || d->device_id == 0x18a1 || d->device_id == 0x19e3 ||
-        d->device_id == 0x37c9 || d->device_id == 0x6f55))
+    else if (d->vendor_id == 0x8086 &&
+	     d->device_class == PCI_CLASS_PROCESSOR_CO &&
+	     (d->device_id == 0x0443 || d->device_id == 0x18a1 ||
+	      d->device_id == 0x19e3 || d->device_id == 0x37c9 ||
+	      d->device_id == 0x6f55 || d->device_id == 0x4941))
       ;
     /* Cisco VIC */
     else if (d->vendor_id == 0x1137 &&
@@ -984,6 +987,7 @@ dpdk_config (vlib_main_t * vm, unformat_input_t * input)
   int eal_no_hugetlb = 0;
   u8 no_pci = 0;
   u8 no_vmbus = 0;
+  u8 no_dsa = 0;
   u8 file_prefix = 0;
   u8 *socket_mem = 0;
   u8 *huge_dir_path = 0;
@@ -1092,6 +1096,8 @@ dpdk_config (vlib_main_t * vm, unformat_input_t * input)
 	  tmp = format (0, "--no-pci%c", 0);
 	  vec_add1 (conf->eal_init_args, tmp);
 	}
+      else if (unformat (input, "no-dsa"))
+	no_dsa = 1;
       else if (unformat (input, "blacklist %U", unformat_vlib_vmbus_addr,
 			 &vmbus_addr))
 	{
@@ -1301,6 +1307,13 @@ dpdk_config (vlib_main_t * vm, unformat_input_t * input)
 
   vm = vlib_get_main ();
 
+  if (no_dsa)
+    {
+      struct rte_bus *bus;
+      bus = rte_bus_find_by_name ("dsa");
+      if (bus)
+	rte_bus_unregister (bus);
+    }
   /* make copy of args as rte_eal_init tends to mess up with arg array */
   for (i = 1; i < vec_len (conf->eal_init_args); i++)
     conf->eal_init_args_str = format (conf->eal_init_args_str, "%s ",

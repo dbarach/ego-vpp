@@ -48,7 +48,6 @@
 #undef vl_typedefs
 
 /* instantiate all the print functions we know about */
-#define vl_print(handle, ...) vlib_cli_output (handle, __VA_ARGS__)
 #define vl_printfun
 #include <vlibmemory/vl_memory_api_h.h>
 #undef vl_printfun
@@ -175,10 +174,8 @@ vlib_api_init (void)
       c->id = VL_API_##N;                                                     \
       c->name = #n;                                                           \
       c->handler = vl_api_##n##_t_handler;                                    \
-      c->cleanup = vl_noop_handler;                                           \
       c->endian = vl_api_##n##_t_endian;                                      \
-      c->print = vl_api_##n##_t_print;                                        \
-      c->print_json = vl_api_##n##_t_print_json;                              \
+      c->format_fn = vl_api_##n##_t_format;                                   \
       c->tojson = vl_api_##n##_t_tojson;                                      \
       c->fromjson = vl_api_##n##_t_fromjson;                                  \
       c->calc_size = vl_api_##n##_t_calc_size;                                \
@@ -710,24 +707,36 @@ rpc_api_hookup (vlib_main_t *vm)
 {
   api_main_t *am = vlibapi_get_main ();
 #define _(N, n)                                                               \
-  vl_msg_api_set_handlers (                                                   \
-    VL_API_##N, #n, vl_api_##n##_t_handler, vl_noop_handler, vl_noop_handler, \
-    vl_api_##n##_t_print, sizeof (vl_api_##n##_t), 0 /* do not trace */,      \
-    vl_api_##n##_t_print_json, vl_api_##n##_t_tojson,                         \
-    vl_api_##n##_t_fromjson, vl_api_##n##_t_calc_size);
+  vl_msg_api_config (&(vl_msg_api_msg_config_t){                              \
+    .id = VL_API_##N,                                                         \
+    .name = #n,                                                               \
+    .handler = vl_api_##n##_t_handler,                                        \
+    .format_fn = vl_api_##n##_t_format,                                       \
+    .size = sizeof (vl_api_##n##_t),                                          \
+    .traced = 0,                                                              \
+    .tojson = vl_api_##n##_t_tojson,                                          \
+    .fromjson = vl_api_##n##_t_fromjson,                                      \
+    .calc_size = vl_api_##n##_t_calc_size,                                    \
+  });
   foreach_rpc_api_msg;
 #undef _
 
 #define _(N, n)                                                               \
-  vl_msg_api_set_handlers (                                                   \
-    VL_API_##N, #n, vl_api_##n##_t_handler, vl_noop_handler, vl_noop_handler, \
-    vl_api_##n##_t_print, sizeof (vl_api_##n##_t), 1 /* do trace */,          \
-    vl_api_##n##_t_print_json, vl_api_##n##_t_tojson,                         \
-    vl_api_##n##_t_fromjson, vl_api_##n##_t_calc_size);
-  foreach_plugin_trace_msg;
+  vl_msg_api_config (&(vl_msg_api_msg_config_t){                              \
+    .id = VL_API_##N,                                                         \
+    .name = #n,                                                               \
+    .handler = vl_api_##n##_t_handler,                                        \
+    .format_fn = vl_api_##n##_t_format,                                       \
+    .size = sizeof (vl_api_##n##_t),                                          \
+    .traced = 1,                                                              \
+    .tojson = vl_api_##n##_t_tojson,                                          \
+    .fromjson = vl_api_##n##_t_fromjson,                                      \
+    .calc_size = vl_api_##n##_t_calc_size,                                    \
+  });
+  foreach_plugin_trace_msg
 #undef _
 
-  vl_api_allow_msg_replay (am, VL_API_TRACE_PLUGIN_MSG_IDS, 0);
+    vl_api_allow_msg_replay (am, VL_API_TRACE_PLUGIN_MSG_IDS, 0);
 
   /* No reason to halt the parade to create a trace record... */
   vl_api_set_msg_thread_safe (am, VL_API_TRACE_PLUGIN_MSG_IDS, 1);

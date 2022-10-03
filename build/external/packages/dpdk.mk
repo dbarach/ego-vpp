@@ -22,9 +22,10 @@ DPDK_FAILSAFE_PMD            ?= n
 DPDK_MACHINE                 ?= default
 DPDK_MLX_IBV_LINK            ?= static
 
-dpdk_version                 ?= 22.03
+dpdk_version                 ?= 22.07
 dpdk_base_url                ?= http://fast.dpdk.org/rel
 dpdk_tarball                 := dpdk-$(dpdk_version).tar.xz
+dpdk_tarball_md5sum_22.07    := fb73b58b80b1349cd05fe9cf6984afd4
 dpdk_tarball_md5sum_22.03    := a07ca8839f98062f46e1cc359735cce8
 dpdk_tarball_md5sum_21.11    := 58660bbbe9e95abce86e47692b196555
 dpdk_tarball_md5sum_21.08    := de33433a1806280996a0ecbe66e3642f
@@ -43,10 +44,12 @@ endif
 DPDK_DRIVERS_DISABLED := baseband/\*,	\
 	bus/dpaa,							\
 	bus/ifpga,							\
+	common/cnxk,						\
 	compress/isal,						\
 	compress/octeontx,					\
 	compress/zlib,						\
 	crypto/ccp,							\
+	crypto/cnxk,						\
 	crypto/dpaa_sec,					\
 	crypto/openssl,						\
 	crypto/aesni_mb,						\
@@ -56,9 +59,11 @@ DPDK_DRIVERS_DISABLED := baseband/\*,	\
 	crypto/zuc,						\
 	event/\*,							\
 	mempool/dpaa,						\
+	mempool/cnxk,						\
 	net/af_packet,						\
 	net/bnx2x,							\
 	net/bonding,						\
+	net/cnxk,							\
 	net/ipn3ke,							\
 	net/liquidio,						\
 	net/pcap,							\
@@ -74,6 +79,7 @@ DPDK_LIBS_DISABLED := acl,				\
 	bitratestats,						\
 	bpf,								\
 	cfgfile,							\
+	cnxk,							\
 	distributor,						\
 	efd,								\
 	fib,								\

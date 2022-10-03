@@ -23,6 +23,7 @@
 
 #include <vnet/ipsec/ipsec.h>
 #include <vnet/ipsec/ipsec_tun.h>
+#include <vnet/ipsec/ipsec.api_enum.h>
 #include <vnet/ipsec/esp.h>
 #include <vnet/tunnel/tunnel_dp.h>
 
@@ -43,31 +44,6 @@ typedef enum
     ESP_ENCRYPT_N_NEXT,
 } esp_encrypt_next_t;
 
-#define foreach_esp_encrypt_error                                             \
-  _ (RX_PKTS, "ESP pkts received")                                            \
-  _ (POST_RX_PKTS, "ESP-post pkts received")                                  \
-  _ (HANDOFF, "Hand-off")                                                     \
-  _ (SEQ_CYCLED, "sequence number cycled (packet dropped)")                   \
-  _ (CRYPTO_ENGINE_ERROR, "crypto engine error (packet dropped)")             \
-  _ (CRYPTO_QUEUE_FULL, "crypto queue full (packet dropped)")                 \
-  _ (NO_BUFFERS, "no buffers (packet dropped)")                               \
-  _ (NO_PROTECTION, "no protecting SA (packet dropped)")                      \
-  _ (NO_ENCRYPTION, "no Encrypting SA (packet dropped)")
-
-typedef enum
-{
-#define _(sym,str) ESP_ENCRYPT_ERROR_##sym,
-  foreach_esp_encrypt_error
-#undef _
-    ESP_ENCRYPT_N_ERROR,
-} esp_encrypt_error_t;
-
-static char *esp_encrypt_error_strings[] = {
-#define _(sym,string) string,
-  foreach_esp_encrypt_error
-#undef _
-};
-
 typedef struct
 {
   u32 sa_index;
@@ -83,6 +59,8 @@ typedef struct
 {
   u32 next_index;
 } esp_encrypt_post_trace_t;
+
+typedef vl_counter_esp_encrypt_enum_t esp_encrypt_error_t;
 
 /* packet trace format function */
 static u8 *
@@ -909,42 +887,40 @@ esp_encrypt_inline (vlib_main_t *vm, vlib_node_runtime_t *node,
 	  else
 	    l2_len = 0;
 
+	  u16 len;
+	  len = payload_len_total + hdr_len - l2_len;
+
 	  if (VNET_LINK_IP6 == lt)
 	    {
 	      ip6_header_t *ip6 = (ip6_header_t *) (old_ip_hdr);
 	      if (PREDICT_TRUE (NULL == ext_hdr))
 		{
 		  *next_hdr_ptr = ip6->protocol;
-		  ip6->protocol = IP_PROTOCOL_IPSEC_ESP;
+		  ip6->protocol =
+		    (udp) ? IP_PROTOCOL_UDP : IP_PROTOCOL_IPSEC_ESP;
 		}
 	      else
 		{
 		  *next_hdr_ptr = ext_hdr->next_hdr;
-		  ext_hdr->next_hdr = IP_PROTOCOL_IPSEC_ESP;
+		  ext_hdr->next_hdr =
+		    (udp) ? IP_PROTOCOL_UDP : IP_PROTOCOL_IPSEC_ESP;
 		}
 	      ip6->payload_length =
-		clib_host_to_net_u16 (payload_len_total + hdr_len - l2_len -
-				      sizeof (ip6_header_t));
+		clib_host_to_net_u16 (len - sizeof (ip6_header_t));
 	    }
 	  else if (VNET_LINK_IP4 == lt)
 	    {
-	      u16 len;
 	      ip4_header_t *ip4 = (ip4_header_t *) (old_ip_hdr);
 	      *next_hdr_ptr = ip4->protocol;
-	      len = payload_len_total + hdr_len - l2_len;
-	      if (udp)
-		{
-		  esp_update_ip4_hdr (ip4, len, /* is_transport */ 1, 1);
-		  udp_len = len - ip_len;
-		}
-	      else
-		esp_update_ip4_hdr (ip4, len, /* is_transport */ 1, 0);
+	      esp_update_ip4_hdr (ip4, len, /* is_transport */ 1,
+				  (udp != NULL));
 	    }
 
 	  clib_memcpy_le64 (ip_hdr, old_ip_hdr, ip_len);
 
 	  if (udp)
 	    {
+	      udp_len = len - ip_len;
 	      esp_fill_udp_hdr (sa0, udp, udp_len);
 	    }
 
@@ -1182,8 +1158,8 @@ VLIB_REGISTER_NODE (esp4_encrypt_node) = {
   .format_trace = format_esp_encrypt_trace,
   .type = VLIB_NODE_TYPE_INTERNAL,
 
-  .n_errors = ARRAY_LEN (esp_encrypt_error_strings),
-  .error_strings = esp_encrypt_error_strings,
+  .n_errors = ESP_ENCRYPT_N_ERROR,
+  .error_counters = esp_encrypt_error_counters,
 
   .n_next_nodes = ESP_ENCRYPT_N_NEXT,
   .next_nodes = { [ESP_ENCRYPT_NEXT_DROP4] = "ip4-drop",
@@ -1211,8 +1187,8 @@ VLIB_REGISTER_NODE (esp4_encrypt_post_node) = {
   .type = VLIB_NODE_TYPE_INTERNAL,
   .sibling_of = "esp4-encrypt",
 
-  .n_errors = ARRAY_LEN(esp_encrypt_error_strings),
-  .error_strings = esp_encrypt_error_strings,
+  .n_errors = ESP_ENCRYPT_N_ERROR,
+  .error_counters = esp_encrypt_error_counters,
 };
 /* *INDENT-ON* */
 
@@ -1232,8 +1208,8 @@ VLIB_REGISTER_NODE (esp6_encrypt_node) = {
   .type = VLIB_NODE_TYPE_INTERNAL,
   .sibling_of = "esp4-encrypt",
 
-  .n_errors = ARRAY_LEN(esp_encrypt_error_strings),
-  .error_strings = esp_encrypt_error_strings,
+  .n_errors = ESP_ENCRYPT_N_ERROR,
+  .error_counters = esp_encrypt_error_counters,
 };
 /* *INDENT-ON* */
 
@@ -1252,8 +1228,8 @@ VLIB_REGISTER_NODE (esp6_encrypt_post_node) = {
   .type = VLIB_NODE_TYPE_INTERNAL,
   .sibling_of = "esp4-encrypt",
 
-  .n_errors = ARRAY_LEN(esp_encrypt_error_strings),
-  .error_strings = esp_encrypt_error_strings,
+  .n_errors = ESP_ENCRYPT_N_ERROR,
+  .error_counters = esp_encrypt_error_counters,
 };
 /* *INDENT-ON* */
 
@@ -1272,8 +1248,8 @@ VLIB_REGISTER_NODE (esp4_encrypt_tun_node) = {
   .format_trace = format_esp_encrypt_trace,
   .type = VLIB_NODE_TYPE_INTERNAL,
 
-  .n_errors = ARRAY_LEN(esp_encrypt_error_strings),
-  .error_strings = esp_encrypt_error_strings,
+  .n_errors = ESP_ENCRYPT_N_ERROR,
+  .error_counters = esp_encrypt_error_counters,
 
   .n_next_nodes = ESP_ENCRYPT_N_NEXT,
   .next_nodes = {
@@ -1302,8 +1278,8 @@ VLIB_REGISTER_NODE (esp4_encrypt_tun_post_node) = {
   .type = VLIB_NODE_TYPE_INTERNAL,
   .sibling_of = "esp4-encrypt-tun",
 
-  .n_errors = ARRAY_LEN(esp_encrypt_error_strings),
-  .error_strings = esp_encrypt_error_strings,
+  .n_errors = ESP_ENCRYPT_N_ERROR,
+  .error_counters = esp_encrypt_error_counters,
 };
 /* *INDENT-ON* */
 
@@ -1322,8 +1298,8 @@ VLIB_REGISTER_NODE (esp6_encrypt_tun_node) = {
   .format_trace = format_esp_encrypt_trace,
   .type = VLIB_NODE_TYPE_INTERNAL,
 
-  .n_errors = ARRAY_LEN(esp_encrypt_error_strings),
-  .error_strings = esp_encrypt_error_strings,
+  .n_errors = ESP_ENCRYPT_N_ERROR,
+  .error_counters = esp_encrypt_error_counters,
 
   .n_next_nodes = ESP_ENCRYPT_N_NEXT,
   .next_nodes = {
@@ -1354,8 +1330,8 @@ VLIB_REGISTER_NODE (esp6_encrypt_tun_post_node) = {
   .type = VLIB_NODE_TYPE_INTERNAL,
   .sibling_of = "esp-mpls-encrypt-tun",
 
-  .n_errors = ARRAY_LEN (esp_encrypt_error_strings),
-  .error_strings = esp_encrypt_error_strings,
+  .n_errors = ESP_ENCRYPT_N_ERROR,
+  .error_counters = esp_encrypt_error_counters,
 };
 /* *INDENT-ON* */
 
@@ -1372,8 +1348,8 @@ VLIB_REGISTER_NODE (esp_mpls_encrypt_tun_node) = {
   .format_trace = format_esp_encrypt_trace,
   .type = VLIB_NODE_TYPE_INTERNAL,
 
-  .n_errors = ARRAY_LEN(esp_encrypt_error_strings),
-  .error_strings = esp_encrypt_error_strings,
+  .n_errors = ESP_ENCRYPT_N_ERROR,
+  .error_counters = esp_encrypt_error_counters,
 
   .n_next_nodes = ESP_ENCRYPT_N_NEXT,
   .next_nodes = {
@@ -1400,8 +1376,8 @@ VLIB_REGISTER_NODE (esp_mpls_encrypt_tun_post_node) = {
   .type = VLIB_NODE_TYPE_INTERNAL,
   .sibling_of = "esp-mpls-encrypt-tun",
 
-  .n_errors = ARRAY_LEN (esp_encrypt_error_strings),
-  .error_strings = esp_encrypt_error_strings,
+  .n_errors = ESP_ENCRYPT_N_ERROR,
+  .error_counters = esp_encrypt_error_counters,
 };
 
 #ifndef CLIB_MARCH_VARIANT

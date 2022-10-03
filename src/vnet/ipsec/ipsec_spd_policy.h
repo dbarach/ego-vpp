@@ -128,13 +128,23 @@ typedef union
 	ip4_address_t laddr;
 	ip4_address_t raddr;
       };
-      ip6_address_t ip6_laddr;
-      ip6_address_t ip6_raddr;
+      struct
+      {
+	ip6_address_t ip6_laddr;
+	ip6_address_t ip6_raddr;
+      };
     };
-
-    u16 lport;
-    u16 rport;
-    u16 protocol;
+    union
+    {
+      struct
+      {
+	u16 lport;
+	u16 rport;
+      };
+      u32 spi;
+    };
+    u8 protocol;
+    u8 action;
     u16 is_ipv6;
   };
   /* for ipv6 */

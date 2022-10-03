@@ -21,6 +21,7 @@
 #include <linux/ethtool.h>
 #include <linux/if_link.h>
 #include <linux/sockios.h>
+#include <linux/limits.h>
 #include <bpf/libbpf.h>
 #include <vlib/vlib.h>
 #include <vlib/unix/unix.h>
@@ -197,6 +198,12 @@ static int
 af_xdp_load_program (af_xdp_create_if_args_t * args, af_xdp_device_t * ad)
 {
   int fd;
+  struct rlimit r = { RLIM_INFINITY, RLIM_INFINITY };
+
+  if (setrlimit (RLIMIT_MEMLOCK, &r))
+    af_xdp_log (VLIB_LOG_LEVEL_WARNING, ad,
+		"setrlimit(%s) failed: %s (errno %d)", ad->linux_ifname,
+		strerror (errno), errno);
 
   ad->linux_ifindex = if_nametoindex (ad->linux_ifname);
   if (!ad->linux_ifindex)
@@ -319,6 +326,9 @@ af_xdp_create_queue (vlib_main_t *vm, af_xdp_create_if_args_t *args,
 
   fd = xsk_socket__fd (*xsk);
   optlen = sizeof (opt);
+#ifndef SOL_XDP
+#define SOL_XDP 283
+#endif
   if (getsockopt (fd, SOL_XDP, XDP_OPTIONS, &opt, &optlen))
     {
       args->rv = VNET_API_ERROR_SYSCALL_ERROR_3;

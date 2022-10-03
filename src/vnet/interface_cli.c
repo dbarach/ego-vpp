@@ -77,7 +77,7 @@ show_or_clear_hw_interfaces (vlib_main_t * vm,
   int i, verbose = -1, show_bond = 0;
 
   if (!unformat_user (input, unformat_line_input, line_input))
-    return 0;
+    goto skip_unformat;
 
   while (unformat_check_input (line_input) != UNFORMAT_END_OF_INPUT)
     {
@@ -117,6 +117,7 @@ show_or_clear_hw_interfaces (vlib_main_t * vm,
 
   unformat_free (line_input);
 
+skip_unformat:
   /* Gather interfaces. */
   if (vec_len (hw_if_indices) == 0)
     pool_foreach (hi, im->hw_interfaces)
@@ -1534,7 +1535,12 @@ set_hw_interface_change_rx_mode (vnet_main_t * vnm, u32 hw_if_index,
     {
       int rv = vnet_hw_if_set_rx_queue_mode (vnm, queue_indices[i], mode);
       if (rv)
-	goto done;
+	{
+	  error = clib_error_return (
+	    0, "unable to set rx-mode on interface %v queue-id %u.\n",
+	    hw->name, queue_id);
+	  goto done;
+	}
     }
 
 done:

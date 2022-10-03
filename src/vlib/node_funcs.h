@@ -498,6 +498,16 @@ vlib_put_next_frame (vlib_main_t * vm,
   (v);									\
 })
 
+#define vlib_set_next_frame_with_aux_safe(vm, node, next_index, v, aux)       \
+  ({                                                                          \
+    uword _n_left;                                                            \
+    vlib_get_next_frame_with_aux_safe ((vm), (node), (next_index), (v),       \
+				       (aux), _n_left);                       \
+    ASSERT (_n_left > 0);                                                     \
+    vlib_put_next_frame ((vm), (node), (next_index), _n_left - 1);            \
+    (v);                                                                      \
+  })
+
 always_inline void
 vlib_set_next_frame_buffer (vlib_main_t * vm,
 			    vlib_node_runtime_t * node,
@@ -506,6 +516,20 @@ vlib_set_next_frame_buffer (vlib_main_t * vm,
   u32 *p;
   p = vlib_set_next_frame (vm, node, next_index, p);
   p[0] = buffer_index;
+}
+
+always_inline void
+vlib_set_next_frame_buffer_with_aux_safe (vlib_main_t *vm,
+					  vlib_node_runtime_t *node,
+					  u32 next_index, u32 buffer_index,
+					  u32 aux)
+{
+  u32 *p;
+  u32 *a;
+  p = vlib_set_next_frame_with_aux_safe (vm, node, next_index, p, a);
+  p[0] = buffer_index;
+  if (a)
+    a[0] = aux;
 }
 
 vlib_frame_t *vlib_get_frame_to_node (vlib_main_t * vm, u32 to_node_index);
@@ -1232,8 +1256,7 @@ vlib_node_vectors_per_main_loop_as_integer (vlib_main_t * vm, u32 node_index)
   return v >> VLIB_LOG2_MAIN_LOOPS_PER_STATS_UPDATE;
 }
 
-void
-vlib_frame_free (vlib_main_t * vm, vlib_node_runtime_t * r, vlib_frame_t * f);
+void vlib_frame_free (vlib_main_t *vm, vlib_frame_t *f);
 
 /* Return the edge index if present, ~0 otherwise */
 uword vlib_node_get_next (vlib_main_t * vm, uword node, uword next_node);
@@ -1418,6 +1441,14 @@ vlib_frame_bitmap_count_set_bits (uword *bmp)
   while (n_left--)
     count += count_set_bits (bmp++[0]);
   return count;
+}
+
+static_always_inline uword
+vlib_frame_bitmap_is_bit_set (uword *bmp, uword bit_index)
+{
+  bmp += bit_index / uword_bits;
+  bit_index %= uword_bits;
+  return (bmp[0] >> bit_index) & 1;
 }
 
 static_always_inline int

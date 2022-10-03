@@ -106,7 +106,6 @@ vl_api_mactime_details_t_handler (vl_api_mactime_details_t * mp)
     }
 }
 
-#define vl_print(handle, ...) fformat(handle, __VA_ARGS__)
 #define vl_endianfun		/* define message structures */
 #include <mactime/mactime.api.h>
 #undef vl_endianfun
@@ -145,10 +144,9 @@ connect_to_vpp (char *name)
 
 #define _(N, n)                                                               \
   vl_msg_api_set_handlers ((VL_API_##N + mm->msg_id_base), #n,                \
-			   vl_api_##n##_t_handler, vl_noop_handler,           \
-			   vl_api_##n##_t_endian, vl_api_##n##_t_print,       \
-			   sizeof (vl_api_##n##_t), 1, vl_api_##n##_t_tojson, \
-			   vl_api_##n##_t_fromjson);
+			   vl_api_##n##_t_handler, vl_api_##n##_t_endian,     \
+			   vl_api_##n##_t_format, sizeof (vl_api_##n##_t), 1, \
+			   vl_api_##n##_t_tojson, vl_api_##n##_t_fromjson);
   foreach_mactime_api_msg;
 #undef _
 
@@ -441,7 +439,7 @@ print_device_table (mt_main_t * mm)
 {
   mactime_device_t *dev;
 
-  fformat (stdout, "%U", format_device, 0 /* header */ , 0 /* verbose */ );
+  fformat (stdout, "%U", format_device, NULL /* header */, 0 /* verbose */);
   /* *INDENT-OFF* */
   pool_foreach (dev, mm->devices)
    {

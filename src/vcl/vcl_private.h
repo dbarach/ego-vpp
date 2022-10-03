@@ -172,6 +172,8 @@ typedef struct vcl_session_
   transport_endpt_ext_cfg_t *ext_config;
   u8 dscp;
 
+  i32 vpp_error;
+
 #if VCL_ELOG
   elog_track_t elog_track;
 #endif
@@ -202,6 +204,7 @@ typedef struct vppcom_cfg_t_
   u8 *vpp_bapi_socket_name;	/**< bapi socket transport socket name */
   u32 tls_engine;
   u8 mt_wrk_supported;
+  u8 huge_page;
 } vppcom_cfg_t;
 
 void vppcom_cfg (vppcom_cfg_t * vcl_cfg);

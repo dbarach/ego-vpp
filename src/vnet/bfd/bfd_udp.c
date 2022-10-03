@@ -40,6 +40,7 @@
 #include <vnet/bfd/bfd_udp.h>
 #include <vnet/bfd/bfd_main.h>
 #include <vnet/bfd/bfd_api.h>
+#include <vnet/bfd/bfd.api_enum.h>
 
 typedef struct
 {
@@ -53,18 +54,6 @@ typedef struct
   int echo_source_is_set;
   /* loopback interface used to get echo source ip */
   u32 echo_source_sw_if_index;
-  /* node index of "ip4-arp" node */
-  u32 ip4_arp_idx;
-  /* node index of "ip6-discover-neighbor" node */
-  u32 ip6_ndp_idx;
-  /* node index of "ip4-rewrite" node */
-  u32 ip4_rewrite_idx;
-  /* node index of "ip6-rewrite" node */
-  u32 ip6_rewrite_idx;
-  /* node index of "ip4-midchain" node */
-  u32 ip4_midchain_idx;
-  /* node index of "ip6-midchain" node */
-  u32 ip6_midchain_idx;
   /* log class */
   vlib_log_class_t log_class;
   /* number of active udp4 sessions */
@@ -383,16 +372,23 @@ bfd_add_udp6_transport (vlib_main_t * vm, u32 bi, const bfd_session_t * bs,
 }
 
 static void
-bfd_create_frame_to_next_node (vlib_main_t *vm, bfd_main_t *bm,
-			       const bfd_session_t *bs, u32 bi, u32 next_node,
+bfd_create_frame_to_next_node (vlib_main_t *vm, vlib_node_runtime_t *rt,
+			       u32 bi, const bfd_session_t *bs, u32 next,
 			       vlib_combined_counter_main_t *tx_counter)
 {
-  vlib_frame_t *f = vlib_get_frame_to_node (vm, next_node);
+  vlib_buffer_t *b = vlib_get_buffer (vm, bi);
+  vlib_node_t *from_node = vlib_get_node (vm, rt->node_index);
+  ASSERT (next < vec_len (from_node->next_nodes));
+  u32 to_node_index = from_node->next_nodes[next];
+  vlib_frame_t *f = vlib_get_frame_to_node (vm, to_node_index);
   u32 *to_next = vlib_frame_vector_args (f);
   to_next[0] = bi;
   f->n_vectors = 1;
-  vlib_put_frame_to_node (vm, next_node, f);
-  vlib_buffer_t *b = vlib_get_buffer (vm, bi);
+  if (b->flags & VLIB_BUFFER_IS_TRACED)
+    {
+      f->frame_flags |= VLIB_NODE_FLAG_TRACE;
+    }
+  vlib_put_frame_to_node (vm, to_node_index, f);
   vlib_increment_combined_counter (tx_counter, vm->thread_index, bs->bs_idx, 1,
 				   vlib_buffer_length_in_chain (vm, b));
 }
@@ -414,10 +410,10 @@ bfd_udp_calc_next_node (const struct bfd_session_s *bs, u32 * next_node)
       switch (bs->transport)
 	{
 	case BFD_TRANSPORT_UDP4:
-	  *next_node = bfd_udp_main.ip4_arp_idx;
+	  *next_node = BFD_TX_IP4_ARP;
 	  return 1;
 	case BFD_TRANSPORT_UDP6:
-	  *next_node = bfd_udp_main.ip6_ndp_idx;
+	  *next_node = BFD_TX_IP6_NDP;
 	  return 1;
 	}
       break;
@@ -425,10 +421,10 @@ bfd_udp_calc_next_node (const struct bfd_session_s *bs, u32 * next_node)
       switch (bs->transport)
 	{
 	case BFD_TRANSPORT_UDP4:
-	  *next_node = bfd_udp_main.ip4_rewrite_idx;
+	  *next_node = BFD_TX_IP4_REWRITE;
 	  return 1;
 	case BFD_TRANSPORT_UDP6:
-	  *next_node = bfd_udp_main.ip6_rewrite_idx;
+	  *next_node = BFD_TX_IP6_REWRITE;
 	  return 1;
 	}
       break;
@@ -436,10 +432,10 @@ bfd_udp_calc_next_node (const struct bfd_session_s *bs, u32 * next_node)
       switch (bs->transport)
 	{
 	case BFD_TRANSPORT_UDP4:
-	  *next_node = bfd_udp_main.ip4_midchain_idx;
+	  *next_node = BFD_TX_IP4_MIDCHAIN;
 	  return 1;
 	case BFD_TRANSPORT_UDP6:
-	  *next_node = bfd_udp_main.ip6_midchain_idx;
+	  *next_node = BFD_TX_IP6_MIDCHAIN;
 	  return 1;
 	}
       break;
@@ -451,33 +447,33 @@ bfd_udp_calc_next_node (const struct bfd_session_s *bs, u32 * next_node)
 }
 
 int
-bfd_transport_udp4 (vlib_main_t *vm, u32 bi, const struct bfd_session_s *bs,
-		    int is_echo)
+bfd_transport_udp4 (vlib_main_t *vm, vlib_node_runtime_t *rt, u32 bi,
+		    const struct bfd_session_s *bs, int is_echo)
 {
   u32 next_node;
   int rv = bfd_udp_calc_next_node (bs, &next_node);
   bfd_main_t *bm = bfd_udp_main.bfd_main;
   if (rv)
     {
-      bfd_create_frame_to_next_node (vm, bm, bs, bi, next_node,
+      bfd_create_frame_to_next_node (vm, rt, bi, bs, next_node,
 				     is_echo ? &bm->tx_echo_counter :
-					       &bm->tx_counter);
+						     &bm->tx_counter);
     }
   return rv;
 }
 
 int
-bfd_transport_udp6 (vlib_main_t *vm, u32 bi, const struct bfd_session_s *bs,
-		    int is_echo)
+bfd_transport_udp6 (vlib_main_t *vm, vlib_node_runtime_t *rt, u32 bi,
+		    const struct bfd_session_s *bs, int is_echo)
 {
   u32 next_node;
   int rv = bfd_udp_calc_next_node (bs, &next_node);
   bfd_main_t *bm = bfd_udp_main.bfd_main;
   if (rv)
     {
-      bfd_create_frame_to_next_node (
-	vm, bfd_udp_main.bfd_main, bs, bi, next_node,
-	is_echo ? &bm->tx_echo_counter : &bm->tx_counter);
+      bfd_create_frame_to_next_node (vm, rt, bi, bs, next_node,
+				     is_echo ? &bm->tx_echo_counter :
+						     &bm->tx_counter);
     }
   return 1;
 }
@@ -930,29 +926,6 @@ typedef enum
   BFD_UDP_INPUT_N_NEXT,
 } bfd_udp_input_next_t;
 
-/* Packet counters - BFD control frames */
-#define foreach_bfd_udp_error(F)           \
-  F (NONE, "good bfd packets (processed)") \
-  F (BAD, "invalid bfd packets")
-
-#define F(sym, string) static char BFD_UDP_ERR_##sym##_STR[] = string;
-foreach_bfd_udp_error (F);
-#undef F
-
-static char *bfd_udp_error_strings[] = {
-#define F(sym, string) BFD_UDP_ERR_##sym##_STR,
-  foreach_bfd_udp_error (F)
-#undef F
-};
-
-typedef enum
-{
-#define F(sym, str) BFD_UDP_ERROR_##sym,
-  foreach_bfd_udp_error (F)
-#undef F
-    BFD_UDP_N_ERROR,
-} bfd_udp_error_t;
-
 typedef enum
 {
   BFD_UDP_ECHO_INPUT_NEXT_NORMAL,
@@ -961,28 +934,12 @@ typedef enum
   BFD_UDP_ECHO_INPUT_N_NEXT,
 } bfd_udp_echo_input_next_t;
 
-/* Packet counters - BFD ECHO packets */
-#define foreach_bfd_udp_echo_error(F)           \
-  F (NONE, "good bfd echo packets (processed)") \
-  F (BAD, "invalid bfd echo packets")
-
-#define F(sym, string) static char BFD_UDP_ECHO_ERR_##sym##_STR[] = string;
-foreach_bfd_udp_echo_error (F);
-#undef F
-
-static char *bfd_udp_echo_error_strings[] = {
-#define F(sym, string) BFD_UDP_ECHO_ERR_##sym##_STR,
-  foreach_bfd_udp_echo_error (F)
-#undef F
-};
-
-typedef enum
+static_always_inline vl_counter_bfd_udp_enum_t
+bfd_error_to_udp (bfd_error_t e)
 {
-#define F(sym, str) BFD_UDP_ECHO_ERROR_##sym,
-  foreach_bfd_udp_echo_error (F)
-#undef F
-    BFD_UDP_ECHO_N_ERROR,
-} bfd_udp_echo_error_t;
+  /* The UDP error is a super set of the proto independent errors */
+  return ((vl_counter_bfd_udp_enum_t) e);
+}
 
 static void
 bfd_udp4_find_headers (vlib_buffer_t * b, ip4_header_t ** ip4,
@@ -1008,9 +965,9 @@ bfd_udp4_find_headers (vlib_buffer_t * b, ip4_header_t ** ip4,
   *udp = (udp_header_t *) ((*ip4) + 1);
 }
 
-static bfd_udp_error_t
-bfd_udp4_verify_transport (const ip4_header_t * ip4,
-			   const udp_header_t * udp, const bfd_session_t * bs)
+static vl_counter_bfd_udp_enum_t
+bfd_udp4_verify_transport (const ip4_header_t *ip4, const udp_header_t *udp,
+			   const bfd_session_t *bs)
 {
   const bfd_udp_session_t *bus = &bs->udp;
   const bfd_udp_key_t *key = &bus->key;
@@ -1019,21 +976,21 @@ bfd_udp4_verify_transport (const ip4_header_t * ip4,
       BFD_ERR ("IPv4 src addr mismatch, got %U, expected %U",
 	       format_ip4_address, ip4->src_address.as_u8, format_ip4_address,
 	       key->peer_addr.ip4.as_u8);
-      return BFD_UDP_ERROR_BAD;
+      return BFD_UDP_ERROR_SRC_MISMATCH;
     }
   if (ip4->dst_address.as_u32 != key->local_addr.ip4.as_u32)
     {
       BFD_ERR ("IPv4 dst addr mismatch, got %U, expected %U",
 	       format_ip4_address, ip4->dst_address.as_u8, format_ip4_address,
 	       key->local_addr.ip4.as_u8);
-      return BFD_UDP_ERROR_BAD;
+      return BFD_UDP_ERROR_DST_MISMATCH;
     }
   const u8 expected_ttl = 255;
   if (ip4->ttl != expected_ttl)
     {
       BFD_ERR ("IPv4 unexpected TTL value %u, expected %u", ip4->ttl,
 	       expected_ttl);
-      return BFD_UDP_ERROR_BAD;
+      return BFD_UDP_ERROR_TTL;
     }
   if (clib_net_to_host_u16 (udp->src_port) < 49152)
     {
@@ -1049,16 +1006,19 @@ typedef struct
   bfd_pkt_t pkt;
 } bfd_rpc_update_t;
 
-static void
-bfd_rpc_update_session (vlib_main_t * vm, u32 bs_idx, const bfd_pkt_t * pkt)
+static bfd_error_t
+bfd_rpc_update_session (vlib_main_t *vm, u32 bs_idx, const bfd_pkt_t *pkt)
 {
   bfd_main_t *bm = &bfd_main;
+  bfd_error_t err;
   bfd_lock (bm);
-  bfd_consume_pkt (vm, bm, pkt, bs_idx);
+  err = bfd_consume_pkt (vm, bm, pkt, bs_idx);
   bfd_unlock (bm);
+
+  return err;
 }
 
-static bfd_udp_error_t
+static vl_counter_bfd_udp_enum_t
 bfd_udp4_scan (vlib_main_t *vm, vlib_buffer_t *b, bfd_session_t **bs_out)
 {
   const bfd_pkt_t *pkt = vlib_buffer_get_current (b);
@@ -1083,11 +1043,13 @@ bfd_udp4_scan (vlib_main_t *vm, vlib_buffer_t *b, bfd_session_t **bs_out)
       BFD_ERR
 	("BFD packet length is larger than udp payload length (%u > %u)",
 	 pkt->head.length, udp_payload_length);
-      return BFD_UDP_ERROR_BAD;
+      return BFD_UDP_ERROR_LENGTH;
     }
-  if (!bfd_verify_pkt_common (pkt))
+  vl_counter_bfd_udp_enum_t err;
+  if (BFD_UDP_ERROR_NONE !=
+      (err = bfd_error_to_udp (bfd_verify_pkt_common (pkt))))
     {
-      return BFD_UDP_ERROR_BAD;
+      return err;
     }
   bfd_session_t *bs = NULL;
   if (pkt->your_disc)
@@ -1112,22 +1074,21 @@ bfd_udp4_scan (vlib_main_t *vm, vlib_buffer_t *b, bfd_session_t **bs_out)
   if (!bs)
     {
       BFD_ERR ("BFD session lookup failed - no session matches BFD pkt");
-      return BFD_UDP_ERROR_BAD;
+      return BFD_UDP_ERROR_NO_SESSION;
     }
   BFD_DBG ("BFD session found, bs_idx=%u", bs->bs_idx);
   if (!bfd_verify_pkt_auth (vm, pkt, b->current_length, bs))
     {
       BFD_ERR ("Packet verification failed, dropping packet");
-      return BFD_UDP_ERROR_BAD;
+      return BFD_UDP_ERROR_FAILED_VERIFICATION;
     }
-  bfd_udp_error_t err;
   if (BFD_UDP_ERROR_NONE != (err = bfd_udp4_verify_transport (ip4, udp, bs)))
     {
       return err;
     }
-  bfd_rpc_update_session (vm, bs->bs_idx, pkt);
+  err = bfd_error_to_udp (bfd_rpc_update_session (vm, bs->bs_idx, pkt));
   *bs_out = bs;
-  return BFD_UDP_ERROR_NONE;
+  return err;
 }
 
 static void
@@ -1162,9 +1123,9 @@ bfd_udp6_find_headers (vlib_buffer_t * b, ip6_header_t ** ip6,
   *udp = (udp_header_t *) ((*ip6) + 1);
 }
 
-static bfd_udp_error_t
-bfd_udp6_verify_transport (const ip6_header_t * ip6,
-			   const udp_header_t * udp, const bfd_session_t * bs)
+static vl_counter_bfd_udp_enum_t
+bfd_udp6_verify_transport (const ip6_header_t *ip6, const udp_header_t *udp,
+			   const bfd_session_t *bs)
 {
   const bfd_udp_session_t *bus = &bs->udp;
   const bfd_udp_key_t *key = &bus->key;
@@ -1174,7 +1135,7 @@ bfd_udp6_verify_transport (const ip6_header_t * ip6,
       BFD_ERR ("IP src addr mismatch, got %U, expected %U",
 	       format_ip6_address, ip6, format_ip6_address,
 	       &key->peer_addr.ip6);
-      return BFD_UDP_ERROR_BAD;
+      return BFD_UDP_ERROR_SRC_MISMATCH;
     }
   if (ip6->dst_address.as_u64[0] != key->local_addr.ip6.as_u64[0] &&
       ip6->dst_address.as_u64[1] != key->local_addr.ip6.as_u64[1])
@@ -1182,14 +1143,14 @@ bfd_udp6_verify_transport (const ip6_header_t * ip6,
       BFD_ERR ("IP dst addr mismatch, got %U, expected %U",
 	       format_ip6_address, ip6, format_ip6_address,
 	       &key->local_addr.ip6);
-      return BFD_UDP_ERROR_BAD;
+      return BFD_UDP_ERROR_DST_MISMATCH;
     }
   const u8 expected_hop_limit = 255;
   if (ip6->hop_limit != expected_hop_limit)
     {
       BFD_ERR ("IPv6 unexpected hop-limit value %u, expected %u",
 	       ip6->hop_limit, expected_hop_limit);
-      return BFD_UDP_ERROR_BAD;
+      return BFD_UDP_ERROR_TTL;
     }
   if (clib_net_to_host_u16 (udp->src_port) < 49152)
     {
@@ -1199,7 +1160,7 @@ bfd_udp6_verify_transport (const ip6_header_t * ip6,
   return BFD_UDP_ERROR_NONE;
 }
 
-static bfd_udp_error_t
+static vl_counter_bfd_udp_enum_t
 bfd_udp6_scan (vlib_main_t *vm, vlib_buffer_t *b, bfd_session_t **bs_out)
 {
   const bfd_pkt_t *pkt = vlib_buffer_get_current (b);
@@ -1226,9 +1187,11 @@ bfd_udp6_scan (vlib_main_t *vm, vlib_buffer_t *b, bfd_session_t **bs_out)
 	 pkt->head.length, udp_payload_length);
       return BFD_UDP_ERROR_BAD;
     }
-  if (!bfd_verify_pkt_common (pkt))
+  vl_counter_bfd_udp_enum_t err;
+  if (BFD_UDP_ERROR_NONE !=
+      (err = bfd_error_to_udp (bfd_verify_pkt_common (pkt))))
     {
-      return BFD_UDP_ERROR_BAD;
+      return err;
     }
   bfd_session_t *bs = NULL;
   if (pkt->your_disc)
@@ -1255,22 +1218,21 @@ bfd_udp6_scan (vlib_main_t *vm, vlib_buffer_t *b, bfd_session_t **bs_out)
   if (!bs)
     {
       BFD_ERR ("BFD session lookup failed - no session matches BFD pkt");
-      return BFD_UDP_ERROR_BAD;
+      return BFD_UDP_ERROR_NO_SESSION;
     }
   BFD_DBG ("BFD session found, bs_idx=%u", bs->bs_idx);
   if (!bfd_verify_pkt_auth (vm, pkt, b->current_length, bs))
     {
       BFD_ERR ("Packet verification failed, dropping packet");
-      return BFD_UDP_ERROR_BAD;
+      return BFD_UDP_ERROR_FAILED_VERIFICATION;
     }
-  bfd_udp_error_t err;
   if (BFD_UDP_ERROR_NONE != (err = bfd_udp6_verify_transport (ip6, udp, bs)))
     {
       return err;
     }
-  bfd_rpc_update_session (vm, bs->bs_idx, pkt);
+  err = bfd_error_to_udp (bfd_rpc_update_session (vm, bs->bs_idx, pkt));
   *bs_out = bs;
-  return BFD_UDP_ERROR_NONE;
+  return err;
 }
 
 /*
@@ -1395,7 +1357,7 @@ VLIB_REGISTER_NODE (bfd_udp4_input_node, static) = {
   .type = VLIB_NODE_TYPE_INTERNAL,
 
   .n_errors = BFD_UDP_N_ERROR,
-  .error_strings = bfd_udp_error_strings,
+  .error_counters = bfd_udp_error_counters,
 
   .format_trace = bfd_input_format_trace,
 
@@ -1424,7 +1386,7 @@ VLIB_REGISTER_NODE (bfd_udp6_input_node, static) = {
   .type = VLIB_NODE_TYPE_INTERNAL,
 
   .n_errors = BFD_UDP_N_ERROR,
-  .error_strings = bfd_udp_error_strings,
+  .error_counters = bfd_udp_error_counters,
 
   .format_trace = bfd_input_format_trace,
 
@@ -1549,8 +1511,8 @@ VLIB_REGISTER_NODE (bfd_udp_echo4_input_node, static) = {
   .vector_size = sizeof (u32),
   .type = VLIB_NODE_TYPE_INTERNAL,
 
-  .n_errors = BFD_UDP_ECHO_N_ERROR,
-  .error_strings = bfd_udp_error_strings,
+  .n_errors = BFD_UDP_N_ERROR,
+  .error_counters = bfd_udp_error_counters,
 
   .format_trace = bfd_echo_input_format_trace,
 
@@ -1578,8 +1540,8 @@ VLIB_REGISTER_NODE (bfd_udp_echo6_input_node, static) = {
   .vector_size = sizeof (u32),
   .type = VLIB_NODE_TYPE_INTERNAL,
 
-  .n_errors = BFD_UDP_ECHO_N_ERROR,
-  .error_strings = bfd_udp_echo_error_strings,
+  .n_errors = BFD_UDP_N_ERROR,
+  .error_counters = bfd_udp_error_counters,
 
   .format_trace = bfd_echo_input_format_trace,
 
@@ -1672,25 +1634,6 @@ bfd_udp_init (vlib_main_t * vm)
 	      sizeof (bfd_udp_key_t));
   bfd_udp_main.bfd_main = &bfd_main;
   bfd_udp_main.vnet_main = vnet_get_main ();
-  vlib_node_t *node = vlib_get_node_by_name (vm, (u8 *) "ip4-arp");
-  ASSERT (node);
-  bfd_udp_main.ip4_arp_idx = node->index;
-  node = vlib_get_node_by_name (vm, (u8 *) "ip6-discover-neighbor");
-  ASSERT (node);
-  bfd_udp_main.ip6_ndp_idx = node->index;
-  node = vlib_get_node_by_name (vm, (u8 *) "ip4-rewrite");
-  ASSERT (node);
-  bfd_udp_main.ip4_rewrite_idx = node->index;
-  node = vlib_get_node_by_name (vm, (u8 *) "ip6-rewrite");
-  ASSERT (node);
-  bfd_udp_main.ip6_rewrite_idx = node->index;
-  node = vlib_get_node_by_name (vm, (u8 *) "ip4-midchain");
-  ASSERT (node);
-  bfd_udp_main.ip4_midchain_idx = node->index;
-  node = vlib_get_node_by_name (vm, (u8 *) "ip6-midchain");
-  ASSERT (node);
-  bfd_udp_main.ip6_midchain_idx = node->index;
-
   bfd_udp_stats_init (&bfd_udp_main);
 
   bfd_udp_main.log_class = vlib_log_register_class ("bfd", "udp");

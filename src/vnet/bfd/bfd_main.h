@@ -332,10 +332,17 @@ typedef struct
 extern bfd_main_t bfd_main;
 
 /** Packet counters */
-#define foreach_bfd_error(F)               \
-  F (NONE, "good bfd packets (processed)") \
-  F (BAD, "invalid bfd packets")           \
-  F (DISABLED, "bfd packets received on disabled interfaces")
+#define foreach_bfd_error(F)                                                  \
+  F (NONE, "good bfd packets (processed)")                                    \
+  F (BAD, "invalid bfd packets")                                              \
+  F (DISABLED, "bfd packets received on disabled interfaces")                 \
+  F (VERSION, "version")                                                      \
+  F (LENGTH, "length")                                                        \
+  F (DETECT_MULTI, "detect-multi")                                            \
+  F (MULTI_POINT, "multi-point")                                              \
+  F (MY_DISC, "my-disc")                                                      \
+  F (YOUR_DISC, "your-disc")                                                  \
+  F (ADMIN_DOWN, "session admin-down")
 
 typedef enum
 {
@@ -418,11 +425,11 @@ bfd_session_t *bfd_find_session_by_idx (bfd_main_t * bm, uword bs_idx);
 bfd_session_t *bfd_find_session_by_disc (bfd_main_t * bm, u32 disc);
 void bfd_session_start (bfd_main_t * bm, bfd_session_t * bs);
 void bfd_session_stop (bfd_main_t *bm, bfd_session_t *bs);
-void bfd_consume_pkt (vlib_main_t * vm, bfd_main_t * bm,
-		      const bfd_pkt_t * bfd, u32 bs_idx);
+bfd_error_t bfd_consume_pkt (vlib_main_t *vm, bfd_main_t *bm,
+			     const bfd_pkt_t *bfd, u32 bs_idx);
 bfd_session_t *bfd_consume_echo_pkt (vlib_main_t *vm, bfd_main_t *bm,
 				     vlib_buffer_t *b);
-int bfd_verify_pkt_common (const bfd_pkt_t * pkt);
+bfd_error_t bfd_verify_pkt_common (const bfd_pkt_t *pkt);
 int bfd_verify_pkt_auth (vlib_main_t * vm, const bfd_pkt_t * pkt,
 			 u16 pkt_size, bfd_session_t * bs);
 void bfd_event (bfd_main_t * bm, bfd_session_t * bs);
@@ -468,6 +475,17 @@ const char *bfd_poll_state_string (bfd_poll_state_e state);
  * Register a callback function to receive session notifications.
  */
 void bfd_register_listener (bfd_notify_fn_t fn);
+
+typedef enum
+{
+  BFD_TX_IP4_ARP,
+  BFD_TX_IP6_NDP,
+  BFD_TX_IP4_REWRITE,
+  BFD_TX_IP6_REWRITE,
+  BFD_TX_IP4_MIDCHAIN,
+  BFD_TX_IP6_MIDCHAIN,
+  BFD_TX_N_NEXT,
+} bfd_tx_next_t;
 
 #endif /* __included_bfd_main_h__ */
 

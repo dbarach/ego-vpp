@@ -411,6 +411,7 @@ vcl_session_connected_handler (vcl_worker_t * wrk,
 	    format_session_error, mp->retval);
       session->session_state = VCL_STATE_DETACHED;
       session->vpp_handle = VCL_INVALID_SESSION_HANDLE;
+      session->vpp_error = mp->retval;
       return session_index;
     }
 
@@ -515,6 +516,8 @@ vcl_session_reset_handler (vcl_worker_t * wrk,
 
   if (session->session_state != VCL_STATE_CLOSED)
     session->session_state = VCL_STATE_DISCONNECT;
+
+  session->flags |= (VCL_SESSION_F_RD_SHUTDOWN | VCL_SESSION_F_WR_SHUTDOWN);
   VDBG (0, "session %u [0x%llx]: reset", sid, reset_msg->handle);
   return sid;
 }
@@ -1066,6 +1069,7 @@ vcl_handle_mq_event (vcl_worker_t * wrk, session_event_t * e)
 	{
 	  s->flags |= VCL_SESSION_F_PENDING_DISCONNECT;
 	  s->session_state = VCL_STATE_DISCONNECT;
+	  s->flags |= (VCL_SESSION_F_RD_SHUTDOWN | VCL_SESSION_F_WR_SHUTDOWN);
 	  vec_add2 (wrk->unhandled_evts_vector, ecpy, 1);
 	  *ecpy = *e;
 	  ecpy->postponed = 1;
@@ -1398,6 +1402,7 @@ vppcom_session_create (u8 proto, u8 is_nonblocking)
   session->session_state = VCL_STATE_CLOSED;
   session->vpp_handle = ~0;
   session->is_dgram = vcl_proto_is_dgram (proto);
+  session->vpp_error = SESSION_E_NONE;
 
   if (is_nonblocking)
     vcl_session_set_attr (session, VCL_SESS_ATTR_NONBLOCK);
@@ -3116,7 +3121,16 @@ vcl_epoll_wait_handle_mq_event (vcl_worker_t * wrk, session_event_t * e,
 	}
       session_events = s->vep.ev.events;
       add_event = 1;
-      events[*num_ev].events = EPOLLHUP | EPOLLRDHUP;
+      events[*num_ev].events = EPOLLERR | EPOLLHUP;
+      if ((EPOLLRDHUP & session_events) &&
+	  (s->flags & VCL_SESSION_F_RD_SHUTDOWN))
+	{
+	  events[*num_ev].events |= EPOLLRDHUP;
+	}
+      if ((EPOLLIN & session_events) && (s->flags & VCL_SESSION_F_RD_SHUTDOWN))
+	{
+	  events[*num_ev].events |= EPOLLIN;
+	}
       session_evt_data = s->vep.ev.data.u64;
       break;
     case SESSION_CTRL_EVT_UNLISTEN_REPLY:
@@ -4420,6 +4434,10 @@ vppcom_retval_str (int retval)
       st = "VPPCOM_ETIMEDOUT";
       break;
 
+    case VPPCOM_EADDRINUSE:
+      st = "VPPCOM_EADDRINUSE";
+      break;
+
     default:
       st = "UNKNOWN_STATE";
       break;
@@ -4444,6 +4462,32 @@ vppcom_del_cert_key_pair (uint32_t ckpair_index)
     return vcl_sapi_del_cert_key_pair (ckpair_index);
   else
     return vcl_bapi_del_cert_key_pair (ckpair_index);
+}
+
+int
+vppcom_session_get_error (uint32_t session_handle)
+{
+  vcl_worker_t *wrk = vcl_worker_get_current ();
+  vcl_session_t *session = 0;
+
+  session = vcl_session_get_w_handle (wrk, session_handle);
+  if (!session)
+    return VPPCOM_EBADFD;
+
+  if (PREDICT_FALSE (session->flags & VCL_SESSION_F_IS_VEP))
+    {
+      VWRN ("epoll session %u! will not have connect", session->session_index);
+      return VPPCOM_EBADFD;
+    }
+
+  if (session->vpp_error == SESSION_E_PORTINUSE)
+    return VPPCOM_EADDRINUSE;
+  else if (session->vpp_error == SESSION_E_REFUSED)
+    return VPPCOM_ECONNREFUSED;
+  else if (session->vpp_error != SESSION_E_NONE)
+    return VPPCOM_EFAULT;
+  else
+    return VPPCOM_OK;
 }
 
 /*

@@ -82,6 +82,7 @@ typedef struct
   u32 rx_frame_offset;
   u16 num_rx_pkts;
   u8 is_rx_pending;
+  u8 is_tx_pending;
   vnet_hw_if_rx_mode mode;
 } af_packet_queue_t;
 
@@ -117,6 +118,7 @@ typedef struct
   CLIB_CACHE_LINE_ALIGN_MARK (cacheline0);
   af_packet_if_t *interfaces;
 
+  u32 polling_count;
   /* rx buffer cache */
   u32 **rx_buffers;
 

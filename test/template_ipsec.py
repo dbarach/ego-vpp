@@ -330,12 +330,12 @@ class IpsecTra4(object):
     """verify methods for Transport v4"""
 
     def get_replay_counts(self, p):
-        replay_node_name = "/err/%s/SA replayed packet" % self.tra4_decrypt_node_name[0]
+        replay_node_name = "/err/%s/replay" % self.tra4_decrypt_node_name[0]
         count = self.statistics.get_err_counter(replay_node_name)
 
         if p.async_mode:
             replay_post_node_name = (
-                "/err/%s/SA replayed packet" % self.tra4_decrypt_node_name[p.async_mode]
+                "/err/%s/replay" % self.tra4_decrypt_node_name[p.async_mode]
             )
             count += self.statistics.get_err_counter(replay_post_node_name)
 
@@ -344,13 +344,11 @@ class IpsecTra4(object):
     def get_hash_failed_counts(self, p):
         if ESP == self.encryption_type and p.crypt_algo == "AES-GCM":
             hash_failed_node_name = (
-                "/err/%s/ESP decryption failed"
-                % self.tra4_decrypt_node_name[p.async_mode]
+                "/err/%s/decryption_failed" % self.tra4_decrypt_node_name[p.async_mode]
             )
         else:
             hash_failed_node_name = (
-                "/err/%s/Integrity check failed"
-                % self.tra4_decrypt_node_name[p.async_mode]
+                "/err/%s/integ_error" % self.tra4_decrypt_node_name[p.async_mode]
             )
         count = self.statistics.get_err_counter(hash_failed_node_name)
 
@@ -365,10 +363,7 @@ class IpsecTra4(object):
         esn_on = p.vpp_tra_sa.esn_en
         ar_on = p.flags & saf.IPSEC_API_SAD_FLAG_USE_ANTI_REPLAY
 
-        seq_cycle_node_name = (
-            "/err/%s/sequence number cycled (packet dropped)"
-            % self.tra4_encrypt_node_name
-        )
+        seq_cycle_node_name = "/err/%s/seq_cycled" % self.tra4_encrypt_node_name
         replay_count = self.get_replay_counts(p)
         hash_failed_count = self.get_hash_failed_counts(p)
         seq_cycle_count = self.statistics.get_err_counter(seq_cycle_node_name)
@@ -605,18 +600,13 @@ class IpsecTra4(object):
         p = self.params[socket.AF_INET]
         esn_en = p.vpp_tra_sa.esn_en
 
-        seq_cycle_node_name = (
-            "/err/%s/sequence number cycled (packet dropped)"
-            % self.tra4_encrypt_node_name
-        )
+        seq_cycle_node_name = "/err/%s/seq_cycled" % self.tra4_encrypt_node_name
         replay_count = self.get_replay_counts(p)
         hash_failed_count = self.get_hash_failed_counts(p)
         seq_cycle_count = self.statistics.get_err_counter(seq_cycle_node_name)
 
         if ESP == self.encryption_type:
-            undersize_node_name = (
-                "/err/%s/undersized packet" % self.tra4_decrypt_node_name[0]
-            )
+            undersize_node_name = "/err/%s/runt" % self.tra4_decrypt_node_name[0]
             undersize_count = self.statistics.get_err_counter(undersize_node_name)
 
         #
@@ -1459,7 +1449,7 @@ class IpsecTun4(object):
         )
         self.send_and_assert_no_replies(self.tun_if, pkt * 31)
         self.assert_error_counter_equal(
-            "/err/%s/NAT Keepalive" % self.tun4_input_node, 31
+            "/err/%s/nat_keepalive" % self.tun4_input_node, 31
         )
 
         pkt = (
@@ -1469,7 +1459,7 @@ class IpsecTun4(object):
             / Raw(b"\xfe")
         )
         self.send_and_assert_no_replies(self.tun_if, pkt * 31)
-        self.assert_error_counter_equal("/err/%s/Too Short" % self.tun4_input_node, 31)
+        self.assert_error_counter_equal("/err/%s/too_short" % self.tun4_input_node, 31)
 
         pkt = (
             Ether(src=self.tun_if.remote_mac, dst=self.tun_if.local_mac)
@@ -1479,7 +1469,7 @@ class IpsecTun4(object):
             / Padding(0 * 21)
         )
         self.send_and_assert_no_replies(self.tun_if, pkt * 31)
-        self.assert_error_counter_equal("/err/%s/Too Short" % self.tun4_input_node, 62)
+        self.assert_error_counter_equal("/err/%s/too_short" % self.tun4_input_node, 62)
 
 
 class IpsecTun4Tests(IpsecTun4):
@@ -1704,6 +1694,40 @@ class IpsecTun6(object):
             self.logger.info(self.vapi.ppcli("show error"))
             self.logger.info(self.vapi.ppcli("show ipsec all"))
         self.verify_counters6(p, p, count)
+
+    def verify_keepalive(self, p):
+        # the sizeof Raw is calculated to pad to the minimum ehternet
+        # frame size of 64 btyes
+        pkt = (
+            Ether(src=self.tun_if.remote_mac, dst=self.tun_if.local_mac)
+            / IPv6(src=p.remote_tun_if_host, dst=self.tun_if.local_ip6)
+            / UDP(sport=333, dport=4500)
+            / Raw(b"\xff")
+            / Padding(0 * 1)
+        )
+        self.send_and_assert_no_replies(self.tun_if, pkt * 31)
+        self.assert_error_counter_equal(
+            "/err/%s/nat_keepalive" % self.tun6_input_node, 31
+        )
+
+        pkt = (
+            Ether(src=self.tun_if.remote_mac, dst=self.tun_if.local_mac)
+            / IPv6(src=p.remote_tun_if_host, dst=self.tun_if.local_ip6)
+            / UDP(sport=333, dport=4500)
+            / Raw(b"\xfe")
+        )
+        self.send_and_assert_no_replies(self.tun_if, pkt * 31)
+        self.assert_error_counter_equal("/err/%s/too_short" % self.tun6_input_node, 31)
+
+        pkt = (
+            Ether(src=self.tun_if.remote_mac, dst=self.tun_if.local_mac)
+            / IPv6(src=p.remote_tun_if_host, dst=self.tun_if.local_ip6)
+            / UDP(sport=333, dport=4500)
+            / Raw(b"\xfe")
+            / Padding(0 * 21)
+        )
+        self.send_and_assert_no_replies(self.tun_if, pkt * 31)
+        self.assert_error_counter_equal("/err/%s/too_short" % self.tun6_input_node, 62)
 
 
 class IpsecTun6Tests(IpsecTun6):
@@ -2086,6 +2110,201 @@ class SpdFlowCacheTemplate(IPSecIPv4Fwd):
         else:
             self.logger.info("\ncrc32 NOT supported:\n" + cpu_info)
             return False
+
+
+class IPSecIPv6Fwd(VppTestCase):
+    """Test IPSec by capturing and verifying IPv6 forwarded pkts"""
+
+    @classmethod
+    def setUpConstants(cls):
+        super(IPSecIPv6Fwd, cls).setUpConstants()
+
+    def setUp(self):
+        super(IPSecIPv6Fwd, self).setUp()
+        # store SPD objects so we can remove configs on tear down
+        self.spd_objs = []
+        self.spd_policies = []
+
+    def tearDown(self):
+        # remove SPD policies
+        for obj in self.spd_policies:
+            obj.remove_vpp_config()
+        self.spd_policies = []
+        # remove SPD items (interface bindings first, then SPD)
+        for obj in reversed(self.spd_objs):
+            obj.remove_vpp_config()
+        self.spd_objs = []
+        # close down pg intfs
+        for pg in self.pg_interfaces:
+            pg.unconfig_ip6()
+            pg.admin_down()
+        super(IPSecIPv6Fwd, self).tearDown()
+
+    def create_interfaces(self, num_ifs=2):
+        # create interfaces pg0 ... pg<num_ifs>
+        self.create_pg_interfaces(range(num_ifs))
+        for pg in self.pg_interfaces:
+            # put the interface up
+            pg.admin_up()
+            # configure IPv6 address on the interface
+            pg.config_ip6()
+            pg.resolve_ndp()
+        self.logger.info(self.vapi.ppcli("show int addr"))
+
+    def spd_create_and_intf_add(self, spd_id, pg_list):
+        spd = VppIpsecSpd(self, spd_id)
+        spd.add_vpp_config()
+        self.spd_objs.append(spd)
+        for pg in pg_list:
+            spdItf = VppIpsecSpdItfBinding(self, spd, pg)
+            spdItf.add_vpp_config()
+            self.spd_objs.append(spdItf)
+
+    def get_policy(self, policy_type):
+        e = VppEnum.vl_api_ipsec_spd_action_t
+        if policy_type == "protect":
+            return e.IPSEC_API_SPD_ACTION_PROTECT
+        elif policy_type == "bypass":
+            return e.IPSEC_API_SPD_ACTION_BYPASS
+        elif policy_type == "discard":
+            return e.IPSEC_API_SPD_ACTION_DISCARD
+        else:
+            raise Exception("Invalid policy type: %s", policy_type)
+
+    def spd_add_rem_policy(
+        self,
+        spd_id,
+        src_if,
+        dst_if,
+        proto,
+        is_out,
+        priority,
+        policy_type,
+        remove=False,
+        all_ips=False,
+        ip_range=False,
+        local_ip_start=ip_address("0::0"),
+        local_ip_stop=ip_address("ffff:ffff:ffff:ffff:ffff:ffff:ffff:ffff"),
+        remote_ip_start=ip_address("0::0"),
+        remote_ip_stop=ip_address("ffff:ffff:ffff:ffff:ffff:ffff:ffff:ffff"),
+        remote_port_start=0,
+        remote_port_stop=65535,
+        local_port_start=0,
+        local_port_stop=65535,
+    ):
+        spd = VppIpsecSpd(self, spd_id)
+
+        if all_ips:
+            src_range_low = ip_address("0::0")
+            src_range_high = ip_address("ffff:ffff:ffff:ffff:ffff:ffff:ffff:ffff")
+            dst_range_low = ip_address("0::0")
+            dst_range_high = ip_address("ffff:ffff:ffff:ffff:ffff:ffff:ffff:ffff")
+
+        elif ip_range:
+            src_range_low = local_ip_start
+            src_range_high = local_ip_stop
+            dst_range_low = remote_ip_start
+            dst_range_high = remote_ip_stop
+
+        else:
+            src_range_low = src_if.remote_ip6
+            src_range_high = src_if.remote_ip6
+            dst_range_low = dst_if.remote_ip6
+            dst_range_high = dst_if.remote_ip6
+
+        spdEntry = VppIpsecSpdEntry(
+            self,
+            spd,
+            0,
+            src_range_low,
+            src_range_high,
+            dst_range_low,
+            dst_range_high,
+            proto,
+            priority=priority,
+            policy=self.get_policy(policy_type),
+            is_outbound=is_out,
+            remote_port_start=remote_port_start,
+            remote_port_stop=remote_port_stop,
+            local_port_start=local_port_start,
+            local_port_stop=local_port_stop,
+        )
+
+        if remove is False:
+            spdEntry.add_vpp_config()
+            self.spd_policies.append(spdEntry)
+        else:
+            spdEntry.remove_vpp_config()
+            self.spd_policies.remove(spdEntry)
+        self.logger.info(self.vapi.ppcli("show ipsec all"))
+        return spdEntry
+
+    def create_stream(self, src_if, dst_if, pkt_count, src_prt=1234, dst_prt=5678):
+        packets = []
+        for i in range(pkt_count):
+            # create packet info stored in the test case instance
+            info = self.create_packet_info(src_if, dst_if)
+            # convert the info into packet payload
+            payload = self.info_to_payload(info)
+            # create the packet itself
+            p = (
+                Ether(dst=src_if.local_mac, src=src_if.remote_mac)
+                / IPv6(src=src_if.remote_ip6, dst=dst_if.remote_ip6)
+                / UDP(sport=src_prt, dport=dst_prt)
+                / Raw(payload)
+            )
+            # store a copy of the packet in the packet info
+            info.data = p.copy()
+            # append the packet to the list
+            packets.append(p)
+        # return the created packet list
+        return packets
+
+    def verify_capture(self, src_if, dst_if, capture):
+        packet_info = None
+        for packet in capture:
+            try:
+                ip = packet[IPv6]
+                udp = packet[UDP]
+                # convert the payload to packet info object
+                payload_info = self.payload_to_info(packet)
+                # make sure the indexes match
+                self.assert_equal(
+                    payload_info.src, src_if.sw_if_index, "source sw_if_index"
+                )
+                self.assert_equal(
+                    payload_info.dst, dst_if.sw_if_index, "destination sw_if_index"
+                )
+                packet_info = self.get_next_packet_info_for_interface2(
+                    src_if.sw_if_index, dst_if.sw_if_index, packet_info
+                )
+                # make sure we didn't run out of saved packets
+                self.assertIsNotNone(packet_info)
+                self.assert_equal(
+                    payload_info.index, packet_info.index, "packet info index"
+                )
+                saved_packet = packet_info.data  # fetch the saved packet
+                # assert the values match
+                self.assert_equal(ip.src, saved_packet[IPv6].src, "IP source address")
+                # ... more assertions here
+                self.assert_equal(udp.sport, saved_packet[UDP].sport, "UDP source port")
+            except Exception as e:
+                self.logger.error(ppp("Unexpected or invalid packet:", packet))
+                raise
+        remaining_packet = self.get_next_packet_info_for_interface2(
+            src_if.sw_if_index, dst_if.sw_if_index, packet_info
+        )
+        self.assertIsNone(
+            remaining_packet,
+            "Interface %s: Packet expected from interface "
+            "%s didn't arrive" % (dst_if.name, src_if.name),
+        )
+
+    def verify_policy_match(self, pkt_count, spdEntry):
+        self.logger.info("XXXX %s %s", str(spdEntry), str(spdEntry.get_stats()))
+        matched_pkts = spdEntry.get_stats().get("packets")
+        self.logger.info("Policy %s matched: %d pkts", str(spdEntry), matched_pkts)
+        self.assert_equal(pkt_count, matched_pkts)
 
 
 if __name__ == "__main__":

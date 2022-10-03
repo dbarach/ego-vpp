@@ -96,7 +96,7 @@ format_error_trace (u8 * s, va_list * va)
   i = counter_index (vm, vlib_error_get_code (&vm->node_main, e[0])) +
     error_node->error_heap_index;
   if (i != CLIB_U32_MAX)
-    s = format (s, "%v: %s", error_node->name, em->counters_heap[i].name);
+    s = format (s, "%v: %s", error_node->name, em->counters_heap[i].desc);
 
   return s;
 }
@@ -236,7 +236,7 @@ process_drop_punt (vlib_main_t * vm,
 
       /* If there is no punt function, free the frame as well. */
       if (disposition == ERROR_DISPOSITION_PUNT && !vm->os_punt_frame)
-	vlib_frame_free (vm, node, frame);
+	vlib_frame_free (vm, frame);
     }
   else
     vm->os_punt_frame (vm, node, frame);

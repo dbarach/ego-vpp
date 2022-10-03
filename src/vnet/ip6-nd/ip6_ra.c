@@ -637,6 +637,8 @@ icmp6_router_solicitation (vlib_main_t * vm,
 			  /* Reuse current MAC header, copy SMAC to DMAC and
 			   * interface MAC to SMAC */
 			  vlib_buffer_reset (p0);
+			  vlib_buffer_advance (
+			    p0, vnet_buffer (p0)->l2_hdr_offset);
 			  eth0 = vlib_buffer_get_current (p0);
 			  clib_memcpy (eth0->dst_address, eth0->src_address,
 				       6);
@@ -2023,8 +2025,7 @@ ip6_ra_cmd (vlib_main_t * vm,
 	}
       else
 	{
-	  error = unformat_parse_error (line_input);
-	  goto done;
+	  break;
 	}
     }
 

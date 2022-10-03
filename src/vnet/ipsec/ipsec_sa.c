@@ -104,7 +104,8 @@ ipsec_sa_set_crypto_alg (ipsec_sa_t * sa, ipsec_crypto_alg_t crypto_alg)
   sa->crypto_calg = im->crypto_algs[crypto_alg].alg;
   ASSERT (sa->crypto_iv_size <= ESP_MAX_IV_SIZE);
   ASSERT (sa->esp_block_align <= ESP_MAX_BLOCK_SIZE);
-  if (IPSEC_CRYPTO_ALG_IS_GCM (crypto_alg))
+  if (IPSEC_CRYPTO_ALG_IS_GCM (crypto_alg) ||
+      IPSEC_CRYPTO_ALG_CTR_AEAD_OTHERS (crypto_alg))
     {
       sa->integ_icv_size = im->crypto_algs[crypto_alg].icv_size;
       ipsec_sa_set_IS_CTR (sa);
@@ -325,7 +326,8 @@ ipsec_sa_add_and_lock (u32 id, u32 spi, ipsec_protocol_t proto,
 	sa->udp_hdr.src_port = clib_host_to_net_u16 (src_port);
 
       if (ipsec_sa_is_set_IS_INBOUND (sa))
-	ipsec_register_udp_port (clib_host_to_net_u16 (sa->udp_hdr.dst_port));
+	ipsec_register_udp_port (clib_host_to_net_u16 (sa->udp_hdr.dst_port),
+				 !ipsec_sa_is_set_IS_TUNNEL_V6 (sa));
     }
 
   hash_set (im->sa_index_by_sa_id, sa->id, sa_index);
@@ -353,7 +355,8 @@ ipsec_sa_del (ipsec_sa_t * sa)
   if (ipsec_sa_is_set_IS_ASYNC (sa))
     vnet_crypto_request_async_mode (0);
   if (ipsec_sa_is_set_UDP_ENCAP (sa) && ipsec_sa_is_set_IS_INBOUND (sa))
-    ipsec_unregister_udp_port (clib_net_to_host_u16 (sa->udp_hdr.dst_port));
+    ipsec_unregister_udp_port (clib_net_to_host_u16 (sa->udp_hdr.dst_port),
+			       !ipsec_sa_is_set_IS_TUNNEL_V6 (sa));
 
   if (ipsec_sa_is_set_IS_TUNNEL (sa) && !ipsec_sa_is_set_IS_INBOUND (sa))
     dpo_reset (&sa->dpo);

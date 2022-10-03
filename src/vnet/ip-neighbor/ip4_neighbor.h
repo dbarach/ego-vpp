@@ -18,19 +18,18 @@
 
 #include <vnet/ip/ip.h>
 #include <vnet/ethernet/arp_packet.h>
+#include <vnet/ip-neighbor/ip_neighbor_types.h>
 
-extern void ip4_neighbor_probe_dst (u32 sw_if_index,
-				    const ip4_address_t * dst);
-extern void ip4_neighbor_advertise (vlib_main_t * vm,
-				    vnet_main_t * vnm,
-				    u32 sw_if_index,
-				    const ip4_address_t * addr);
+extern void ip4_neighbor_probe_dst (u32 sw_if_index, u32 thread_index,
+				    const ip4_address_t *dst);
+extern void ip4_neighbor_advertise (vlib_main_t *vm, vnet_main_t *vnm,
+				    u32 sw_if_index, u32 thread_index,
+				    const ip4_address_t *addr);
 
 always_inline vlib_buffer_t *
-ip4_neighbor_probe (vlib_main_t * vm,
-		    vnet_main_t * vnm,
-		    const ip_adjacency_t * adj0,
-		    const ip4_address_t * src, const ip4_address_t * dst)
+ip4_neighbor_probe (vlib_main_t *vm, vnet_main_t *vnm,
+		    const ip_adjacency_t *adj0, const ip4_address_t *src,
+		    const ip4_address_t *dst)
 {
   vnet_hw_interface_t *hw_if0;
   ethernet_arp_header_t *h0;
@@ -62,6 +61,7 @@ ip4_neighbor_probe (vlib_main_t * vm,
   h0->ip4_over_ethernet[1].ip4 = *dst;
 
   vnet_buffer (b0)->sw_if_index[VLIB_TX] = adj0->rewrite_header.sw_if_index;
+  b0->flags |= VNET_BUFFER_F_LOCALLY_ORIGINATED;
 
   vlib_buffer_advance (b0, -adj0->rewrite_header.data_bytes);
 
@@ -72,6 +72,10 @@ ip4_neighbor_probe (vlib_main_t * vm,
     f->n_vectors = 1;
     vlib_put_frame_to_node (vm, hw_if0->output_node_index, f);
   }
+
+  vlib_increment_simple_counter (
+    &ip_neighbor_counters[AF_IP4].ipnc[VLIB_TX][IP_NEIGHBOR_CTR_REQUEST],
+    vm->thread_index, adj0->rewrite_header.sw_if_index, 1);
 
   return b0;
 }
