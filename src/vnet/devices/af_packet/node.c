@@ -246,7 +246,7 @@ af_packet_device_input_fn (vlib_main_t *vm, vlib_node_runtime_t *node,
   u32 num_pkts = 0;
   u32 rx_frame_offset = 0;
   block_desc_t *bd = 0;
-  vlib_buffer_t bt;
+  vlib_buffer_t bt = {};
   u8 is_ip = (apif->mode == AF_PACKET_IF_MODE_IP);
 
   if (is_ip)
@@ -504,12 +504,15 @@ af_packet_device_input_fn (vlib_main_t *vm, vlib_node_runtime_t *node,
 
 done:
 
-  if ((((block_desc_t *) (block_start = rx_queue->rx_ring[block]))
-	 ->hdr.bh1.block_status &
-       TP_STATUS_USER) != 0)
-    vlib_node_set_state (vm, node->node_index, VLIB_NODE_STATE_POLLING);
-  else
-    vlib_node_set_state (vm, node->node_index, VLIB_NODE_STATE_INTERRUPT);
+  if (apm->polling_count == 0)
+    {
+      if ((((block_desc_t *) (block_start = rx_queue->rx_ring[block]))
+	     ->hdr.bh1.block_status &
+	   TP_STATUS_USER) != 0)
+	vlib_node_set_state (vm, node->node_index, VLIB_NODE_STATE_POLLING);
+      else
+	vlib_node_set_state (vm, node->node_index, VLIB_NODE_STATE_INTERRUPT);
+    }
 
   vlib_error_count (vm, node->node_index, AF_PACKET_INPUT_ERROR_TOTAL_RECV_BLK,
 		    total);

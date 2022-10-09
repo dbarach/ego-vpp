@@ -63,13 +63,31 @@ format_virtio_device (u8 * s, va_list * args)
   u32 dev_instance = va_arg (*args, u32);
   int verbose = va_arg (*args, int);
   u32 indent = format_get_indent (s);
+  virtio_main_t *vim = &virtio_main;
+  virtio_if_t *vif = vec_elt_at_index (vim->interfaces, dev_instance);
+  vnet_virtio_vring_t *vring = 0;
 
   s = format (s, "VIRTIO interface");
   if (verbose)
     {
       s = format (s, "\n%U instance %u", format_white_space, indent + 2,
 		  dev_instance);
+      s = format (s, "\n%U RX QUEUE : Total Packets", format_white_space,
+		  indent + 4);
+      vec_foreach (vring, vif->rxq_vrings)
+	{
+	  s = format (s, "\n%U %8u : %llu", format_white_space, indent + 4,
+		      RX_QUEUE_ACCESS (vring->queue_id), vring->total_packets);
+	}
+      s = format (s, "\n%U TX QUEUE : Total Packets", format_white_space,
+		  indent + 4);
+      vec_foreach (vring, vif->txq_vrings)
+	{
+	  s = format (s, "\n%U %8u : %llu", format_white_space, indent + 4,
+		      TX_QUEUE_ACCESS (vring->queue_id), vring->total_packets);
+	}
     }
+
   return s;
 }
 
@@ -109,6 +127,7 @@ virtio_tx_trace (vlib_main_t *vm, vlib_node_runtime_t *node, vlib_buffer_t *b0,
   t = vlib_add_trace (vm, node, b0, sizeof (t[0]));
   t->sw_if_index = vnet_buffer (b0)->sw_if_index[VLIB_TX];
   t->buffer_index = bi;
+  clib_memset (&t->gho, 0, sizeof (t->gho));
   if (is_tun)
     {
       int is_ip4 = 0, is_ip6 = 0;
@@ -407,6 +426,7 @@ add_buffer_to_slot (vlib_main_t *vm, vlib_node_runtime_t *node,
 
   clib_memset_u8 (hdr, 0, hdr_sz);
 
+  vring->total_packets++;
   if (b->flags & VNET_BUFFER_F_GSO)
     {
       if (do_gso)
@@ -612,6 +632,8 @@ add_buffer_to_slot_packed (vlib_main_t *vm, vlib_node_runtime_t *node,
   u32 drop_inline = ~0;
 
   clib_memset (hdr, 0, hdr_sz);
+
+  vring->total_packets++;
 
   if (b->flags & VNET_BUFFER_F_GSO)
     {

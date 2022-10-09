@@ -4,7 +4,7 @@ import unittest
 import os
 from socket import AF_INET, AF_INET6, inet_pton
 
-from framework import tag_fixme_vpp_workers
+from framework import tag_fixme_vpp_workers, tag_fixme_ubuntu2204, tag_fixme_debian11
 from framework import VppTestCase, VppTestRunner
 from vpp_neighbor import VppNeighbor, find_nbr
 from vpp_ip_route import (
@@ -160,6 +160,30 @@ class ARPTestCase(VppTestCase):
         self.assertEqual(ip.src, sip)
         self.assertEqual(ip.dst, dip)
 
+    def get_arp_rx_requests(self, itf):
+        """Get ARP RX request stats for and interface"""
+        return self.statistics["/net/arp/rx/requests"][:, itf.sw_if_index].sum()
+
+    def get_arp_tx_requests(self, itf):
+        """Get ARP TX request stats for and interface"""
+        return self.statistics["/net/arp/tx/requests"][:, itf.sw_if_index].sum()
+
+    def get_arp_rx_replies(self, itf):
+        """Get ARP RX replies stats for and interface"""
+        return self.statistics["/net/arp/rx/replies"][:, itf.sw_if_index].sum()
+
+    def get_arp_tx_replies(self, itf):
+        """Get ARP TX replies stats for and interface"""
+        return self.statistics["/net/arp/tx/replies"][:, itf.sw_if_index].sum()
+
+    def get_arp_rx_garp(self, itf):
+        """Get ARP RX grat stats for and interface"""
+        return self.statistics["/net/arp/rx/gratuitous"][:, itf.sw_if_index].sum()
+
+    def get_arp_tx_garp(self, itf):
+        """Get ARP RX grat stats for and interface"""
+        return self.statistics["/net/arp/tx/gratuitous"][:, itf.sw_if_index].sum()
+
     def test_arp(self):
         """ARP"""
 
@@ -207,6 +231,10 @@ class ARPTestCase(VppTestCase):
         self.verify_arp_req(
             rx[0], self.pg1.local_mac, self.pg1.local_ip4, self.pg1._remote_hosts[1].ip4
         )
+
+        self.logger.info(self.vapi.cli("sh ip neighbor-stats"))
+        self.logger.info(self.vapi.cli("sh ip neighbor-stats pg1"))
+        self.assert_equal(self.get_arp_tx_requests(self.pg1), 1)
 
         #
         # And a dynamic ARP entry for host 1
@@ -328,6 +356,7 @@ class ARPTestCase(VppTestCase):
         self.verify_arp_req(
             rx[0], self.pg1.local_mac, self.pg1.local_ip4, self.pg1._remote_hosts[1].ip4
         )
+        self.assert_equal(self.get_arp_tx_requests(self.pg1), 2)
 
         self.assertFalse(dyn_arp.query_vpp_config())
         self.assertTrue(static_arp.query_vpp_config())
@@ -353,6 +382,9 @@ class ARPTestCase(VppTestCase):
             self.pg1.local_ip4,
             self.pg1._remote_hosts[3].ip4,
         )
+        self.logger.info(self.vapi.cli("sh ip neighbor-stats pg1"))
+        self.assert_equal(self.get_arp_rx_requests(self.pg1), 1)
+        self.assert_equal(self.get_arp_tx_replies(self.pg1), 1)
 
         #
         # VPP should have learned the mapping for the remote host
@@ -1662,6 +1694,7 @@ class ARPTestCase(VppTestCase):
                 mac=self.pg1.remote_hosts[2].mac,
             )
         )
+        self.assert_equal(self.get_arp_rx_garp(self.pg1), 1)
 
         #
         # Send a GARP (reply) to swap the host 1's address to that of host 3
@@ -1686,6 +1719,7 @@ class ARPTestCase(VppTestCase):
                 mac=self.pg1.remote_hosts[3].mac,
             )
         )
+        self.assert_equal(self.get_arp_rx_garp(self.pg1), 2)
 
         #
         # GARPs (request nor replies) for host we don't know yet
@@ -1728,6 +1762,10 @@ class ARPTestCase(VppTestCase):
         #
         self.pg2.configure_ipv4_neighbors()
 
+        cntr = self.statistics.get_err_counter(
+            "/err/arp-reply/l3_dst_address_not_local"
+        )
+
         for op in ["is-at", "who-has"]:
             p1 = [
                 (
@@ -1759,10 +1797,8 @@ class ARPTestCase(VppTestCase):
 
         # they are all dropped because the subnet's don't match
         self.assertEqual(
-            4,
-            self.statistics.get_err_counter(
-                "/err/arp-reply/IP4 destination address not local to subnet"
-            ),
+            cntr + 4,
+            self.statistics.get_err_counter("/err/arp-reply/l3_dst_address_not_local"),
         )
 
     def test_arp_incomplete2(self):
@@ -2160,6 +2196,7 @@ class NeighborStatsTestCase(VppTestCase):
         self.assertEqual(NUM_PKTS + 16, nd1.get_stats()["packets"])
 
 
+@tag_fixme_ubuntu2204
 class NeighborAgeTestCase(VppTestCase):
     """ARP/ND Aging"""
 

@@ -14,17 +14,15 @@
 DPDK_PKTMBUF_HEADROOM        ?= 128
 DPDK_USE_LIBBSD              ?= n
 DPDK_DEBUG                   ?= n
-DPDK_MLX4_PMD                ?= n
-DPDK_MLX5_PMD                ?= n
-DPDK_MLX5_COMMON_PMD         ?= n
 DPDK_TAP_PMD                 ?= n
 DPDK_FAILSAFE_PMD            ?= n
 DPDK_MACHINE                 ?= default
 DPDK_MLX_IBV_LINK            ?= static
 
-dpdk_version                 ?= 22.03
+dpdk_version                 ?= 22.07
 dpdk_base_url                ?= http://fast.dpdk.org/rel
 dpdk_tarball                 := dpdk-$(dpdk_version).tar.xz
+dpdk_tarball_md5sum_22.07    := fb73b58b80b1349cd05fe9cf6984afd4
 dpdk_tarball_md5sum_22.03    := a07ca8839f98062f46e1cc359735cce8
 dpdk_tarball_md5sum_21.11    := 58660bbbe9e95abce86e47692b196555
 dpdk_tarball_md5sum_21.08    := de33433a1806280996a0ecbe66e3642f
@@ -33,6 +31,11 @@ dpdk_tarball_md5sum          := $(dpdk_tarball_md5sum_$(dpdk_version))
 dpdk_url                     := $(dpdk_base_url)/$(dpdk_tarball)
 dpdk_tarball_strip_dirs      := 1
 dpdk_depends		     := rdma-core $(if $(ARCH_X86_64), ipsec-mb)
+
+DPDK_MLX_DEFAULT             := $(shell if grep -q "rdma=$(rdma-core_version) dpdk=$(dpdk_version)" mlx_rdma_dpdk_matrix.txt; then echo 'y'; else echo 'n'; fi)
+DPDK_MLX4_PMD                ?= $(DPDK_MLX_DEFAULT)
+DPDK_MLX5_PMD                ?= $(DPDK_MLX_DEFAULT)
+DPDK_MLX5_COMMON_PMD         ?= $(DPDK_MLX_DEFAULT)
 # Debug or release
 
 DPDK_BUILD_TYPE:=release
@@ -43,10 +46,12 @@ endif
 DPDK_DRIVERS_DISABLED := baseband/\*,	\
 	bus/dpaa,							\
 	bus/ifpga,							\
+	common/cnxk,						\
 	compress/isal,						\
 	compress/octeontx,					\
 	compress/zlib,						\
 	crypto/ccp,							\
+	crypto/cnxk,						\
 	crypto/dpaa_sec,					\
 	crypto/openssl,						\
 	crypto/aesni_mb,						\
@@ -56,9 +61,11 @@ DPDK_DRIVERS_DISABLED := baseband/\*,	\
 	crypto/zuc,						\
 	event/\*,							\
 	mempool/dpaa,						\
+	mempool/cnxk,						\
 	net/af_packet,						\
 	net/bnx2x,							\
 	net/bonding,						\
+	net/cnxk,							\
 	net/ipn3ke,							\
 	net/liquidio,						\
 	net/pcap,							\
@@ -74,6 +81,7 @@ DPDK_LIBS_DISABLED := acl,				\
 	bitratestats,						\
 	bpf,								\
 	cfgfile,							\
+	cnxk,							\
 	distributor,						\
 	efd,								\
 	fib,								\
@@ -167,6 +175,7 @@ PIP_DOWNLOAD_DIR = $(CURDIR)/downloads/
 
 define dpdk_config_cmds
 	cd $(dpdk_build_dir) && \
+	echo "DPDK_MLX_DEFAULT=$(DPDK_MLX_DEFAULT)" > ../../../dpdk_mlx_default.sh && \
 	rm -rf ../dpdk-meson-venv && \
 	mkdir -p ../dpdk-meson-venv && \
 	python3 -m venv ../dpdk-meson-venv && \

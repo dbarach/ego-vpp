@@ -19,6 +19,7 @@
 #include <vnet/api_errno.h>
 #include <vnet/ip/ip.h>
 #include <vnet/feature/feature.h>
+#include <vnet/ipsec/ipsec_spd_fp_lookup.h>
 
 #include <vnet/ipsec/ipsec.h>
 #include <vnet/ipsec/esp.h>
@@ -51,6 +52,7 @@ typedef struct
   ip_protocol_t proto;
   u32 spd;
   u32 policy_index;
+  u32 policy_type;
   u32 sa_id;
   u32 spi;
   u32 seq;
@@ -64,9 +66,10 @@ format_ipsec_input_trace (u8 * s, va_list * args)
   CLIB_UNUSED (vlib_node_t * node) = va_arg (*args, vlib_node_t *);
   ipsec_input_trace_t *t = va_arg (*args, ipsec_input_trace_t *);
 
-  s = format (s, "%U: sa_id %u spd %u policy %d spi %u (0x%08x) seq %u",
-	      format_ip_protocol, t->proto, t->sa_id,
-	      t->spd, t->policy_index, t->spi, t->spi, t->seq);
+  s =
+    format (s, "%U: sa_id %u type: %u spd %u policy %d spi %u (0x%08x) seq %u",
+	    format_ip_protocol, t->proto, t->sa_id, t->policy_type, t->spd,
+	    t->policy_index, t->spi, t->spi, t->seq);
 
   return s;
 }
@@ -147,6 +150,31 @@ ipsec4_input_spd_find_flow_cache_entry (ipsec_main_t *im, u32 sa, u32 da,
     }
 
   return p;
+}
+
+always_inline void
+ipsec_fp_in_5tuple_from_ip4_range (ipsec_fp_5tuple_t *tuple, u32 la, u32 ra,
+				   u32 spi, u8 action)
+{
+  clib_memset (tuple->l3_zero_pad, 0, sizeof (tuple->l3_zero_pad));
+  tuple->laddr.as_u32 = la;
+  tuple->raddr.as_u32 = ra;
+  tuple->spi = spi;
+  tuple->action = action;
+  tuple->is_ipv6 = 0;
+}
+
+always_inline void
+ipsec_fp_in_5tuple_from_ip6_range (ipsec_fp_5tuple_t *tuple, ip6_address_t *la,
+				   ip6_address_t *ra, u32 spi, u8 action)
+
+{
+  clib_memcpy (&tuple->ip6_laddr, la, sizeof (ip6_address_t));
+  clib_memcpy (&tuple->ip6_raddr, ra, sizeof (ip6_address_t));
+
+  tuple->spi = spi;
+  tuple->action = action;
+  tuple->is_ipv6 = 1;
 }
 
 always_inline ipsec_policy_t *
@@ -317,6 +345,9 @@ VLIB_NODE_FN (ipsec4_input_node) (vlib_main_t * vm,
       ipsec_policy_t *p0 = NULL;
       u8 has_space0;
       bool search_flow_cache = false;
+      ipsec_policy_t *policies[1];
+      ipsec_fp_5tuple_t tuples[1];
+      bool ip_v6 = true;
 
       if (n_left_from > 2)
 	{
@@ -351,7 +382,19 @@ VLIB_NODE_FN (ipsec4_input_node) (vlib_main_t * vm,
 	  search_flow_cache = im->input_flow_cache_flag;
 
 	esp_or_udp:
-	  if (search_flow_cache) // attempt to match policy in flow cache
+	  if (im->fp_spd_ipv4_in_is_enabled &&
+	      PREDICT_TRUE (INDEX_INVALID !=
+			    spd0->fp_spd.ip4_in_lookup_hash_idx))
+	    {
+	      ipsec_fp_in_5tuple_from_ip4_range (
+		&tuples[0], ip0->src_address.as_u32, ip0->dst_address.as_u32,
+		clib_net_to_host_u32 (esp0->spi),
+		IPSEC_SPD_POLICY_IP4_INBOUND_PROTECT);
+	      ipsec_fp_in_policy_match_n (&spd0->fp_spd, !ip_v6, tuples,
+					  policies, 1);
+	      p0 = policies[0];
+	    }
+	  else if (search_flow_cache) // attempt to match policy in flow cache
 	    {
 	      p0 = ipsec4_input_spd_find_flow_cache_entry (
 		im, ip0->src_address.as_u32, ip0->dst_address.as_u32,
@@ -392,7 +435,16 @@ VLIB_NODE_FN (ipsec4_input_node) (vlib_main_t * vm,
 	      pi0 = ~0;
 	    };
 
-	  if (search_flow_cache)
+	  if (im->fp_spd_ipv4_in_is_enabled &&
+	      PREDICT_TRUE (INDEX_INVALID !=
+			    spd0->fp_spd.ip4_in_lookup_hash_idx))
+	    {
+	      tuples->action = IPSEC_SPD_POLICY_IP4_INBOUND_BYPASS;
+	      ipsec_fp_in_policy_match_n (&spd0->fp_spd, !ip_v6, tuples,
+					  policies, 1);
+	      p0 = policies[0];
+	    }
+	  else if (search_flow_cache)
 	    {
 	      p0 = ipsec4_input_spd_find_flow_cache_entry (
 		im, ip0->src_address.as_u32, ip0->dst_address.as_u32,
@@ -424,7 +476,18 @@ VLIB_NODE_FN (ipsec4_input_node) (vlib_main_t * vm,
 	      pi0 = ~0;
 	    };
 
-	  if (search_flow_cache)
+	  if (im->fp_spd_ipv4_in_is_enabled &&
+	      PREDICT_TRUE (INDEX_INVALID !=
+			    spd0->fp_spd.ip4_in_lookup_hash_idx))
+	    {
+	      tuples->action = IPSEC_SPD_POLICY_IP4_INBOUND_DISCARD;
+	      ipsec_fp_in_policy_match_n (&spd0->fp_spd, !ip_v6, tuples,
+					  policies, 1);
+	      p0 = policies[0];
+	    }
+	  else
+
+	    if (search_flow_cache)
 	    {
 	      p0 = ipsec4_input_spd_find_flow_cache_entry (
 		im, ip0->src_address.as_u32, ip0->dst_address.as_u32,
@@ -684,6 +747,9 @@ VLIB_NODE_FN (ipsec6_input_node) (vlib_main_t * vm,
   ipsec_main_t *im = &ipsec_main;
   u32 ipsec_unprocessed = 0;
   u32 ipsec_matched = 0;
+  ipsec_policy_t *policies[1];
+  ipsec_fp_5tuple_t tuples[1];
+  bool ip_v6 = true;
 
   from = vlib_frame_vector_args (from_frame);
   n_left_from = from_frame->n_vectors;
@@ -699,7 +765,7 @@ VLIB_NODE_FN (ipsec6_input_node) (vlib_main_t * vm,
 
       while (n_left_from > 0 && n_left_to_next > 0)
 	{
-	  u32 bi0, next0, pi0;
+	  u32 bi0, next0, pi0 = ~0;
 	  vlib_buffer_t *b0;
 	  ip6_header_t *ip0;
 	  esp_header_t *esp0;
@@ -736,11 +802,22 @@ VLIB_NODE_FN (ipsec6_input_node) (vlib_main_t * vm,
 		 clib_net_to_host_u16 (ip0->payload_length) + header_size,
 		 spd0->id);
 #endif
-	      p0 = ipsec6_input_protect_policy_match (spd0,
-						      &ip0->src_address,
-						      &ip0->dst_address,
-						      clib_net_to_host_u32
-						      (esp0->spi));
+	      if (im->fp_spd_ipv6_in_is_enabled &&
+		  PREDICT_TRUE (INDEX_INVALID !=
+				spd0->fp_spd.ip6_in_lookup_hash_idx))
+		{
+		  ipsec_fp_in_5tuple_from_ip6_range (
+		    &tuples[0], &ip0->src_address, &ip0->dst_address,
+		    clib_net_to_host_u32 (esp0->spi),
+		    IPSEC_SPD_POLICY_IP6_INBOUND_PROTECT);
+		  ipsec_fp_in_policy_match_n (&spd0->fp_spd, ip_v6, tuples,
+					      policies, 1);
+		  p0 = policies[0];
+		}
+	      else
+		p0 = ipsec6_input_protect_policy_match (
+		  spd0, &ip0->src_address, &ip0->dst_address,
+		  clib_net_to_host_u32 (esp0->spi));
 
 	      if (PREDICT_TRUE (p0 != 0))
 		{
@@ -756,6 +833,8 @@ VLIB_NODE_FN (ipsec6_input_node) (vlib_main_t * vm,
 		  vnet_buffer (b0)->ipsec.sad_index = p0->sa_index;
 		  next0 = im->esp6_decrypt_next_index;
 		  vlib_buffer_advance (b0, header_size);
+		  /* TODO Add policy matching for bypass and discard policy
+		   * type */
 		  goto trace0;
 		}
 	      else
@@ -807,11 +886,16 @@ VLIB_NODE_FN (ipsec6_input_node) (vlib_main_t * vm,
 		vlib_add_trace (vm, node, b0, sizeof (*tr));
 
 	      if (p0)
-		tr->sa_id = p0->sa_id;
+		{
+		  tr->sa_id = p0->sa_id;
+		  tr->policy_type = p0->type;
+		}
+
 	      tr->proto = ip0->protocol;
 	      tr->spi = clib_net_to_host_u32 (esp0->spi);
 	      tr->seq = clib_net_to_host_u32 (esp0->seq);
 	      tr->spd = spd0->id;
+	      tr->policy_index = pi0;
 	    }
 
 	  vlib_validate_buffer_enqueue_x1 (vm, node, next_index, to_next,

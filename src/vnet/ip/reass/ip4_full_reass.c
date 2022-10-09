@@ -23,6 +23,7 @@
 #include <vppinfra/vec.h>
 #include <vnet/vnet.h>
 #include <vnet/ip/ip.h>
+#include <vnet/ip/ip.api_enum.h>
 #include <vppinfra/fifo.h>
 #include <vppinfra/bihash_16_8.h>
 #include <vnet/ip/reass/ip4_full_reass.h>
@@ -72,20 +73,18 @@ typedef enum
 
 typedef struct
 {
-  union
+  struct
   {
-    struct
-    {
-      u32 xx_id;
-      ip4_address_t src;
-      ip4_address_t dst;
-      u16 frag_id;
-      u8 proto;
-      u8 unused;
-    };
-    u64 as_u64[2];
+    u16 frag_id;
+    u8 proto;
+    u8 unused;
+    u32 fib_index;
+    ip4_address_t src;
+    ip4_address_t dst;
   };
 } ip4_full_reass_key_t;
+
+STATIC_ASSERT_SIZEOF (ip4_full_reass_key_t, 16);
 
 typedef union
 {
@@ -416,9 +415,8 @@ ip4_full_reass_free (ip4_full_reass_main_t * rm,
 		     ip4_full_reass_per_thread_t * rt,
 		     ip4_full_reass_t * reass)
 {
-  clib_bihash_kv_16_8_t kv;
-  kv.key[0] = reass->key.as_u64[0];
-  kv.key[1] = reass->key.as_u64[1];
+  clib_bihash_kv_16_8_t kv = {};
+  clib_memcpy_fast (&kv, &reass->key, sizeof (kv.key));
   clib_bihash_add_del_16_8 (&rm->hash, &kv, 0);
   return ip4_full_reass_free_ctx (rt, reass);
 }
@@ -620,8 +618,7 @@ again:
       ++rt->reass_n;
     }
 
-  reass->key.as_u64[0] = kv->kv.key[0];
-  reass->key.as_u64[1] = kv->kv.key[1];
+  clib_memcpy_fast (&reass->key, &kv->kv.key, sizeof (reass->key));
   kv->v.reass_index = (reass - rt->pool);
   kv->v.memory_owner_thread_index = vm->thread_index;
   reass->last_heard = now;
@@ -1249,16 +1246,18 @@ ip4_full_reass_inline (vlib_main_t *vm, vlib_node_runtime_t *node,
 	      error0 = IP4_ERROR_REASS_MALFORMED_PACKET;
 	      goto packet_enqueue;
 	    }
-	  ip4_full_reass_kv_t kv;
-	  u8 do_handoff = 0;
 
-	  kv.k.as_u64[0] =
-	    (u64) vec_elt (ip4_main.fib_index_by_sw_if_index,
-			   vnet_buffer (b0)->sw_if_index[VLIB_RX]) |
-	    (u64) ip0->src_address.as_u32 << 32;
-	  kv.k.as_u64[1] =
-	    (u64) ip0->dst_address.
-	    as_u32 | (u64) ip0->fragment_id << 32 | (u64) ip0->protocol << 48;
+	  u32 fib_index = vec_elt (ip4_main.fib_index_by_sw_if_index,
+				   vnet_buffer (b0)->sw_if_index[VLIB_RX]);
+
+	  ip4_full_reass_kv_t kv = { .k.fib_index = fib_index,
+				     .k.src.as_u32 = ip0->src_address.as_u32,
+				     .k.dst.as_u32 = ip0->dst_address.as_u32,
+				     .k.frag_id = ip0->fragment_id,
+				     .k.proto = ip0->protocol
+
+	  };
+	  u8 do_handoff = 0;
 
 	  ip4_full_reass_t *reass = ip4_full_reass_find_or_create (
 	    vm, node, rm, rt, &kv, &do_handoff, &n_left_to_next, &to_next);
@@ -1387,12 +1386,6 @@ ip4_full_reass_inline (vlib_main_t *vm, vlib_node_runtime_t *node,
   return frame->n_vectors;
 }
 
-static char *ip4_full_reass_error_strings[] = {
-#define _(sym, string) string,
-  foreach_ip4_error
-#undef _
-};
-
 VLIB_NODE_FN (ip4_full_reass_node) (vlib_main_t * vm,
 				    vlib_node_runtime_t * node,
 				    vlib_frame_t * frame)
@@ -1404,8 +1397,8 @@ VLIB_REGISTER_NODE (ip4_full_reass_node) = {
     .name = "ip4-full-reassembly",
     .vector_size = sizeof (u32),
     .format_trace = format_ip4_full_reass_trace,
-    .n_errors = ARRAY_LEN (ip4_full_reass_error_strings),
-    .error_strings = ip4_full_reass_error_strings,
+    .n_errors = IP4_N_ERROR,
+    .error_counters = ip4_error_counters,
     .n_next_nodes = IP4_FULL_REASS_N_NEXT,
     .next_nodes =
         {
@@ -1426,8 +1419,8 @@ VLIB_REGISTER_NODE (ip4_local_full_reass_node) = {
     .name = "ip4-local-full-reassembly",
     .vector_size = sizeof (u32),
     .format_trace = format_ip4_full_reass_trace,
-    .n_errors = ARRAY_LEN (ip4_full_reass_error_strings),
-    .error_strings = ip4_full_reass_error_strings,
+    .n_errors = IP4_N_ERROR,
+    .error_counters = ip4_error_counters,
     .n_next_nodes = IP4_FULL_REASS_N_NEXT,
     .next_nodes =
         {
@@ -1450,8 +1443,8 @@ VLIB_REGISTER_NODE (ip4_full_reass_node_feature) = {
     .name = "ip4-full-reassembly-feature",
     .vector_size = sizeof (u32),
     .format_trace = format_ip4_full_reass_trace,
-    .n_errors = ARRAY_LEN (ip4_full_reass_error_strings),
-    .error_strings = ip4_full_reass_error_strings,
+    .n_errors = IP4_N_ERROR,
+    .error_counters = ip4_error_counters,
     .n_next_nodes = IP4_FULL_REASS_N_NEXT,
     .next_nodes =
         {
@@ -1480,8 +1473,8 @@ VLIB_REGISTER_NODE (ip4_full_reass_node_custom) = {
     .name = "ip4-full-reassembly-custom",
     .vector_size = sizeof (u32),
     .format_trace = format_ip4_full_reass_trace,
-    .n_errors = ARRAY_LEN (ip4_full_reass_error_strings),
-    .error_strings = ip4_full_reass_error_strings,
+    .n_errors = IP4_N_ERROR,
+    .error_counters = ip4_error_counters,
     .n_next_nodes = IP4_FULL_REASS_N_NEXT,
     .next_nodes =
         {
@@ -1760,13 +1753,12 @@ ip4_full_reass_walk_expired (vlib_main_t *vm, vlib_node_runtime_t *node,
 }
 
 VLIB_REGISTER_NODE (ip4_full_reass_expire_node) = {
-    .function = ip4_full_reass_walk_expired,
-    .type = VLIB_NODE_TYPE_PROCESS,
-    .name = "ip4-full-reassembly-expire-walk",
-    .format_trace = format_ip4_full_reass_trace,
-    .n_errors = ARRAY_LEN (ip4_full_reass_error_strings),
-    .error_strings = ip4_full_reass_error_strings,
-
+  .function = ip4_full_reass_walk_expired,
+  .type = VLIB_NODE_TYPE_PROCESS,
+  .name = "ip4-full-reassembly-expire-walk",
+  .format_trace = format_ip4_full_reass_trace,
+  .n_errors = IP4_N_ERROR,
+  .error_counters = ip4_error_counters,
 };
 
 static u8 *
@@ -1774,9 +1766,8 @@ format_ip4_full_reass_key (u8 * s, va_list * args)
 {
   ip4_full_reass_key_t *key = va_arg (*args, ip4_full_reass_key_t *);
   s =
-    format (s,
-	    "xx_id: %u, src: %U, dst: %U, frag_id: %u, proto: %u",
-	    key->xx_id, format_ip4_address, &key->src, format_ip4_address,
+    format (s, "fib_index: %u, src: %U, dst: %U, frag_id: %u, proto: %u",
+	    key->fib_index, format_ip4_address, &key->src, format_ip4_address,
 	    &key->dst, clib_net_to_host_u16 (key->frag_id), key->proto);
   return s;
 }

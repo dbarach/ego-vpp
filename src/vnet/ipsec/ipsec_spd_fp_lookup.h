@@ -20,21 +20,8 @@
 
 #include <vnet/ipsec/ipsec.h>
 
-/**
- * @brief function handler to perform lookup in fastpath SPD
- * for inbound traffic burst of n packets
- **/
-
-inline u32
-ipsec_fp_in_policy_match_n (void *spd_fp, u8 is_ipv6,
-			    ipsec_fp_5tuple_t *tuples,
-			    ipsec_policy_t **policies, u32 *policy_ids, u32 n)
-{
-  return 0;
-}
-
 static_always_inline int
-single_rule_match_5tuple (ipsec_policy_t *policy, ipsec_fp_5tuple_t *match)
+single_rule_out_match_5tuple (ipsec_policy_t *policy, ipsec_fp_5tuple_t *match)
 {
   if (PREDICT_FALSE (policy->is_ipv6 != match->is_ipv6))
     return (0);
@@ -106,19 +93,57 @@ single_rule_match_5tuple (ipsec_policy_t *policy, ipsec_fp_5tuple_t *match)
   return (1);
 }
 
-static_always_inline u32
-ipsec_fp_ip6_out_policy_match_n (void *spd_fp, ipsec_fp_5tuple_t *tuples,
-				 ipsec_policy_t **policies, u32 *ids, u32 n)
+static_always_inline int
+single_rule_in_match_5tuple (ipsec_policy_t *policy, ipsec_fp_5tuple_t *match)
+{
 
+  u32 sa = clib_net_to_host_u32 (match->laddr.as_u32);
+  u32 da = clib_net_to_host_u32 (match->raddr.as_u32);
+
+  if (policy->policy == IPSEC_POLICY_ACTION_PROTECT)
+    {
+      ipsec_sa_t *s = ipsec_sa_get (policy->sa_index);
+
+      if (match->spi != s->spi)
+	return (0);
+
+      if (ipsec_sa_is_set_IS_TUNNEL (s))
+	{
+	  if (da != clib_net_to_host_u32 (s->tunnel.t_dst.ip.ip4.as_u32))
+	    return (0);
+
+	  if (sa != clib_net_to_host_u32 (s->tunnel.t_src.ip.ip4.as_u32))
+	    return (0);
+	}
+    }
+  else
+    {
+      if (da < clib_net_to_host_u32 (policy->raddr.start.ip4.as_u32))
+	return (0);
+
+      if (da > clib_net_to_host_u32 (policy->raddr.stop.ip4.as_u32))
+	return (0);
+
+      if (sa < clib_net_to_host_u32 (policy->laddr.start.ip4.as_u32))
+	return (0);
+
+      if (sa > clib_net_to_host_u32 (policy->laddr.stop.ip4.as_u32))
+	return (0);
+    }
+  return (1);
+}
+
+static_always_inline u32
+ipsec_fp_in_ip6_policy_match_n (void *spd_fp, ipsec_fp_5tuple_t *tuples,
+				ipsec_policy_t **policies, u32 n)
 {
   u32 last_priority[n];
   u32 i = 0;
   u32 counter = 0;
   ipsec_fp_mask_type_entry_t *mte;
-  u32 *mti;
+  ipsec_fp_mask_id_t *mti;
   ipsec_fp_5tuple_t *match = tuples;
   ipsec_policy_t *policy;
-
   u32 n_left = n;
   clib_bihash_kv_40_8_t kv;
   /* result of the lookup */
@@ -128,9 +153,11 @@ ipsec_fp_ip6_out_policy_match_n (void *spd_fp, ipsec_fp_5tuple_t *tuples,
   u64 *pkey, *pmatch, *pmask;
   ipsec_main_t *im = &ipsec_main;
   ipsec_spd_fp_t *pspd_fp = (ipsec_spd_fp_t *) spd_fp;
-  u32 *mask_type_ids = pspd_fp->fp_mask_types[IPSEC_SPD_POLICY_IP6_OUTBOUND];
+  ipsec_fp_mask_id_t *mask_type_ids = pspd_fp->fp_mask_ids[match->action];
+  clib_bihash_40_8_t *bihash_table = pool_elt_at_index (
+    im->fp_ip6_lookup_hashes_pool, pspd_fp->ip6_in_lookup_hash_idx);
 
-  /*clear the list of matched policies pointers */
+  /* clear the list of matched policies pointers */
   clib_memset (policies, 0, n * sizeof (*policies));
   clib_memset (last_priority, 0, n * sizeof (u32));
   n_left = n;
@@ -138,10 +165,12 @@ ipsec_fp_ip6_out_policy_match_n (void *spd_fp, ipsec_fp_5tuple_t *tuples,
     {
       vec_foreach (mti, mask_type_ids)
 	{
-	  mte = im->fp_mask_types + *mti;
+	  mte = im->fp_mask_types + mti->mask_type_idx;
+	  if (mte->mask.action == 0)
+	    continue;
 
-	  pmatch = (u64 *) &match->ip6_laddr;
-	  pmask = (u64 *) &mte->mask.ip6_laddr;
+	  pmatch = (u64 *) match->kv_40_8.key;
+	  pmask = (u64 *) mte->mask.kv_40_8.key;
 	  pkey = (u64 *) kv.key;
 
 	  *pkey++ = *pmatch++ & *pmask++;
@@ -150,8 +179,8 @@ ipsec_fp_ip6_out_policy_match_n (void *spd_fp, ipsec_fp_5tuple_t *tuples,
 	  *pkey++ = *pmatch++ & *pmask++;
 	  *pkey = *pmatch & *pmask;
 
-	  int res = clib_bihash_search_inline_2_40_8 (
-	    &pspd_fp->fp_ip6_lookup_hash, &kv, &result);
+	  int res =
+	    clib_bihash_search_inline_2_40_8 (bihash_table, &kv, &result);
 	  /* lookup the hash by each packet in the burst for this mask. */
 
 	  if (res == 0)
@@ -167,7 +196,219 @@ ipsec_fp_ip6_out_policy_match_n (void *spd_fp, ipsec_fp_5tuple_t *tuples,
 		    {
 		      policy = im->policies + *policy_id;
 
-		      if (single_rule_match_5tuple (policy, match))
+		      if ((last_priority[i] < policy->priority) &&
+			  (single_rule_in_match_5tuple (policy, match)))
+			{
+			  last_priority[i] = policy->priority;
+			  if (policies[i] == 0)
+			    counter++;
+			  policies[i] = policy;
+			}
+		    }
+		}
+	      else
+		{
+		  u32 *policy_id;
+		  ASSERT (vec_len (result_val->fp_policies_ids) == 1);
+		  policy_id = result_val->fp_policies_ids;
+		  policy = im->policies + *policy_id;
+		  if ((last_priority[i] < policy->priority) &&
+		      (single_rule_in_match_5tuple (policy, match)))
+		    {
+		      last_priority[i] = policy->priority;
+		      if (policies[i] == 0)
+			counter++;
+		      policies[i] = policy;
+		    }
+		}
+	    }
+	}
+
+      i++;
+      n_left--;
+      match++;
+    }
+  return counter;
+}
+
+static_always_inline u32
+ipsec_fp_in_ip4_policy_match_n (void *spd_fp, ipsec_fp_5tuple_t *tuples,
+				ipsec_policy_t **policies, u32 n)
+
+{
+  u32 last_priority[n];
+  u32 i = 0;
+  u32 counter = 0;
+  ipsec_fp_mask_type_entry_t *mte;
+  ipsec_fp_mask_id_t *mti;
+  ipsec_fp_5tuple_t *match = tuples;
+  ipsec_policy_t *policy;
+  u32 n_left = n;
+  clib_bihash_kv_16_8_t kv;
+  /* result of the lookup */
+  clib_bihash_kv_16_8_t result;
+  ipsec_fp_lookup_value_t *result_val =
+    (ipsec_fp_lookup_value_t *) &result.value;
+  u64 *pkey, *pmatch, *pmask;
+  ipsec_main_t *im = &ipsec_main;
+  ipsec_spd_fp_t *pspd_fp = (ipsec_spd_fp_t *) spd_fp;
+  ipsec_fp_mask_id_t *mask_type_ids = pspd_fp->fp_mask_ids[match->action];
+  clib_bihash_16_8_t *bihash_table = pool_elt_at_index (
+    im->fp_ip4_lookup_hashes_pool, pspd_fp->ip4_in_lookup_hash_idx);
+
+  /* clear the list of matched policies pointers */
+  clib_memset (policies, 0, n * sizeof (*policies));
+  clib_memset (last_priority, 0, n * sizeof (u32));
+  n_left = n;
+  while (n_left)
+    {
+      vec_foreach (mti, mask_type_ids)
+	{
+	  mte = im->fp_mask_types + mti->mask_type_idx;
+	  if (mte->mask.action == 0)
+	    continue;
+	  pmatch = (u64 *) match->kv_16_8.key;
+	  pmask = (u64 *) mte->mask.kv_16_8.key;
+	  pkey = (u64 *) kv.key;
+
+	  *pkey++ = *pmatch++ & *pmask++;
+	  *pkey = *pmatch & *pmask;
+
+	  int res =
+	    clib_bihash_search_inline_2_16_8 (bihash_table, &kv, &result);
+	  /* lookup the hash by each packet in the burst for this mask. */
+
+	  if (res == 0)
+	    {
+	      /* There is a hit in the hash table. */
+	      /* Find the policy with highest priority. */
+	      /* Store the lookup results in a dedicated array. */
+
+	      if (vec_len (result_val->fp_policies_ids) > 1)
+		{
+		  u32 *policy_id;
+		  vec_foreach (policy_id, result_val->fp_policies_ids)
+		    {
+		      policy = im->policies + *policy_id;
+
+		      if ((last_priority[i] < policy->priority) &&
+			  (single_rule_in_match_5tuple (policy, match)))
+			{
+			  last_priority[i] = policy->priority;
+			  if (policies[i] == 0)
+			    counter++;
+			  policies[i] = policy;
+			}
+		    }
+		}
+	      else
+		{
+		  u32 *policy_id;
+		  ASSERT (vec_len (result_val->fp_policies_ids) == 1);
+		  policy_id = result_val->fp_policies_ids;
+		  policy = im->policies + *policy_id;
+		  if ((last_priority[i] < policy->priority) &&
+		      (single_rule_in_match_5tuple (policy, match)))
+		    {
+		      last_priority[i] = policy->priority;
+		      if (policies[i] == 0)
+			counter++;
+		      policies[i] = policy;
+		    }
+		}
+	    }
+	}
+
+      i++;
+      n_left--;
+      match++;
+    }
+  return counter;
+}
+
+/**
+ * @brief function handler to perform lookup in fastpath SPD
+ * for inbound traffic burst of n packets
+ **/
+
+static_always_inline u32
+ipsec_fp_in_policy_match_n (void *spd_fp, u8 is_ipv6,
+			    ipsec_fp_5tuple_t *tuples,
+			    ipsec_policy_t **policies, u32 n)
+{
+  if (is_ipv6)
+    return ipsec_fp_in_ip6_policy_match_n (spd_fp, tuples, policies, n);
+  else
+    return ipsec_fp_in_ip4_policy_match_n (spd_fp, tuples, policies, n);
+}
+
+static_always_inline u32
+ipsec_fp_out_ip6_policy_match_n (void *spd_fp, ipsec_fp_5tuple_t *tuples,
+				 ipsec_policy_t **policies, u32 *ids, u32 n)
+
+{
+  u32 last_priority[n];
+  u32 i = 0;
+  u32 counter = 0;
+  ipsec_fp_mask_type_entry_t *mte;
+  ipsec_fp_mask_id_t *mti;
+  ipsec_fp_5tuple_t *match = tuples;
+  ipsec_policy_t *policy;
+
+  u32 n_left = n;
+  clib_bihash_kv_40_8_t kv;
+  /* result of the lookup */
+  clib_bihash_kv_40_8_t result;
+  ipsec_fp_lookup_value_t *result_val =
+    (ipsec_fp_lookup_value_t *) &result.value;
+  u64 *pkey, *pmatch, *pmask;
+  ipsec_main_t *im = &ipsec_main;
+  ipsec_spd_fp_t *pspd_fp = (ipsec_spd_fp_t *) spd_fp;
+  ipsec_fp_mask_id_t *mask_type_ids =
+    pspd_fp->fp_mask_ids[IPSEC_SPD_POLICY_IP6_OUTBOUND];
+  clib_bihash_40_8_t *bihash_table = pool_elt_at_index (
+    im->fp_ip6_lookup_hashes_pool, pspd_fp->ip6_out_lookup_hash_idx);
+
+  /*clear the list of matched policies pointers */
+  clib_memset (policies, 0, n * sizeof (*policies));
+  clib_memset (last_priority, 0, n * sizeof (u32));
+  n_left = n;
+  while (n_left)
+    {
+      vec_foreach (mti, mask_type_ids)
+	{
+	  mte = im->fp_mask_types + mti->mask_type_idx;
+	  if (mte->mask.action != 0)
+	    continue;
+
+	  pmatch = (u64 *) match->kv_40_8.key;
+	  pmask = (u64 *) mte->mask.kv_40_8.key;
+	  pkey = (u64 *) kv.key;
+
+	  *pkey++ = *pmatch++ & *pmask++;
+	  *pkey++ = *pmatch++ & *pmask++;
+	  *pkey++ = *pmatch++ & *pmask++;
+	  *pkey++ = *pmatch++ & *pmask++;
+	  *pkey = *pmatch & *pmask;
+
+	  int res =
+	    clib_bihash_search_inline_2_40_8 (bihash_table, &kv, &result);
+	  /* lookup the hash by each packet in the burst for this mask. */
+
+	  if (res == 0)
+	    {
+	      /* There is a hit in the hash table. */
+	      /* Find the policy with highest priority. */
+	      /* Store the lookup results in a dedicated array. */
+
+	      if (vec_len (result_val->fp_policies_ids) > 1)
+		{
+		  u32 *policy_id;
+		  vec_foreach (policy_id, result_val->fp_policies_ids)
+		    {
+		      policy = im->policies + *policy_id;
+
+		      if (single_rule_out_match_5tuple (policy, match))
 			{
 			  if (last_priority[i] < policy->priority)
 			    {
@@ -186,7 +427,7 @@ ipsec_fp_ip6_out_policy_match_n (void *spd_fp, ipsec_fp_5tuple_t *tuples,
 		  ASSERT (vec_len (result_val->fp_policies_ids) == 1);
 		  policy_id = result_val->fp_policies_ids;
 		  policy = im->policies + *policy_id;
-		  if (single_rule_match_5tuple (policy, match))
+		  if (single_rule_out_match_5tuple (policy, match))
 		    {
 		      if (last_priority[i] < policy->priority)
 			{
@@ -208,7 +449,7 @@ ipsec_fp_ip6_out_policy_match_n (void *spd_fp, ipsec_fp_5tuple_t *tuples,
 }
 
 static_always_inline u32
-ipsec_fp_ip4_out_policy_match_n (void *spd_fp, ipsec_fp_5tuple_t *tuples,
+ipsec_fp_out_ip4_policy_match_n (void *spd_fp, ipsec_fp_5tuple_t *tuples,
 				 ipsec_policy_t **policies, u32 *ids, u32 n)
 
 {
@@ -216,7 +457,7 @@ ipsec_fp_ip4_out_policy_match_n (void *spd_fp, ipsec_fp_5tuple_t *tuples,
   u32 i = 0;
   u32 counter = 0;
   ipsec_fp_mask_type_entry_t *mte;
-  u32 *mti;
+  ipsec_fp_mask_id_t *mti;
   ipsec_fp_5tuple_t *match = tuples;
   ipsec_policy_t *policy;
 
@@ -229,7 +470,10 @@ ipsec_fp_ip4_out_policy_match_n (void *spd_fp, ipsec_fp_5tuple_t *tuples,
   u64 *pkey, *pmatch, *pmask;
   ipsec_main_t *im = &ipsec_main;
   ipsec_spd_fp_t *pspd_fp = (ipsec_spd_fp_t *) spd_fp;
-  u32 *mask_type_ids = pspd_fp->fp_mask_types[IPSEC_SPD_POLICY_IP4_OUTBOUND];
+  ipsec_fp_mask_id_t *mask_type_ids =
+    pspd_fp->fp_mask_ids[IPSEC_SPD_POLICY_IP4_OUTBOUND];
+  clib_bihash_16_8_t *bihash_table = pool_elt_at_index (
+    im->fp_ip4_lookup_hashes_pool, pspd_fp->ip4_out_lookup_hash_idx);
 
   /* clear the list of matched policies pointers */
   clib_memset (policies, 0, n * sizeof (*policies));
@@ -239,17 +483,19 @@ ipsec_fp_ip4_out_policy_match_n (void *spd_fp, ipsec_fp_5tuple_t *tuples,
     {
       vec_foreach (mti, mask_type_ids)
 	{
-	  mte = im->fp_mask_types + *mti;
+	  mte = im->fp_mask_types + mti->mask_type_idx;
+	  if (mte->mask.action != 0)
+	    continue;
 
-	  pmatch = (u64 *) &match->laddr;
-	  pmask = (u64 *) &mte->mask.laddr;
+	  pmatch = (u64 *) match->kv_16_8.key;
+	  pmask = (u64 *) mte->mask.kv_16_8.key;
 	  pkey = (u64 *) kv.key;
 
 	  *pkey++ = *pmatch++ & *pmask++;
-	  *pkey++ = *pmatch++ & *pmask++;
+	  *pkey = *pmatch & *pmask;
 
-	  int res = clib_bihash_search_inline_2_16_8 (
-	    &pspd_fp->fp_ip4_lookup_hash, &kv, &result);
+	  int res =
+	    clib_bihash_search_inline_2_16_8 (bihash_table, &kv, &result);
 	  /* lookup the hash by each packet in the burst for this mask. */
 
 	  if (res == 0)
@@ -266,7 +512,7 @@ ipsec_fp_ip4_out_policy_match_n (void *spd_fp, ipsec_fp_5tuple_t *tuples,
 		      policy = im->policies + *policy_id;
 
 		      if ((last_priority[i] < policy->priority) &&
-			  (single_rule_match_5tuple (policy, match)))
+			  (single_rule_out_match_5tuple (policy, match)))
 			{
 			  last_priority[i] = policy->priority;
 			  if (policies[i] == 0)
@@ -283,7 +529,7 @@ ipsec_fp_ip4_out_policy_match_n (void *spd_fp, ipsec_fp_5tuple_t *tuples,
 		  policy_id = result_val->fp_policies_ids;
 		  policy = im->policies + *policy_id;
 		  if ((last_priority[i] < policy->priority) &&
-		      (single_rule_match_5tuple (policy, match)))
+		      (single_rule_out_match_5tuple (policy, match)))
 		    {
 		      last_priority[i] = policy->priority;
 		      if (policies[i] == 0)
@@ -315,9 +561,9 @@ ipsec_fp_out_policy_match_n (void *spd_fp, u8 is_ipv6,
 
 {
   if (is_ipv6)
-    return ipsec_fp_ip6_out_policy_match_n (spd_fp, tuples, policies, ids, n);
+    return ipsec_fp_out_ip6_policy_match_n (spd_fp, tuples, policies, ids, n);
   else
-    return ipsec_fp_ip4_out_policy_match_n (spd_fp, tuples, policies, ids, n);
+    return ipsec_fp_out_ip4_policy_match_n (spd_fp, tuples, policies, ids, n);
 }
 
 #endif /* !IPSEC_SPD_FP_LOOKUP_H */

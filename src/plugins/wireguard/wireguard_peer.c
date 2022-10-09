@@ -66,10 +66,10 @@ wg_peer_clear (vlib_main_t * vm, wg_peer_t * peer)
   adj_index_t *adj_index;
   vec_foreach (adj_index, peer->adj_indices)
     {
-      if (INDEX_INVALID != *adj_index)
-	{
-	  wg_peer_by_adj_index[*adj_index] = INDEX_INVALID;
-	}
+      wg_peer_by_adj_index[*adj_index] = INDEX_INVALID;
+
+      if (adj_is_valid (*adj_index))
+	adj_midchain_delegate_unstack (*adj_index);
     }
   peer->input_thread_index = ~0;
   peer->output_thread_index = ~0;
@@ -83,6 +83,7 @@ wg_peer_clear (vlib_main_t * vm, wg_peer_t * peer)
   peer->new_handshake_interval_tick = 0;
   peer->rehandshake_interval_tick = 0;
   peer->timer_need_another_keepalive = false;
+  vec_free (peer->rewrite);
   vec_free (peer->allowed_ips);
   vec_free (peer->adj_indices);
 }
@@ -93,51 +94,6 @@ wg_peer_init (vlib_main_t * vm, wg_peer_t * peer)
   peer->api_client_by_client_index = hash_create (0, sizeof (u32));
   peer->api_clients = NULL;
   wg_peer_clear (vm, peer);
-}
-
-static u8 *
-wg_peer_build_rewrite (const wg_peer_t *peer, u8 is_ip4)
-{
-  u8 *rewrite = NULL;
-  if (is_ip4)
-    {
-      ip4_udp_header_t *hdr;
-
-      /* reserve space for ip4, udp and wireguard headers */
-      vec_validate (rewrite, sizeof (ip4_udp_wg_header_t) - 1);
-      hdr = (ip4_udp_header_t *) rewrite;
-
-      hdr->ip4.ip_version_and_header_length = 0x45;
-      hdr->ip4.ttl = 64;
-      hdr->ip4.src_address = peer->src.addr.ip4;
-      hdr->ip4.dst_address = peer->dst.addr.ip4;
-      hdr->ip4.protocol = IP_PROTOCOL_UDP;
-      hdr->ip4.checksum = ip4_header_checksum (&hdr->ip4);
-
-      hdr->udp.src_port = clib_host_to_net_u16 (peer->src.port);
-      hdr->udp.dst_port = clib_host_to_net_u16 (peer->dst.port);
-      hdr->udp.checksum = 0;
-    }
-  else
-    {
-      ip6_udp_header_t *hdr;
-
-      /* reserve space for ip6, udp and wireguard headers */
-      vec_validate (rewrite, sizeof (ip6_udp_wg_header_t) - 1);
-      hdr = (ip6_udp_header_t *) rewrite;
-
-      hdr->ip6.ip_version_traffic_class_and_flow_label = 0x60;
-      ip6_address_copy (&hdr->ip6.src_address, &peer->src.addr.ip6);
-      ip6_address_copy (&hdr->ip6.dst_address, &peer->dst.addr.ip6);
-      hdr->ip6.protocol = IP_PROTOCOL_UDP;
-      hdr->ip6.hop_limit = 64;
-
-      hdr->udp.src_port = clib_host_to_net_u16 (peer->src.port);
-      hdr->udp.dst_port = clib_host_to_net_u16 (peer->dst.port);
-      hdr->udp.checksum = 0;
-    }
-
-  return (rewrite);
 }
 
 static void
@@ -161,7 +117,8 @@ wg_peer_adj_stack (wg_peer_t *peer, adj_index_t ai)
   if (!wgi)
     return;
 
-  if (!vnet_sw_interface_is_admin_up (vnet_get_main (), wgi->sw_if_index))
+  if (!vnet_sw_interface_is_admin_up (vnet_get_main (), wgi->sw_if_index) ||
+      !wg_peer_can_send (peer))
     {
       adj_midchain_delegate_unstack (ai);
     }
@@ -180,6 +137,12 @@ wg_peer_adj_stack (wg_peer_t *peer, adj_index_t ai)
 
       adj_midchain_delegate_stack (ai, fib_index, &dst);
     }
+}
+
+static void
+wg_peer_adj_reset_stacking (adj_index_t ai)
+{
+  adj_midchain_delegate_remove (ai);
 }
 
 static void
@@ -239,16 +202,76 @@ wg_peer_get_fixup (wg_peer_t *peer, vnet_link_t lt)
   return (NULL);
 }
 
+static void
+wg_peer_disable (vlib_main_t *vm, wg_peer_t *peer)
+{
+  index_t peeri = peer - wg_peer_pool;
+
+  wg_timers_stop (peer);
+  wg_peer_update_flags (peeri, WG_PEER_ESTABLISHED, false);
+
+  for (int i = 0; i < WG_N_TIMERS; i++)
+    {
+      peer->timers[i] = ~0;
+      peer->timers_dispatched[i] = 0;
+    }
+  peer->timer_handshake_attempts = 0;
+
+  peer->last_sent_handshake = vlib_time_now (vm) - (REKEY_TIMEOUT + 1);
+  peer->last_sent_packet = 0;
+  peer->last_received_packet = 0;
+  peer->session_derived = 0;
+  peer->rehandshake_started = 0;
+
+  peer->new_handshake_interval_tick = 0;
+  peer->rehandshake_interval_tick = 0;
+
+  peer->timer_need_another_keepalive = false;
+
+  noise_remote_clear (vm, &peer->remote);
+}
+
+static void
+wg_peer_enable (vlib_main_t *vm, wg_peer_t *peer)
+{
+  index_t peeri = peer - wg_peer_pool;
+  wg_if_t *wg_if;
+  u8 public_key[NOISE_PUBLIC_KEY_LEN];
+
+  wg_if = wg_if_get (wg_if_find_by_sw_if_index (peer->wg_sw_if_index));
+  clib_memcpy (public_key, peer->remote.r_public, NOISE_PUBLIC_KEY_LEN);
+
+  noise_remote_init (&peer->remote, peeri, public_key, wg_if->local_idx);
+
+  wg_send_handshake (vm, peer, false);
+  if (peer->persistent_keepalive_interval != 0)
+    {
+      wg_send_keepalive (vm, peer);
+    }
+}
+
 walk_rc_t
 wg_peer_if_admin_state_change (index_t peeri, void *data)
 {
   wg_peer_t *peer;
   adj_index_t *adj_index;
+  vlib_main_t *vm = vlib_get_main ();
+
   peer = wg_peer_get (peeri);
   vec_foreach (adj_index, peer->adj_indices)
     {
       wg_peer_adj_stack (peer, *adj_index);
     }
+
+  if (vnet_sw_interface_is_admin_up (vnet_get_main (), peer->wg_sw_if_index))
+    {
+      wg_peer_enable (vm, peer);
+    }
+  else
+    {
+      wg_peer_disable (vm, peer);
+    }
+
   return (WALK_CONTINUE);
 }
 
@@ -270,9 +293,10 @@ wg_peer_if_adj_change (index_t peeri, void *data)
 				       &adj->sub_type.nbr.next_hop))
 	{
 	  vec_add1 (peer->adj_indices, *adj_index);
+
 	  vec_validate_init_empty (wg_peer_by_adj_index, *adj_index,
 				   INDEX_INVALID);
-	  wg_peer_by_adj_index[*adj_index] = peer - wg_peer_pool;
+	  wg_peer_by_adj_index[*adj_index] = peeri;
 
 	  fixup = wg_peer_get_fixup (peer, adj_get_link_type (*adj_index));
 	  adj_nbr_midchain_update_rewrite (*adj_index, fixup, NULL,
@@ -327,7 +351,8 @@ wg_peer_fill (vlib_main_t *vm, wg_peer_t *peer, u32 table_id,
   peer->src.port = wgi->port;
 
   u8 is_ip4 = ip46_address_is_ip4 (&peer->dst.addr);
-  peer->rewrite = wg_peer_build_rewrite (peer, is_ip4);
+  peer->rewrite = wg_build_rewrite (&peer->src.addr, peer->src.port,
+				    &peer->dst.addr, peer->dst.port, is_ip4);
 
   u32 ii;
   vec_validate (peer->allowed_ips, vec_len (allowed_ips) - 1);
@@ -355,6 +380,65 @@ wg_peer_update_flags (index_t peeri, wg_peer_flags flag, bool add_del)
 
   peer->flags ^= flag;
   wg_api_peer_event (peeri, peer->flags);
+}
+
+void
+wg_peer_update_endpoint (index_t peeri, const ip46_address_t *addr, u16 port)
+{
+  wg_peer_t *peer = wg_peer_get (peeri);
+
+  if (ip46_address_is_equal (&peer->dst.addr, addr) && peer->dst.port == port)
+    return;
+
+  wg_peer_endpoint_init (&peer->dst, addr, port);
+
+  u8 is_ip4 = ip46_address_is_ip4 (&peer->dst.addr);
+  vec_free (peer->rewrite);
+  peer->rewrite = wg_build_rewrite (&peer->src.addr, peer->src.port,
+				    &peer->dst.addr, peer->dst.port, is_ip4);
+
+  adj_index_t *adj_index;
+  vec_foreach (adj_index, peer->adj_indices)
+    {
+      if (adj_is_valid (*adj_index))
+	{
+	  adj_midchain_fixup_t fixup =
+	    wg_peer_get_fixup (peer, adj_get_link_type (*adj_index));
+	  adj_nbr_midchain_update_rewrite (*adj_index, fixup, NULL,
+					   ADJ_FLAG_MIDCHAIN_IP_STACK,
+					   vec_dup (peer->rewrite));
+
+	  wg_peer_adj_reset_stacking (*adj_index);
+	  wg_peer_adj_stack (peer, *adj_index);
+	}
+    }
+}
+
+typedef struct wg_peer_upd_ep_args_t_
+{
+  index_t peeri;
+  ip46_address_t addr;
+  u16 port;
+} wg_peer_upd_ep_args_t;
+
+static void
+wg_peer_update_endpoint_thread_fn (wg_peer_upd_ep_args_t *args)
+{
+  wg_peer_update_endpoint (args->peeri, &args->addr, args->port);
+}
+
+void
+wg_peer_update_endpoint_from_mt (index_t peeri, const ip46_address_t *addr,
+				 u16 port)
+{
+  wg_peer_upd_ep_args_t args = {
+    .peeri = peeri,
+    .port = port,
+  };
+
+  ip46_address_copy (&args.addr, addr);
+  vlib_rpc_call_main_thread (wg_peer_update_endpoint_thread_fn, (u8 *) &args,
+			     sizeof (args));
 }
 
 int
@@ -389,7 +473,7 @@ wg_peer_add (u32 tun_sw_if_index, const u8 public_key[NOISE_PUBLIC_KEY_LEN],
   if (pool_elts (wg_peer_pool) > MAX_PEERS)
     return (VNET_API_ERROR_LIMIT_EXCEEDED);
 
-  pool_get (wg_peer_pool, peer);
+  pool_get_zero (wg_peer_pool, peer);
 
   wg_peer_init (vm, peer);
 
@@ -407,10 +491,13 @@ wg_peer_add (u32 tun_sw_if_index, const u8 public_key[NOISE_PUBLIC_KEY_LEN],
 		     wg_if->local_idx);
   cookie_maker_init (&peer->cookie_maker, public_key);
 
-  wg_send_handshake (vm, peer, false);
-  if (peer->persistent_keepalive_interval != 0)
+  if (vnet_sw_interface_is_admin_up (vnet_get_main (), tun_sw_if_index))
     {
-      wg_send_keepalive (vm, peer);
+      wg_send_handshake (vm, peer, false);
+      if (peer->persistent_keepalive_interval != 0)
+	{
+	  wg_send_keepalive (vm, peer);
+	}
     }
 
   *peer_index = peer - wg_peer_pool;

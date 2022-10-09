@@ -778,7 +778,7 @@ lcp_itf_pair_create (u32 phy_sw_if_index, u8 *host_if_name,
 {
   vlib_main_t *vm;
   vnet_main_t *vnm;
-  u32 vif_index = 0, host_sw_if_index;
+  u32 vif_index = 0, host_sw_if_index = ~0;
   const vnet_sw_interface_t *sw;
   const vnet_hw_interface_t *hw;
   const lcp_itf_pair_t *lip;
@@ -1191,6 +1191,8 @@ lcp_interface_init (vlib_main_t *vm)
 
   /* punt IKE */
   vlib_punt_register (punt_hdl, ipsec_punt_reason[IPSEC_PUNT_IP4_SPI_UDP_0],
+		      "linux-cp-punt");
+  vlib_punt_register (punt_hdl, ipsec_punt_reason[IPSEC_PUNT_IP6_SPI_UDP_0],
 		      "linux-cp-punt");
 
   /* punt all unknown ports */

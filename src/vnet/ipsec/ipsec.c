@@ -182,14 +182,24 @@ ipsec_add_node (vlib_main_t * vm, const char *node_name,
   *out_next_index = vlib_node_add_next (vm, prev_node->index, node->index);
 }
 
+static inline uword
+ipsec_udp_registration_key (u16 port, u8 is_ip4)
+{
+  uword key = (is_ip4) ? AF_IP4 : AF_IP6;
+
+  key |= (uword) (port << 16);
+  return key;
+}
+
 void
-ipsec_unregister_udp_port (u16 port)
+ipsec_unregister_udp_port (u16 port, u8 is_ip4)
 {
   ipsec_main_t *im = &ipsec_main;
   u32 n_regs;
-  uword *p;
+  uword *p, key;
 
-  p = hash_get (im->udp_port_registrations, port);
+  key = ipsec_udp_registration_key (port, is_ip4);
+  p = hash_get (im->udp_port_registrations, key);
 
   ASSERT (p);
 
@@ -197,33 +207,35 @@ ipsec_unregister_udp_port (u16 port)
 
   if (0 == --n_regs)
     {
-      udp_unregister_dst_port (vlib_get_main (), port, 1);
-      hash_unset (im->udp_port_registrations, port);
+      udp_unregister_dst_port (vlib_get_main (), port, is_ip4);
+      hash_unset (im->udp_port_registrations, key);
     }
   else
     {
-      hash_unset (im->udp_port_registrations, port);
-      hash_set (im->udp_port_registrations, port, n_regs);
+      hash_unset (im->udp_port_registrations, key);
+      hash_set (im->udp_port_registrations, key, n_regs);
     }
 }
 
 void
-ipsec_register_udp_port (u16 port)
+ipsec_register_udp_port (u16 port, u8 is_ip4)
 {
   ipsec_main_t *im = &ipsec_main;
-  u32 n_regs;
-  uword *p;
+  u32 n_regs, node_index;
+  uword *p, key;
 
-  p = hash_get (im->udp_port_registrations, port);
+  key = ipsec_udp_registration_key (port, is_ip4);
+  node_index =
+    (is_ip4) ? ipsec4_tun_input_node.index : ipsec6_tun_input_node.index;
+  p = hash_get (im->udp_port_registrations, key);
 
   n_regs = (p ? p[0] : 0);
 
   if (0 == n_regs++)
-    udp_register_dst_port (vlib_get_main (), port,
-			   ipsec4_tun_input_node.index, 1);
+    udp_register_dst_port (vlib_get_main (), port, node_index, is_ip4);
 
-  hash_unset (im->udp_port_registrations, port);
-  hash_set (im->udp_port_registrations, port, n_regs);
+  hash_unset (im->udp_port_registrations, key);
+  hash_set (im->udp_port_registrations, key, n_regs);
 }
 
 u32
@@ -483,11 +495,6 @@ ipsec_init (vlib_main_t * vm)
   if ((error = vlib_call_init_function (vm, ipsec_cli_init)))
     return error;
 
-  im->ipv4_fp_spd_is_enabled = 0;
-  im->ipv6_fp_spd_is_enabled = 0;
-
-  im->fp_lookup_hash_buckets = IPSEC_FP_HASH_LOOKUP_HASH_BUCKETS;
-
   vec_validate (im->crypto_algs, IPSEC_CRYPTO_N_ALG - 1);
 
   a = im->crypto_algs + IPSEC_CRYPTO_ALG_NONE;
@@ -572,6 +579,13 @@ ipsec_init (vlib_main_t * vm)
   a->block_align = 1;
   a->icv_size = 16;
 
+  a = im->crypto_algs + IPSEC_CRYPTO_ALG_CHACHA20_POLY1305;
+  a->enc_op_id = VNET_CRYPTO_OP_CHACHA20_POLY1305_ENC;
+  a->dec_op_id = VNET_CRYPTO_OP_CHACHA20_POLY1305_DEC;
+  a->alg = VNET_CRYPTO_ALG_CHACHA20_POLY1305;
+  a->iv_size = 8;
+  a->icv_size = 16;
+
   vec_validate (im->integ_algs, IPSEC_INTEG_N_ALG - 1);
   ipsec_main_integ_alg_t *i;
 
@@ -626,6 +640,13 @@ ipsec_init (vlib_main_t * vm)
   vec_validate_init_empty_aligned (im->next_header_registrations, 255, ~0,
 				   CLIB_CACHE_LINE_BYTES);
 
+  im->fp_spd_ipv4_out_is_enabled = 0;
+  im->fp_spd_ipv6_out_is_enabled = 0;
+  im->fp_spd_ipv4_in_is_enabled = 0;
+  im->fp_spd_ipv6_in_is_enabled = 0;
+
+  im->fp_lookup_hash_buckets = IPSEC_FP_HASH_LOOKUP_HASH_BUCKETS;
+
   return 0;
 }
 
@@ -640,22 +661,41 @@ ipsec_config (vlib_main_t *vm, unformat_input_t *input)
   u32 ipsec4_out_spd_hash_num_buckets;
   u32 ipsec4_in_spd_hash_num_buckets;
   u32 ipsec_spd_fp_num_buckets;
+  bool fp_spd_ip4_enabled = false;
+  bool fp_spd_ip6_enabled = false;
 
   while (unformat_check_input (input) != UNFORMAT_END_OF_INPUT)
     {
       if (unformat (input, "ipv6-outbound-spd-fast-path on"))
 	{
-	  im->ipv6_fp_spd_is_enabled = 1;
+	  im->fp_spd_ipv6_out_is_enabled = 1;
+	  fp_spd_ip6_enabled = true;
 	}
       else if (unformat (input, "ipv6-outbound-spd-fast-path off"))
-	im->ipv6_fp_spd_is_enabled = 0;
+	im->fp_spd_ipv6_out_is_enabled = 0;
       else if (unformat (input, "ipv4-outbound-spd-fast-path on"))
 	{
-	  im->ipv4_fp_spd_is_enabled = 1;
+	  im->fp_spd_ipv4_out_is_enabled = 1;
 	  im->output_flow_cache_flag = 0;
+	  fp_spd_ip4_enabled = true;
 	}
       else if (unformat (input, "ipv4-outbound-spd-fast-path off"))
-	im->ipv4_fp_spd_is_enabled = 0;
+	im->fp_spd_ipv4_out_is_enabled = 0;
+      else if (unformat (input, "ipv6-inbound-spd-fast-path on"))
+	{
+	  im->fp_spd_ipv6_in_is_enabled = 1;
+	  fp_spd_ip6_enabled = true;
+	}
+      else if (unformat (input, "ipv6-inbound-spd-fast-path off"))
+	im->fp_spd_ipv6_in_is_enabled = 0;
+      else if (unformat (input, "ipv4-inbound-spd-fast-path on"))
+	{
+	  im->fp_spd_ipv4_in_is_enabled = 1;
+	  im->input_flow_cache_flag = 0;
+	  fp_spd_ip4_enabled = true;
+	}
+      else if (unformat (input, "ipv4-inbound-spd-fast-path off"))
+	im->fp_spd_ipv4_in_is_enabled = 0;
       else if (unformat (input, "spd-fast-path-num-buckets %d",
 			 &ipsec_spd_fp_num_buckets))
 	{
@@ -664,7 +704,7 @@ ipsec_config (vlib_main_t *vm, unformat_input_t *input)
 				       << max_log2 (ipsec_spd_fp_num_buckets);
 	}
       else if (unformat (input, "ipv4-outbound-spd-flow-cache on"))
-	im->output_flow_cache_flag = im->ipv4_fp_spd_is_enabled ? 0 : 1;
+	im->output_flow_cache_flag = im->fp_spd_ipv4_out_is_enabled ? 0 : 1;
       else if (unformat (input, "ipv4-outbound-spd-flow-cache off"))
 	im->output_flow_cache_flag = 0;
       else if (unformat (input, "ipv4-outbound-spd-hash-buckets %d",
@@ -675,7 +715,7 @@ ipsec_config (vlib_main_t *vm, unformat_input_t *input)
 	    1ULL << max_log2 (ipsec4_out_spd_hash_num_buckets);
 	}
       else if (unformat (input, "ipv4-inbound-spd-flow-cache on"))
-	im->input_flow_cache_flag = 1;
+	im->input_flow_cache_flag = im->fp_spd_ipv4_in_is_enabled ? 0 : 1;
       else if (unformat (input, "ipv4-inbound-spd-flow-cache off"))
 	im->input_flow_cache_flag = 0;
       else if (unformat (input, "ipv4-inbound-spd-hash-buckets %d",
@@ -732,6 +772,14 @@ ipsec_config (vlib_main_t *vm, unformat_input_t *input)
       vec_add2 (im->ipsec4_in_spd_hash_tbl, im->ipsec4_in_spd_hash_tbl,
 		im->ipsec4_in_spd_hash_num_buckets);
     }
+
+  if (fp_spd_ip4_enabled)
+    pool_alloc_aligned (im->fp_ip4_lookup_hashes_pool,
+			IPSEC_FP_IP4_HASHES_POOL_SIZE, CLIB_CACHE_LINE_BYTES);
+
+  if (fp_spd_ip6_enabled)
+    pool_alloc_aligned (im->fp_ip6_lookup_hashes_pool,
+			IPSEC_FP_IP6_HASHES_POOL_SIZE, CLIB_CACHE_LINE_BYTES);
 
   return 0;
 }

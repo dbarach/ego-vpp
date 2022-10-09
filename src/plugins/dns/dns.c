@@ -30,13 +30,11 @@
 #define REPLY_MSG_ID_BASE dm->msg_id_base
 #include <vlibapi/api_helper_macros.h>
 
-/* Macro to finish up custom dump fns */
-#define vl_print(handle, ...) vlib_cli_output (handle, __VA_ARGS__)
-#define FINISH                                  \
-    vec_add1 (s, 0);                            \
-    vl_print (handle, (char *)s);               \
-    vec_free (s);                               \
-    return handle;
+#define FINISH                                                                \
+  vec_add1 (s, 0);                                                            \
+  vlib_cli_output (handle, (char *) s);                                       \
+  vec_free (s);                                                               \
+  return handle;
 
 dns_main_t dns_main;
 
@@ -1370,7 +1368,7 @@ vl_api_dns_resolve_name_t_handler (vl_api_dns_resolve_name_t * mp)
   dns_main_t *dm = &dns_main;
   vl_api_dns_resolve_name_reply_t *rmp;
   dns_cache_entry_t *ep = 0;
-  dns_pending_request_t _t0, *t0 = &_t0;
+  dns_pending_request_t _t0 = { 0 }, *t0 = &_t0;
   int rv;
   dns_resolve_name_t rn;
 
@@ -1416,7 +1414,7 @@ vl_api_dns_resolve_ip_t_handler (vl_api_dns_resolve_ip_t * mp)
   int i, len;
   u8 *lookup_name = 0;
   u8 digit, nybble;
-  dns_pending_request_t _t0, *t0 = &_t0;
+  dns_pending_request_t _t0 = { 0 }, *t0 = &_t0;
 
   if (mp->is_ip6)
     {

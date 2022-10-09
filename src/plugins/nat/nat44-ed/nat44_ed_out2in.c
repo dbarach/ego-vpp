@@ -279,7 +279,8 @@ nat44_ed_alloc_i2o_port (snat_main_t *sm, snat_address_t *a, snat_session_t *s,
   for (int i = 0; i < ED_PORT_ALLOC_ATTEMPTS; ++i)
     {
       portnum = (sm->port_per_thread * snat_thread_index) +
-		snat_random_port (0, sm->port_per_thread - 1) + 1024;
+		snat_random_port (0, sm->port_per_thread - 1) +
+		ED_USER_PORT_OFFSET;
       portnum = clib_host_to_net_u16 (portnum);
       nat_6t_i2o_flow_init (sm, thread_index, s, i2o_addr, i2o_port, a->addr,
 			    portnum, i2o_fib_index, proto);
@@ -759,7 +760,7 @@ nat44_ed_out2in_fast_path_node_fn_inline (vlib_main_t * vm,
       ip_protocol_t proto0;
       ip4_header_t *ip0;
       snat_session_t *s0 = 0;
-      clib_bihash_kv_16_8_t kv0, value0;
+      clib_bihash_kv_16_8_t kv0 = {}, value0;
       nat_translation_error_e translation_error = NAT_ED_TRNSL_ERR_SUCCESS;
       nat_slow_path_reason_e slow_path_reason = NAT_ED_SP_REASON_NO_REASON;
       nat_6t_flow_t *f = 0;
@@ -1060,7 +1061,7 @@ nat44_ed_out2in_slow_path_node_fn_inline (vlib_main_t * vm,
       udp_header_t *udp0;
       icmp46_header_t *icmp0;
       snat_session_t *s0 = 0;
-      clib_bihash_kv_16_8_t kv0, value0;
+      clib_bihash_kv_16_8_t kv0 = {}, value0;
       lb_nat_type_t lb_nat0;
       twice_nat_type_t twice_nat0;
       u8 identity_nat0;

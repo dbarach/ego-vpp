@@ -46,6 +46,7 @@ fib_entry_src_get_vft (const fib_entry_src_t *esrc)
         return (&fib_entry_src_bh_vft[FIB_SOURCE_BH_INTERPOSE]);
     }
 
+    ASSERT(bh < FIB_SOURCE_BH_MAX);
     return (&fib_entry_src_bh_vft[bh]);
 }
 
@@ -1794,6 +1795,25 @@ fib_entry_get_dpo_for_source (fib_node_index_t fib_entry_index,
 	}
     }
     return (0);
+}
+
+fib_node_index_t
+fib_entry_get_path_list_for_source (fib_node_index_t fib_entry_index,
+				    fib_source_t source)
+{
+  fib_entry_t *fib_entry;
+  fib_entry_src_t *esrc;
+
+  if (FIB_NODE_INDEX_INVALID == fib_entry_index)
+    return FIB_NODE_INDEX_INVALID;
+
+  fib_entry = fib_entry_get(fib_entry_index);
+  esrc = fib_entry_src_find(fib_entry, source);
+
+  if (esrc)
+    return esrc->fes_pl;
+
+  return FIB_NODE_INDEX_INVALID;
 }
 
 u32

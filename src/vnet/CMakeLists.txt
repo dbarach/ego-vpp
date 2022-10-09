@@ -444,13 +444,11 @@ list(APPEND VNET_HEADERS
   ip/icmp4.h
   ip/icmp6.h
   ip/igmp_packet.h
-  ip/ip4_error.h
   ip/ip4.h
   ip/ip4_mtrie.h
   ip/ip4_inlines.h
   ip/ip4_packet.h
   ip/ip46_address.h
-  ip/ip6_error.h
   ip/ip6.h
   ip/ip6_hop_by_hop.h
   ip/ip6_hop_by_hop_packet.h
@@ -470,6 +468,8 @@ list(APPEND VNET_HEADERS
   ip/protocols.def
   ip/punt_error.def
   ip/punt.h
+  ip/reass/ip4_sv_reass.h
+  ip/reass/ip6_sv_reass.h
 )
 
 list(APPEND VNET_API_FILES
@@ -750,6 +750,7 @@ list(APPEND VNET_API_FILES
 list(APPEND VNET_HEADERS
   tunnel/tunnel.h
   tunnel/tunnel_dp.h
+  tunnel/tunnel_types_api.h
 )
 
 ##############################################################################
@@ -776,10 +777,10 @@ list(APPEND VNET_MULTIARCH_SOURCES
 
 list(APPEND VNET_HEADERS
   mpls/mpls.h
+  mpls/mpls_lookup.h
   mpls/mpls_types.h
   mpls/mpls_tunnel.h
   mpls/packet.h
-  mpls/error.def
 )
 
 list(APPEND VNET_API_FILES mpls/mpls.api)
@@ -1219,6 +1220,8 @@ list(APPEND VNET_HEADERS
   fib/fib_node_list.h
   fib/fib_entry.h
   fib/fib_entry_delegate.h
+  fib/fib_path.h
+  fib/fib_path_list.h
   fib/fib_sas.h
   fib/fib_source.h
 )
@@ -1412,10 +1415,13 @@ list(APPEND VNET_MULTIARCH_SOURCES
 )
 
 list(APPEND VNET_HEADERS
-  bier/bier_types.h
+  bier/bier_bit_string.h
   bier/bier_entry.h
+  bier/bier_fwd.h
+  bier/bier_hdr_inlines.h
   bier/bier_update.h
   bier/bier_table.h
+  bier/bier_types.h
 )
 
 list(APPEND VNET_API_FILES bier/bier.api)

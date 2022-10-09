@@ -271,7 +271,6 @@ vl_api_app_del_cert_key_pair_reply_t_handler (
   _ (APP_DEL_CERT_KEY_PAIR_REPLY, app_del_cert_key_pair_reply)                \
   _ (APP_WORKER_ADD_DEL_REPLY, app_worker_add_del_reply)
 
-#define vl_print(handle, ...) fformat (handle, __VA_ARGS__)
 #define vl_endianfun	      /* define message structures */
 #include <vnet/session/session.api.h>
 #undef vl_endianfun
@@ -303,12 +302,18 @@ vcl_bapi_hookup (void)
     return;
 
 #define _(N, n)                                                               \
-  vl_msg_api_set_handlers (                                                   \
-    REPLY_MSG_ID_BASE + VL_API_##N, #n, vl_api_##n##_t_handler,               \
-    vl_noop_handler, vl_api_##n##_t_endian, vl_api_##n##_t_print,             \
-    sizeof (vl_api_##n##_t), 1, vl_api_##n##_t_print_json,                    \
-    vl_api_##n##_t_tojson, vl_api_##n##_t_fromjson,                           \
-    vl_api_##n##_t_calc_size);
+  vl_msg_api_config (&(vl_msg_api_msg_config_t){                              \
+    .id = REPLY_MSG_ID_BASE + VL_API_##N,                                     \
+    .name = #n,                                                               \
+    .handler = vl_api_##n##_t_handler,                                        \
+    .endian = vl_api_##n##_t_endian,                                          \
+    .format_fn = vl_api_##n##_t_format,                                       \
+    .size = sizeof (vl_api_##n##_t),                                          \
+    .traced = 1,                                                              \
+    .tojson = vl_api_##n##_t_tojson,                                          \
+    .fromjson = vl_api_##n##_t_fromjson,                                      \
+    .calc_size = vl_api_##n##_t_calc_size,                                    \
+  });
   foreach_sock_msg;
 #undef _
 }
@@ -354,7 +359,8 @@ vcl_bapi_send_attach (void)
     (vcm->cfg.app_scope_local ? APP_OPTIONS_FLAGS_USE_LOCAL_SCOPE : 0) |
     (vcm->cfg.app_scope_global ? APP_OPTIONS_FLAGS_USE_GLOBAL_SCOPE : 0) |
     (app_is_proxy ? APP_OPTIONS_FLAGS_IS_PROXY : 0) |
-    (vcm->cfg.use_mq_eventfd ? APP_OPTIONS_FLAGS_EVT_MQ_USE_EVENTFD : 0);
+    (vcm->cfg.use_mq_eventfd ? APP_OPTIONS_FLAGS_EVT_MQ_USE_EVENTFD : 0) |
+    (vcm->cfg.huge_page ? APP_OPTIONS_FLAGS_USE_HUGE_PAGE : 0);
   bmp->options[APP_OPTIONS_PROXY_TRANSPORT] =
     (u64) ((vcm->cfg.app_proxy_transport_tcp ? 1 << TRANSPORT_PROTO_TCP : 0) |
 	   (vcm->cfg.app_proxy_transport_udp ? 1 << TRANSPORT_PROTO_UDP : 0));

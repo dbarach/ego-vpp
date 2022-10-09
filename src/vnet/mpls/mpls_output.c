@@ -20,6 +20,7 @@
 #include <vnet/mpls/mpls.h>
 #include <vnet/ip/ip_frag.h>
 #include <vnet/adj/adj_dp.h>
+#include <vnet/mpls/mpls.api_enum.h>
 
 typedef struct {
   /* Adjacency taken. */
@@ -317,12 +318,6 @@ mpls_output_inline (vlib_main_t * vm,
   return from_frame->n_vectors;
 }
 
-static char * mpls_error_strings[] = {
-#define mpls_error(n,s) s,
-#include "error.def"
-#undef mpls_error
-};
-
 VLIB_NODE_FN (mpls_output_node) (vlib_main_t * vm,
              vlib_node_runtime_t * node,
              vlib_frame_t * from_frame)
@@ -335,7 +330,7 @@ VLIB_REGISTER_NODE (mpls_output_node) = {
   /* Takes a vector of packets. */
   .vector_size = sizeof (u32),
   .n_errors = MPLS_N_ERROR,
-  .error_strings = mpls_error_strings,
+  .error_counters = mpls_error_counters,
 
   .n_next_nodes = MPLS_OUTPUT_N_NEXT,
   .next_nodes = {
@@ -357,16 +352,10 @@ VLIB_REGISTER_NODE (mpls_midchain_node) = {
   .vector_size = sizeof (u32),
 
   .n_errors = MPLS_N_ERROR,
-  .error_strings = mpls_error_strings,
+  .error_counters = mpls_error_counters,
 
   .sibling_of = "mpls-output",
   .format_trace = format_mpls_output_trace,
-};
-
-static char *mpls_frag_error_strings[] = {
-#define _(sym,string) string,
-  foreach_ip_frag_error
-#undef _
 };
 
 typedef struct mpls_frag_trace_t_
@@ -541,7 +530,7 @@ VLIB_REGISTER_NODE (mpls_frag_node) = {
   .type = VLIB_NODE_TYPE_INTERNAL,
 
   .n_errors = IP_FRAG_N_ERROR,
-  .error_strings = mpls_frag_error_strings,
+  .error_counters = ip_frag_error_counters,
 
   .n_next_nodes = MPLS_FRAG_N_NEXT,
   .next_nodes = { [MPLS_FRAG_NEXT_REWRITE] = "mpls-output",
@@ -667,7 +656,7 @@ VLIB_REGISTER_NODE (mpls_adj_incomplete_node) = {
   /* Takes a vector of packets. */
   .vector_size = sizeof (u32),
   .n_errors = MPLS_N_ERROR,
-  .error_strings = mpls_error_strings,
+  .error_counters = mpls_error_counters,
 
   .n_next_nodes = MPLS_ADJ_INCOMPLETE_N_NEXT,
   .next_nodes = {

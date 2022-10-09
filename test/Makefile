@@ -54,7 +54,8 @@ PYTHON_OPTS="-m cProfile $(PROFILE_OUTPUT_OPTS) -s $(PROFILE_SORT_BY)"
 FORCE_FOREGROUND=1
 endif
 
-VENV_PATH=$(TEST_DIR)/venv
+VENV_BR_DIR=$(BR)/test
+VENV_PATH=$(VENV_BR_DIR)/venv
 
 ifeq ($(TEST_DEBUG),1)
 VENV_RUN_DIR:=$(VENV_PATH)/run-debug
@@ -310,10 +311,11 @@ reset:
 	@if [ $(FORCE_NO_WIPE) -eq "0" ] ; then rm -rf /tmp/vpp-unittest-*;  fi
 	@rm -f /tmp/api_post_mortem.*
 	@rm -rf $(FAILED_DIR)
+	@rm -rf /tmp/vpp-vm-tests
 
 .PHONY: wipe
 wipe: reset
-	@rm -rf $(VENV_PATH)
+	@rm -rf $(VENV_BR_DIR)
 	@rm -rf $(patsubst %,%/__pycache__, $(VPP_TEST_DIRS))
 
 $(BUILD_COV_DIR):

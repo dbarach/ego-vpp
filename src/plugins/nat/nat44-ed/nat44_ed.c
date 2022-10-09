@@ -761,9 +761,9 @@ get_thread_idx_by_port (u16 e_port)
   u32 thread_idx = sm->num_workers;
   if (sm->num_workers > 1)
     {
-      thread_idx =
-	sm->first_worker_index +
-	sm->workers[(e_port - 1024) / sm->port_per_thread];
+      thread_idx = sm->first_worker_index +
+		   sm->workers[(e_port - ED_USER_PORT_OFFSET) /
+			       sm->port_per_thread % _vec_len (sm->workers)];
     }
   return thread_idx;
 }
@@ -2133,7 +2133,7 @@ snat_set_workers (uword * bitmap)
       j++;
     }
 
-  sm->port_per_thread = (0xffff - 1024) / _vec_len (sm->workers);
+  sm->port_per_thread = (65536 - ED_USER_PORT_OFFSET) / _vec_len (sm->workers);
 
   return 0;
 }
@@ -2384,7 +2384,7 @@ nat_init (vlib_main_t * vm)
 	}
     }
   num_threads = tm->n_vlib_mains - 1;
-  sm->port_per_thread = 0xffff - 1024;
+  sm->port_per_thread = 65536 - ED_USER_PORT_OFFSET;
   vec_validate (sm->per_thread_data, num_threads);
 
   /* Use all available workers by default */
@@ -3166,9 +3166,7 @@ nat44_ed_get_out2in_worker_index (vlib_buffer_t *b, ip4_header_t *ip,
     }
 
   /* worker by outside port */
-  next_worker_index = sm->first_worker_index;
-  next_worker_index +=
-    sm->workers[(clib_net_to_host_u16 (port) - 1024) / sm->port_per_thread];
+  next_worker_index = get_thread_idx_by_port (clib_net_to_host_u16 (port));
 
 done:
   nat_elog_debug_handoff (sm, "HANDOFF OUT2IN", next_worker_index,
