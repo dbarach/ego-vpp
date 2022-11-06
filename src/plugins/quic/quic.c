@@ -388,7 +388,8 @@ quic_ctx_alloc (u32 thread_index)
   quic_main_t *qm = &quic_main;
   quic_ctx_t *ctx;
 
-  pool_get (qm->ctx_pool[thread_index], ctx);
+  pool_get_aligned_safe (qm->ctx_pool[thread_index], ctx,
+			 CLIB_CACHE_LINE_BYTES);
 
   clib_memset (ctx, 0, sizeof (quic_ctx_t));
   ctx->c_thread_index = thread_index;
@@ -2674,7 +2675,6 @@ quic_get_counter_value (u32 event_code)
 
   u32 code, i;
   u64 c, sum = 0;
-  int index = 0;
 
   vm = vlib_get_main ();
   em = &vm->error_main;
@@ -2689,7 +2689,6 @@ quic_get_counter_value (u32 event_code)
       if (i < vec_len (em->counters_last_clear))
 	c -= em->counters_last_clear[i];
       sum += c;
-      index++;
     }
   return sum;
 }

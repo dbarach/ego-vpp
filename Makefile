@@ -140,6 +140,7 @@ else ifeq ($(OS_ID)-$(OS_VERSION_ID),centos-8)
 	RPM_DEPENDS += python2-devel python36-devel python3-ply
 	RPM_DEPENDS += python3-virtualenv python3-jsonschema
 	RPM_DEPENDS += libarchive cmake
+	RPM_DEPENDS += infiniband-diags libibumad
 	RPM_DEPENDS_GROUPS = 'Development Tools'
 else
 	RPM_DEPENDS += yum-utils
@@ -740,7 +741,7 @@ docs:
 
 .PHONY: pkg-verify
 pkg-verify: install-dep $(BR)/.deps.ok install-ext-deps
-	$(call banner,"Building for PLATFORM=vpp using gcc")
+	$(call banner,"Building for PLATFORM=vpp")
 	@make -C build-root PLATFORM=vpp TAG=vpp wipe-all install-packages
 	$(call banner,"Building sample-plugin")
 	@make -C build-root PLATFORM=vpp TAG=vpp sample-plugin-install
@@ -749,7 +750,8 @@ pkg-verify: install-dep $(BR)/.deps.ok install-ext-deps
 	$(call banner,"Building $(PKG) packages")
 	@make pkg-$(PKG)
 
-MAKE_VERIFY_GATE_OS ?= ubuntu-20.04
+# Note: 'make verify' target is not used by ci-management scripts
+MAKE_VERIFY_GATE_OS ?= ubuntu-22.04
 .PHONY: verify
 verify: pkg-verify
 ifeq ($(OS_ID)-$(OS_VERSION_ID),$(MAKE_VERIFY_GATE_OS))
@@ -760,3 +762,7 @@ ifeq ($(OS_ID)-$(OS_VERSION_ID),$(MAKE_VERIFY_GATE_OS))
 else
 	$(call banner,"Skipping tests. Tests under 'make verify' supported on $(MAKE_VERIFY_GATE_OS)")
 endif
+
+.PHONY: check-dpdk-mlx
+check-dpdk-mlx:
+	@[ $$(make -sC build/external dpdk-show-DPDK_MLX_DEFAULT) = y ]

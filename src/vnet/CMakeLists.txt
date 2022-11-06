@@ -670,6 +670,7 @@ list(APPEND VNET_SOURCES
   udp/udp_encap.c
   udp/udp_decap.c
   udp/udp_api.c
+  udp/udp_output.c
 )
 
 list(APPEND VNET_MULTIARCH_SOURCES
@@ -819,6 +820,7 @@ list(APPEND VNET_SOURCES
   srv6/sr_steering.c
   srv6/sr_api.c
   srv6/sr_pt.c
+  srv6/sr_pt_node.c
 )
 
 list(APPEND VNET_HEADERS

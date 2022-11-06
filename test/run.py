@@ -25,6 +25,7 @@ from subprocess import Popen, PIPE, STDOUT, call
 import sys
 import time
 import venv
+import datetime
 
 
 # Required Std. Path Variables
@@ -282,6 +283,7 @@ def run_tests_in_venv(
     log_dir,
     socket_dir="",
     running_vpp=False,
+    extended=False,
 ):
     """Runs tests in the virtual environment set by venv_dir.
 
@@ -291,6 +293,7 @@ def run_tests_in_venv(
     log_dir: Directory location for storing log files
     socket_dir: Use running VPP's socket files
     running_vpp: True if tests are run against a running VPP
+    extended: Run extended tests
     """
     script = os.path.join(test_dir, "scripts", "run.sh")
     args = [
@@ -300,9 +303,12 @@ def run_tests_in_venv(
         f"--filter={test}",
         f"--jobs={jobs}",
         f"--log-dir={log_dir}",
+        f"--tmp-dir={log_dir}",
     ]
     if running_vpp:
         args = args + [f"--use-running-vpp"]
+    if extended:
+        args = args + [f"--extended"]
     print(f"Running script: {script} " f"{' '.join(args)}")
     process_args = [script] + args
     call(process_args)
@@ -376,9 +382,9 @@ if __name__ == "__main__":
     parser.add_argument(
         "--log-dir",
         action="store",
-        default="/tmp",
+        default=os.path.abspath(f"./test-run-{datetime.date.today()}"),
         help="directory where to store directories "
-        "containing log files (default: /tmp)",
+        "containing log files (default: ./test-run-YYYY-MM-DD)",
     )
     parser.add_argument(
         "--jobs",
@@ -407,6 +413,15 @@ if __name__ == "__main__":
         "Default: /var/run/vpp if VPP is started as the root user, else "
         "/var/run/user/${uid}/vpp.",
     )
+    parser.add_argument(
+        "-e",
+        "--extended",
+        dest="extended",
+        required=False,
+        action="store_true",
+        default=False,
+        help="Run extended tests.",
+    )
     args = parser.parse_args()
     vm_tests = False
     # Enable VM tests
@@ -434,6 +449,7 @@ if __name__ == "__main__":
             log_dir=args.log_dir,
             socket_dir=args.socket_dir,
             running_vpp=args.running_vpp,
+            extended=args.extended,
         )
     # Run tests against a VPP inside a VM
     else:

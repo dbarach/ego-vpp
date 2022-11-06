@@ -55,6 +55,24 @@ typedef enum udp_conn_flags_
 #undef _
 } udp_conn_flags_t;
 
+#define foreach_udp_cfg_flag _ (NO_CSUM_OFFLOAD, "no-csum-offload")
+
+typedef enum udp_cfg_flag_bits_
+{
+#define _(sym, str) UDP_CFG_F_##sym##_BIT,
+  foreach_udp_cfg_flag
+#undef _
+    UDP_CFG_N_FLAG_BITS
+} udp_cfg_flag_bits_e;
+
+typedef enum udp_cfg_flag_
+{
+#define _(sym, str) UDP_CFG_F_##sym = 1 << UDP_CFG_F_##sym##_BIT,
+  foreach_udp_cfg_flag
+#undef _
+    UDP_CFG_N_FLAGS
+} __clib_packed udp_cfg_flags_t;
+
 typedef struct
 {
   /** Required for pool_get_aligned */
@@ -62,9 +80,14 @@ typedef struct
   transport_connection_t connection;	/**< must be first */
   clib_spinlock_t rx_lock;		/**< rx fifo lock */
   u8 flags;				/**< connection flags */
+  udp_cfg_flags_t cfg_flags;		/**< configuration flags */
   u16 mss;				/**< connection mss */
   u32 sw_if_index;			/**< connection sw_if_index */
+  u32 next_node_index;	/**< Can be used to control next node in output */
+  u32 next_node_opaque; /**< Opaque to pass to next node */
 } udp_connection_t;
+
+#define udp_csum_offload(uc) (!((uc)->cfg_flags & UDP_CFG_F_NO_CSUM_OFFLOAD))
 
 typedef struct
 {
@@ -94,6 +117,12 @@ typedef enum
   N_UDP_AF,
 } udp_af_t;
 
+typedef struct udp_worker_
+{
+  udp_connection_t *connections;
+  u32 *pending_cleanups;
+} udp_worker_t;
+
 typedef struct
 {
   udp_dst_port_info_t *dst_port_infos[N_UDP_AF];
@@ -113,13 +142,15 @@ typedef struct
   u32 local_to_input_edge[N_UDP_AF];
 
   /*
-   * Per-worker thread udp connection pools used with session layer
+   * UDP transport layer per-thread context
    */
-  udp_connection_t **connections;
+
+  udp_worker_t *wrk;
   udp_connection_t *listener_pool;
 
   u16 default_mtu;
   u16 msg_id_base;
+  u8 csum_offload;
 
   u8 icmp_send_unreachable_disabled;
 } udp_main_t;
@@ -129,16 +160,26 @@ extern vlib_node_registration_t udp4_input_node;
 extern vlib_node_registration_t udp6_input_node;
 extern vlib_node_registration_t udp4_local_node;
 extern vlib_node_registration_t udp6_local_node;
+extern vlib_node_registration_t udp4_output_node;
+extern vlib_node_registration_t udp6_output_node;
 
 void udp_add_dst_port (udp_main_t * um, udp_dst_port_t dst_port,
 		       char *dst_port_name, u8 is_ip4);
 
+always_inline udp_worker_t *
+udp_worker_get (u32 thread_index)
+{
+  return vec_elt_at_index (udp_main.wrk, thread_index);
+}
+
 always_inline udp_connection_t *
 udp_connection_get (u32 conn_index, u32 thread_index)
 {
-  if (pool_is_free_index (udp_main.connections[thread_index], conn_index))
+  udp_worker_t *wrk = udp_worker_get (thread_index);
+
+  if (pool_is_free_index (wrk->connections, conn_index))
     return 0;
-  return pool_elt_at_index (udp_main.connections[thread_index], conn_index);
+  return pool_elt_at_index (wrk->connections, conn_index);
 }
 
 always_inline udp_connection_t *
@@ -171,7 +212,7 @@ udp_connection_clone_safe (u32 connection_index, u32 thread_index)
   new_c = udp_connection_alloc (current_thread_index);
   new_index = new_c->c_c_index;
   /* Connection pool always realloced with barrier */
-  old_c = udp_main.connections[thread_index] + connection_index;
+  old_c = udp_main.wrk[thread_index].connections + connection_index;
   clib_memcpy_fast (new_c, old_c, sizeof (*new_c));
   old_c->flags |= UDP_CONN_F_MIGRATED;
   new_c->c_thread_index = current_thread_index;

@@ -527,6 +527,13 @@ int session_tx_fifo_peek_bytes (transport_connection_t * tc, u8 * buffer,
 				u32 offset, u32 max_bytes);
 u32 session_tx_fifo_dequeue_drop (transport_connection_t * tc, u32 max_bytes);
 
+always_inline void
+session_set_state (session_t *s, session_state_t session_state)
+{
+  s->session_state = session_state;
+  SESSION_EVT (SESSION_EVT_STATE_CHANGE, s);
+}
+
 always_inline u32
 transport_max_rx_enqueue (transport_connection_t * tc)
 {
@@ -674,7 +681,8 @@ ho_session_alloc (void)
   if (CLIB_DEBUG)
     {
       session_t *sp = session_main.wrk[0].sessions;
-      clib_bitmap_validate (pool_header (sp)->free_bitmap, s->session_index);
+      clib_bitmap_validate (pool_header (sp)->free_bitmap,
+			    s->session_index + 1);
     }
   return s;
 }
@@ -769,7 +777,7 @@ void session_wrk_enable_adaptive_mode (session_worker_t *wrk);
 fifo_segment_t *session_main_get_wrk_mqs_segment (void);
 void session_node_enable_disable (u8 is_en);
 clib_error_t *vnet_session_enable_disable (vlib_main_t * vm, u8 is_en);
-void session_wrk_handle_evts_main_rpc ();
+void session_wrk_handle_evts_main_rpc (void *);
 
 session_t *session_alloc_for_connection (transport_connection_t * tc);
 session_t *session_alloc_for_half_open (transport_connection_t *tc);

@@ -92,14 +92,13 @@ udp_connection_share_port (u16 lcl_port, u8 is_ip4)
 udp_connection_t *
 udp_connection_alloc (u32 thread_index)
 {
-  udp_main_t *um = &udp_main;
+  udp_worker_t *wrk = udp_worker_get (thread_index);
   udp_connection_t *uc;
 
-  pool_get_aligned_safe (um->connections[thread_index], uc,
-			 CLIB_CACHE_LINE_BYTES);
+  pool_get_aligned_safe (wrk->connections, uc, CLIB_CACHE_LINE_BYTES);
 
   clib_memset (uc, 0, sizeof (*uc));
-  uc->c_c_index = uc - um->connections[thread_index];
+  uc->c_c_index = uc - wrk->connections;
   uc->c_thread_index = thread_index;
   uc->c_proto = TRANSPORT_PROTO_UDP;
   return uc;
@@ -108,11 +107,12 @@ udp_connection_alloc (u32 thread_index)
 void
 udp_connection_free (udp_connection_t * uc)
 {
-  u32 thread_index = uc->c_thread_index;
+  udp_worker_t *wrk = udp_worker_get (uc->c_thread_index);
+
   clib_spinlock_free (&uc->rx_lock);
   if (CLIB_DEBUG)
     clib_memset (uc, 0xFA, sizeof (*uc));
-  pool_put (udp_main.connections[thread_index], uc);
+  pool_put (wrk->connections, uc);
 }
 
 static void
@@ -130,6 +130,38 @@ udp_connection_delete (udp_connection_t * uc)
 {
   session_transport_delete_notify (&uc->connection);
   udp_connection_cleanup (uc);
+}
+
+static void
+udp_handle_cleanups (void *args)
+{
+  u32 thread_index = (u32) pointer_to_uword (args);
+  udp_connection_t *uc;
+  udp_worker_t *wrk;
+  u32 *uc_index;
+
+  wrk = udp_worker_get (thread_index);
+  vec_foreach (uc_index, wrk->pending_cleanups)
+    {
+      uc = udp_connection_get (*uc_index, thread_index);
+      udp_connection_delete (uc);
+    }
+  vec_reset_length (wrk->pending_cleanups);
+}
+
+static void
+udp_connection_program_cleanup (udp_connection_t *uc)
+{
+  uword thread_index = uc->c_thread_index;
+  udp_worker_t *wrk;
+
+  wrk = udp_worker_get (uc->c_thread_index);
+  vec_add1 (wrk->pending_cleanups, uc->c_c_index);
+
+  if (vec_len (wrk->pending_cleanups) == 1)
+    session_send_rpc_evt_to_thread_force (
+      thread_index, udp_handle_cleanups,
+      uword_to_pointer (thread_index, void *));
 }
 
 static u8
@@ -194,6 +226,8 @@ udp_session_bind (u32 session_index, transport_endpoint_cfg_t *lcl)
   else
     listener->c_flags |= TRANSPORT_CONNECTION_F_CLESS;
   clib_spinlock_init (&listener->rx_lock);
+  if (!um->csum_offload)
+    listener->cfg_flags |= UDP_CFG_F_NO_CSUM_OFFLOAD;
 
   udp_connection_register_port (lcl_port_ho, lcl->is_ip4);
   return listener->c_c_index;
@@ -225,17 +259,11 @@ udp_session_get_listener (u32 listener_index)
 always_inline u32
 udp_push_one_header (vlib_main_t *vm, udp_connection_t *uc, vlib_buffer_t *b)
 {
-  vlib_buffer_push_udp (b, uc->c_lcl_port, uc->c_rmt_port, 1);
-  if (uc->c_is_ip4)
-    vlib_buffer_push_ip4_custom (vm, b, &uc->c_lcl_ip4, &uc->c_rmt_ip4,
-				 IP_PROTOCOL_UDP, 1 /* csum offload */,
-				 0 /* is_df */, uc->c_dscp);
-  else
-    vlib_buffer_push_ip6 (vm, b, &uc->c_lcl_ip6, &uc->c_rmt_ip6,
-			  IP_PROTOCOL_UDP);
-  vnet_buffer (b)->sw_if_index[VLIB_RX] = uc->sw_if_index;
-  vnet_buffer (b)->sw_if_index[VLIB_TX] = uc->c_fib_index;
+  vlib_buffer_push_udp (b, uc->c_lcl_port, uc->c_rmt_port,
+			udp_csum_offload (uc));
   b->flags |= VNET_BUFFER_F_LOCALLY_ORIGINATED;
+  /* reuse tcp medatada for now */
+  vnet_buffer (b)->tcp.connection_index = uc->c_c_index;
 
   return 0;
 }
@@ -273,7 +301,7 @@ udp_push_header (transport_connection_t *tc, vlib_buffer_t **bs, u32 n_bufs)
   if (PREDICT_FALSE (uc->flags & UDP_CONN_F_CLOSING))
     {
       if (!transport_max_tx_dequeue (&uc->connection))
-	udp_connection_delete (uc);
+	udp_connection_program_cleanup (uc);
     }
 
   return 0;
@@ -299,7 +327,7 @@ udp_session_close (u32 connection_index, u32 thread_index)
     return;
 
   if (!transport_max_tx_dequeue (&uc->connection))
-    udp_connection_delete (uc);
+    udp_connection_program_cleanup (uc);
   else
     uc->flags |= UDP_CONN_F_CLOSING;
 }
@@ -412,6 +440,10 @@ conn_alloc:
       clib_spinlock_init (&uc->rx_lock);
       uc->c_flags |= TRANSPORT_CONNECTION_F_CLESS;
     }
+  if (!um->csum_offload)
+    uc->cfg_flags |= UDP_CFG_F_NO_CSUM_OFFLOAD;
+  uc->next_node_index = rmt->next_node_index;
+  uc->next_node_opaque = rmt->next_node_opaque;
 
   return uc->c_c_index;
 }
@@ -505,18 +537,18 @@ udp_init (vlib_main_t * vm)
   pi->format_header = format_udp_header;
   pi->unformat_pg_edit = unformat_pg_udp_header;
 
-  /* Register as transport with URI */
+  /* Register as transport with session layer */
   transport_register_protocol (TRANSPORT_PROTO_UDP, &udp_proto,
-			       FIB_PROTOCOL_IP4, ip4_lookup_node.index);
+			       FIB_PROTOCOL_IP4, udp4_output_node.index);
   transport_register_protocol (TRANSPORT_PROTO_UDP, &udp_proto,
-			       FIB_PROTOCOL_IP6, ip6_lookup_node.index);
+			       FIB_PROTOCOL_IP6, udp6_output_node.index);
 
   /*
    * Initialize data structures
    */
 
   num_threads = 1 /* main thread */  + tm->n_threads;
-  vec_validate (um->connections, num_threads - 1);
+  vec_validate (um->wrk, num_threads - 1);
 
   um->local_to_input_edge[UDP_IP4] =
     vlib_node_add_next (vm, udp4_local_node.index, udp4_input_node.index);
@@ -524,6 +556,7 @@ udp_init (vlib_main_t * vm)
     vlib_node_add_next (vm, udp6_local_node.index, udp6_input_node.index);
 
   um->default_mtu = 1500;
+  um->csum_offload = 1;
   return 0;
 }
 
