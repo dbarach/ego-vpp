@@ -309,7 +309,9 @@ static int
 acl_api_invalid_prefix (const vl_api_prefix_t * prefix)
 {
   ip_prefix_t ip_prefix;
-  return ip_prefix_decode2 (prefix, &ip_prefix);
+  int valid_af =
+    prefix->address.af == ADDRESS_IP4 || prefix->address.af == ADDRESS_IP6;
+  return (!valid_af) || ip_prefix_decode2 (prefix, &ip_prefix);
 }
 
 static int
@@ -338,6 +340,8 @@ acl_add_list (u32 count, vl_api_acl_rule_t rules[],
 	return VNET_API_ERROR_INVALID_SRC_ADDRESS;
       if (acl_api_invalid_prefix (&rules[i].dst_prefix))
 	return VNET_API_ERROR_INVALID_DST_ADDRESS;
+      if (rules[i].src_prefix.address.af != rules[i].dst_prefix.address.af)
+	return VNET_API_ERROR_INVALID_SRC_ADDRESS;
       if (ntohs (rules[i].srcport_or_icmptype_first) >
 	  ntohs (rules[i].srcport_or_icmptype_last))
 	return VNET_API_ERROR_INVALID_VALUE_2;
@@ -2840,6 +2844,7 @@ acl_set_aclplugin_interface_fn (vlib_main_t * vm,
 	break;
     }
 
+  unformat_free (line_input);
   if (~0 == sw_if_index)
     return (clib_error_return (0, "invalid interface"));
   if (~0 == acl_index)
@@ -2847,7 +2852,6 @@ acl_set_aclplugin_interface_fn (vlib_main_t * vm,
 
   acl_interface_add_del_inout_acl (sw_if_index, is_add, is_input, acl_index);
 
-  unformat_free (line_input);
   return (NULL);
 }
 
@@ -2980,6 +2984,7 @@ acl_set_aclplugin_acl_fn (vlib_main_t * vm,
   vec_free (rules);
   vec_free (tag);
 
+  unformat_free (line_input);
   if (rv)
     return (clib_error_return (0, "failed"));
 

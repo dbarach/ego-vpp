@@ -154,7 +154,7 @@ class VPPValueError(ValueError):
 
 class VPPApiJSONFiles:
     @classmethod
-    def find_api_dir(cls, dirs):
+    def find_api_dir(cls, dirs=[]):
         """Attempt to find the best directory in which API definition
         files may reside. If the value VPP_API_DIR exists in the environment
         then it is first on the search list. If we're inside a recognized
@@ -169,6 +169,9 @@ class VPPApiJSONFiles:
         # perhaps we're in the 'src/scripts' or 'src/vpp-api/python' dir;
         # in which case, plot a course to likely places in the src tree
         import __main__ as main
+
+        if os.getenv("VPP_API_DIR"):
+            dirs.append(os.getenv("VPP_API_DIR"))
 
         if hasattr(main, "__file__"):
             # get the path of the calling script
@@ -449,7 +452,12 @@ class VPPApiClient:
         if not apifiles:
             # Pick up API definitions from default directory
             try:
-                apifiles = VPPApiJSONFiles.find_api_files(self.apidir)
+                if isinstance(self.apidir, list):
+                    apifiles = []
+                    for d in self.apidir:
+                        apifiles += VPPApiJSONFiles.find_api_files(d)
+                else:
+                    apifiles = VPPApiJSONFiles.find_api_files(self.apidir)
             except (RuntimeError, VPPApiError):
                 # In test mode we don't care that we can't find the API files
                 if testmode:
@@ -525,6 +533,13 @@ class VPPApiClient:
 
         return f
 
+    def make_pack_function(self, msg, i, multipart):
+        def f(**kwargs):
+            return self._call_vpp_pack(i, msg, **kwargs)
+
+        f.msg = msg
+        return f
+
     def _register_functions(self, do_async=False):
         self.id_names = [None] * (self.vpp_dictionary_maxid + 1)
         self.id_msgdef = [None] * (self.vpp_dictionary_maxid + 1)
@@ -539,14 +554,16 @@ class VPPApiClient:
                 # Create function for client side messages.
                 if name in self.services:
                     f = self.make_function(msg, i, self.services[name], do_async)
+                    f_pack = self.make_pack_function(msg, i, self.services[name])
                     setattr(self._api, name, FuncWrapper(f))
+                    setattr(self._api, name + "_pack", FuncWrapper(f_pack))
             else:
                 self.logger.debug("No such message type or failed CRC checksum: %s", n)
 
     def connect_internal(self, name, msg_handler, chroot_prefix, rx_qlen, do_async):
         pfx = chroot_prefix.encode("utf-8") if chroot_prefix else None
 
-        rv = self.transport.connect(name, pfx, msg_handler, rx_qlen)
+        rv = self.transport.connect(name, pfx, msg_handler, rx_qlen, do_async)
         if rv != 0:
             raise VPPIOError(2, "Connect failed")
         self.vpp_dictionary_maxid = self.transport.msg_table_max_index()
@@ -830,6 +847,13 @@ class VPPApiClient:
 
         self.transport.write(b)
         return context
+
+    def _call_vpp_pack(self, i, msg, **kwargs):
+        """Given a message, return the binary representation."""
+        kwargs["_vl_msg_id"] = i
+        kwargs["client_index"] = 0
+        kwargs["context"] = 0
+        return msg.pack(kwargs)
 
     def read_blocking(self, no_type_conversion=False, timeout=None):
         """Get next received message from transport within timeout, decoded.

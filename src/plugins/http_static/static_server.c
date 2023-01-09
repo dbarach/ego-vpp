@@ -41,7 +41,7 @@ hss_session_alloc (u32 thread_index)
   return hs;
 }
 
-static hss_session_t *
+__clib_export hss_session_t *
 hss_session_get (u32 thread_index, u32 hs_index)
 {
   hss_main_t *hsm = &hss_main;
@@ -89,7 +89,7 @@ start_send_data (hss_session_t *hs, http_status_code_t status)
 
   msg.type = HTTP_MSG_REPLY;
   msg.code = status;
-  msg.content_type = HTTP_CONTENT_TEXT_HTML;
+  msg.content_type = hs->content_type;
   msg.data.len = hs->data_len;
 
   if (hs->data_len > hss_main.use_ptr_thresh)
@@ -145,6 +145,71 @@ hss_session_send_data (hss_url_handler_args_t *args)
   start_send_data (hs, args->sc);
 }
 
+/*
+ * path_has_known_suffix()
+ * Returns 1 if the request ends with a known suffix, like .htm or .ico
+ * Used to avoid looking for "/favicon.ico/index.html" or similar.
+ */
+
+static int
+path_has_known_suffix (u8 *request)
+{
+  u8 *ext;
+  uword *p;
+
+  if (vec_len (request) == 0)
+    {
+      return 0;
+    }
+
+  ext = request + vec_len (request) - 1;
+
+  while (ext > request && ext[0] != '.')
+    ext--;
+
+  if (ext == request)
+    return 0;
+
+  p = hash_get_mem (hss_main.mime_type_indices_by_file_extensions, ext);
+  if (p)
+    return 1;
+
+  return 0;
+}
+
+/*
+ * content_type_from_request
+ * Returns the index of the request's suffix in the
+ * http-layer http_content_type_str[] array.
+ */
+
+static http_content_type_t
+content_type_from_request (u8 *request)
+{
+  u8 *ext;
+  uword *p;
+  /* default to text/html */
+  http_content_type_t rv = HTTP_CONTENT_TEXT_HTML;
+
+  ASSERT (vec_len (request) > 0);
+
+  ext = request + vec_len (request) - 1;
+
+  while (ext > request && ext[0] != '.')
+    ext--;
+
+  if (ext == request)
+    return rv;
+
+  p = hash_get_mem (hss_main.mime_type_indices_by_file_extensions, ext);
+
+  if (p == 0)
+    return rv;
+
+  rv = p[0];
+  return rv;
+}
+
 static int
 try_url_handler (hss_main_t *hsm, hss_session_t *hs, http_req_method_t rt,
 		 u8 *request)
@@ -152,10 +217,19 @@ try_url_handler (hss_main_t *hsm, hss_session_t *hs, http_req_method_t rt,
   http_status_code_t sc = HTTP_STATUS_OK;
   hss_url_handler_args_t args = {};
   uword *p, *url_table;
+  http_content_type_t type;
   int rv;
 
   if (!hsm->enable_url_handlers || !request)
     return -1;
+
+  /* zero-length? try "index.html" */
+  if (vec_len (request) == 0)
+    {
+      request = format (request, "index.html");
+    }
+
+  type = content_type_from_request (request);
 
   /* Look for built-in GET / POST handlers */
   url_table =
@@ -193,6 +267,7 @@ try_url_handler (hss_main_t *hsm, hss_session_t *hs, http_req_method_t rt,
   hs->data = args.data;
   hs->data_len = args.data_len;
   hs->free_data = args.free_vec_data;
+  hs->content_type = type;
 
   start_send_data (hs, sc);
 
@@ -261,7 +336,6 @@ try_index_file (hss_main_t *hsm, hss_session_t *hs, u8 *path)
 
   redirect =
     format (0,
-	    "HTTP/1.1 301 Moved Permanently\r\n"
 	    "Location: http%s://%U%s%s\r\n\r\n",
 	    proto == TRANSPORT_PROTO_TLS ? "s" : "", format_ip46_address,
 	    &endpt.ip, endpt.is_ip4, print_port ? port_str : (u8 *) "", path);
@@ -275,7 +349,7 @@ try_index_file (hss_main_t *hsm, hss_session_t *hs, u8 *path)
   hs->data_len = vec_len (redirect);
   hs->free_data = 1;
 
-  return HTTP_STATUS_OK;
+  return HTTP_STATUS_MOVED;
 }
 
 static int
@@ -285,10 +359,13 @@ try_file_handler (hss_main_t *hsm, hss_session_t *hs, http_req_method_t rt,
   http_status_code_t sc = HTTP_STATUS_OK;
   u8 *path;
   u32 ce_index;
+  http_content_type_t type;
 
   /* Feature not enabled */
   if (!hsm->www_root)
     return -1;
+
+  type = content_type_from_request (request);
 
   /*
    * Construct the file to open
@@ -307,7 +384,6 @@ try_file_handler (hss_main_t *hsm, hss_session_t *hs, http_req_method_t rt,
   if (hs->data && hs->free_data)
     vec_free (hs->data);
 
-  hs->path = path;
   hs->data_offset = 0;
 
   ce_index =
@@ -316,6 +392,17 @@ try_file_handler (hss_main_t *hsm, hss_session_t *hs, http_req_method_t rt,
     {
       if (!file_path_is_valid (path))
 	{
+	  /*
+	   * Generate error 404 right now if we can't find a path with
+	   * a known file extension. It's silly to look for
+	   * "favicon.ico/index.html" if you can't find
+	   * "favicon.ico"; realistic example which used to happen.
+	   */
+	  if (path_has_known_suffix (path))
+	    {
+	      sc = HTTP_STATUS_NOT_FOUND;
+	      goto done;
+	    }
 	  sc = try_index_file (hsm, hs, path);
 	  goto done;
 	}
@@ -328,10 +415,12 @@ try_file_handler (hss_main_t *hsm, hss_session_t *hs, http_req_method_t rt,
 	}
     }
 
+  hs->path = path;
   hs->cache_pool_index = ce_index;
 
 done:
 
+  hs->content_type = type;
   start_send_data (hs, sc);
   if (!hs->data)
     hss_session_disconnect_transport (hs);
@@ -385,6 +474,8 @@ hss_ts_rx_callback (session_t *ts)
       vec_validate (request, msg.data.len - 1);
       rv = svm_fifo_dequeue (ts->rx_fifo, msg.data.len, request);
       ASSERT (rv == msg.data.len);
+      /* request must be a proper C-string in addition to a vector */
+      vec_add1 (request, 0);
     }
 
   /* Find and send data */
@@ -906,6 +997,16 @@ hss_main_init (vlib_main_t *vm)
 
   hsm->app_index = ~0;
   hsm->vlib_main = vm;
+
+  /* Set up file extension to mime type index map */
+  hsm->mime_type_indices_by_file_extensions =
+    hash_create_string (0, sizeof (uword));
+
+#define _(def, ext, str)                                                      \
+  hash_set_mem (hsm->mime_type_indices_by_file_extensions, ext,               \
+		HTTP_CONTENT_##def);
+  foreach_http_content_type;
+#undef _
 
   return 0;
 }

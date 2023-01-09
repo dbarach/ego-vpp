@@ -157,9 +157,6 @@ typedef struct session_worker_
   /** Flag that is set if main thread signaled to handle connects */
   u32 n_pending_connects;
 
-  /** Main thread loops in poll mode without a connect */
-  u32 no_connect_loops;
-
   /** List head for first worker evts pending handling on main */
   clib_llist_index_t evts_pending_main;
 
@@ -212,7 +209,9 @@ typedef struct session_main_
    * Trade memory for speed, for now */
   u32 *session_type_to_next;
 
-  /** Thread for cl and ho that rely on cl allocs */
+  /** Thread used for allocating active open connections, i.e., half-opens
+   * for transports like tcp, and sessions that will be migrated for cl
+   * transports like udp. If vpp has workers, this will be first worker. */
   u32 transport_cl_thread;
 
   transport_proto_t last_transport_proto_type;
@@ -616,6 +615,13 @@ transport_cl_thread (void)
   return session_main.transport_cl_thread;
 }
 
+always_inline u32
+session_vlib_thread_is_cl_thread (void)
+{
+  return (vlib_get_thread_index () == transport_cl_thread () ||
+	  vlib_thread_is_main_w_barrier ());
+}
+
 /*
  * Listen sessions
  */
@@ -668,29 +674,17 @@ always_inline session_t *
 ho_session_alloc (void)
 {
   session_t *s;
-  ASSERT (vlib_get_thread_index () == 0);
-  s = session_alloc (0);
+  ASSERT (session_vlib_thread_is_cl_thread ());
+  s = session_alloc (transport_cl_thread ());
   s->session_state = SESSION_STATE_CONNECTING;
   s->flags |= SESSION_F_HALF_OPEN;
-  /* Not ideal. Half-opens are only allocated from main with worker barrier
-   * but can be cleaned up, i.e., session_half_open_free, from main without
-   * a barrier. In debug images, the free_bitmap can grow while workers peek
-   * the sessions pool, e.g., session_half_open_migrate_notify, and as a
-   * result crash while validating the session. To avoid this, grow the bitmap
-   * now. */
-  if (CLIB_DEBUG)
-    {
-      session_t *sp = session_main.wrk[0].sessions;
-      clib_bitmap_validate (pool_header (sp)->free_bitmap,
-			    s->session_index + 1);
-    }
   return s;
 }
 
 always_inline session_t *
 ho_session_get (u32 ho_index)
 {
-  return session_get (ho_index, 0 /* half-open thread */);
+  return session_get (ho_index, transport_cl_thread ());
 }
 
 always_inline void
@@ -715,7 +709,7 @@ vnet_get_session_main ()
 always_inline session_worker_t *
 session_main_get_worker (u32 thread_index)
 {
-  return &session_main.wrk[thread_index];
+  return vec_elt_at_index (session_main.wrk, thread_index);
 }
 
 static inline session_worker_t *
@@ -723,13 +717,13 @@ session_main_get_worker_if_valid (u32 thread_index)
 {
   if (thread_index > vec_len (session_main.wrk))
     return 0;
-  return &session_main.wrk[thread_index];
+  return session_main_get_worker (thread_index);
 }
 
 always_inline svm_msg_q_t *
 session_main_get_vpp_event_queue (u32 thread_index)
 {
-  return session_main.wrk[thread_index].vpp_event_queue;
+  return session_main_get_worker (thread_index)->vpp_event_queue;
 }
 
 always_inline u8
@@ -821,8 +815,7 @@ pool_program_safe_realloc_rpc (void *args)
     {
       max_elts = _vec_max_len (*pra->pool, pra->elt_size);
       n_alloc = clib_max (2 * max_elts, POOL_REALLOC_SAFE_ELT_THRESH);
-      _pool_alloc (pra->pool, free_elts + n_alloc, pra->align, 0,
-		   pra->elt_size);
+      _pool_alloc (pra->pool, n_alloc, pra->align, 0, pra->elt_size);
     }
   pool_realloc_flag (*pra->pool) = 0;
   clib_mem_free (args);

@@ -188,8 +188,7 @@ tcp_session_get_listener (u32 listener_index)
 static tcp_connection_t *
 tcp_half_open_connection_alloc (void)
 {
-  ASSERT (vlib_get_thread_index () == 0);
-  return tcp_connection_alloc (0);
+  return tcp_connection_alloc (transport_cl_thread ());
 }
 
 /**
@@ -199,7 +198,8 @@ tcp_half_open_connection_alloc (void)
 static void
 tcp_half_open_connection_free (tcp_connection_t * tc)
 {
-  ASSERT (vlib_get_thread_index () == 0);
+  ASSERT (vlib_get_thread_index () == tc->c_thread_index ||
+	  vlib_thread_is_main_w_barrier ());
   return tcp_connection_free (tc);
 }
 
@@ -240,8 +240,8 @@ tcp_connection_cleanup (tcp_connection_t * tc)
 
   /* Cleanup local endpoint if this was an active connect */
   if (!(tc->cfg_flags & TCP_CFG_F_NO_ENDPOINT))
-    transport_endpoint_cleanup (TRANSPORT_PROTO_TCP, &tc->c_lcl_ip,
-				tc->c_lcl_port);
+    transport_release_local_endpoint (TRANSPORT_PROTO_TCP, &tc->c_lcl_ip,
+				      tc->c_lcl_port);
 
   /* Check if connection is not yet fully established */
   if (tc->state == TCP_STATE_SYN_SENT)

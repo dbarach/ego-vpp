@@ -59,7 +59,7 @@ static_always_inline void nat_validate_interface_counters (snat_main_t *sm,
       if (PREDICT_FALSE (sm->enabled))                                        \
 	{                                                                     \
 	  nat_log_err ("plugin enabled");                                     \
-	  return 1;                                                           \
+	  return VNET_API_ERROR_FEATURE_ALREADY_ENABLED;                      \
 	}                                                                     \
     }                                                                         \
   while (0)
@@ -71,7 +71,7 @@ static_always_inline void nat_validate_interface_counters (snat_main_t *sm,
       if (PREDICT_FALSE (!sm->enabled))                                       \
 	{                                                                     \
 	  nat_log_err ("plugin disabled");                                    \
-	  return 1;                                                           \
+	  return VNET_API_ERROR_FEATURE_ALREADY_DISABLED;                     \
 	}                                                                     \
     }                                                                         \
   while (0)
@@ -147,7 +147,8 @@ VLIB_PLUGIN_REGISTER () = {
     .description = "Network Address Translation (NAT)",
 };
 
-static void nat44_ed_db_init (u32 translations, u32 translation_buckets);
+static void nat44_ed_db_init ();
+static void nat44_ed_db_free ();
 static void nat44_ed_worker_db_free (snat_main_per_thread_data_t *tsm);
 
 static int nat44_ed_add_static_mapping_internal (
@@ -286,8 +287,7 @@ nat44_ed_resolve_nat_addr_len (snat_address_t *ap,
 	{
 	  ap->addr_len = ia->address_length;
 	  ap->sw_if_index = i->sw_if_index;
-	  ap->net.as_u32 = (ap->addr.as_u32 >> (32 - ap->addr_len))
-			   << (32 - ap->addr_len);
+	  ap->net.as_u32 = ap->addr.as_u32 & ip4_main.fib_masks[ap->addr_len];
 
 	  nat_log_debug ("pool addr %U binds to -> sw_if_idx: %u net: %U/%u",
 			 format_ip4_address, &ap->addr, ap->sw_if_index,
@@ -334,8 +334,7 @@ nat44_ed_bind_if_addr_to_nat_addr (u32 sw_if_index)
 	{
 	  ap->addr_len = ia->address_length;
 	  ap->sw_if_index = sw_if_index;
-	  ap->net.as_u32 = (ap->addr.as_u32 >> (32 - ap->addr_len))
-			   << (32 - ap->addr_len);
+	  ap->net.as_u32 = ap->addr.as_u32 & ip4_main.fib_masks[ap->addr_len];
 
 	  nat_log_debug ("pool addr %U binds to -> sw_if_idx: %u net: %U/%u",
 			 format_ip4_address, &ap->addr, ap->sw_if_index,
@@ -1635,19 +1634,19 @@ expire_per_vrf_sessions (u32 fib_index)
 
   vec_foreach (tsm, sm->per_thread_data)
     {
-      vec_foreach (per_vrf_sessions, tsm->per_vrf_sessions_vec)
-        {
-          if ((per_vrf_sessions->rx_fib_index == fib_index) ||
-              (per_vrf_sessions->tx_fib_index == fib_index))
-            {
-              per_vrf_sessions->expired = 1;
-            }
-        }
+      pool_foreach (per_vrf_sessions, tsm->per_vrf_sessions_pool)
+	{
+	  if ((per_vrf_sessions->rx_fib_index == fib_index) ||
+	      (per_vrf_sessions->tx_fib_index == fib_index))
+	    {
+	      per_vrf_sessions->expired = 1;
+	    }
+	}
     }
 }
 
 void
-update_per_vrf_sessions_vec (u32 fib_index, int is_del)
+update_per_vrf_sessions_pool (u32 fib_index, int is_del)
 {
   snat_main_t *sm = &snat_main;
   nat_fib_t *fib;
@@ -1790,7 +1789,7 @@ nat44_ed_add_interface (u32 sw_if_index, u8 is_inside)
   fib_index =
     fib_table_get_index_for_sw_if_index (FIB_PROTOCOL_IP4, sw_if_index);
 
-  update_per_vrf_sessions_vec (fib_index, 0 /*is_del*/);
+  update_per_vrf_sessions_pool (fib_index, 0 /*is_del*/);
 
   if (!is_inside)
     {
@@ -1905,7 +1904,7 @@ nat44_ed_del_interface (u32 sw_if_index, u8 is_inside)
   fib_index =
     fib_table_get_index_for_sw_if_index (FIB_PROTOCOL_IP4, sw_if_index);
 
-  update_per_vrf_sessions_vec (fib_index, 1 /*is_del*/);
+  update_per_vrf_sessions_pool (fib_index, 1 /*is_del*/);
 
   if (!is_inside)
     {
@@ -2004,7 +2003,7 @@ nat44_ed_add_output_interface (u32 sw_if_index)
 
   fib_index =
     fib_table_get_index_for_sw_if_index (FIB_PROTOCOL_IP4, sw_if_index);
-  update_per_vrf_sessions_vec (fib_index, 0 /*is_del*/);
+  update_per_vrf_sessions_pool (fib_index, 0 /*is_del*/);
 
   outside_fib = nat44_ed_get_outside_fib (sm->outside_fibs, fib_index);
   if (outside_fib)
@@ -2094,7 +2093,7 @@ nat44_ed_del_output_interface (u32 sw_if_index)
 
   fib_index =
     fib_table_get_index_for_sw_if_index (FIB_PROTOCOL_IP4, sw_if_index);
-  update_per_vrf_sessions_vec (fib_index, 1 /*is_del*/);
+  update_per_vrf_sessions_pool (fib_index, 1 /*is_del*/);
 
   outside_fib = nat44_ed_get_outside_fib (sm->outside_fibs, fib_index);
   if (outside_fib)
@@ -2454,7 +2453,7 @@ nat44_plugin_enable (nat44_config_t c)
   sm->outside_fib_index = fib_table_find_or_create_and_lock (
     FIB_PROTOCOL_IP4, c.outside_vrf, sm->fib_src_hi);
 
-  nat44_ed_db_init (sm->max_translations_per_thread, sm->translation_buckets);
+  nat44_ed_db_init ();
 
   nat_affinity_enable ();
 
@@ -2589,6 +2588,55 @@ nat44_ed_del_output_interfaces ()
   return error;
 }
 
+static clib_error_t *
+nat44_ed_sw_interface_add_del (vnet_main_t *vnm, u32 sw_if_index, u32 is_add)
+{
+  snat_main_t *sm = &snat_main;
+  snat_interface_t *i;
+  int error = 0;
+
+  if (is_add)
+    return 0;
+
+  if (!sm->enabled)
+    return 0;
+
+  i = nat44_ed_get_interface (sm->interfaces, sw_if_index);
+  if (i)
+    {
+      bool is_inside = nat44_ed_is_interface_inside (i);
+      bool is_outside = nat44_ed_is_interface_outside (i);
+
+      if (is_inside)
+	{
+	  error |= nat44_ed_del_interface (sw_if_index, 1);
+	}
+      if (is_outside)
+	{
+	  error |= nat44_ed_del_interface (sw_if_index, 0);
+	}
+
+      if (error)
+	{
+	  nat_log_err ("error occurred while removing interface");
+	}
+    }
+
+  i = nat44_ed_get_interface (sm->output_feature_interfaces, sw_if_index);
+  if (i)
+    {
+      error = nat44_ed_del_output_interface (sw_if_index);
+      if (error)
+	{
+	  nat_log_err ("error occurred while removing output interface");
+	}
+    }
+
+  return 0;
+}
+
+VNET_SW_INTERFACE_ADD_DEL_FUNCTION (nat44_ed_sw_interface_add_del);
+
 int
 nat44_ed_del_static_mappings ()
 {
@@ -2620,7 +2668,6 @@ nat44_ed_del_static_mappings ()
 int
 nat44_plugin_disable ()
 {
-  snat_main_per_thread_data_t *tsm;
   snat_main_t *sm = &snat_main;
   int rc, error = 0;
 
@@ -2628,31 +2675,26 @@ nat44_plugin_disable ()
 
   rc = nat44_ed_del_static_mappings ();
   if (rc)
-    error = 1;
+    error = VNET_API_ERROR_BUG;
 
   rc = nat44_ed_del_addresses ();
   if (rc)
-    error = 1;
+    error = VNET_API_ERROR_BUG;
 
   rc = nat44_ed_del_interfaces ();
   if (rc)
-    error = 1;
+    error = VNET_API_ERROR_BUG;
 
   rc = nat44_ed_del_output_interfaces ();
   if (rc)
-    error = 1;
+    error = VNET_API_ERROR_BUG;
 
   nat44_ed_del_vrf_tables ();
 
   vec_free (sm->max_translations_per_fib);
   sm->max_translations_per_fib = 0;
 
-  clib_bihash_free_16_8 (&sm->flow_hash);
-
-  vec_foreach (tsm, sm->per_thread_data)
-    {
-      nat44_ed_worker_db_free (tsm);
-    }
+  nat44_ed_db_free ();
 
   clib_memset (&sm->rconfig, 0, sizeof (sm->rconfig));
 
@@ -3229,11 +3271,11 @@ nat44_update_session_limit (u32 session_limit, u32 vrf_id)
 }
 
 static void
-nat44_ed_worker_db_init (snat_main_per_thread_data_t *tsm, u32 translations,
-			 u32 translation_buckets)
+nat44_ed_worker_db_init (snat_main_per_thread_data_t *tsm, u32 translations)
 {
   dlist_elt_t *head;
 
+  pool_alloc (tsm->per_vrf_sessions_pool, translations);
   pool_alloc (tsm->sessions, translations);
   pool_alloc (tsm->lru_pool, translations);
 
@@ -3259,7 +3301,7 @@ nat44_ed_worker_db_init (snat_main_per_thread_data_t *tsm, u32 translations,
 }
 
 static void
-reinit_ed_flow_hash ()
+nat44_ed_flow_hash_init ()
 {
   snat_main_t *sm = &snat_main;
   // we expect 2 flows per session, so multiply translation_buckets by 2
@@ -3270,17 +3312,16 @@ reinit_ed_flow_hash ()
 }
 
 static void
-nat44_ed_db_init (u32 translations, u32 translation_buckets)
+nat44_ed_db_init ()
 {
   snat_main_t *sm = &snat_main;
   snat_main_per_thread_data_t *tsm;
 
-  reinit_ed_flow_hash ();
+  nat44_ed_flow_hash_init ();
 
   vec_foreach (tsm, sm->per_thread_data)
     {
-      nat44_ed_worker_db_init (tsm, sm->max_translations_per_thread,
-			       sm->translation_buckets);
+      nat44_ed_worker_db_init (tsm, sm->max_translations_per_thread);
     }
 }
 
@@ -3289,23 +3330,38 @@ nat44_ed_worker_db_free (snat_main_per_thread_data_t *tsm)
 {
   pool_free (tsm->lru_pool);
   pool_free (tsm->sessions);
-  vec_free (tsm->per_vrf_sessions_vec);
+  pool_free (tsm->per_vrf_sessions_pool);
+}
+
+static void
+nat44_ed_flow_hash_free ()
+{
+  snat_main_t *sm = &snat_main;
+
+  clib_bihash_free_16_8 (&sm->flow_hash);
+}
+
+static void
+nat44_ed_db_free ()
+{
+  snat_main_t *sm = &snat_main;
+  snat_main_per_thread_data_t *tsm;
+
+  vec_foreach (tsm, sm->per_thread_data)
+    {
+      nat44_ed_worker_db_free (tsm);
+    }
+
+  nat44_ed_flow_hash_free ();
 }
 
 void
 nat44_ed_sessions_clear ()
 {
   snat_main_t *sm = &snat_main;
-  snat_main_per_thread_data_t *tsm;
 
-  reinit_ed_flow_hash ();
-
-  vec_foreach (tsm, sm->per_thread_data)
-    {
-      nat44_ed_worker_db_free (tsm);
-      nat44_ed_worker_db_init (tsm, sm->max_translations_per_thread,
-			       sm->translation_buckets);
-    }
+  nat44_ed_db_free ();
+  nat44_ed_db_init ();
   vlib_zero_simple_counter (&sm->total_sessions, 0);
 }
 
@@ -3434,8 +3490,8 @@ nat44_ed_add_del_interface_address_cb (ip4_main_t *im, uword opaque,
 		    {
 		      ap->addr_len = address_length;
 		      ap->sw_if_index = sw_if_index;
-		      ap->net.as_u32 = (ap->addr.as_u32 >> (32 - ap->addr_len))
-				       << (32 - ap->addr_len);
+		      ap->net.as_u32 =
+			ap->addr.as_u32 & ip4_main.fib_masks[ap->addr_len];
 
 		      nat_log_debug (
 			"pool addr %U binds to -> sw_if_idx: %u net: %U/%u",

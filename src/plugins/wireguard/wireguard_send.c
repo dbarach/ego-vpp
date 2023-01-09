@@ -41,7 +41,8 @@ ip46_enqueue_packet (vlib_main_t *vm, u32 bi0, int is_ip4)
 }
 
 static void
-wg_buffer_prepend_rewrite (vlib_buffer_t *b0, const u8 *rewrite, u8 is_ip4)
+wg_buffer_prepend_rewrite (vlib_main_t *vm, vlib_buffer_t *b0,
+			   const u8 *rewrite, u8 is_ip4)
 {
   if (is_ip4)
     {
@@ -72,6 +73,13 @@ wg_buffer_prepend_rewrite (vlib_buffer_t *b0, const u8 *rewrite, u8 is_ip4)
 
       hdr6->ip6.payload_length = hdr6->udp.length =
 	clib_host_to_net_u16 (b0->current_length - sizeof (ip6_header_t));
+
+      /* IPv6 UDP checksum is mandatory */
+      int bogus = 0;
+      ip6_header_t *ip6_0 = &(hdr6->ip6);
+      hdr6->udp.checksum =
+	ip6_tcp_udp_icmp_compute_checksum (vm, b0, ip6_0, &bogus);
+      ASSERT (bogus == 0);
     }
 }
 
@@ -93,7 +101,7 @@ wg_create_buffer (vlib_main_t *vm, const u8 *rewrite, const u8 *packet,
 
   b0->current_length = packet_len;
 
-  wg_buffer_prepend_rewrite (b0, rewrite, is_ip4);
+  wg_buffer_prepend_rewrite (vm, b0, rewrite, is_ip4);
 
   return true;
 }
@@ -206,8 +214,11 @@ wg_send_handshake_thread_fn (void *arg)
 
   wg_main_t *wmp = &wg_main;
   wg_peer_t *peer = wg_peer_get (a->peer_idx);
+  bool handshake;
 
   wg_send_handshake (wmp->vlib_main, peer, a->is_retry);
+  handshake = false;
+  __atomic_store_n (&peer->handshake_is_sent, handshake, __ATOMIC_RELEASE);
   return 0;
 }
 
@@ -219,8 +230,18 @@ wg_send_handshake_from_mt (u32 peer_idx, bool is_retry)
     .is_retry = is_retry,
   };
 
-  vl_api_rpc_call_main_thread (wg_send_handshake_thread_fn,
-			       (u8 *) & a, sizeof (a));
+  wg_peer_t *peer = wg_peer_get (peer_idx);
+
+  bool handshake =
+    __atomic_load_n (&peer->handshake_is_sent, __ATOMIC_ACQUIRE);
+
+  if (handshake == false)
+    {
+      handshake = true;
+      __atomic_store_n (&peer->handshake_is_sent, handshake, __ATOMIC_RELEASE);
+      vl_api_rpc_call_main_thread (wg_send_handshake_thread_fn, (u8 *) &a,
+				   sizeof (a));
+    }
 }
 
 bool

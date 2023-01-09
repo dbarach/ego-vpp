@@ -676,6 +676,7 @@ quic_send_datagram (session_t *udp_session, struct iovec *packet,
   hdr.is_ip4 = tc->is_ip4;
   clib_memcpy (&hdr.lcl_ip, &tc->lcl_ip, sizeof (ip46_address_t));
   hdr.lcl_port = tc->lcl_port;
+  hdr.gso_size = 0;
 
   /*  Read dest address from quicly-provided sockaddr */
   if (hdr.is_ip4)
@@ -2569,6 +2570,7 @@ quic_init (vlib_main_t * vm)
   transport_register_protocol (TRANSPORT_PROTO_QUIC, &quic_proto,
 			       FIB_PROTOCOL_IP6, ~0);
 
+  quic_load_openssl3_legacy_provider ();
   clib_bitmap_alloc (qm->available_crypto_engines,
 		     app_crypto_engine_n_types ());
   quic_register_cipher_suite (CRYPTO_ENGINE_PICOTLS,

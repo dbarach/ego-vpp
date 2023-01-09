@@ -89,6 +89,7 @@ GTAGS
 # language servers
 compile_commands.json
 .clangd
+.cache
 
 # indent backup files
 *.BAK
