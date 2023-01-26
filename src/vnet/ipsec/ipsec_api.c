@@ -327,7 +327,7 @@ vl_api_ipsec_spd_entry_add_del_v2_t_handler (
     goto out;
 
 out:
-  REPLY_MACRO2 (VL_API_IPSEC_SPD_ENTRY_ADD_DEL_REPLY,
+  REPLY_MACRO2 (VL_API_IPSEC_SPD_ENTRY_ADD_DEL_V2_REPLY,
 		({ rmp->stat_index = ntohl (stat_index); }));
 }
 
@@ -565,6 +565,31 @@ vl_api_ipsec_sad_entry_add_t_handler (vl_api_ipsec_sad_entry_add_t *mp)
 
   REPLY_MACRO2 (VL_API_IPSEC_SAD_ENTRY_ADD_REPLY,
 		{ rmp->stat_index = htonl (sa_index); });
+}
+
+static void
+vl_api_ipsec_sad_entry_update_t_handler (vl_api_ipsec_sad_entry_update_t *mp)
+{
+  vl_api_ipsec_sad_entry_update_reply_t *rmp;
+  u32 id;
+  tunnel_t tun = { 0 };
+  int rv;
+
+  id = ntohl (mp->sad_id);
+
+  if (mp->is_tun)
+    {
+      rv = tunnel_decode (&mp->tunnel, &tun);
+
+      if (rv)
+	goto out;
+    }
+
+  rv = ipsec_sa_update (id, htons (mp->udp_src_port), htons (mp->udp_dst_port),
+			&tun, mp->is_tun);
+
+out:
+  REPLY_MACRO (VL_API_IPSEC_SAD_ENTRY_UPDATE_REPLY);
 }
 
 static void

@@ -50,13 +50,6 @@ defaultmapping = {
     "bier_table_add_del": {
         "is_add": 1,
     },
-    "bridge_domain_add_del": {
-        "flood": 1,
-        "uu_flood": 1,
-        "forward": 1,
-        "learn": 1,
-        "is_add": 1,
-    },
     "bvi_delete": {},
     "geneve_add_del_tunnel": {
         "mcast_sw_if_index": 4294967295,
@@ -245,7 +238,7 @@ class VppPapiProvider(object):
 
         # install_dir is a class attribute. We need to set it before
         # calling the constructor.
-        VPPApiClient.apidir = config.vpp_install_dir
+        VPPApiClient.apidir = config.extern_apidir + [config.vpp_install_dir]
 
         self.vpp = VPPApiClient(
             logger=test_class.logger,

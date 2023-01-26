@@ -1,7 +1,6 @@
 package main
 
 import (
-	"context"
 	"encoding/json"
 	"errors"
 	"fmt"
@@ -10,12 +9,10 @@ import (
 	"os"
 	"os/exec"
 	"strings"
-	"testing"
 	"time"
-
-	"github.com/edwarnicke/exechelper"
 )
 
+// TODO remove `configTemplate` once its usage has been replaced everywhere with VppConfig
 const configTemplate = `unix {
   nodaemon
   log %[1]s/var/log/vpp/vpp.log
@@ -42,15 +39,29 @@ statseg {
 }
 
 plugins {
-	plugin unittest_plugin.so { enable }
-    plugin dpdk_plugin.so { disable }
-    plugin crypto_aesni_plugin.so { enable }
-    plugin quic_plugin.so { enable }
+  plugin default { disable }
+
+  plugin unittest_plugin.so { enable }
+  plugin quic_plugin.so { enable }
+  plugin af_packet_plugin.so { enable }
+  plugin hs_apps_plugin.so { enable }
+  plugin http_plugin.so { enable }
 }
 
 `
 
-const TopologyDir string = "topo/"
+const vclTemplate = `vcl {
+  app-socket-api %[1]s
+  app-scope-global
+  app-scope-local
+  namespace-id %[2]s
+  namespace-secret %[2]s
+  use-mq-eventfd
+}
+`
+
+const NetworkTopologyDir string = "topo-network/"
+const ContainerTopologyDir string = "topo-containers/"
 
 type Stanza struct {
 	content string
@@ -87,7 +98,7 @@ func StartServerApp(running chan error, done chan struct{}, env []string) {
 	cmd.Process.Kill()
 }
 
-func StartClientApp(env []string, clnCh chan error) {
+func StartClientApp(env []string, clnCh chan error, clnRes chan string) {
 	defer func() {
 		clnCh <- nil
 	}()
@@ -109,40 +120,16 @@ func StartClientApp(env []string, clnCh chan error) {
 			nTries++
 			continue
 		} else {
-			fmt.Printf("Client output: %s", o)
+			clnRes <- fmt.Sprintf("Client output: %s", o)
 		}
 		break
 	}
 }
 
-// run vpphelper in docker
-func hstExec(args string, instance string) (string, error) {
-	syncFile := fmt.Sprintf("/tmp/%s/sync/rc", instance)
-	os.Remove(syncFile)
-
-	c := "docker exec -d " + instance + " /hs-test " + args
-	err := exechelper.Run(c)
-	if err != nil {
-		return "", err
-	}
-
-	res, err := waitForSyncFile(syncFile)
-
-	if err != nil {
-		return "", fmt.Errorf("failed to read sync file while executing './hs-test %s': %v", args, err)
-	}
-
-	o := res.StdOutput + res.ErrOutput
-	if res.Code != 0 {
-		return o, fmt.Errorf("cmd resulted in non-zero value %d: %s", res.Code, res.Desc)
-	}
-	return o, err
-}
-
 func waitForSyncFile(fname string) (*JsonResult, error) {
 	var res JsonResult
 
-	for i := 0; i < 60; i++ {
+	for i := 0; i < 360; i++ {
 		f, err := os.Open(fname)
 		if err == nil {
 			defer f.Close()
@@ -162,17 +149,6 @@ func waitForSyncFile(fname string) (*JsonResult, error) {
 	return nil, fmt.Errorf("no sync file found")
 }
 
-func dockerRun(instance, args string) error {
-	exechelper.Run(fmt.Sprintf("mkdir -p /tmp/%s/sync", instance))
-	syncPath := fmt.Sprintf("-v /tmp/%s/sync:/tmp/sync", instance)
-	cmd := "docker run --cap-add=all -d --privileged --network host --rm "
-	cmd += syncPath
-	cmd += " " + args
-	cmd += " --name " + instance + " hs-test/vpp"
-	fmt.Println(cmd)
-	return exechelper.Run(cmd)
-}
-
 func assertFileSize(f1, f2 string) error {
 	fi1, err := os.Stat(f1)
 	if err != nil {
@@ -190,87 +166,6 @@ func assertFileSize(f1, f2 string) error {
 	return nil
 }
 
-func dockerExec(cmd string, instance string) ([]byte, error) {
-	c := "docker exec -d " + instance + " " + cmd
-	return exechelper.CombinedOutput(c)
-}
-
-func startEnvoy(ctx context.Context, dockerInstance string) <-chan error {
-	errCh := make(chan error)
-	wd, err := os.Getwd()
-	if err != nil {
-		errCh <- err
-		return errCh
-	}
-
-	c := []string{"docker", "run", "--rm", "--name", "envoy",
-		"-v", fmt.Sprintf("%s/envoy/proxy.yaml:/etc/envoy/envoy.yaml", wd),
-		"-v", fmt.Sprintf("shared-vol:/tmp/%s", dockerInstance),
-		"-v", fmt.Sprintf("%s/envoy:/tmp", wd),
-		"-e", "VCL_CONFIG=/tmp/vcl.conf",
-		"envoyproxy/envoy-contrib:v1.21-latest"}
-	fmt.Println(c)
-
-	go func(errCh chan error) {
-		count := 0
-		var cmd *exec.Cmd
-		for ; ; count++ {
-			cmd = NewCommand(c, "")
-			err = cmd.Start()
-			if err == nil {
-				break
-			}
-			if count > 5 {
-				errCh <- fmt.Errorf("Failed to start envoy docker after %d attempts", count)
-				return
-			}
-		}
-
-		err = cmd.Wait()
-		if err != nil {
-			errCh <- fmt.Errorf("failed to start docker: %v", err)
-			return
-		}
-		<-ctx.Done()
-	}(errCh)
-	return errCh
-}
-
-func setupEnvoy(t *testing.T, ctx context.Context, dockerInstance string) error {
-	errCh := startEnvoy(ctx, dockerInstance)
-	select {
-	case err := <-errCh:
-		return err
-	default:
-	}
-
-	go func(ctx context.Context, errCh <-chan error) {
-		for {
-			select {
-			// handle cancel() call from outside to gracefully stop the routine
-			case <-ctx.Done():
-				return
-			default:
-				select {
-				case err := <-errCh:
-					fmt.Printf("error while running envoy: %v", err)
-				default:
-				}
-			}
-		}
-	}(ctx, errCh)
-	return nil
-}
-
-func configureVppProxy() error {
-	_, err := dockerExec("vppctl test proxy server server-uri tcp://10.0.0.2/555 client-uri tcp://10.0.1.1/666",
-		"vpp-proxy")
-	if err != nil {
-		return fmt.Errorf("error while configuring vpp proxy test: %v", err)
-	}
-	return nil
-}
-
 func startHttpServer(running chan struct{}, done chan struct{}, addressPort, netNs string) {
 	cmd := NewCommand([]string{"./http_server", addressPort}, netNs)
 	err := cmd.Start()
@@ -283,20 +178,18 @@ func startHttpServer(running chan struct{}, done chan struct{}, addressPort, net
 	cmd.Process.Kill()
 }
 
-func startWget(finished chan error, server_ip, port string, netNs string) {
-	fname := "test_file_10M"
+func startWget(finished chan error, server_ip, port, query, netNs string) {
 	defer func() {
 		finished <- errors.New("wget error")
 	}()
 
-	cmd := NewCommand([]string{"wget", "--tries=5", "-q", "-O", "/dev/null", server_ip + ":" + port + "/" + fname},
+	cmd := NewCommand([]string{"wget", "--no-proxy", "--tries=5", "-q", "-O", "/dev/null", server_ip + ":" + port + "/" + query},
 		netNs)
 	o, err := cmd.CombinedOutput()
 	if err != nil {
-		fmt.Printf("wget error: '%s'.\n%s", err, o)
+		finished <- fmt.Errorf("wget error: '%v\n\n%s'", err, o)
 		return
 	}
-	fmt.Printf("Client output: %s", o)
 	finished <- nil
 }
 

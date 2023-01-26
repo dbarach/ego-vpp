@@ -28,6 +28,7 @@
 #include <vppinfra/mem.h>
 #include <vppinfra/lock.h>
 #include <vppinfra/time.h>
+#include <vppinfra/bitmap.h>
 #include <vppinfra/format.h>
 #include <vppinfra/clib_error.h>
 #include <vppinfra/linux/sysfs.h>
@@ -99,9 +100,10 @@ legacy_get_log2_default_hugepage_size (void)
 }
 
 void
-clib_mem_main_init ()
+clib_mem_main_init (void)
 {
   clib_mem_main_t *mm = &clib_mem_main;
+  long sysconf_page_size;
   uword page_size;
   void *va;
   int fd;
@@ -110,7 +112,12 @@ clib_mem_main_init ()
     return;
 
   /* system page size */
-  page_size = sysconf (_SC_PAGESIZE);
+  sysconf_page_size = sysconf (_SC_PAGESIZE);
+  if (sysconf_page_size < 0)
+    {
+      clib_panic ("Could not determine the page size");
+    }
+  page_size = sysconf_page_size;
   mm->log2_page_sz = min_log2 (page_size);
 
   /* default system hugeppage size */
@@ -608,8 +615,8 @@ __clib_export int
 clib_mem_set_numa_affinity (u8 numa_node, int force)
 {
   clib_mem_main_t *mm = &clib_mem_main;
-  long unsigned int mask[16] = { 0 };
-  int mask_len = sizeof (mask) * 8 + 1;
+  clib_bitmap_t *bmp = 0;
+  int rv;
 
   /* no numa support */
   if (mm->numa_node_bitmap == 0)
@@ -625,19 +632,21 @@ clib_mem_set_numa_affinity (u8 numa_node, int force)
 	return 0;
     }
 
-  mask[0] = 1 << numa_node;
+  bmp = clib_bitmap_set (bmp, numa_node, 1);
 
-  if (syscall (__NR_set_mempolicy, force ? MPOL_BIND : MPOL_PREFERRED, mask,
-	       mask_len))
-    goto error;
+  rv = syscall (__NR_set_mempolicy, force ? MPOL_BIND : MPOL_PREFERRED, bmp,
+		vec_len (bmp) * sizeof (bmp[0]) * 8 + 1);
 
+  clib_bitmap_free (bmp);
   vec_reset_length (mm->error);
+
+  if (rv)
+    {
+      mm->error = clib_error_return_unix (mm->error, (char *) __func__);
+      return CLIB_MEM_ERROR;
+    }
+
   return 0;
-
-error:
-  vec_reset_length (mm->error);
-  mm->error = clib_error_return_unix (mm->error, (char *) __func__);
-  return CLIB_MEM_ERROR;
 }
 
 __clib_export int

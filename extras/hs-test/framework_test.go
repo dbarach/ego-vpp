@@ -1,56 +1,155 @@
 package main
 
 import (
+	"io/ioutil"
+	"os"
 	"testing"
-	"time"
 
+	"github.com/edwarnicke/exechelper"
+	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/suite"
+	"gopkg.in/yaml.v3"
 )
 
-type TapSuite struct {
+func IsPersistent() bool {
+	return os.Getenv("HST_PERSIST") == "1"
+}
+
+func IsVerbose() bool {
+	return os.Getenv("HST_VERBOSE") == "1"
+}
+
+type HstSuite struct {
 	suite.Suite
 	teardownSuite func()
+	containers    map[string]*Container
+	volumes       []string
 }
 
-func (s *TapSuite) SetupSuite() {
-	time.Sleep(1 * time.Second)
-	s.teardownSuite = setupSuite(&s.Suite, "tap")
-}
-
-func (s *TapSuite) TearDownSuite() {
+func (s *HstSuite) TearDownSuite() {
 	s.teardownSuite()
 }
 
-type Veths2Suite struct {
-	suite.Suite
-	teardownSuite func()
+func (s *HstSuite) TearDownTest() {
+	if IsPersistent() {
+		return
+	}
+	s.ResetContainers()
+	s.RemoveVolumes()
 }
 
-func (s *Veths2Suite) SetupSuite() {
-	time.Sleep(1 * time.Second)
-	s.teardownSuite = setupSuite(&s.Suite, "2peerVeth")
+func (s *HstSuite) SetupTest() {
+	for _, volume := range s.volumes {
+		cmd := "docker volume create --name=" + volume
+		s.log(cmd)
+		exechelper.Run(cmd)
+	}
+	for _, container := range s.containers {
+		if container.isOptional == false {
+			container.run()
+		}
+	}
 }
 
-func (s *Veths2Suite) TearDownSuite() {
-	s.teardownSuite()
+func (s *HstSuite) hstFail() {
+	s.T().FailNow()
 }
 
-type NsSuite struct {
-	suite.Suite
-	teardownSuite func()
+func (s *HstSuite) assertNil(object interface{}, msgAndArgs ...interface{}) {
+	if !assert.Nil(s.T(), object, msgAndArgs...) {
+		s.hstFail()
+	}
 }
 
-func (s *NsSuite) SetupSuite() {
-	s.teardownSuite = setupSuite(&s.Suite, "ns")
+func (s *HstSuite) assertNotNil(object interface{}, msgAndArgs ...interface{}) {
+	if !assert.NotNil(s.T(), object, msgAndArgs...) {
+		s.hstFail()
+	}
 }
 
-func (s *NsSuite) TearDownSuite() {
-	s.teardownSuite()
+func (s *HstSuite) assertEqual(expected, actual interface{}, msgAndArgs ...interface{}) {
+	if !assert.Equal(s.T(), expected, actual, msgAndArgs...) {
+		s.hstFail()
+	}
+}
+
+func (s *HstSuite) assertNotEqual(expected, actual interface{}, msgAndArgs ...interface{}) {
+	if !assert.NotEqual(s.T(), expected, actual, msgAndArgs...) {
+		s.hstFail()
+	}
+}
+
+func (s *HstSuite) assertContains(testString, contains interface{}, msgAndArgs ...interface{}) {
+	if !assert.Contains(s.T(), testString, contains, msgAndArgs...) {
+		s.hstFail()
+	}
+}
+
+func (s *HstSuite) assertNotContains(testString, contains interface{}, msgAndArgs ...interface{}) {
+	if !assert.NotContains(s.T(), testString, contains, msgAndArgs...) {
+		s.hstFail()
+	}
+}
+
+func (s *HstSuite) log(args ...any) {
+	if IsVerbose() {
+		s.T().Log(args...)
+	}
+}
+
+func (s *HstSuite) skip(args ...any) {
+	s.log(args...)
+	s.T().SkipNow()
+}
+
+func (s *HstSuite) ResetContainers() {
+	for _, container := range s.containers {
+		container.stop()
+	}
+}
+
+func (s *HstSuite) RemoveVolumes() {
+	for _, volumeName := range s.volumes {
+		cmd := "docker volume rm " + volumeName
+		exechelper.Run(cmd)
+	}
+}
+
+func (s *HstSuite) getContainerByName(name string) *Container {
+	return s.containers[name]
+}
+
+func (s *HstSuite) loadContainerTopology(topologyName string) {
+	data, err := ioutil.ReadFile(ContainerTopologyDir + topologyName + ".yaml")
+	if err != nil {
+		s.T().Fatalf("read error: %v", err)
+	}
+	var yamlTopo YamlTopology
+	err = yaml.Unmarshal(data, &yamlTopo)
+	if err != nil {
+		s.T().Fatalf("unmarshal error: %v", err)
+	}
+
+	for _, elem := range yamlTopo.Volumes {
+		volumeMap := elem["volume"].(VolumeConfig)
+		hostDir := volumeMap["host-dir"].(string)
+		s.volumes = append(s.volumes, hostDir)
+	}
+
+	s.containers = make(map[string]*Container)
+	for _, elem := range yamlTopo.Containers {
+		newContainer, err := NewContainer(elem)
+		if err != nil {
+			s.T().Fatalf("config error: %v", err)
+		}
+		s.log(newContainer.getRunCommand())
+		s.containers[newContainer.name] = newContainer
+	}
 }
 
 func setupSuite(s *suite.Suite, topologyName string) func() {
 	t := s.T()
-	topology, err := LoadTopology(TopologyDir, topologyName)
+	topology, err := LoadTopology(NetworkTopologyDir, topologyName)
 	if err != nil {
 		t.Fatalf("error on loading topology '%s': %v", topologyName, err)
 	}
@@ -59,8 +158,10 @@ func setupSuite(s *suite.Suite, topologyName string) func() {
 		t.Fatalf("failed to configure %s: %v", topologyName, err)
 	}
 
-	t.Logf("topo %s loaded", topologyName)
 	return func() {
+		if IsPersistent() {
+			return
+		}
 		topology.Unconfigure()
 	}
 }
@@ -75,8 +176,12 @@ func TestNs(t *testing.T) {
 	suite.Run(t, &m)
 }
 
-func TestVeths2(t *testing.T) {
-	var m Veths2Suite
+func TestVeths(t *testing.T) {
+	var m VethsSuite
 	suite.Run(t, &m)
+}
 
+func TestNoTopo(t *testing.T) {
+	var m NoTopoSuite
+	suite.Run(t, &m)
 }

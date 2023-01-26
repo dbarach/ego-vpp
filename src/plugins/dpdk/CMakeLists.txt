@@ -104,7 +104,9 @@ else()
       else()
         message(WARNING "EXPERIMENTAL: DPDK plugin without dlopen mode")
 	vpp_plugin_find_library(dpdk IBVERBS_LIB "libibverbs.a")
-	string_append(DPDK_LINK_FLAGS "${IBVERBS_LIB} -Wl,--exclude-libs,ALL")
+	vpp_plugin_find_library(dpdk MLX5_LIB "libmlx5.a")
+	vpp_plugin_find_library(dpdk MLX4_LIB "libmlx4.a")
+	string_append(DPDK_LINK_FLAGS "-Wl,--whole-archive,${IBVERBS_LIB},${MLX5_LIB},${MLX4_LIB} -Wl,--no-whole-archive,--exclude-libs,ALL")
       endif()
     endif()
 endif()
@@ -154,7 +156,7 @@ add_vpp_plugin(dpdk
   ${DPDK_LINK_LIBRARIES}
 
   LINK_LIBRARIES
-  ${OPENSSL_LIBRARIES}
+  ${OPENSSL_CRYPTO_LIBRARIES}
 
   COMPONENT
   vpp-plugin-dpdk

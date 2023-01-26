@@ -1268,13 +1268,56 @@ vcl_api_attach (void)
   return vcl_bapi_attach ();
 }
 
+int
+vcl_is_first_reattach_to_execute ()
+{
+  if (vcm->reattach_count == 0)
+    return 1;
+
+  return 0;
+}
+
+void
+vcl_set_reattach_counter ()
+{
+  ++vcm->reattach_count;
+
+  if (vcm->reattach_count == vec_len (vcm->workers))
+    vcm->reattach_count = 0;
+}
+
+/**
+ * Reattach vcl to vpp after it has previously been disconnected.
+ *
+ * The logic should be:
+ * - first worker to hit `vcl_api_retry_attach` should attach to vpp,
+ *   to reproduce the `vcl_api_attach` in `vppcom_app_create`.
+ * - the rest of the workers should `reproduce vcl_worker_register_with_vpp`
+ *   from `vppcom_worker_register` since they were already allocated.
+ */
+
 static void
 vcl_api_retry_attach (vcl_worker_t *wrk)
 {
   vcl_session_t *s;
 
-  if (vcl_api_attach ())
-    return;
+  clib_spinlock_lock (&vcm->workers_lock);
+  if (vcl_is_first_reattach_to_execute ())
+    {
+      if (vcl_api_attach ())
+	{
+	  clib_spinlock_unlock (&vcm->workers_lock);
+	  return;
+	}
+      vcl_set_reattach_counter ();
+      clib_spinlock_unlock (&vcm->workers_lock);
+    }
+  else
+    {
+      vcl_set_reattach_counter ();
+      clib_spinlock_unlock (&vcm->workers_lock);
+      vcl_worker_register_with_vpp ();
+    }
 
   /* Treat listeners as configuration that needs to be re-added to vpp */
   pool_foreach (s, wrk->sessions)
@@ -2184,8 +2227,8 @@ vcl_fifo_is_writeable (svm_fifo_t * f, u32 len, u8 is_dgram)
 }
 
 always_inline int
-vppcom_session_write_inline (vcl_worker_t * wrk, vcl_session_t * s, void *buf,
-			     size_t n, u8 is_flush, u8 is_dgram)
+vppcom_session_write_inline (vcl_worker_t *wrk, vcl_session_t *s, void *buf,
+			     size_t n, u16 gso_size, u8 is_flush, u8 is_dgram)
 {
   int n_write, is_nonblocking;
   session_evt_type_t et;
@@ -2250,9 +2293,9 @@ vppcom_session_write_inline (vcl_worker_t * wrk, vcl_session_t * s, void *buf,
     et = SESSION_IO_EVT_TX_FLUSH;
 
   if (is_dgram)
-    n_write = app_send_dgram_raw (tx_fifo, &s->transport,
-				  s->vpp_evt_q, buf, n, et,
-				  0 /* do_evt */ , SVM_Q_WAIT);
+    n_write =
+      app_send_dgram_raw_gso (tx_fifo, &s->transport, s->vpp_evt_q, buf, n,
+			      gso_size, et, 0 /* do_evt */, SVM_Q_WAIT);
   else
     n_write = app_send_stream_raw (tx_fifo, s->vpp_evt_q, buf, n, et,
 				   0 /* do_evt */ , SVM_Q_WAIT);
@@ -2281,8 +2324,8 @@ vppcom_session_write (uint32_t session_handle, void *buf, size_t n)
   if (PREDICT_FALSE (!s))
     return VPPCOM_EBADFD;
 
-  return vppcom_session_write_inline (wrk, s, buf, n,
-				      0 /* is_flush */ , s->is_dgram ? 1 : 0);
+  return vppcom_session_write_inline (wrk, s, buf, n, 0, 0 /* is_flush */,
+				      s->is_dgram ? 1 : 0);
 }
 
 int
@@ -2295,8 +2338,8 @@ vppcom_session_write_msg (uint32_t session_handle, void *buf, size_t n)
   if (PREDICT_FALSE (!s))
     return VPPCOM_EBADFD;
 
-  return vppcom_session_write_inline (wrk, s, buf, n,
-				      1 /* is_flush */ , s->is_dgram ? 1 : 0);
+  return vppcom_session_write_inline (wrk, s, buf, n, 0, 1 /* is_flush */,
+				      s->is_dgram ? 1 : 0);
 }
 
 #define vcl_fifo_rx_evt_valid_or_break(_s)				\
@@ -3055,6 +3098,10 @@ vcl_epoll_wait_handle_mq_event (vcl_worker_t * wrk, session_event_t * e,
       /* Generate EPOLLOUT because there's no connected event */
       if (!(EPOLLOUT & session_events))
 	break;
+      /* We didn't have a fifo when the event was added */
+      svm_fifo_add_want_deq_ntf (
+	(vcl_session_is_ct (s) ? s->ct_tx_fifo : s->tx_fifo),
+	SVM_FIFO_WANT_DEQ_NOTIF_IF_FULL);
       add_event = 1;
       events[*num_ev].events = EPOLLOUT;
       session_evt_data = s->vep.ev.data.u64;
@@ -3965,7 +4012,6 @@ vppcom_session_attr (uint32_t session_handle, uint32_t op,
       VDBG (2, "VPPCOM_ATTR_GET_TCP_USER_MSS: %d, buflen %d", *(int *) buffer,
 	    *buflen);
       break;
-
     case VPPCOM_ATTR_SET_TCP_USER_MSS:
       if (!(buffer && buflen && (*buflen == sizeof (u32))))
 	{
@@ -4108,6 +4154,7 @@ vppcom_session_sendto (uint32_t session_handle, void *buffer,
 {
   vcl_worker_t *wrk = vcl_worker_get_current ();
   vcl_session_t *s;
+  u16 gso_size = 0;
 
   s = vcl_session_get_w_handle (wrk, session_handle);
   if (PREDICT_FALSE (!s))
@@ -4122,6 +4169,12 @@ vppcom_session_sendto (uint32_t session_handle, void *buffer,
       s->transport.rmt_port = ep->port;
       vcl_ip_copy_from_ep (&s->transport.rmt_ip, ep);
 
+      vppcom_endpt_tlv_t *p_app_data = &ep->app_data;
+
+      if (p_app_data && (p_app_data->data_type == VCL_UDP_SEGMENT))
+	{
+	  gso_size = p_app_data->value;
+	}
       /* Session not connected/bound in vpp. Create it by 'connecting' it */
       if (PREDICT_FALSE (s->session_state == VCL_STATE_CLOSED))
 	{
@@ -4145,7 +4198,7 @@ vppcom_session_sendto (uint32_t session_handle, void *buffer,
       VDBG (2, "handling flags 0x%u (%d) not implemented yet.", flags, flags);
     }
 
-  return (vppcom_session_write_inline (wrk, s, buffer, buflen, 1,
+  return (vppcom_session_write_inline (wrk, s, buffer, buflen, gso_size, 1,
 				       s->is_dgram ? 1 : 0));
 }
 

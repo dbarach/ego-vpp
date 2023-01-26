@@ -25,6 +25,8 @@ from subprocess import Popen, PIPE, STDOUT, call
 import sys
 import time
 import venv
+import datetime
+import re
 
 
 # Required Std. Path Variables
@@ -63,10 +65,15 @@ signal.signal(signal.SIGINT, handler)
 signal.signal(signal.SIGTERM, handler)
 
 
-def show_progress(stream):
+def show_progress(stream, exclude_pattern=None):
     """
     Read lines from a subprocess stdout/stderr streams and write
     to sys.stdout & the logfile
+
+    arguments:
+    stream - subprocess stdout or stderr data stream
+    exclude_pattern - lines matching this reg-ex will be excluded
+                      from stdout.
     """
     while True:
         s = stream.readline()
@@ -76,7 +83,11 @@ def show_progress(stream):
         # Filter the annoying SIGTERM signal from the output when VPP is
         # terminated after a test run
         if "SIGTERM" not in data:
-            sys.stdout.write(data)
+            if exclude_pattern is not None:
+                if bool(re.search(exclude_pattern, data)) is False:
+                    sys.stdout.write(data)
+            else:
+                sys.stdout.write(data)
             logging.debug(data)
         sys.stdout.flush()
     stream.close()
@@ -221,10 +232,13 @@ def vm_test_runner(test_name, kernel_image, test_data_dir, cpu_mask, mem, jobs="
     p = Popen(
         [script, test_name, kernel_image, test_data_dir, cpu_mask, mem],
         stdout=PIPE,
-        stderr=STDOUT,
         cwd=ws_root,
     )
-    show_progress(p.stdout)
+    # Show only the test result without clobbering the stdout.
+    # The VM console displays VPP stderr & Linux IPv6 netdev change
+    # messages, which is logged by default and can be excluded.
+    exclude_pattern = r"vpp\[\d+\]:|ADDRCONF\(NETDEV_CHANGE\):"
+    show_progress(p.stdout, exclude_pattern)
     post_vm_test_run()
 
 
@@ -282,6 +296,7 @@ def run_tests_in_venv(
     log_dir,
     socket_dir="",
     running_vpp=False,
+    extended=False,
 ):
     """Runs tests in the virtual environment set by venv_dir.
 
@@ -291,6 +306,7 @@ def run_tests_in_venv(
     log_dir: Directory location for storing log files
     socket_dir: Use running VPP's socket files
     running_vpp: True if tests are run against a running VPP
+    extended: Run extended tests
     """
     script = os.path.join(test_dir, "scripts", "run.sh")
     args = [
@@ -300,9 +316,13 @@ def run_tests_in_venv(
         f"--filter={test}",
         f"--jobs={jobs}",
         f"--log-dir={log_dir}",
+        f"--tmp-dir={log_dir}",
+        f"--cache-vpp-output",
     ]
     if running_vpp:
         args = args + [f"--use-running-vpp"]
+    if extended:
+        args = args + [f"--extended"]
     print(f"Running script: {script} " f"{' '.join(args)}")
     process_args = [script] + args
     call(process_args)
@@ -376,9 +396,9 @@ if __name__ == "__main__":
     parser.add_argument(
         "--log-dir",
         action="store",
-        default="/tmp",
+        default=os.path.abspath(f"./test-run-{datetime.date.today()}"),
         help="directory where to store directories "
-        "containing log files (default: /tmp)",
+        "containing log files (default: ./test-run-YYYY-MM-DD)",
     )
     parser.add_argument(
         "--jobs",
@@ -407,6 +427,15 @@ if __name__ == "__main__":
         "Default: /var/run/vpp if VPP is started as the root user, else "
         "/var/run/user/${uid}/vpp.",
     )
+    parser.add_argument(
+        "-e",
+        "--extended",
+        dest="extended",
+        required=False,
+        action="store_true",
+        default=False,
+        help="Run extended tests.",
+    )
     args = parser.parse_args()
     vm_tests = False
     # Enable VM tests
@@ -434,6 +463,7 @@ if __name__ == "__main__":
             log_dir=args.log_dir,
             socket_dir=args.socket_dir,
             running_vpp=args.running_vpp,
+            extended=args.extended,
         )
     # Run tests against a VPP inside a VM
     else:

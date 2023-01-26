@@ -50,6 +50,8 @@ typedef struct
   int free_data;
   /** File cache pool index */
   u32 cache_pool_index;
+  /** Content type, e.g. text, text/javascript, etc. */
+  http_content_type_t content_type;
 } hss_session_t;
 
 typedef struct hss_session_handle_
@@ -145,11 +147,14 @@ typedef struct
   /** The bind URI, defaults to tcp://0.0.0.0/80 */
   u8 *uri;
   /** Threshold for switching to ptr data in http msgs */
-  u32 use_ptr_thresh;
+  u64 use_ptr_thresh;
   /** Enable the use of builtinurls */
   u8 enable_url_handlers;
   /** Max cache size before LRU occurs */
   u64 cache_size;
+
+  /** hash table of file extensions to mime types string indices */
+  uword *mime_type_indices_by_file_extensions;
 } hss_main_t;
 
 extern hss_main_t hss_main;
@@ -163,6 +168,7 @@ void hss_register_url_handler (hss_url_handler_fn fp, const char *url,
 			       http_req_method_t type);
 void hss_session_send_data (hss_url_handler_args_t *args);
 void hss_builtinurl_json_handlers_init (void);
+hss_session_t *hss_session_get (u32 thread_index, u32 hs_index);
 
 #endif /* __included_http_static_h__ */
 

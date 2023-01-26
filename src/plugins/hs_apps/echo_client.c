@@ -25,21 +25,24 @@ static ec_main_t ec_main;
   clib_warning (_fmt, ##_args)
 
 static void
-signal_evt_to_cli_i (int *code)
+signal_evt_to_cli_i (void *codep)
 {
   ec_main_t *ecm = &ec_main;
+  int code;
+
   ASSERT (vlib_get_thread_index () == 0);
-  vlib_process_signal_event (ecm->vlib_main, ecm->cli_node_index, *code, 0);
+  code = pointer_to_uword (codep);
+  vlib_process_signal_event (ecm->vlib_main, ecm->cli_node_index, code, 0);
 }
 
 static void
 signal_evt_to_cli (int code)
 {
   if (vlib_get_thread_index () != 0)
-    vl_api_rpc_call_main_thread (signal_evt_to_cli_i, (u8 *) & code,
-				 sizeof (code));
+    session_send_rpc_evt_to_thread_force (
+      0, signal_evt_to_cli_i, uword_to_pointer ((uword) code, void *));
   else
-    signal_evt_to_cli_i (&code);
+    signal_evt_to_cli_i (uword_to_pointer ((uword) code, void *));
 }
 
 static inline ec_worker_t *
@@ -127,6 +130,7 @@ send_data_chunk (ec_main_t *ecm, ec_session_t *es)
       else
 	{
 	  bytes_this_chunk = clib_min (bytes_this_chunk, max_enqueue);
+	  bytes_this_chunk = clib_min (bytes_this_chunk, 1460);
 	  rv = app_send_dgram (&es->data, test_data + test_buf_offset,
 			       bytes_this_chunk, 0);
 	}
@@ -369,7 +373,6 @@ static int
 ec_init (vlib_main_t *vm)
 {
   ec_main_t *ecm = &ec_main;
-  vlib_thread_main_t *vtm = vlib_get_thread_main ();
   ec_worker_t *wrk;
   u32 num_threads;
   int i;
@@ -410,8 +413,8 @@ ec_init (vlib_main_t *vm)
   for (i = 0; i < vec_len (ecm->connect_test_data); i++)
     ecm->connect_test_data[i] = i & 0xff;
 
-  num_threads = 1 /* main thread */ + vtm->n_threads;
-  vec_validate (ecm->wrk, num_threads);
+  num_threads = 1 /* main thread */ + vlib_num_workers ();
+  vec_validate (ecm->wrk, num_threads - 1);
   vec_foreach (wrk, ecm->wrk)
     {
       vec_validate (wrk->rx_buf, vec_len (ecm->connect_test_data) - 1);
@@ -427,8 +430,8 @@ ec_init (vlib_main_t *vm)
   vlib_worker_thread_barrier_release (vm);
 
   /* Turn on the builtin client input nodes */
-  for (i = 0; i < vtm->n_vlib_mains; i++)
-    vlib_node_set_state (vlib_get_main_by_index (i), echo_clients_node.index,
+  foreach_vlib_main ()
+    vlib_node_set_state (this_vlib_main, echo_clients_node.index,
 			 VLIB_NODE_STATE_POLLING);
 
   return 0;
@@ -822,18 +825,16 @@ ec_connect_rpc (void *args)
 {
   ec_main_t *ecm = &ec_main;
   vnet_connect_args_t _a = {}, *a = &_a;
-  vlib_main_t *vm = vlib_get_main ();
   int rv, needs_crypto;
   u32 n_clients, ci;
 
   n_clients = ecm->n_clients;
   needs_crypto = ec_transport_needs_crypto (ecm->transport_proto);
   clib_memcpy (&a->sep_ext, &ecm->connect_sep, sizeof (ecm->connect_sep));
+  a->sep_ext.transport_flags |= TRANSPORT_CFG_F_CONNECTED;
   a->app_index = ecm->app_index;
 
   ci = ecm->connect_conn_index;
-
-  vlib_worker_thread_barrier_sync (vm);
 
   while (ci < n_clients)
     {
@@ -868,9 +869,7 @@ ec_connect_rpc (void *args)
       ci += 1;
     }
 
-  vlib_worker_thread_barrier_release (vm);
-
-  if (ci < ecm->expected_connections)
+  if (ci < ecm->expected_connections && ecm->run_test != EC_EXITING)
     ec_program_connects ();
 
   return 0;
@@ -879,7 +878,8 @@ ec_connect_rpc (void *args)
 void
 ec_program_connects (void)
 {
-  session_send_rpc_evt_to_thread_force (0, ec_connect_rpc, 0);
+  session_send_rpc_evt_to_thread_force (transport_cl_thread (), ec_connect_rpc,
+					0);
 }
 
 #define ec_cli(_fmt, _args...)                                                \
@@ -1052,8 +1052,8 @@ parse_config:
   switch (event_type)
     {
     case ~0:
-      ec_cli ("Timeout with %d sessions still active...",
-	      ecm->ready_connections);
+      ec_cli ("Timeout at %.6f with %d sessions still active...",
+	      vlib_time_now (ecm->vlib_main), ecm->ready_connections);
       error = clib_error_return (0, "failed: timeout with %d sessions",
 				 ecm->ready_connections);
       goto cleanup;

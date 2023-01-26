@@ -297,30 +297,6 @@ list(APPEND VNET_HEADERS
 )
 
 ##############################################################################
-# Layer 2 / vxlan
-##############################################################################
-list(APPEND VNET_SOURCES
-  vxlan/vxlan.c
-  vxlan/encap.c
-  vxlan/decap.c
-  vxlan/vxlan_api.c
-)
-
-list(APPEND VNET_MULTIARCH_SOURCES
-  vxlan/encap.c
-)
-
-list(APPEND VNET_HEADERS
-  vxlan/vxlan.h
-  vxlan/vxlan_packet.h
-  vxlan/vxlan_error.def
-)
-
-list(APPEND VNET_MULTIARCH_SOURCES vxlan/decap.c)
-
-list(APPEND VNET_API_FILES vxlan/vxlan.api)
-
-##############################################################################
 # Layer 2 / Bonding
 ##############################################################################
 list(APPEND VNET_SOURCES
@@ -670,6 +646,7 @@ list(APPEND VNET_SOURCES
   udp/udp_encap.c
   udp/udp_decap.c
   udp/udp_api.c
+  udp/udp_output.c
 )
 
 list(APPEND VNET_MULTIARCH_SOURCES
@@ -819,6 +796,8 @@ list(APPEND VNET_SOURCES
   srv6/sr_steering.c
   srv6/sr_api.c
   srv6/sr_pt.c
+  srv6/sr_pt_node.c
+  srv6/sr_pt_api.c
 )
 
 list(APPEND VNET_HEADERS
@@ -830,6 +809,7 @@ list(APPEND VNET_HEADERS
 list(APPEND VNET_API_FILES
   srv6/sr.api
   srv6/sr_types.api
+  srv6/sr_pt.api
 )
 
 ##############################################################################
@@ -982,10 +962,6 @@ list(APPEND VNET_SOURCES
   devices/virtio/format.c
   devices/virtio/node.c
   devices/virtio/pci.c
-  devices/virtio/vhost_user.c
-  devices/virtio/vhost_user_input.c
-  devices/virtio/vhost_user_output.c
-  devices/virtio/vhost_user_api.c
   devices/virtio/virtio.c
   devices/virtio/virtio_api.c
   devices/virtio/virtio_pci_legacy.c
@@ -1002,20 +978,15 @@ list(APPEND VNET_HEADERS
   devices/virtio/virtio_pci_legacy.h
   devices/virtio/virtio_pci_modern.h
   devices/virtio/vhost_std.h
-  devices/virtio/vhost_user.h
   devices/virtio/virtio_types_api.h
 )
 
 list(APPEND VNET_MULTIARCH_SOURCES
-  devices/virtio/vhost_user_input.c
-  devices/virtio/vhost_user_output.c
   devices/virtio/node.c
-  devices/af_packet/node.c
   devices/virtio/device.c
 )
 
 list(APPEND VNET_API_FILES
-  devices/virtio/vhost_user.api
   devices/virtio/virtio.api
   devices/virtio/virtio_types.api
 )
@@ -1110,27 +1081,6 @@ list(APPEND VNET_HEADERS
   tls/tls_test.h
 )
 
-##############################################################################
-# Linux packet interface
-##############################################################################
-
-list(APPEND VNET_SOURCES
-  devices/af_packet/af_packet.c
-  devices/af_packet/device.c
-  devices/af_packet/node.c
-  devices/af_packet/cli.c
-  devices/af_packet/af_packet_api.c
-)
-
-list(APPEND VNET_MULTIARCH_SOURCES
-  devices/af_packet/device.c
-)
-
-list(APPEND VNET_HEADERS
-  devices/af_packet/af_packet.h
-)
-
-list(APPEND VNET_API_FILES devices/af_packet/af_packet.api)
 
 ##############################################################################
 # Driver feature graph arc support

@@ -75,23 +75,22 @@ DEB_DEPENDS += libnl-3-dev libnl-route-3-dev libmnl-dev
 # DEB_DEPENDS += enchant  # for docs
 DEB_DEPENDS += python3-virtualenv
 DEB_DEPENDS += libssl-dev
-DEB_DEPENDS += libelf-dev # for libbpf (af_xdp)
+DEB_DEPENDS += libelf-dev libpcap-dev # for libxdp (af_xdp)
 DEB_DEPENDS += iperf3 # for 'make test TEST=vcl'
 DEB_DEPENDS += nasm
+DEB_DEPENDS += iperf ethtool  # for 'make test TEST=vm_vpp_interfaces'
 
 LIBFFI=libffi6 # works on all but 20.04 and debian-testing
 
 ifeq ($(OS_VERSION_ID),22.04)
 	DEB_DEPENDS += python3-virtualenv
 	DEB_DEPENDS += libssl-dev
-	DEB_DEPENDS += libelf-dev # for libbpf (af_xdp)
 	DEB_DEPENDS += clang clang-format-11
 	LIBFFI=libffi7
 	DEB_DEPENDS += enchant-2  # for docs
 else ifeq ($(OS_VERSION_ID),20.04)
 	DEB_DEPENDS += python3-virtualenv
 	DEB_DEPENDS += libssl-dev
-	DEB_DEPENDS += libelf-dev # for libbpf (af_xdp)
 	DEB_DEPENDS += clang clang-format-11
 	LIBFFI=libffi7
 	DEB_DEPENDS += enchant-2  # for docs
@@ -140,6 +139,7 @@ else ifeq ($(OS_ID)-$(OS_VERSION_ID),centos-8)
 	RPM_DEPENDS += python2-devel python36-devel python3-ply
 	RPM_DEPENDS += python3-virtualenv python3-jsonschema
 	RPM_DEPENDS += libarchive cmake
+	RPM_DEPENDS += infiniband-diags libibumad
 	RPM_DEPENDS_GROUPS = 'Development Tools'
 else
 	RPM_DEPENDS += yum-utils

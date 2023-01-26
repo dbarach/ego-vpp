@@ -115,6 +115,7 @@ udp_connection_accept (udp_connection_t * listener, session_dgram_hdr_t * hdr,
   uc->c_fib_index = listener->c_fib_index;
   uc->mss = listener->mss;
   uc->flags |= UDP_CONN_F_CONNECTED;
+  uc->cfg_flags = listener->cfg_flags;
 
   if (session_dgram_accept (&uc->connection, listener->c_s_index,
 			    listener->c_thread_index))
@@ -122,8 +123,8 @@ udp_connection_accept (udp_connection_t * listener, session_dgram_hdr_t * hdr,
       udp_connection_free (uc);
       return 0;
     }
-  udp_connection_share_port (clib_net_to_host_u16
-			     (uc->c_lcl_port), uc->c_is_ip4);
+  transport_share_local_endpoint (TRANSPORT_PROTO_UDP, &uc->c_lcl_ip,
+				  uc->c_lcl_port);
   return uc;
 }
 
@@ -184,6 +185,7 @@ udp_parse_and_lookup_buffer (vlib_buffer_t * b, session_dgram_hdr_t * hdr,
   hdr->lcl_port = udp->dst_port;
   hdr->rmt_port = udp->src_port;
   hdr->is_ip4 = is_ip4;
+  hdr->gso_size = 0;
 
   if (is_ip4)
     {

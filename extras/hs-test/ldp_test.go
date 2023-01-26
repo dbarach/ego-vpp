@@ -4,26 +4,21 @@ import (
 	"fmt"
 	"os"
 	"time"
-
-	"github.com/edwarnicke/exechelper"
 )
 
-func (s *Veths2Suite) TestLDPreloadIperfVpp() {
-	t := s.T()
+func (s *VethsSuite) TestLDPreloadIperfVpp() {
 	var clnVclConf, srvVclConf Stanza
 
-	srvInstance := "vpp-ldp-srv"
-	clnInstance := "vpp-ldp-cln"
-	srvPath := "/tmp/" + srvInstance
-	clnPath := "/tmp/" + clnInstance
-	srvVcl := srvPath + "/vcl_srv.conf"
-	clnVcl := clnPath + "/vcl_cln.conf"
+	serverContainer := s.getContainerByName("server-vpp")
+	serverVolume := serverContainer.getVolumeByHostDir("/tmp/server")
+	srvVcl := serverVolume.containerDir + "/vcl_srv.conf"
 
-	exechelper.Run("mkdir " + srvPath)
-	exechelper.Run("mkdir " + clnPath)
+	clientContainer := s.getContainerByName("client-vpp")
+	clientVolume := clientContainer.getVolumeByHostDir("/tmp/client")
+	clnVcl := clientVolume.containerDir + "/vcl_cln.conf"
 
 	ldpreload := os.Getenv("HST_LDPRELOAD")
-	s.Assert().NotEqual("", ldpreload)
+	s.assertNotEqual("", ldpreload)
 
 	ldpreload = "LD_PRELOAD=" + ldpreload
 
@@ -31,34 +26,22 @@ func (s *Veths2Suite) TestLDPreloadIperfVpp() {
 	srvCh := make(chan error, 1)
 	clnCh := make(chan error)
 
-	fmt.Println("starting VPPs")
+	s.log("starting VPPs")
 
-	err := dockerRun(srvInstance, fmt.Sprintf("-v /tmp/%s:/tmp", srvInstance))
-	if err != nil {
-		t.Errorf("%v", err)
-		return
-	}
-	defer func() { exechelper.Run("docker stop " + srvInstance) }()
+	originalWorkDir := serverContainer.workDir
+	serverContainer.workDir = serverVolume.containerDir
+	_, err := serverContainer.execAction("Configure2Veths srv")
+	s.assertNil(err)
+	serverContainer.workDir = originalWorkDir
 
-	err = dockerRun(clnInstance, fmt.Sprintf("-v /tmp/%s:/tmp", clnInstance))
-	if err != nil {
-		t.Errorf("%v", err)
-		return
-	}
-	defer func() { exechelper.Run("docker stop " + clnInstance) }()
+	originalWorkDir = clientContainer.workDir
+	clientContainer.workDir = clientVolume.containerDir
+	_, err = clientContainer.execAction("Configure2Veths cln")
+	s.assertNil(err)
+	clientContainer.workDir = originalWorkDir
 
-	_, err = hstExec("2veths srv", srvInstance)
-	if err != nil {
-		t.Errorf("%v", err)
-		return
-	}
-
-	_, err = hstExec("2veths cln", clnInstance)
-	if err != nil {
-		t.Errorf("%v", err)
-		return
-	}
-
+	clientAppSocketApi := fmt.Sprintf("app-socket-api %s/var/run/app_ns_sockets/2",
+		clientVolume.containerDir)
 	err = clnVclConf.
 		NewStanza("vcl").
 		Append("rx-fifo-size 4000000").
@@ -66,13 +49,12 @@ func (s *Veths2Suite) TestLDPreloadIperfVpp() {
 		Append("app-scope-local").
 		Append("app-scope-global").
 		Append("use-mq-eventfd").
-		Append(fmt.Sprintf("app-socket-api /tmp/%s/2veths/var/run/app_ns_sockets/2", clnInstance)).Close().
+		Append(clientAppSocketApi).Close().
 		SaveToFile(clnVcl)
-	if err != nil {
-		t.Errorf("%v", err)
-		t.FailNow()
-	}
+	s.assertNil(err)
 
+	serverAppSocketApi := fmt.Sprintf("app-socket-api %s/var/run/app_ns_sockets/1",
+		serverVolume.containerDir)
 	err = srvVclConf.
 		NewStanza("vcl").
 		Append("rx-fifo-size 4000000").
@@ -80,13 +62,11 @@ func (s *Veths2Suite) TestLDPreloadIperfVpp() {
 		Append("app-scope-local").
 		Append("app-scope-global").
 		Append("use-mq-eventfd").
-		Append(fmt.Sprintf("app-socket-api /tmp/%s/2veths/var/run/app_ns_sockets/1", srvInstance)).Close().
+		Append(serverAppSocketApi).Close().
 		SaveToFile(srvVcl)
-	if err != nil {
-		t.Errorf("%v", err)
-		t.FailNow()
-	}
-	fmt.Printf("attaching server to vpp")
+	s.assertNil(err)
+
+	s.log("attaching server to vpp")
 
 	// FIXME
 	time.Sleep(5 * time.Second)
@@ -95,19 +75,17 @@ func (s *Veths2Suite) TestLDPreloadIperfVpp() {
 	go StartServerApp(srvCh, stopServerCh, srvEnv)
 
 	err = <-srvCh
-	if err != nil {
-		s.FailNow("vcl server", "%v", err)
-	}
+	s.assertNil(err)
 
-	fmt.Println("attaching client to vpp")
+	s.log("attaching client to vpp")
+	var clnRes = make(chan string, 1)
 	clnEnv := append(os.Environ(), ldpreload, "VCL_CONFIG="+clnVcl)
-	go StartClientApp(clnEnv, clnCh)
+	go StartClientApp(clnEnv, clnCh, clnRes)
+	s.log(<-clnRes)
 
 	// wait for client's result
 	err = <-clnCh
-	if err != nil {
-		s.Failf("client", "%v", err)
-	}
+	s.assertNil(err)
 
 	// stop server
 	stopServerCh <- struct{}{}

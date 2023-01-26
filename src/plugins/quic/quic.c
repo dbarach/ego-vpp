@@ -388,7 +388,8 @@ quic_ctx_alloc (u32 thread_index)
   quic_main_t *qm = &quic_main;
   quic_ctx_t *ctx;
 
-  pool_get (qm->ctx_pool[thread_index], ctx);
+  pool_get_aligned_safe (qm->ctx_pool[thread_index], ctx,
+			 CLIB_CACHE_LINE_BYTES);
 
   clib_memset (ctx, 0, sizeof (quic_ctx_t));
   ctx->c_thread_index = thread_index;
@@ -675,6 +676,7 @@ quic_send_datagram (session_t *udp_session, struct iovec *packet,
   hdr.is_ip4 = tc->is_ip4;
   clib_memcpy (&hdr.lcl_ip, &tc->lcl_ip, sizeof (ip46_address_t));
   hdr.lcl_port = tc->lcl_port;
+  hdr.gso_size = 0;
 
   /*  Read dest address from quicly-provided sockaddr */
   if (hdr.is_ip4)
@@ -2568,6 +2570,7 @@ quic_init (vlib_main_t * vm)
   transport_register_protocol (TRANSPORT_PROTO_QUIC, &quic_proto,
 			       FIB_PROTOCOL_IP6, ~0);
 
+  quic_load_openssl3_legacy_provider ();
   clib_bitmap_alloc (qm->available_crypto_engines,
 		     app_crypto_engine_n_types ());
   quic_register_cipher_suite (CRYPTO_ENGINE_PICOTLS,
@@ -2674,7 +2677,6 @@ quic_get_counter_value (u32 event_code)
 
   u32 code, i;
   u64 c, sum = 0;
-  int index = 0;
 
   vm = vlib_get_main ();
   em = &vm->error_main;
@@ -2689,7 +2691,6 @@ quic_get_counter_value (u32 event_code)
       if (i < vec_len (em->counters_last_clear))
 	c -= em->counters_last_clear[i];
       sum += c;
-      index++;
     }
   return sum;
 }

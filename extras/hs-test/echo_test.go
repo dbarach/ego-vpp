@@ -1,51 +1,18 @@
 package main
 
-import (
-	"fmt"
+func (s *VethsSuite) TestEchoBuiltin() {
+	serverContainer := s.getContainerByName("server-vpp")
+	_, err := serverContainer.execAction("Configure2Veths srv")
+	s.assertNil(err)
 
-	"github.com/edwarnicke/exechelper"
-)
+	clientContainer := s.getContainerByName("client-vpp")
+	_, err = clientContainer.execAction("Configure2Veths cln")
+	s.assertNil(err)
 
-func (s *Veths2Suite) TestEchoBuiltin() {
-	t := s.T()
-	srvInstance := "echo-srv-internal"
-	clnInstance := "echo-cln-internal"
-	err := dockerRun(srvInstance, "")
-	if err != nil {
-		t.Errorf("%v", err)
-		return
-	}
-	defer func() { exechelper.Run("docker stop " + srvInstance) }()
+	_, err = serverContainer.execAction("RunEchoSrvInternal private-segment-size 1g fifo-size 4 no-echo")
+	s.assertNil(err)
 
-	err = dockerRun(clnInstance, "")
-	if err != nil {
-		t.Errorf("%v", err)
-		return
-	}
-	defer func() { exechelper.Run("docker stop " + clnInstance) }()
-
-	_, err = hstExec("2veths srv", srvInstance)
-	if err != nil {
-		t.Errorf("%v", err)
-		return
-	}
-
-	_, err = hstExec("2veths cln", clnInstance)
-	if err != nil {
-		t.Errorf("%v", err)
-		return
-	}
-
-	_, err = hstExec("echo-srv-internal private-segment-size 1g fifo-size 4 no-echo", srvInstance)
-	if err != nil {
-		t.Errorf("%v", err)
-		return
-	}
-
-	o, err := hstExec("echo-cln-internal nclients 10000 bytes 1 syn-timeout 100 test-timeout 100 no-return private-segment-size 1g fifo-size 4", clnInstance)
-	if err != nil {
-		t.Errorf("%v", err)
-		return
-	}
-	fmt.Println(o)
+	o, err := clientContainer.execAction("RunEchoClnInternal nclients 10000 bytes 1 syn-timeout 100 test-timeout 100 no-return private-segment-size 1g fifo-size 4")
+	s.assertNil(err)
+	s.log(o)
 }

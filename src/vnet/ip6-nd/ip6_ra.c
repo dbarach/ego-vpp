@@ -204,6 +204,16 @@ ip6_ra_get_itf (u32 sw_if_index)
   return (NULL);
 }
 
+u8
+ip6_ra_adv_enabled (u32 sw_if_index)
+{
+  ip6_ra_t *ra;
+
+  ra = ip6_ra_get_itf (sw_if_index);
+
+  return ((ra != NULL) && (ra->send_radv != 0));
+}
+
 /* for "syslogging" - use elog for now */
 #define foreach_log_level	     \
   _ (DEBUG, "DEBUG")                 \
@@ -1699,6 +1709,9 @@ ip6_ra_config (vlib_main_t * vm, u32 sw_if_index,
 
   if (!radv_info)
     return (VNET_API_ERROR_IP6_NOT_ENABLED);
+
+  /* Start off believing that we're going to send radv's */
+  radv_info->send_radv = 1;
 
   if ((max_interval != 0) && (min_interval == 0))
     min_interval = .75 * max_interval;
