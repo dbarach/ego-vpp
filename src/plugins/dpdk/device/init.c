@@ -449,6 +449,9 @@ dpdk_lib_init (dpdk_main_t * dm)
       xd->sw_if_index = sw->sw_if_index;
       dpdk_log_debug ("[%u] interface %s created", port_id, hi->name);
 
+      if (devconf->tag)
+	vnet_set_sw_interface_tag (vnm, devconf->tag, sw->sw_if_index);
+
       ethernet_set_flags (vnm, xd->hw_if_index,
 			  ETHERNET_INTERFACE_FLAG_DEFAULT_L3);
 
@@ -681,7 +684,8 @@ dpdk_bind_devices_to_uio (dpdk_config_main_t * conf)
         continue;
       }
 
-    error = vlib_pci_bind_to_uio (vm, addr, (char *) conf->uio_driver_name);
+    error = vlib_pci_bind_to_uio (vm, addr, (char *) conf->uio_driver_name,
+				  conf->uio_bind_force);
 
     if (error)
       {
@@ -875,6 +879,8 @@ dpdk_device_config (dpdk_config_main_t *conf, void *addr,
       else if (unformat (input, "num-tx-desc %u", &devconf->num_tx_desc))
 	;
       else if (unformat (input, "name %v", &devconf->name))
+	;
+      else if (unformat (input, "tag %s", &devconf->tag))
 	;
       else if (unformat (input, "workers %U", unformat_bitmap_list,
 			 &devconf->workers))
@@ -1089,6 +1095,8 @@ dpdk_config (vlib_main_t * vm, unformat_input_t * input)
 	}
       else if (unformat (input, "uio-driver %s", &conf->uio_driver_name))
 	;
+      else if (unformat (input, "uio-bind-force"))
+	conf->uio_bind_force = 1;
       else if (unformat (input, "socket-mem %s", &socket_mem))
 	;
       else if (unformat (input, "no-pci"))

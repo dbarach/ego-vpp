@@ -21,7 +21,7 @@
 #include <vnet/ip/ip.h>
 #include <vnet/ethernet/ethernet.h>
 #include <vnet/ethernet/arp_packet.h>
-#include <vnet/vxlan/vxlan.h>
+#include <vxlan/vxlan.h>
 #include <dpdk/device/dpdk.h>
 #include <dpdk/device/dpdk_priv.h>
 #include <vppinfra/error.h>
@@ -319,7 +319,8 @@ dpdk_flow_add (dpdk_device_t * xd, vnet_flow_t * f, dpdk_flow_entry_t * fe)
 
       if ((ip6_ptr->src_addr.mask.as_u64[0] == 0) &&
 	  (ip6_ptr->src_addr.mask.as_u64[1] == 0) &&
-	  (!ip6_ptr->protocol.mask))
+	  (ip6_ptr->dst_addr.mask.as_u64[0] == 0) &&
+	  (ip6_ptr->dst_addr.mask.as_u64[1] == 0) && (!ip6_ptr->protocol.mask))
 	{
 	  item->spec = NULL;
 	  item->mask = NULL;

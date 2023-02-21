@@ -1,6 +1,7 @@
 package main
 
 import (
+	"fmt"
 	"time"
 )
 
@@ -19,111 +20,98 @@ func (s *VethsSuite) TestVclEchoTcp() {
 }
 
 func (s *VethsSuite) testVclEcho(proto string) {
-	srvVppContainer := s.getContainerByName("server-vpp")
-
-	_, err := srvVppContainer.execAction("Configure2Veths srv")
-	s.assertNil(err)
-
-	clnVppContainer := s.getContainerByName("client-vpp")
-
-	_, err = clnVppContainer.execAction("Configure2Veths cln")
-	s.assertNil(err)
+	serverVethAddress := s.netInterfaces["vppsrv"].IP4AddressString()
+	uri := proto + "://" + serverVethAddress + "/12344"
 
 	echoSrvContainer := s.getContainerByName("server-application")
-
-	// run server app
-	_, err = echoSrvContainer.execAction("RunEchoServer "+proto)
-	s.assertNil(err)
+	serverCommand := "vpp_echo server TX=RX" +
+		" socket-name " + echoSrvContainer.GetContainerWorkDir() + "/var/run/app_ns_sockets/1" +
+		" use-app-socket-api" +
+		" uri " + uri
+	s.log(serverCommand)
+	echoSrvContainer.execServer(serverCommand)
 
 	echoClnContainer := s.getContainerByName("client-application")
 
-	o, err := echoClnContainer.execAction("RunEchoClient "+proto)
-	s.assertNil(err)
+	clientCommand := "vpp_echo client" +
+		" socket-name " + echoClnContainer.GetContainerWorkDir() + "/var/run/app_ns_sockets/2" +
+		" use-app-socket-api uri " + uri
+	s.log(clientCommand)
+	o := echoClnContainer.exec(clientCommand)
 
 	s.log(o)
 }
 
 func (s *VethsSuite) TestVclRetryAttach() {
-	s.skip()
+	s.skip("this test takes too long, for now it's being skipped")
 	s.testRetryAttach("tcp")
 }
 
 func (s *VethsSuite) testRetryAttach(proto string) {
-	srvVppContainer := s.getContainerByName("server-vpp")
-
-	_, err := srvVppContainer.execAction("Configure2Veths srv-with-preset-hw-addr")
-	s.assertNil(err)
-
-	clnVppContainer := s.getContainerByName("client-vpp")
-
-	_, err = clnVppContainer.execAction("Configure2Veths cln")
-	s.assertNil(err)
+	srvVppContainer := s.getTransientContainerByName("server-vpp")
 
 	echoSrvContainer := s.getContainerByName("server-application")
-	_, err = echoSrvContainer.execAction("RunVclEchoServer "+proto)
-	s.assertNil(err)
+
+	serverVclConfContent := fmt.Sprintf(vclTemplate, echoSrvContainer.GetContainerWorkDir(), "1")
+	echoSrvContainer.createFile("/vcl.conf", serverVclConfContent)
+
+	echoSrvContainer.addEnvVar("VCL_CONFIG", "/vcl.conf")
+	echoSrvContainer.execServer("vcl_test_server -p " + proto + " 12346")
 
 	s.log("This whole test case can take around 3 minutes to run. Please be patient.")
 	s.log("... Running first echo client test, before disconnect.")
-	echoClnContainer := s.getContainerByName("client-application")
-	_, err = echoClnContainer.execAction("RunVclEchoClient "+proto)
-	s.assertNil(err)
+
+	serverVeth := s.netInterfaces[serverInterfaceName]
+	serverVethAddress := serverVeth.IP4AddressString()
+
+	echoClnContainer := s.getTransientContainerByName("client-application")
+	clientVclConfContent := fmt.Sprintf(vclTemplate, echoClnContainer.GetContainerWorkDir(), "2")
+	echoClnContainer.createFile("/vcl.conf", clientVclConfContent)
+
+	testClientCommand := "vcl_test_client -U -p " + proto + " " + serverVethAddress + " 12346"
+	echoClnContainer.addEnvVar("VCL_CONFIG", "/vcl.conf")
+	o := echoClnContainer.exec(testClientCommand)
+	s.log(o)
 	s.log("... First test ended. Stopping VPP server now.")
 
 	// Stop server-vpp-instance, start it again and then run vcl-test-client once more
+	srvVppContainer.vppInstance.disconnect()
 	stopVppCommand := "/bin/bash -c 'ps -C vpp_main -o pid= | xargs kill -9'"
-	_, err = srvVppContainer.exec(stopVppCommand)
-	s.assertNil(err)
-	time.Sleep(5 * time.Second) // Give parent process time to reap the killed child process
-	stopVppCommand = "/bin/bash -c 'ps -C hs-test -o pid= | xargs kill -9'"
-	_, err = srvVppContainer.exec(stopVppCommand)
-	s.assertNil(err)
-	_, err = srvVppContainer.execAction("Configure2Veths srv-with-preset-hw-addr")
-	s.assertNil(err)
+	srvVppContainer.exec(stopVppCommand)
+
+	s.setupServerVpp()
 
 	s.log("... VPP server is starting again, so waiting for a bit.")
 	time.Sleep(30 * time.Second) // Wait a moment for the re-attachment to happen
 
 	s.log("... Running second echo client test, after disconnect and re-attachment.")
-	_, err = echoClnContainer.execAction("RunVclEchoClient "+proto)
-	s.assertNil(err)
+	o = echoClnContainer.exec(testClientCommand)
+	s.log(o)
 	s.log("Done.")
 }
 
 func (s *VethsSuite) TestTcpWithLoss() {
-	serverContainer := s.getContainerByName("server-vpp")
+	serverVpp := s.getContainerByName("server-vpp").vppInstance
 
-	serverVpp := NewVppInstance(serverContainer)
-	s.assertNotNil(serverVpp)
-	serverVpp.set2VethsServer()
-	err := serverVpp.start()
-	s.assertNil(err, "starting VPP failed")
+	serverVeth := s.netInterfaces[serverInterfaceName]
+	serverVpp.vppctl("test echo server uri tcp://%s/20022",
+		serverVeth.IP4AddressString())
 
-	_, err = serverVpp.vppctl("test echo server uri tcp://10.10.10.1/20022")
-	s.assertNil(err, "starting echo server failed")
-
-	clientContainer := s.getContainerByName("client-vpp")
-
-	clientVpp := NewVppInstance(clientContainer)
-	s.assertNotNil(clientVpp)
-	clientVpp.set2VethsClient()
-	err = clientVpp.start()
-	s.assertNil(err, "starting VPP failed")
+	clientVpp := s.getContainerByName("client-vpp").vppInstance
 
 	// Ensure that VPP doesn't abort itself with NSIM enabled
 	// Warning: Removing this ping will make the test fail!
-	_, err = serverVpp.vppctl("ping 10.10.10.2")
-	s.assertNil(err, "ping failed")
+	clientVpp.vppctl("ping %s", serverVeth.IP4AddressString())
 
 	// Add loss of packets with Network Delay Simulator
-	_, err = clientVpp.vppctl("set nsim poll-main-thread delay 0.01 ms bandwidth 40 gbit packet-size 1400 packets-per-drop 1000")
-	s.assertNil(err, "configuring NSIM failed")
-	_, err = clientVpp.vppctl("nsim output-feature enable-disable host-vppcln")
-	s.assertNil(err, "enabling NSIM failed")
+	clientVpp.vppctl("set nsim poll-main-thread delay 0.01 ms bandwidth 40 gbit" +
+		" packet-size 1400 packets-per-drop 1000")
+
+	clientVpp.vppctl("nsim output-feature enable-disable host-vppcln")
 
 	// Do echo test from client-vpp container
-	output, err := clientVpp.vppctl("test echo client uri tcp://10.10.10.1/20022 mbytes 50")
-	s.assertNil(err)
+	output := clientVpp.vppctl("test echo client uri tcp://%s/20022 mbytes 50",
+		serverVeth.IP4AddressString())
 	s.assertEqual(true, len(output) != 0)
 	s.assertNotContains(output, "failed: timeout")
 	s.log(output)

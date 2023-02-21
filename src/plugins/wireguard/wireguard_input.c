@@ -266,10 +266,6 @@ wg_handshake_process (vlib_main_t *vm, wg_main_t *wmp, vlib_buffer_t *b,
 	    vlib_node_increment_counter (vm, node_idx,
 					 WG_INPUT_ERROR_HANDSHAKE_SEND, 1);
 	  }
-	else
-	  {
-	    wg_peer_update_flags (rp->r_peer_idx, WG_PEER_ESTABLISHED, true);
-	  }
 	break;
       }
     case MESSAGE_HANDSHAKE_RESPONSE:
@@ -343,9 +339,11 @@ wg_input_post_process (vlib_main_t *vm, vlib_buffer_t *b, u16 *next,
 		       bool *is_keepalive)
 {
   next[0] = WG_INPUT_NEXT_PUNT;
+  noise_keypair_t *kp;
 
-  noise_keypair_t *kp =
-    wg_get_active_keypair (&peer->remote, data->receiver_index);
+  if ((kp = wg_get_active_keypair (&peer->remote, data->receiver_index)) ==
+      NULL)
+    return -1;
 
   if (!noise_counter_recv (&kp->kp_ctr, data->counter))
     {
@@ -363,7 +361,7 @@ wg_input_post_process (vlib_main_t *vm, vlib_buffer_t *b, u16 *next,
   if (decr_len == 0)
     {
       *is_keepalive = true;
-      return -1;
+      return 0;
     }
 
   wg_timers_data_received (peer);
@@ -632,6 +630,7 @@ wg_input_inline (vlib_main_t *vm, vlib_node_runtime_t *node,
 
   bool is_keepalive = false;
   u32 *peer_idx = NULL;
+  index_t peeri = INDEX_INVALID;
 
   while (n_left_from > 0)
     {
@@ -665,9 +664,15 @@ wg_input_inline (vlib_main_t *vm, vlib_node_runtime_t *node,
 						data->receiver_index);
 	      if (PREDICT_TRUE (peer_idx != NULL))
 		{
-		  peer = wg_peer_get (*peer_idx);
+		  peeri = *peer_idx;
+		  peer = wg_peer_get (peeri);
+		  last_rec_idx = data->receiver_index;
 		}
-	      last_rec_idx = data->receiver_index;
+	      else
+		{
+		  peer = NULL;
+		  last_rec_idx = ~0;
+		}
 	    }
 
 	  if (PREDICT_FALSE (!peer_idx))
@@ -739,7 +744,7 @@ wg_input_inline (vlib_main_t *vm, vlib_node_runtime_t *node,
 	    }
 	  else if (PREDICT_FALSE (state_cr == SC_KEEP_KEY_FRESH))
 	    {
-	      wg_send_handshake_from_mt (*peer_idx, false);
+	      wg_send_handshake_from_mt (peeri, false);
 	      goto next;
 	    }
 	  else if (PREDICT_TRUE (state_cr == SC_OK))
@@ -780,7 +785,7 @@ wg_input_inline (vlib_main_t *vm, vlib_node_runtime_t *node,
 	  t->type = header_type;
 	  t->current_length = b[0]->current_length;
 	  t->is_keepalive = is_keepalive;
-	  t->peer = peer_idx ? *peer_idx : INDEX_INVALID;
+	  t->peer = peer_idx ? peeri : INDEX_INVALID;
 	}
 
     next:
@@ -827,23 +832,41 @@ wg_input_inline (vlib_main_t *vm, vlib_node_runtime_t *node,
 	{
 	  peer_idx =
 	    wg_index_table_lookup (&wmp->index_table, data->receiver_index);
-	  peer = wg_peer_get (*peer_idx);
-	  last_rec_idx = data->receiver_index;
+	  if (PREDICT_TRUE (peer_idx != NULL))
+	    {
+	      peeri = *peer_idx;
+	      peer = wg_peer_get (peeri);
+	      last_rec_idx = data->receiver_index;
+	    }
+	  else
+	    {
+	      peer = NULL;
+	      last_rec_idx = ~0;
+	    }
 	}
 
-      if (PREDICT_FALSE (wg_input_post_process (vm, b[0], data_next, peer,
-						data, &is_keepalive) < 0))
-	goto trace;
+      if (PREDICT_TRUE (peer != NULL))
+	{
+	  if (PREDICT_FALSE (wg_input_post_process (vm, b[0], data_next, peer,
+						    data, &is_keepalive) < 0))
+	    goto trace;
+	}
+      else
+	{
+	  data_next[0] = WG_INPUT_NEXT_PUNT;
+	  goto trace;
+	}
 
       if (PREDICT_FALSE (peer_idx && (last_peer_time_idx != peer_idx)))
 	{
 	  if (PREDICT_FALSE (
 		!ip46_address_is_equal (&peer->dst.addr, &out_src_ip) ||
 		peer->dst.port != out_udp_src_port))
-	    wg_peer_update_endpoint_from_mt (*peer_idx, &out_src_ip,
+	    wg_peer_update_endpoint_from_mt (peeri, &out_src_ip,
 					     out_udp_src_port);
 	  wg_timers_any_authenticated_packet_received_opt (peer, time);
 	  wg_timers_any_authenticated_packet_traversal (peer);
+	  wg_peer_update_flags (*peer_idx, WG_PEER_ESTABLISHED, true);
 	  last_peer_time_idx = peer_idx;
 	}
 
@@ -860,7 +883,7 @@ wg_input_inline (vlib_main_t *vm, vlib_node_runtime_t *node,
 	  t->type = header_type;
 	  t->current_length = b[0]->current_length;
 	  t->is_keepalive = is_keepalive;
-	  t->peer = peer_idx ? *peer_idx : INDEX_INVALID;
+	  t->peer = peer_idx ? peeri : INDEX_INVALID;
 	}
 
       b += 1;
@@ -922,6 +945,7 @@ wg_input_post (vlib_main_t *vm, vlib_node_runtime_t *node, vlib_frame_t *frame,
   wg_peer_t *peer = NULL;
   u32 *peer_idx = NULL;
   u32 *last_peer_time_idx = NULL;
+  index_t peeri = INDEX_INVALID;
   u32 last_rec_idx = ~0;
   f64 time = clib_time_now (&vm->clib_time) + vm->time_offset;
 
@@ -955,8 +979,17 @@ wg_input_post (vlib_main_t *vm, vlib_node_runtime_t *node, vlib_frame_t *frame,
 	  peer_idx =
 	    wg_index_table_lookup (&wmp->index_table, data->receiver_index);
 
-	  peer = wg_peer_get (*peer_idx);
-	  last_rec_idx = data->receiver_index;
+	  if (PREDICT_TRUE (peer_idx != NULL))
+	    {
+	      peeri = *peer_idx;
+	      peer = wg_peer_get (peeri);
+	      last_rec_idx = data->receiver_index;
+	    }
+	  else
+	    {
+	      peer = NULL;
+	      last_rec_idx = ~0;
+	    }
 	}
 
       if (PREDICT_TRUE (peer != NULL))
@@ -976,10 +1009,11 @@ wg_input_post (vlib_main_t *vm, vlib_node_runtime_t *node, vlib_frame_t *frame,
 	  if (PREDICT_FALSE (
 		!ip46_address_is_equal (&peer->dst.addr, &out_src_ip) ||
 		peer->dst.port != out_udp_src_port))
-	    wg_peer_update_endpoint_from_mt (*peer_idx, &out_src_ip,
+	    wg_peer_update_endpoint_from_mt (peeri, &out_src_ip,
 					     out_udp_src_port);
 	  wg_timers_any_authenticated_packet_received_opt (peer, time);
 	  wg_timers_any_authenticated_packet_traversal (peer);
+	  wg_peer_update_flags (*peer_idx, WG_PEER_ESTABLISHED, true);
 	  last_peer_time_idx = peer_idx;
 	}
 
@@ -995,7 +1029,7 @@ wg_input_post (vlib_main_t *vm, vlib_node_runtime_t *node, vlib_frame_t *frame,
 	  wg_input_post_trace_t *t =
 	    vlib_add_trace (vm, node, b[0], sizeof (*t));
 	  t->next = next[0];
-	  t->peer = peer_idx ? *peer_idx : INDEX_INVALID;
+	  t->peer = peer_idx ? peeri : INDEX_INVALID;
 	}
 
       b += 1;

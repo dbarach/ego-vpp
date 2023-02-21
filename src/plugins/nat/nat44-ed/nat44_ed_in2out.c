@@ -105,6 +105,9 @@ nat_ed_alloc_addr_and_port_with_snat_address (
   const u16 port_thread_offset =
     (port_per_thread * snat_thread_index) + ED_USER_PORT_OFFSET;
 
+  /* Backup original match in case of failure */
+  const nat_6t_t match = s->o2i.match;
+
   s->o2i.match.daddr = a->addr;
   /* first try port suggested by caller */
   u16 port = clib_net_to_host_u16 (*outside_port);
@@ -136,6 +139,9 @@ nat_ed_alloc_addr_and_port_with_snat_address (
       --attempts;
     }
   while (attempts > 0);
+
+  /* Revert match */
+  s->o2i.match = match;
   return 1;
 }
 
@@ -1194,6 +1200,7 @@ nat44_ed_in2out_fast_path_node_fn_inline (vlib_main_t *vm,
 	  // session is closed, go slow path
 	  nat44_ed_free_session_data (sm, s0, thread_index, 0);
 	  nat_ed_session_delete (sm, s0, thread_index, 1);
+	  s0 = 0;
 	  next[0] = def_slow;
 	  goto trace0;
 	}
@@ -1206,6 +1213,7 @@ nat44_ed_in2out_fast_path_node_fn_inline (vlib_main_t *vm,
 	{
 	  nat44_ed_free_session_data (sm, s0, thread_index, 0);
 	  nat_ed_session_delete (sm, s0, thread_index, 1);
+	  s0 = 0;
 	  // session is closed, go slow path
 	  next[0] = def_slow;
 	  goto trace0;
@@ -1227,6 +1235,7 @@ nat44_ed_in2out_fast_path_node_fn_inline (vlib_main_t *vm,
 	  translation_error = NAT_ED_TRNSL_ERR_FLOW_MISMATCH;
 	  nat44_ed_free_session_data (sm, s0, thread_index, 0);
 	  nat_ed_session_delete (sm, s0, thread_index, 1);
+	  s0 = 0;
 	  next[0] = NAT_NEXT_DROP;
 	  b0->error = node->errors[NAT_IN2OUT_ED_ERROR_TRNSL_FAILED];
 	  goto trace0;
@@ -1238,6 +1247,7 @@ nat44_ed_in2out_fast_path_node_fn_inline (vlib_main_t *vm,
 	{
 	  nat44_ed_free_session_data (sm, s0, thread_index, 0);
 	  nat_ed_session_delete (sm, s0, thread_index, 1);
+	  s0 = 0;
 	  next[0] = NAT_NEXT_DROP;
 	  b0->error = node->errors[NAT_IN2OUT_ED_ERROR_TRNSL_FAILED];
 	  goto trace0;
@@ -1395,6 +1405,7 @@ nat44_ed_in2out_slow_path_node_fn_inline (vlib_main_t *vm,
 	    {
 	      nat44_ed_free_session_data (sm, s0, thread_index, 0);
 	      nat_ed_session_delete (sm, s0, thread_index, 1);
+	      s0 = 0;
 	      next[0] = NAT_NEXT_DROP;
 	      b0->error = node->errors[NAT_IN2OUT_ED_ERROR_TRNSL_FAILED];
 	      goto trace0;
@@ -1418,6 +1429,7 @@ nat44_ed_in2out_slow_path_node_fn_inline (vlib_main_t *vm,
 	    {
 	      nat44_ed_free_session_data (sm, s0, thread_index, 0);
 	      nat_ed_session_delete (sm, s0, thread_index, 1);
+	      s0 = 0;
 	      next[0] = NAT_NEXT_DROP;
 	      b0->error = node->errors[NAT_IN2OUT_ED_ERROR_TRNSL_FAILED];
 	      goto trace0;
@@ -1496,6 +1508,7 @@ nat44_ed_in2out_slow_path_node_fn_inline (vlib_main_t *vm,
 	{
 	  nat44_ed_free_session_data (sm, s0, thread_index, 0);
 	  nat_ed_session_delete (sm, s0, thread_index, 1);
+	  s0 = 0;
 	  next[0] = NAT_NEXT_DROP;
 	  b0->error = node->errors[NAT_IN2OUT_ED_ERROR_TRNSL_FAILED];
 	  goto trace0;

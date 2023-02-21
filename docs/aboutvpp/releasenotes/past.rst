@@ -6,6 +6,7 @@ Past releases
 .. toctree::
     :maxdepth: 1
 
+    v22.02
     v21.10.1
     v21.10
     v21.06
@@ -39,4 +40,3 @@ Past releases
     v17.01
     v16.09
     v16.06
-

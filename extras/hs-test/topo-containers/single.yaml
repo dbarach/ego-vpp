@@ -1,0 +1,18 @@
+---
+volumes:
+  - volume: &shared-vol
+      host-dir: /tmp/shared-vol
+
+containers:
+  - name: "vpp"
+    volumes:
+      - <<: *shared-vol
+        container-dir: "/tmp/vpp"
+        is-default-work-dir: true
+  - name: "nginx"
+    volumes:
+      - <<: *shared-vol
+        container-dir: "/tmp/nginx"
+        is-default-work-dir: true
+    image: "hs-test/nginx-ldp"
+    is-optional: true

@@ -243,6 +243,7 @@ typedef struct
   };
   dpdk_device_addr_type_t dev_addr_type;
   u8 *name;
+  u8 *tag;
   u8 is_blacklisted;
 
 #define _(x) uword x;
@@ -265,6 +266,7 @@ typedef struct
   u8 **eal_init_args;
   u8 *eal_init_args_str;
   u8 *uio_driver_name;
+  u8 uio_bind_force;
   u8 enable_telemetry;
   u16 max_simd_bitwidth;
 

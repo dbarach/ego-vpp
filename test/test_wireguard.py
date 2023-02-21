@@ -147,6 +147,8 @@ UNDER_LOAD_INTERVAL = 1.0
 HANDSHAKE_NUM_PER_PEER_UNTIL_UNDER_LOAD = 40
 HANDSHAKE_NUM_BEFORE_RATELIMITING = 5
 
+HANDSHAKE_JITTER = 0.5
+
 
 class VppWgPeer(VppObject):
     def __init__(self, test, itf, endpoint, port, allowed_ips, persistent_keepalive=15):
@@ -672,6 +674,9 @@ class TestWg(VppTestCase):
         self.assertEqual(len(self.vapi.wireguard_peers_dump()), 1)
 
         if is_resp:
+            # skip the first automatic handshake
+            self.pg1.get_capture(1, timeout=HANDSHAKE_JITTER)
+
             # prepare and send a handshake initiation
             # expect the peer to send a handshake response
             init = peer_1.mk_handshake(self.pg1, is_ip6=is_ip6)
@@ -764,6 +769,9 @@ class TestWg(VppTestCase):
             # reset noise to be able to turn into initiator later
             peer_1.noise_reset()
         else:
+            # skip the first automatic handshake
+            self.pg1.get_capture(1, timeout=HANDSHAKE_JITTER)
+
             # prepare and send a bunch of handshake initiations
             # expect to switch to under load state
             init = peer_1.mk_handshake(self.pg1, is_ip6=is_ip6)
@@ -829,6 +837,9 @@ class TestWg(VppTestCase):
         ).add_vpp_config()
         self.assertEqual(len(self.vapi.wireguard_peers_dump()), 1)
 
+        # skip the first automatic handshake
+        self.pg1.get_capture(1, timeout=HANDSHAKE_JITTER)
+
         # prepare and send a bunch of handshake initiations
         # expect to switch to under load state
         init = peer_1.mk_handshake(self.pg1)
@@ -892,6 +903,9 @@ class TestWg(VppTestCase):
                 self, wg0, self.pg1.remote_ip4, port + 1, ["10.11.3.0/24"]
             ).add_vpp_config()
         self.assertEqual(len(self.vapi.wireguard_peers_dump()), 1)
+
+        # skip the first automatic handshake
+        self.pg1.get_capture(1, timeout=HANDSHAKE_JITTER)
 
         # prepare and send a bunch of handshake initiations
         # expect to switch to under load state
@@ -962,6 +976,9 @@ class TestWg(VppTestCase):
             self, wg0, self.pg1.remote_hosts[1].ip4, port + 1, ["10.11.4.0/24"]
         ).add_vpp_config()
         self.assertEqual(len(self.vapi.wireguard_peers_dump()), 2)
+
+        # skip the first automatic handshake
+        self.pg1.get_capture(NUM_PEERS, timeout=HANDSHAKE_JITTER)
 
         # (peer_1) prepare and send a bunch of handshake initiations
         # expect not to switch to under load state
@@ -2098,6 +2115,9 @@ class TestWg(VppTestCase):
         self.pg0.generate_remote_hosts(NUM_IFS)
         self.pg0.configure_ipv4_neighbors()
 
+        self.pg_enable_capture(self.pg_interfaces)
+        self.pg_start()
+
         # Create interfaces with a peer on each
         peers = []
         routes = []
@@ -2128,6 +2148,9 @@ class TestWg(VppTestCase):
             )
 
         self.assertEqual(len(self.vapi.wireguard_peers_dump()), NUM_IFS)
+
+        # skip the first automatic handshake
+        self.pg1.get_capture(NUM_IFS, timeout=HANDSHAKE_JITTER)
 
         for i in range(NUM_IFS):
             # send a valid handsake init for which we expect a response
@@ -2282,23 +2305,55 @@ class TestWg(VppTestCase):
 
         self.assertEqual(len(self.vapi.wireguard_peers_dump()), NUM_PEERS * 2)
 
+        # skip the first automatic handshake
+        self.pg1.get_capture(NUM_PEERS, timeout=HANDSHAKE_JITTER)
+        self.pg2.get_capture(NUM_PEERS, timeout=HANDSHAKE_JITTER)
+
         # Want events from the first perr of wg0
         # and from all wg1 peers
         peers_0[0].want_events()
         wg1.want_events()
 
         for i in range(NUM_PEERS):
-            # send a valid handsake init for which we expect a response
+            # wg0 peers: send a valid handsake init for which we expect a response
             p = peers_0[i].mk_handshake(self.pg1)
             rx = self.send_and_expect(self.pg1, [p], self.pg1)
             peers_0[i].consume_response(rx[0])
+
+            # wg0 peers: send empty packet, it means successful connection (WIREGUARD_PEER_ESTABLISHED)
+            keepalive = peers_0[i].encrypt_transport(0)
+            p = peers_0[i].mk_tunnel_header(self.pg1) / (
+                Wireguard(message_type=4, reserved_zero=0)
+                / WireguardTransport(
+                    receiver_index=peers_0[i].sender,
+                    counter=0,
+                    encrypted_encapsulated_packet=keepalive,
+                )
+            )
+            self.send_and_assert_no_replies(self.pg1, [p])
+
+            # wg0 peers: wait for established flag
             if i == 0:
                 peers_0[0].wait_event(ESTABLISHED_FLAG)
 
+            # wg1 peers: send a valid handsake init for which we expect a response
             p = peers_1[i].mk_handshake(self.pg2)
             rx = self.send_and_expect(self.pg2, [p], self.pg2)
             peers_1[i].consume_response(rx[0])
 
+            # wg1 peers: send empty packet, it means successful connection (WIREGUARD_PEER_ESTABLISHED)
+            keepalive = peers_1[i].encrypt_transport(0)
+            p = peers_1[i].mk_tunnel_header(self.pg2) / (
+                Wireguard(message_type=4, reserved_zero=0)
+                / WireguardTransport(
+                    receiver_index=peers_1[i].sender,
+                    counter=0,
+                    encrypted_encapsulated_packet=keepalive,
+                )
+            )
+            self.send_and_assert_no_replies(self.pg2, [p])
+
+        # wg1 peers: wait for established flag
         wg1.wait_events(ESTABLISHED_FLAG, [peers_1[0].index, peers_1[1].index])
 
         # remove routes
@@ -2472,6 +2527,9 @@ class WireguardHandoffTests(TestWg):
         wg0.admin_up()
         wg0.config_ip4()
 
+        self.pg_enable_capture(self.pg_interfaces)
+        self.pg_start()
+
         peer_1 = VppWgPeer(
             self, wg0, self.pg1.remote_ip4, port + 1, ["10.11.2.0/24", "10.11.3.0/24"]
         ).add_vpp_config()
@@ -2480,6 +2538,9 @@ class WireguardHandoffTests(TestWg):
         r1 = VppIpRoute(
             self, "10.11.3.0", 24, [VppRoutePath("10.11.3.1", wg0.sw_if_index)]
         ).add_vpp_config()
+
+        # skip the first automatic handshake
+        self.pg1.get_capture(1, timeout=HANDSHAKE_JITTER)
 
         # send a valid handsake init for which we expect a response
         p = peer_1.mk_handshake(self.pg1)

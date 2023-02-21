@@ -1228,24 +1228,20 @@ send_interface_tx_placement_details (vnet_hw_if_tx_queue_t **all_queues,
   n_bits = clib_bitmap_count_set_bits (bitmap);
   u32 n = n_bits * sizeof (u32);
 
-  /*
-   * FIXME: Use the REPLY_MACRO_DETAILS5_END once endian handler is registered
-   * and available.
-   */
-  REPLY_MACRO_DETAILS5 (
-    VL_API_SW_INTERFACE_TX_PLACEMENT_DETAILS, n, rp, context, ({
-      rmp->sw_if_index = clib_host_to_net_u32 (hw_if->sw_if_index);
-      rmp->queue_id = clib_host_to_net_u32 (q[0]->queue_id);
-      rmp->shared = q[0]->shared_queue;
-      rmp->array_size = clib_host_to_net_u32 (n_bits);
+  REPLY_MACRO_DETAILS5_END (VL_API_SW_INTERFACE_TX_PLACEMENT_DETAILS, n, rp,
+			    context, ({
+			      rmp->sw_if_index = hw_if->sw_if_index;
+			      rmp->queue_id = q[0]->queue_id;
+			      rmp->shared = q[0]->shared_queue;
+			      rmp->array_size = n_bits;
 
-      v = clib_bitmap_first_set (bitmap);
-      for (u32 i = 0; i < n_bits; i++)
-	{
-	  rmp->threads[i] = clib_host_to_net_u32 (v);
-	  v = clib_bitmap_next_set (bitmap, v + 1);
-	}
-    }));
+			      v = clib_bitmap_first_set (bitmap);
+			      for (u32 i = 0; i < n_bits; i++)
+				{
+				  rmp->threads[i] = v;
+				  v = clib_bitmap_next_set (bitmap, v + 1);
+				}
+			    }));
 }
 
 static void
@@ -1606,6 +1602,65 @@ static void
   ip_interface_address_sweep ();
 
   REPLY_MACRO (VL_API_SW_INTERFACE_ADDRESS_REPLACE_END_REPLY);
+}
+
+static void
+vl_api_pcap_trace_on_t_handler (vl_api_pcap_trace_on_t *mp)
+{
+  vl_api_pcap_trace_on_reply_t *rmp;
+  unformat_input_t filename, drop_err_name;
+  vnet_pcap_dispatch_trace_args_t capture_args;
+  int rv = 0;
+
+  VALIDATE_SW_IF_INDEX (mp);
+
+  unformat_init_cstring (&filename, (char *) mp->filename);
+  if (!unformat_user (&filename, unformat_vlib_tmpfile,
+		      &capture_args.filename))
+    {
+      rv = VNET_API_ERROR_ILLEGAL_NAME;
+      goto out;
+    }
+
+  capture_args.rx_enable = mp->capture_rx;
+  capture_args.tx_enable = mp->capture_tx;
+  capture_args.preallocate_data = mp->preallocate_data;
+  capture_args.free_data = mp->free_data;
+  capture_args.drop_enable = mp->capture_drop;
+  capture_args.status = 0;
+  capture_args.packets_to_capture = ntohl (mp->max_packets);
+  capture_args.sw_if_index = ntohl (mp->sw_if_index);
+  capture_args.filter = mp->filter;
+  capture_args.max_bytes_per_pkt = ntohl (mp->max_bytes_per_packet);
+  capture_args.drop_err = ~0;
+
+  unformat_init_cstring (&drop_err_name, (char *) mp->error);
+  unformat_user (&drop_err_name, unformat_vlib_error, vlib_get_main (),
+		 &capture_args.drop_err);
+
+  rv = vnet_pcap_dispatch_trace_configure (&capture_args);
+
+  BAD_SW_IF_INDEX_LABEL;
+
+out:
+  unformat_free (&filename);
+  unformat_free (&drop_err_name);
+
+  REPLY_MACRO (VL_API_PCAP_TRACE_ON_REPLY);
+}
+
+static void
+vl_api_pcap_trace_off_t_handler (vl_api_pcap_trace_off_t *mp)
+{
+  vl_api_pcap_trace_off_reply_t *rmp;
+  vnet_pcap_dispatch_trace_args_t capture_args;
+  int rv = 0;
+
+  clib_memset (&capture_args, 0, sizeof (capture_args));
+
+  rv = vnet_pcap_dispatch_trace_configure (&capture_args);
+
+  REPLY_MACRO (VL_API_PCAP_TRACE_OFF_REPLY);
 }
 
 /*

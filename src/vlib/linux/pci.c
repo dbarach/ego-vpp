@@ -453,8 +453,8 @@ directory_exists (char *path)
 }
 
 clib_error_t *
-vlib_pci_bind_to_uio (vlib_main_t * vm, vlib_pci_addr_t * addr,
-		      char *uio_drv_name)
+vlib_pci_bind_to_uio (vlib_main_t *vm, vlib_pci_addr_t *addr,
+		      char *uio_drv_name, int force)
 {
   clib_error_t *error = 0;
   u8 *s = 0, *driver_name = 0;
@@ -486,7 +486,7 @@ vlib_pci_bind_to_uio (vlib_main_t * vm, vlib_pci_addr_t * addr,
 					 "is bound to IOMMU group and "
 					 "vfio-pci driver is not loaded",
 					 format_vlib_pci_addr, addr);
-	      goto done;
+	      goto err0;
 	    }
 	  else
 	    uio_drv_name = "vfio-pci";
@@ -507,7 +507,7 @@ vlib_pci_bind_to_uio (vlib_main_t * vm, vlib_pci_addr_t * addr,
 	      error = clib_error_return (0, "Skipping PCI device %U: missing "
 					 "kernel VFIO or UIO driver",
 					 format_vlib_pci_addr, addr);
-	      goto done;
+	      goto err0;
 	    }
 	  clib_error_free (error);
 	}
@@ -521,78 +521,82 @@ vlib_pci_bind_to_uio (vlib_main_t * vm, vlib_pci_addr_t * addr,
       ((strcmp ("vfio-pci", (char *) driver_name) == 0) ||
        (strcmp ("uio_pci_generic", (char *) driver_name) == 0) ||
        (strcmp ("igb_uio", (char *) driver_name) == 0)))
-    goto done;
+    goto err0;
 
-  /* walk trough all linux interfaces and if interface belonging to
-     this device is founf check if interface is admin up  */
-  dir = opendir ("/sys/class/net");
-  s = format (s, "%U%c", format_vlib_pci_addr, addr, 0);
-
-  if (!dir)
+  if (!force)
     {
-      error = clib_error_return (0, "Skipping PCI device %U: failed to "
-				 "read /sys/class/net",
-				 format_vlib_pci_addr, addr);
-      goto done;
-    }
+      /* walk trough all linux interfaces and if interface belonging to
+	 this device is found check if interface is admin up  */
+      dir = opendir ("/sys/class/net");
+      s = format (s, "%U%c", format_vlib_pci_addr, addr, 0);
 
-  fd = socket (PF_INET, SOCK_DGRAM, 0);
-  if (fd < 0)
-    {
-      error = clib_error_return_unix (0, "socket");
-      goto done;
-    }
-
-  while ((e = readdir (dir)))
-    {
-      struct ifreq ifr;
-      struct ethtool_drvinfo drvinfo;
-
-      if (e->d_name[0] == '.')	/* skip . and .. */
-	continue;
-
-      clib_memset (&ifr, 0, sizeof ifr);
-      clib_memset (&drvinfo, 0, sizeof drvinfo);
-      ifr.ifr_data = (char *) &drvinfo;
-      clib_strncpy (ifr.ifr_name, e->d_name, sizeof (ifr.ifr_name) - 1);
-
-      drvinfo.cmd = ETHTOOL_GDRVINFO;
-      if (ioctl (fd, SIOCETHTOOL, &ifr) < 0)
+      if (!dir)
 	{
-	  /* Some interfaces (eg "lo") don't support this ioctl */
-	  if ((errno != ENOTSUP) && (errno != ENODEV))
-	    clib_unix_warning ("ioctl fetch intf %s bus info error",
-			       e->d_name);
-	  continue;
+	  error = clib_error_return (0,
+				     "Skipping PCI device %U: failed to "
+				     "read /sys/class/net",
+				     format_vlib_pci_addr, addr);
+	  goto err0;
 	}
 
-      if (strcmp ((char *) s, drvinfo.bus_info))
-	continue;
-
-      clib_memset (&ifr, 0, sizeof (ifr));
-      clib_strncpy (ifr.ifr_name, e->d_name, sizeof (ifr.ifr_name) - 1);
-
-      if (ioctl (fd, SIOCGIFFLAGS, &ifr) < 0)
+      fd = socket (PF_INET, SOCK_DGRAM, 0);
+      if (fd < 0)
 	{
-	  error = clib_error_return_unix (0, "ioctl fetch intf %s flags",
-					  e->d_name);
-	  close (fd);
-	  goto done;
+	  error = clib_error_return_unix (0, "socket");
+	  goto err1;
 	}
 
-      if (ifr.ifr_flags & IFF_UP)
+      while ((e = readdir (dir)))
 	{
-	  vlib_log (VLIB_LOG_LEVEL_WARNING, pci_main.log_default,
-		    "Skipping PCI device %U as host "
-		    "interface %s is up", format_vlib_pci_addr, addr,
-		    e->d_name);
-	  close (fd);
-	  goto done;
+	  struct ifreq ifr;
+	  struct ethtool_drvinfo drvinfo;
+
+	  if (e->d_name[0] == '.') /* skip . and .. */
+	    continue;
+
+	  clib_memset (&ifr, 0, sizeof ifr);
+	  clib_memset (&drvinfo, 0, sizeof drvinfo);
+	  ifr.ifr_data = (char *) &drvinfo;
+	  clib_strncpy (ifr.ifr_name, e->d_name, sizeof (ifr.ifr_name) - 1);
+
+	  drvinfo.cmd = ETHTOOL_GDRVINFO;
+	  if (ioctl (fd, SIOCETHTOOL, &ifr) < 0)
+	    {
+	      /* Some interfaces (eg "lo") don't support this ioctl */
+	      if ((errno != ENOTSUP) && (errno != ENODEV))
+		clib_unix_warning ("ioctl fetch intf %s bus info error",
+				   e->d_name);
+	      continue;
+	    }
+
+	  if (strcmp ((char *) s, drvinfo.bus_info))
+	    continue;
+
+	  clib_memset (&ifr, 0, sizeof (ifr));
+	  clib_strncpy (ifr.ifr_name, e->d_name, sizeof (ifr.ifr_name) - 1);
+
+	  if (ioctl (fd, SIOCGIFFLAGS, &ifr) < 0)
+	    {
+	      error = clib_error_return_unix (0, "ioctl fetch intf %s flags",
+					      e->d_name);
+	      close (fd);
+	      goto err1;
+	    }
+
+	  if (ifr.ifr_flags & IFF_UP)
+	    {
+	      vlib_log (VLIB_LOG_LEVEL_WARNING, pci_main.log_default,
+			"Skipping PCI device %U as host "
+			"interface %s is up",
+			format_vlib_pci_addr, addr, e->d_name);
+	      close (fd);
+	      goto err1;
+	    }
 	}
+
+      close (fd);
+      vec_reset_length (s);
     }
-
-  close (fd);
-  vec_reset_length (s);
 
   s = format (s, "%v/driver/unbind%c", dev_dir_name, 0);
   clib_sysfs_write ((char *) s, "%U", format_vlib_pci_addr, addr);
@@ -624,8 +628,9 @@ vlib_pci_bind_to_uio (vlib_main_t * vm, vlib_pci_addr_t * addr,
       vec_reset_length (s);
     }
 
-done:
+err1:
   closedir (dir);
+err0:
   vec_free (s);
   vec_free (dev_dir_name);
   vec_free (driver_name);

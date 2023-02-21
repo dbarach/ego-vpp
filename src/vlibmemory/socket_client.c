@@ -87,12 +87,11 @@ vl_socket_client_read_internal (socket_client_main_t * scm, int wait)
 
   while (1)
     {
-      while (vec_len (scm->socket_rx_buffer) < sizeof (*mbp))
+      current_rx_index = vec_len (scm->socket_rx_buffer);
+      while (current_rx_index < sizeof (*mbp))
 	{
-	  current_rx_index = vec_len (scm->socket_rx_buffer);
 	  vec_validate (scm->socket_rx_buffer, current_rx_index
 			+ scm->socket_buffer_size - 1);
-	  vec_set_len (scm->socket_rx_buffer, current_rx_index);
 	  n = read (scm->socket_fd, scm->socket_rx_buffer + current_rx_index,
 		    scm->socket_buffer_size);
 	  if (n < 0)
@@ -101,10 +100,12 @@ vl_socket_client_read_internal (socket_client_main_t * scm, int wait)
 		continue;
 
 	      clib_unix_warning ("socket_read");
+	      vec_set_len (scm->socket_rx_buffer, current_rx_index);
 	      return -1;
 	    }
-	  vec_inc_len (scm->socket_rx_buffer, n);
+	  current_rx_index += n;
 	}
+      vec_set_len (scm->socket_rx_buffer, current_rx_index);
 
 #if CLIB_DEBUG > 1
       if (n > 0)
@@ -115,25 +116,25 @@ vl_socket_client_read_internal (socket_client_main_t * scm, int wait)
       data_len = ntohl (mbp->data_len);
       current_rx_index = vec_len (scm->socket_rx_buffer);
       vec_validate (scm->socket_rx_buffer, current_rx_index + data_len);
-      vec_set_len (scm->socket_rx_buffer, current_rx_index);
       mbp = (msgbuf_t *) (scm->socket_rx_buffer);
       msg_size = data_len + sizeof (*mbp);
 
-      while (vec_len (scm->socket_rx_buffer) < msg_size)
+      while (current_rx_index < msg_size)
 	{
-	  n = read (scm->socket_fd,
-		    scm->socket_rx_buffer + vec_len (scm->socket_rx_buffer),
-		    msg_size - vec_len (scm->socket_rx_buffer));
+	  n = read (scm->socket_fd, scm->socket_rx_buffer + current_rx_index,
+		    msg_size - current_rx_index);
 	  if (n < 0)
 	    {
 	      if (errno == EAGAIN)
 		continue;
 
 	      clib_unix_warning ("socket_read");
+	      vec_set_len (scm->socket_rx_buffer, current_rx_index);
 	      return -1;
 	    }
-	  vec_inc_len (scm->socket_rx_buffer, n);
+	  current_rx_index += n;
 	}
+      vec_set_len (scm->socket_rx_buffer, current_rx_index);
 
       if (vec_len (scm->socket_rx_buffer) >= data_len + sizeof (*mbp))
 	{
@@ -178,11 +179,11 @@ static int
 vl_socket_client_write_internal (socket_client_main_t * scm)
 {
   int n;
-
+  int len = vec_len (scm->socket_tx_buffer);
   msgbuf_t msgbuf = {
     .q = 0,
     .gc_mark_timestamp = 0,
-    .data_len = htonl (scm->socket_tx_nbytes),
+    .data_len = htonl (len),
   };
 
   n = write (scm->socket_fd, &msgbuf, sizeof (msgbuf));
@@ -192,8 +193,11 @@ vl_socket_client_write_internal (socket_client_main_t * scm)
       return -1;
     }
 
-  n = write (scm->socket_fd, scm->socket_tx_buffer, scm->socket_tx_nbytes);
-  if (n < scm->socket_tx_nbytes)
+  n = write (scm->socket_fd, scm->socket_tx_buffer, len);
+
+  vec_set_len (scm->socket_tx_buffer, 0);
+
+  if (n < len)
     {
       clib_unix_warning ("socket write (msg)");
       return -1;
@@ -223,7 +227,7 @@ vl_socket_client_write2 (socket_client_main_t * scm)
 void *
 vl_socket_client_msg_alloc2 (socket_client_main_t * scm, int nbytes)
 {
-  scm->socket_tx_nbytes = nbytes;
+  vec_set_len (scm->socket_tx_buffer, nbytes);
   return ((void *) scm->socket_tx_buffer);
 }
 

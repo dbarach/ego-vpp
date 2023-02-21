@@ -126,6 +126,13 @@ struct private_kernel_vpp_ipsec_t
    * Whether to install routes along policies
    */
   bool install_routes;
+
+  /**
+   * Whether to install SAs with tunnel flag. Disabling this can be useful
+   * in some scenarios e.g. using SAs to "ipsec tunnel protect" for the
+   * route-based IPsec
+   */
+  bool use_tunnel_mode_sa;
 };
 
 /**
@@ -490,6 +497,22 @@ sa_equals (kernel_ipsec_sa_id_t *sa, kernel_ipsec_sa_id_t *other_sa)
   return sa->src->ip_equals (sa->src, other_sa->src) &&
 	 sa->dst->ip_equals (sa->dst, other_sa->dst) &&
 	 sa->spi == other_sa->spi && sa->proto == other_sa->proto;
+}
+
+/**
+ * Equality function for policy SPD
+ */
+static bool
+policy_equals (vl_api_ipsec_spd_entry_t *policy,
+	       vl_api_ipsec_spd_entry_t *other_policy)
+{
+
+  /* change protocol due to legacy implementation of ANY protocol inside VPP */
+  if (other_policy->protocol == 255)
+    other_policy->protocol = 0;
+
+  /* return true if both policies are equal */
+  return !memcmp (policy, other_policy, sizeof (*policy));
 }
 
 /**
@@ -1104,6 +1127,49 @@ manage_policy (private_kernel_vpp_ipsec_t *this, bool add,
   mp->entry.remote_port_start = htons (id->dst_ts->get_from_port (id->dst_ts));
   mp->entry.remote_port_stop = htons (id->dst_ts->get_to_port (id->dst_ts));
 
+  /* check if policy exists in SPD */
+  vl_api_ipsec_spd_dump_t *mp_dump;
+  vl_api_ipsec_spd_details_t *rmp_dump, *tmp;
+
+  mp_dump = vl_msg_api_alloc (sizeof (*mp_dump));
+  memset (mp_dump, 0, sizeof (*mp_dump));
+
+  msg_id = vl_msg_api_get_msg_index ((u8 *) "ipsec_spd_dump_afefbf7d");
+  mp_dump->_vl_msg_id = htons (msg_id);
+  mp_dump->spd_id = htonl (spd->spd_id);
+  mp_dump->sa_id = htonl (sad_id);
+
+  if (vac->send_dump (vac, (char *) mp_dump, sizeof (*mp_dump), &out,
+		      &out_len))
+    {
+      DBG1 (DBG_KNL, "vac %s SPD lookup failed", add ? "adding" : "removing");
+      goto error;
+    }
+
+  int num = out_len / sizeof (*rmp_dump);
+  tmp = (void *) out;
+
+  /* found existing policy */
+  if (add && num)
+    {
+      int i;
+      for (i = 0; i < num; i++)
+	{
+	  rmp_dump = tmp;
+	  tmp += 1;
+	  /* check if found entry equals the new one */
+	  if (policy_equals (&mp->entry, &rmp_dump->entry))
+	    goto next;
+	}
+    }
+  else if (!add && num == 0)
+    {
+      /* VPP doesn't have any policy to delete */
+      goto next;
+    }
+
+  free (out);
+
   if (vac->send (vac, (char *) mp, sizeof (*mp), &out, &out_len))
     {
       DBG1 (DBG_KNL, "vac %s SPD entry failed", add ? "adding" : "removing");
@@ -1117,6 +1183,7 @@ manage_policy (private_kernel_vpp_ipsec_t *this, bool add,
       goto error;
     }
 
+next:
   if (add)
     {
       ref_get (&spd->policy_num);
@@ -1146,6 +1213,7 @@ manage_policy (private_kernel_vpp_ipsec_t *this, bool add,
   rv = SUCCESS;
 error:
   free (out);
+  vl_msg_api_free (mp_dump);
   vl_msg_api_free (mp);
   this->mutex->unlock (this->mutex);
   return rv;
@@ -1414,9 +1482,15 @@ METHOD (kernel_ipsec_t, add_sa, status_t, private_kernel_vpp_ipsec_t *this,
 	  mp->entry.integrity_key.length);
 
   int flags = IPSEC_API_SAD_FLAG_NONE;
+  if (data->inbound)
+    flags |= IPSEC_API_SAD_FLAG_IS_INBOUND;
+  /* like the kernel-netlink plugin, anti-replay can be disabled with zero
+   * replay_window, but window size cannot be customized for vpp */
+  if (data->replay_window)
+    flags |= IPSEC_API_SAD_FLAG_USE_ANTI_REPLAY;
   if (data->esn)
     flags |= IPSEC_API_SAD_FLAG_USE_ESN;
-  if (data->mode == MODE_TUNNEL)
+  if (this->use_tunnel_mode_sa && data->mode == MODE_TUNNEL)
     {
       if (id->src->get_family (id->src) == AF_INET6)
 	flags |= IPSEC_API_SAD_FLAG_IS_TUNNEL_V6;
@@ -1739,6 +1813,9 @@ kernel_vpp_ipsec_create ()
         .routes = linked_list_create(),
         .install_routes = lib->settings->get_bool(lib->settings,
                             "%s.install_routes", TRUE, lib->ns),
+        .use_tunnel_mode_sa = lib->settings->get_bool(lib->settings,
+                            "%s.plugins.kernel-vpp.use_tunnel_mode_sa",
+                            TRUE, lib->ns),
     );
 
   if (!init_spi (this))

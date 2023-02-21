@@ -12,6 +12,11 @@
  * See the License for the specific language governing permissions and
  * limitations under the License.
  */
+
+#ifdef HAVE_GNU_SOURCE
+#define _GNU_SOURCE
+#endif
+
 #include <unistd.h>
 #include <stdio.h>
 #include <signal.h>
@@ -21,7 +26,7 @@
 #include <stdarg.h>
 #include <sys/resource.h>
 #include <netinet/tcp.h>
-#include <linux/udp.h>
+#include <netinet/udp.h>
 
 #include <vcl/ldp_socket_wrapper.h>
 #include <vcl/ldp.h>
@@ -51,6 +56,12 @@
 #endif
 
 #define LDP_MAX_NWORKERS 32
+
+#ifdef HAVE_GNU_SOURCE
+#define SOCKADDR_GET_SA(__addr) __addr.__sockaddr__;
+#else
+#define SOCKADDR_GET_SA(__addr) _addr;
+#endif
 
 typedef struct ldp_worker_ctx_
 {
@@ -1052,8 +1063,9 @@ socketpair (int domain, int type, int protocol, int fds[2])
 }
 
 int
-bind (int fd, __CONST_SOCKADDR_ARG addr, socklen_t len)
+bind (int fd, __CONST_SOCKADDR_ARG _addr, socklen_t len)
 {
+  const struct sockaddr *addr = SOCKADDR_GET_SA (_addr);
   vls_handle_t vlsh;
   int rv;
 
@@ -1124,11 +1136,10 @@ done:
 }
 
 static inline int
-ldp_copy_ep_to_sockaddr (__SOCKADDR_ARG addr, socklen_t * __restrict len,
-			 vppcom_endpt_t * ep)
+ldp_copy_ep_to_sockaddr (struct sockaddr *addr, socklen_t *__restrict len,
+			 vppcom_endpt_t *ep)
 {
-  int rv = 0;
-  int sa_len, copy_len;
+  int rv = 0, sa_len, copy_len;
 
   ldp_init_check ();
 
@@ -1169,8 +1180,9 @@ ldp_copy_ep_to_sockaddr (__SOCKADDR_ARG addr, socklen_t * __restrict len,
 }
 
 int
-getsockname (int fd, __SOCKADDR_ARG addr, socklen_t * __restrict len)
+getsockname (int fd, __SOCKADDR_ARG _addr, socklen_t *__restrict len)
 {
+  struct sockaddr *addr = SOCKADDR_GET_SA (_addr);
   vls_handle_t vlsh;
   int rv;
 
@@ -1203,15 +1215,16 @@ getsockname (int fd, __SOCKADDR_ARG addr, socklen_t * __restrict len)
     }
   else
     {
-      rv = libc_getsockname (fd, addr, len);
+      rv = libc_getsockname (fd, _addr, len);
     }
 
   return rv;
 }
 
 int
-connect (int fd, __CONST_SOCKADDR_ARG addr, socklen_t len)
+connect (int fd, __CONST_SOCKADDR_ARG _addr, socklen_t len)
 {
+  const struct sockaddr *addr = SOCKADDR_GET_SA (_addr);
   vls_handle_t vlsh;
   int rv;
 
@@ -1291,8 +1304,9 @@ done:
 }
 
 int
-getpeername (int fd, __SOCKADDR_ARG addr, socklen_t * __restrict len)
+getpeername (int fd, __SOCKADDR_ARG _addr, socklen_t *__restrict len)
 {
+  struct sockaddr *addr = SOCKADDR_GET_SA (_addr);
   vls_handle_t vlsh;
   int rv;
 
@@ -1542,16 +1556,14 @@ __recv_chk (int fd, void *buf, size_t n, size_t buflen, int flags)
 
 static inline int
 ldp_vls_sendo (vls_handle_t vlsh, const void *buf, size_t n,
-	       vppcom_endpt_tlv_t *ep_tlv, int flags,
-	       __CONST_SOCKADDR_ARG addr, socklen_t addr_len)
+	       vppcom_endpt_tlv_t *app_tlvs, int flags,
+	       __CONST_SOCKADDR_ARG _addr, socklen_t addr_len)
 {
+  const struct sockaddr *addr = SOCKADDR_GET_SA (_addr);
   vppcom_endpt_t *ep = 0;
   vppcom_endpt_t _ep;
 
-  if (ep_tlv)
-    {
-      _ep.app_data = *ep_tlv;
-    }
+  _ep.app_tlvs = app_tlvs;
 
   if (addr)
     {
@@ -1582,11 +1594,11 @@ ldp_vls_sendo (vls_handle_t vlsh, const void *buf, size_t n,
 }
 
 static int
-ldp_vls_recvfrom (vls_handle_t vlsh, void *__restrict buf, size_t n,
-		  int flags, __SOCKADDR_ARG addr,
-		  socklen_t * __restrict addr_len)
+ldp_vls_recvfrom (vls_handle_t vlsh, void *__restrict buf, size_t n, int flags,
+		  __SOCKADDR_ARG _addr, socklen_t *__restrict addr_len)
 {
   u8 src_addr[sizeof (struct sockaddr_in6)];
+  struct sockaddr *addr = SOCKADDR_GET_SA (_addr);
   vppcom_endpt_t ep;
   ssize_t size;
   int rv;
@@ -1611,8 +1623,9 @@ ldp_vls_recvfrom (vls_handle_t vlsh, void *__restrict buf, size_t n,
 
 ssize_t
 sendto (int fd, const void *buf, size_t n, int flags,
-	__CONST_SOCKADDR_ARG addr, socklen_t addr_len)
+	__CONST_SOCKADDR_ARG _addr, socklen_t addr_len)
 {
+  const struct sockaddr *addr = SOCKADDR_GET_SA (_addr);
   vls_handle_t vlsh;
   ssize_t size;
 
@@ -1663,6 +1676,97 @@ recvfrom (int fd, void *__restrict buf, size_t n, int flags,
   return size;
 }
 
+static int
+ldp_parse_cmsg (vls_handle_t vlsh, const struct msghdr *msg,
+		vppcom_endpt_tlv_t **app_tlvs)
+{
+  uint8_t *ad, *at = (uint8_t *) *app_tlvs;
+  vppcom_endpt_tlv_t *adh;
+  struct in_pktinfo *pi;
+  struct cmsghdr *cmsg;
+
+  cmsg = CMSG_FIRSTHDR (msg);
+
+  while (cmsg != NULL)
+    {
+      switch (cmsg->cmsg_level)
+	{
+	case SOL_UDP:
+	  switch (cmsg->cmsg_type)
+	    {
+	    case UDP_SEGMENT:
+	      vec_add2 (at, adh, sizeof (*adh));
+	      adh->data_type = VCL_UDP_SEGMENT;
+	      adh->data_len = sizeof (uint16_t);
+	      vec_add2 (at, ad, sizeof (uint16_t));
+	      *(uint16_t *) ad = *(uint16_t *) CMSG_DATA (cmsg);
+	      break;
+	    default:
+	      LDBG (1, "SOL_UDP cmsg_type %u not supported", cmsg->cmsg_type);
+	      break;
+	    }
+	  break;
+	case SOL_IP:
+	  switch (cmsg->cmsg_type)
+	    {
+	    case IP_PKTINFO:
+	      vec_add2 (at, adh, sizeof (*adh));
+	      adh->data_type = VCL_IP_PKTINFO;
+	      adh->data_len = sizeof (struct in_addr);
+	      vec_add2 (at, ad, sizeof (struct in_addr));
+	      pi = (void *) CMSG_DATA (cmsg);
+	      clib_memcpy_fast (ad, &pi->ipi_spec_dst,
+				sizeof (struct in_addr));
+	      break;
+	    default:
+	      LDBG (1, "SOL_IP cmsg_type %u not supported", cmsg->cmsg_type);
+	      break;
+	    }
+	  break;
+	default:
+	  LDBG (1, "cmsg_level %u not supported", cmsg->cmsg_level);
+	  break;
+	}
+      cmsg = CMSG_NXTHDR ((struct msghdr *) msg, cmsg);
+    }
+  *app_tlvs = (vppcom_endpt_tlv_t *) at;
+  return 0;
+}
+
+static int
+ldp_make_cmsg (vls_handle_t vlsh, struct msghdr *msg)
+{
+  u32 optval, optlen = sizeof (optval);
+  struct cmsghdr *cmsg;
+
+  cmsg = CMSG_FIRSTHDR (msg);
+
+  if (!vls_attr (vlsh, VPPCOM_ATTR_GET_IP_PKTINFO, (void *) &optval, &optlen))
+    return 0;
+
+  if (optval)
+    {
+      vppcom_endpt_t ep;
+      u8 addr_buf[sizeof (struct in_addr)];
+      u32 size = sizeof (ep);
+
+      ep.ip = addr_buf;
+
+      if (!vls_attr (vlsh, VPPCOM_ATTR_GET_LCL_ADDR, &ep, &size))
+	{
+	  struct in_pktinfo pi = {};
+
+	  clib_memcpy (&pi.ipi_addr, ep.ip, sizeof (struct in_addr));
+	  cmsg->cmsg_level = SOL_IP;
+	  cmsg->cmsg_type = IP_PKTINFO;
+	  cmsg->cmsg_len = CMSG_LEN (sizeof (pi));
+	  clib_memcpy (CMSG_DATA (cmsg), &pi, sizeof (pi));
+	}
+    }
+
+  return 0;
+}
+
 ssize_t
 sendmsg (int fd, const struct msghdr * msg, int flags)
 {
@@ -1674,29 +1778,17 @@ sendmsg (int fd, const struct msghdr * msg, int flags)
   vlsh = ldp_fd_to_vlsh (fd);
   if (vlsh != VLS_INVALID_HANDLE)
     {
+      vppcom_endpt_tlv_t *app_tlvs = 0;
       struct iovec *iov = msg->msg_iov;
       ssize_t total = 0;
       int i, rv = 0;
-      struct cmsghdr *cmsg;
-      uint16_t *valp;
-      vppcom_endpt_tlv_t _app_data;
-      vppcom_endpt_tlv_t *p_app_data = NULL;
 
-      cmsg = CMSG_FIRSTHDR (msg);
-      if (cmsg && cmsg->cmsg_type == UDP_SEGMENT)
-	{
-	  p_app_data = &_app_data;
-	  valp = (void *) CMSG_DATA (cmsg);
-	  p_app_data->data_type = VCL_UDP_SEGMENT;
-	  p_app_data->data_len = sizeof (*valp);
-	  p_app_data->value = *valp;
-	}
+      ldp_parse_cmsg (vlsh, msg, &app_tlvs);
 
       for (i = 0; i < msg->msg_iovlen; ++i)
 	{
-	  rv =
-	    ldp_vls_sendo (vlsh, iov[i].iov_base, iov[i].iov_len, p_app_data,
-			   flags, msg->msg_name, msg->msg_namelen);
+	  rv = ldp_vls_sendo (vlsh, iov[i].iov_base, iov[i].iov_len, app_tlvs,
+			      flags, msg->msg_name, msg->msg_namelen);
 	  if (rv < 0)
 	    break;
 	  else
@@ -1706,6 +1798,8 @@ sendmsg (int fd, const struct msghdr * msg, int flags)
 		break;
 	    }
 	}
+
+      vec_free (app_tlvs);
 
       if (rv < 0 && total == 0)
 	{
@@ -1723,7 +1817,7 @@ sendmsg (int fd, const struct msghdr * msg, int flags)
   return size;
 }
 
-#ifdef USE_GNU
+#ifdef _GNU_SOURCE
 int
 sendmmsg (int fd, struct mmsghdr *vmessages, unsigned int vlen, int flags)
 {
@@ -1812,7 +1906,11 @@ recvmsg (int fd, struct msghdr * msg, int flags)
 	  size = -1;
 	}
       else
-	size = total;
+	{
+	  if (msg->msg_controllen)
+	    ldp_make_cmsg (vlsh, msg);
+	  size = total;
+	}
     }
   else
     {
@@ -1822,52 +1920,60 @@ recvmsg (int fd, struct msghdr * msg, int flags)
   return size;
 }
 
-#ifdef USE_GNU
+#ifdef _GNU_SOURCE
 int
 recvmmsg (int fd, struct mmsghdr *vmessages,
 	  unsigned int vlen, int flags, struct timespec *tmo)
 {
-  ssize_t size;
-  const char *func_str;
-  u32 sh = ldp_fd_to_vlsh (fd);
+  ldp_worker_ctx_t *ldpw = ldp_worker_get_current ();
+  u32 sh;
 
   ldp_init_check ();
 
+  sh = ldp_fd_to_vlsh (fd);
+
   if (sh != VLS_INVALID_HANDLE)
     {
-      clib_warning ("LDP<%d>: LDP-TBD", getpid ());
-      errno = ENOSYS;
-      size = -1;
+      struct mmsghdr *mh;
+      ssize_t rv = 0;
+      u32 nvecs = 0;
+      f64 time_out;
+
+      if (PREDICT_FALSE (ldpw->clib_time.init_cpu_time == 0))
+	clib_time_init (&ldpw->clib_time);
+      if (tmo)
+	{
+	  time_out = (f64) tmo->tv_sec + (f64) tmo->tv_nsec / (f64) 1e9;
+	  time_out += clib_time_now (&ldpw->clib_time);
+	}
+      else
+	{
+	  time_out = (f64) ~0;
+	}
+
+      while (nvecs < vlen)
+	{
+	  mh = &vmessages[nvecs];
+	  rv = recvmsg (fd, &mh->msg_hdr, flags);
+	  if (rv > 0)
+	    {
+	      mh->msg_len = rv;
+	      nvecs += 1;
+	      continue;
+	    }
+
+	  if (!time_out || clib_time_now (&ldpw->clib_time) >= time_out)
+	    break;
+
+	  usleep (1);
+	}
+
+      return nvecs > 0 ? nvecs : rv;
     }
   else
     {
-      func_str = "libc_recvmmsg";
-
-      if (LDP_DEBUG > 2)
-	clib_warning ("LDP<%d>: fd %d (0x%x): calling %s(): "
-		      "vmessages %p, vlen %u, flags 0x%x, tmo %p",
-		      getpid (), fd, fd, func_str, vmessages, vlen,
-		      flags, tmo);
-
-      size = libc_recvmmsg (fd, vmessages, vlen, flags, tmo);
+      return libc_recvmmsg (fd, vmessages, vlen, flags, tmo);
     }
-
-  if (LDP_DEBUG > 2)
-    {
-      if (size < 0)
-	{
-	  int errno_val = errno;
-	  perror (func_str);
-	  clib_warning ("LDP<%d>: ERROR: fd %d (0x%x): %s() failed! "
-			"rv %d, errno = %d", getpid (), fd, fd,
-			func_str, size, errno_val);
-	  errno = errno_val;
-	}
-      else
-	clib_warning ("LDP<%d>: fd %d (0x%x): returning %d (0x%x)",
-		      getpid (), fd, fd, size, size);
-    }
-  return size;
 }
 #endif
 
@@ -2090,6 +2196,21 @@ setsockopt (int fd, int level, int optname,
 	      break;
 	    }
 	  break;
+	case SOL_IP:
+	  switch (optname)
+	    {
+	    case IP_PKTINFO:
+	      rv = vls_attr (vlsh, VPPCOM_ATTR_SET_IP_PKTINFO, (void *) optval,
+			     &optlen);
+	      break;
+	    default:
+	      LDBG (0,
+		    "ERROR: fd %d: setsockopt SOL_IP: vlsh %u optname %d"
+		    "unsupported!",
+		    fd, vlsh, optname);
+	      break;
+	    }
+	  break;
 	default:
 	  break;
 	}
@@ -2139,9 +2260,10 @@ listen (int fd, int n)
 }
 
 static inline int
-ldp_accept4 (int listen_fd, __SOCKADDR_ARG addr,
-	     socklen_t * __restrict addr_len, int flags)
+ldp_accept4 (int listen_fd, __SOCKADDR_ARG _addr,
+	     socklen_t *__restrict addr_len, int flags)
 {
+  struct sockaddr *addr = SOCKADDR_GET_SA (_addr);
   vls_handle_t listen_vlsh, accept_vlsh;
   int rv;
 
@@ -2360,7 +2482,7 @@ static inline int
 ldp_epoll_pwait (int epfd, struct epoll_event *events, int maxevents,
 		 int timeout, const sigset_t * sigmask)
 {
-  ldp_worker_ctx_t *ldpw = ldp_worker_get_current ();
+  ldp_worker_ctx_t *ldpw;
   double time_to_wait = (double) 0, max_time;
   int libc_epfd, rv = 0;
   vls_handle_t ep_vlsh;
@@ -2373,6 +2495,10 @@ ldp_epoll_pwait (int epfd, struct epoll_event *events, int maxevents,
       return -1;
     }
 
+  if (PREDICT_FALSE (vppcom_worker_index () == ~0))
+    vls_register_vcl_worker ();
+
+  ldpw = ldp_worker_get_current ();
   if (epfd == ldpw->vcl_mq_epfd)
     return libc_epoll_pwait (epfd, events, maxevents, timeout, sigmask);
 
@@ -2671,7 +2797,7 @@ done:
   return rv;
 }
 
-#ifdef USE_GNU
+#ifdef _GNU_SOURCE
 int
 ppoll (struct pollfd *fds, nfds_t nfds,
        const struct timespec *timeout, const sigset_t * sigmask)
