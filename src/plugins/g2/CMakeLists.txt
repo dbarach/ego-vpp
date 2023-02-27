@@ -56,7 +56,7 @@ if(VPP_BUILD_G2_PLUGIN)
 
   ego_plugin_object(ego_g2
     PACKAGE tools/g2
-    FLAGS -g;-O2
+    FLAGS -g;-O2;
     )
 
 endif()
