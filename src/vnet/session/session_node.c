@@ -1101,6 +1101,8 @@ session_tx_fill_buffer (session_worker_t *wrk, session_tx_context_t *ctx,
 	  if (transport_connection_is_cless (ctx->tc))
 	    {
 	      ip_copy (&ctx->tc->rmt_ip, &hdr->rmt_ip, ctx->tc->is_ip4);
+	      ip_copy (&ctx->tc->lcl_ip, &hdr->lcl_ip, ctx->tc->is_ip4);
+	      /* Local port assumed to be bound, not overwriting it */
 	      ctx->tc->rmt_port = hdr->rmt_port;
 	    }
 	  hdr->data_offset += n_bytes_read;
@@ -1224,6 +1226,13 @@ session_tx_set_dequeue_params (vlib_main_t * vm, session_tx_context_t * ctx,
 
 	  svm_fifo_peek (ctx->s->tx_fifo, 0, sizeof (ctx->hdr),
 			 (u8 *) & ctx->hdr);
+	  /* Zero length dgrams not supported */
+	  if (PREDICT_FALSE (ctx->hdr.data_length == 0))
+	    {
+	      svm_fifo_dequeue_drop (ctx->s->tx_fifo, sizeof (ctx->hdr));
+	      ctx->max_len_to_snd = 0;
+	      return;
+	    }
 	  ASSERT (ctx->hdr.data_length > ctx->hdr.data_offset);
 	  len = ctx->hdr.data_length - ctx->hdr.data_offset;
 
@@ -1251,12 +1260,13 @@ session_tx_set_dequeue_params (vlib_main_t * vm, session_tx_context_t * ctx,
 		{
 		  svm_fifo_peek (ctx->s->tx_fifo, offset, sizeof (ctx->hdr),
 				 (u8 *) & hdr);
-		  ASSERT (hdr.data_length > hdr.data_offset);
 		  dgram_len = hdr.data_length - hdr.data_offset;
 		  if (offset + sizeof (hdr) + hdr.data_length >
 			ctx->max_dequeue ||
 		      first_dgram_len != dgram_len)
 		    break;
+		  /* Assert here to allow test above with zero length dgrams */
+		  ASSERT (hdr.data_length > hdr.data_offset);
 		  len += dgram_len;
 		  offset += sizeof (hdr) + hdr.data_length;
 		}

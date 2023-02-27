@@ -246,7 +246,7 @@ error:
 
 static_always_inline enum noise_state_crypt
 wg_add_to_async_frame (vlib_main_t *vm, wg_per_thread_data_t *ptd,
-		       vnet_crypto_async_frame_t *async_frame,
+		       vnet_crypto_async_frame_t **async_frame,
 		       vlib_buffer_t *b, u8 *payload, u32 payload_len, u32 bi,
 		       u16 next, u16 async_next, noise_remote_t *r,
 		       uint32_t *r_idx, uint64_t *nonce, u8 *iv, f64 time)
@@ -284,8 +284,17 @@ wg_add_to_async_frame (vlib_main_t *vm, wg_per_thread_data_t *ptd,
   clib_memset (iv, 0, 4);
   clib_memcpy (iv + 4, nonce, sizeof (*nonce));
 
+  /* get a frame for this op if we don't yet have one or it's full  */
+  if (NULL == *async_frame || vnet_crypto_async_frame_is_full (*async_frame))
+    {
+      *async_frame = vnet_crypto_async_get_frame (
+	vm, VNET_CRYPTO_OP_CHACHA20_POLY1305_TAG16_AAD0_ENC);
+      /* Save the frame to the list we'll submit at the end */
+      vec_add1 (ptd->async_frames, *async_frame);
+    }
+
   /* this always succeeds because we know the frame is not full */
-  wg_output_tun_add_to_frame (vm, async_frame, kp->kp_send_index, payload_len,
+  wg_output_tun_add_to_frame (vm, *async_frame, kp->kp_send_index, payload_len,
 			      payload - b->data, bi, async_next, iv,
 			      payload + payload_len, flag);
 
@@ -423,20 +432,7 @@ wg_output_tun_inline (vlib_main_t *vm, vlib_node_runtime_t *node,
 	  goto out;
 	}
 
-      is_ip4_out = ip46_address_is_ip4 (&peer->src.addr);
-      if (is_ip4_out)
-	{
-	  hdr4_out = vlib_buffer_get_current (b[0]);
-	  message_data_wg = &hdr4_out->wg;
-	}
-      else
-	{
-	  hdr6_out = vlib_buffer_get_current (b[0]);
-	  message_data_wg = &hdr6_out->wg;
-	}
-
       iph_offset = vnet_buffer (b[0])->ip.save_rewrite_length;
-      plain_data = vlib_buffer_get_current (b[0]) + iph_offset;
       plain_data_len = vlib_buffer_length_in_chain (vm, b[0]) - iph_offset;
       u8 *iv_data = b[0]->pre_data;
 
@@ -447,11 +443,34 @@ wg_output_tun_inline (vlib_main_t *vm, vlib_node_runtime_t *node,
        * into the packet
        */
       if (PREDICT_FALSE (encrypted_packet_len >= WG_DEFAULT_DATA_SIZE) ||
-	  PREDICT_FALSE ((b[0]->current_data + encrypted_packet_len) >=
+	  PREDICT_FALSE ((iph_offset + encrypted_packet_len) >=
 			 vlib_buffer_get_default_data_size (vm)))
 	{
 	  b[0]->error = node->errors[WG_OUTPUT_ERROR_TOO_BIG];
 	  goto out;
+	}
+
+      /*
+       * Move the buffer to fit ethernet header
+       */
+      if (b[0]->current_data + VLIB_BUFFER_PRE_DATA_SIZE <
+	  sizeof (ethernet_header_t))
+	{
+	  vlib_buffer_move (vm, b[0], 0);
+	}
+
+      plain_data = vlib_buffer_get_current (b[0]) + iph_offset;
+
+      is_ip4_out = ip46_address_is_ip4 (&peer->src.addr);
+      if (is_ip4_out)
+	{
+	  hdr4_out = vlib_buffer_get_current (b[0]);
+	  message_data_wg = &hdr4_out->wg;
+	}
+      else
+	{
+	  hdr6_out = vlib_buffer_get_current (b[0]);
+	  message_data_wg = &hdr6_out->wg;
 	}
 
       if (PREDICT_FALSE (last_adj_index != adj_index))
@@ -469,17 +488,8 @@ wg_output_tun_inline (vlib_main_t *vm, vlib_node_runtime_t *node,
 
       if (is_async)
 	{
-	  /* get a frame for this op if we don't yet have one or it's full  */
-	  if (NULL == async_frame ||
-	      vnet_crypto_async_frame_is_full (async_frame))
-	    {
-	      async_frame = vnet_crypto_async_get_frame (
-		vm, VNET_CRYPTO_OP_CHACHA20_POLY1305_TAG16_AAD0_ENC);
-	      /* Save the frame to the list we'll submit at the end */
-	      vec_add1 (ptd->async_frames, async_frame);
-	    }
 	  state = wg_add_to_async_frame (
-	    vm, ptd, async_frame, b[0], plain_data, plain_data_len,
+	    vm, ptd, &async_frame, b[0], plain_data, plain_data_len,
 	    from[b - bufs], next[0], async_next_node, &peer->remote,
 	    &message_data_wg->receiver_index, &message_data_wg->counter,
 	    iv_data, time);

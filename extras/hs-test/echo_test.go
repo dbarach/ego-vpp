@@ -1,18 +1,17 @@
 package main
 
 func (s *VethsSuite) TestEchoBuiltin() {
-	serverContainer := s.getContainerByName("server-vpp")
-	_, err := serverContainer.execAction("Configure2Veths srv")
-	s.assertNil(err)
+	serverVpp := s.getContainerByName("server-vpp").vppInstance
+	serverVeth := s.netInterfaces["vppsrv"]
 
-	clientContainer := s.getContainerByName("client-vpp")
-	_, err = clientContainer.execAction("Configure2Veths cln")
-	s.assertNil(err)
+	serverVpp.vppctl("test echo server " +
+		" private-segment-size 1g fifo-size 4 no-echo" +
+		" uri tcp://" + serverVeth.IP4AddressString() + "/1234")
 
-	_, err = serverContainer.execAction("RunEchoSrvInternal private-segment-size 1g fifo-size 4 no-echo")
-	s.assertNil(err)
+	clientVpp := s.getContainerByName("client-vpp").vppInstance
 
-	o, err := clientContainer.execAction("RunEchoClnInternal nclients 10000 bytes 1 syn-timeout 100 test-timeout 100 no-return private-segment-size 1g fifo-size 4")
-	s.assertNil(err)
+	o := clientVpp.vppctl("test echo client nclients 10000 bytes 1" +
+		" syn-timeout 100 test-timeout 100 no-return private-segment-size 1g" +
+		" fifo-size 4 uri tcp://" + serverVeth.IP4AddressString() + "/1234")
 	s.log(o)
 }

@@ -1,57 +1,17 @@
 package main
 
 import (
-	"encoding/json"
 	"errors"
 	"fmt"
 	"io"
-	"io/ioutil"
 	"os"
 	"os/exec"
 	"strings"
 	"time"
 )
 
-// TODO remove `configTemplate` once its usage has been replaced everywhere with VppConfig
-const configTemplate = `unix {
-  nodaemon
-  log %[1]s/var/log/vpp/vpp.log
-  full-coredump
-  cli-listen %[1]s/var/run/vpp/cli.sock
-  runtime-dir %[1]s/var/run
-  gid vpp
-}
-
-api-trace {
-  on
-}
-
-api-segment {
-  gid vpp
-}
-
-socksvr {
-  socket-name %[1]s/var/run/vpp/api.sock
-}
-
-statseg {
-  socket-name %[1]s/var/run/vpp/stats.sock
-}
-
-plugins {
-  plugin default { disable }
-
-  plugin unittest_plugin.so { enable }
-  plugin quic_plugin.so { enable }
-  plugin af_packet_plugin.so { enable }
-  plugin hs_apps_plugin.so { enable }
-  plugin http_plugin.so { enable }
-}
-
-`
-
 const vclTemplate = `vcl {
-  app-socket-api %[1]s
+  app-socket-api %[1]s/var/run/app_ns_sockets/%[2]s
   app-scope-global
   app-scope-local
   namespace-id %[2]s
@@ -98,7 +58,7 @@ func StartServerApp(running chan error, done chan struct{}, env []string) {
 	cmd.Process.Kill()
 }
 
-func StartClientApp(env []string, clnCh chan error, clnRes chan string) {
+func StartClientApp(ipAddress string, env []string, clnCh chan error, clnRes chan string) {
 	defer func() {
 		clnCh <- nil
 	}()
@@ -106,7 +66,7 @@ func StartClientApp(env []string, clnCh chan error, clnRes chan string) {
 	nTries := 0
 
 	for {
-		cmd := exec.Command("iperf3", "-c", "10.10.10.1", "-u", "-l", "1460", "-b", "10g")
+		cmd := exec.Command("iperf3", "-c", ipAddress, "-u", "-l", "1460", "-b", "10g")
 		if env != nil {
 			cmd.Env = env
 		}
@@ -124,29 +84,6 @@ func StartClientApp(env []string, clnCh chan error, clnRes chan string) {
 		}
 		break
 	}
-}
-
-func waitForSyncFile(fname string) (*JsonResult, error) {
-	var res JsonResult
-
-	for i := 0; i < 360; i++ {
-		f, err := os.Open(fname)
-		if err == nil {
-			defer f.Close()
-
-			data, err := ioutil.ReadFile(fname)
-			if err != nil {
-				return nil, fmt.Errorf("read error: %v", err)
-			}
-			err = json.Unmarshal(data, &res)
-			if err != nil {
-				return nil, fmt.Errorf("json unmarshal error: %v", err)
-			}
-			return &res, nil
-		}
-		time.Sleep(1 * time.Second)
-	}
-	return nil, fmt.Errorf("no sync file found")
 }
 
 func assertFileSize(f1, f2 string) error {
@@ -183,11 +120,14 @@ func startWget(finished chan error, server_ip, port, query, netNs string) {
 		finished <- errors.New("wget error")
 	}()
 
-	cmd := NewCommand([]string{"wget", "--no-proxy", "--tries=5", "-q", "-O", "/dev/null", server_ip + ":" + port + "/" + query},
+	cmd := NewCommand([]string{"wget", "--timeout=10", "--no-proxy", "--tries=5", "-O", "/dev/null", server_ip + ":" + port + "/" + query},
 		netNs)
 	o, err := cmd.CombinedOutput()
 	if err != nil {
 		finished <- fmt.Errorf("wget error: '%v\n\n%s'", err, o)
+		return
+	} else if strings.Contains(string(o), "200 OK") == false {
+		finished <- fmt.Errorf("wget error: response not 200 OK")
 		return
 	}
 	finished <- nil
