@@ -215,9 +215,6 @@ typedef struct _tcp_main
   /** vlib buffer size */
   u32 bytes_per_buffer;
 
-  /** Session layer edge indices to ip lookup (syns, rst) */
-  u32 ipl_next_node[2];
-
   /** Dispatch table by state and flags */
   tcp_lookup_dispatch_t dispatch_table[TCP_N_STATES][64];
 
@@ -270,6 +267,8 @@ extern vlib_node_registration_t tcp4_listen_node;
 extern vlib_node_registration_t tcp6_listen_node;
 extern vlib_node_registration_t tcp4_input_nolookup_node;
 extern vlib_node_registration_t tcp6_input_nolookup_node;
+extern vlib_node_registration_t tcp4_drop_node;
+extern vlib_node_registration_t tcp6_drop_node;
 
 #define tcp_cfg tcp_main.cfg
 #define tcp_node_index(node_id, is_ip4) 				\

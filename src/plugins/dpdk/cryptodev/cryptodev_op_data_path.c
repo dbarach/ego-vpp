@@ -127,7 +127,7 @@ cryptodev_frame_linked_algs_enqueue (vlib_main_t *vm,
   clib_pmalloc_main_t *pm = vm->physmem_main.pmalloc_main;
   cryptodev_engine_thread_t *cet = cmt->per_thread_data + vm->thread_index;
   vnet_crypto_async_frame_elt_t *fe;
-  struct rte_cryptodev_sym_session *sess = 0;
+  cryptodev_session_t *sess = 0;
   cryptodev_op_t **cop;
   u32 *bi;
   u32 n_enqueue, n_elts;
@@ -140,7 +140,8 @@ cryptodev_frame_linked_algs_enqueue (vlib_main_t *vm,
   if (PREDICT_FALSE (CRYPTODEV_NB_CRYPTO_OPS - cet->inflight < n_elts))
     {
       cryptodev_mark_frame_err_status (frame,
-				       VNET_CRYPTO_OP_STATUS_FAIL_ENGINE_ERR);
+				       VNET_CRYPTO_OP_STATUS_FAIL_ENGINE_ERR,
+				       VNET_CRYPTO_FRAME_STATE_NOT_PROCESSED);
       return -1;
     }
 
@@ -148,7 +149,8 @@ cryptodev_frame_linked_algs_enqueue (vlib_main_t *vm,
 	rte_mempool_get_bulk (cet->cop_pool, (void **) cet->cops, n_elts) < 0))
     {
       cryptodev_mark_frame_err_status (frame,
-				       VNET_CRYPTO_OP_STATUS_FAIL_ENGINE_ERR);
+				       VNET_CRYPTO_OP_STATUS_FAIL_ENGINE_ERR,
+				       VNET_CRYPTO_FRAME_STATE_NOT_PROCESSED);
       return -1;
     }
 
@@ -184,7 +186,8 @@ cryptodev_frame_linked_algs_enqueue (vlib_main_t *vm,
 		    cryptodev_session_create (vm, last_key_index, 0) < 0))
 		{
 		  cryptodev_mark_frame_err_status (
-		    frame, VNET_CRYPTO_OP_STATUS_FAIL_ENGINE_ERR);
+		    frame, VNET_CRYPTO_OP_STATUS_FAIL_ENGINE_ERR,
+		    VNET_CRYPTO_FRAME_STATE_NOT_PROCESSED);
 		  return -1;
 		}
 	    }
@@ -246,7 +249,7 @@ cryptodev_frame_aead_enqueue (vlib_main_t *vm,
   clib_pmalloc_main_t *pm = vm->physmem_main.pmalloc_main;
   cryptodev_engine_thread_t *cet = cmt->per_thread_data + vm->thread_index;
   vnet_crypto_async_frame_elt_t *fe;
-  struct rte_cryptodev_sym_session *sess = 0;
+  cryptodev_session_t *sess = 0;
   cryptodev_op_t **cop;
   u32 *bi;
   u32 n_enqueue = 0, n_elts;
@@ -259,7 +262,8 @@ cryptodev_frame_aead_enqueue (vlib_main_t *vm,
   if (PREDICT_FALSE (CRYPTODEV_MAX_INFLIGHT - cet->inflight < n_elts))
     {
       cryptodev_mark_frame_err_status (frame,
-				       VNET_CRYPTO_OP_STATUS_FAIL_ENGINE_ERR);
+				       VNET_CRYPTO_OP_STATUS_FAIL_ENGINE_ERR,
+				       VNET_CRYPTO_FRAME_STATE_NOT_PROCESSED);
       return -1;
     }
 
@@ -267,7 +271,8 @@ cryptodev_frame_aead_enqueue (vlib_main_t *vm,
 	rte_mempool_get_bulk (cet->cop_pool, (void **) cet->cops, n_elts) < 0))
     {
       cryptodev_mark_frame_err_status (frame,
-				       VNET_CRYPTO_OP_STATUS_FAIL_ENGINE_ERR);
+				       VNET_CRYPTO_OP_STATUS_FAIL_ENGINE_ERR,
+				       VNET_CRYPTO_FRAME_STATE_NOT_PROCESSED);
       return -1;
     }
 
@@ -301,13 +306,19 @@ cryptodev_frame_aead_enqueue (vlib_main_t *vm,
 							   aad_len) < 0))
 		{
 		  cryptodev_mark_frame_err_status (
-		    frame, VNET_CRYPTO_OP_STATUS_FAIL_ENGINE_ERR);
+		    frame, VNET_CRYPTO_OP_STATUS_FAIL_ENGINE_ERR,
+		    VNET_CRYPTO_FRAME_STATE_NOT_PROCESSED);
 		  return -1;
 		}
 	    }
 	  else if (PREDICT_FALSE (
-		     key->keys[vm->numa_node][op_type]->opaque_data !=
-		     aad_len))
+#if RTE_VERSION >= RTE_VERSION_NUM(22, 11, 0, 0)
+		     rte_cryptodev_sym_session_opaque_data_get (
+		       key->keys[vm->numa_node][op_type]) != (u64) aad_len
+#else
+		     key->keys[vm->numa_node][op_type]->opaque_data != aad_len
+#endif
+		     ))
 	    {
 	      cryptodev_sess_handler (vm, VNET_CRYPTO_KEY_OP_DEL,
 				      fe->key_index, aad_len);
@@ -315,7 +326,8 @@ cryptodev_frame_aead_enqueue (vlib_main_t *vm,
 							   aad_len) < 0))
 		{
 		  cryptodev_mark_frame_err_status (
-		    frame, VNET_CRYPTO_OP_STATUS_FAIL_ENGINE_ERR);
+		    frame, VNET_CRYPTO_OP_STATUS_FAIL_ENGINE_ERR,
+		    VNET_CRYPTO_FRAME_STATE_NOT_PROCESSED);
 		  return -1;
 		}
 	    }

@@ -277,12 +277,6 @@ api_app_worker_add_del (vat_main_t *vat)
 }
 
 static int
-api_application_tls_key_add (vat_main_t *vat)
-{
-  return -1;
-}
-
-static int
 api_app_namespace_add_del (vat_main_t *vam)
 {
   vl_api_app_namespace_add_del_t *mp;
@@ -330,8 +324,14 @@ api_app_namespace_add_del (vat_main_t *vam)
   return ret;
 }
 
+static void
+vl_api_app_namespace_add_del_v4_reply_t_handler (
+  vl_api_app_namespace_add_del_v4_reply_t *mp)
+{
+}
+
 static int
-api_application_tls_cert_add (vat_main_t *vat)
+api_app_namespace_add_del_v4 (vat_main_t *vat)
 {
   return -1;
 }

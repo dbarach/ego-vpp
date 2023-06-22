@@ -670,8 +670,19 @@ vls_listener_wrk_is_active (vcl_locked_session_t * vls, u32 wrk_index)
 static void
 vls_listener_wrk_start_listen (vcl_locked_session_t * vls, u32 wrk_index)
 {
-  vppcom_session_listen (vls_to_sh (vls), ~0);
-  vls_listener_wrk_set (vls, wrk_index, 1 /* is_active */ );
+  vcl_worker_t *wrk;
+  vcl_session_t *ls;
+
+  wrk = vcl_worker_get (wrk_index);
+  ls = vcl_session_get (wrk, vls->session_index);
+
+  /* Listen request already sent */
+  if (ls->flags & VCL_SESSION_F_PENDING_LISTEN)
+    return;
+
+  vcl_send_session_listen (wrk, ls);
+
+  vls_listener_wrk_set (vls, wrk_index, 1 /* is_active */);
 }
 
 static void
@@ -1301,7 +1312,13 @@ vls_mp_checks (vcl_locked_session_t * vls, int is_add)
 	  vls_listener_wrk_set (vls, vls->vcl_wrk_index, 1 /* is_active */);
 	  break;
 	}
-      vls_listener_wrk_stop_listen (vls, vls->vcl_wrk_index);
+      /* Although removal from epoll means listener no longer accepts new
+       * sessions, the accept queue built by vpp cannot be drained by stopping
+       * the listener. Morover, some applications, e.g., nginx, might
+       * constantly remove and add listeners to their epfds. Removing
+       * listeners in such situations causes a lot of churn in vpp as segments
+       * and segment managers need to be recreated. */
+      /* vls_listener_wrk_stop_listen (vls, vls->vcl_wrk_index); */
       break;
     case VCL_STATE_LISTEN_NO_MQ:
       if (!is_add)

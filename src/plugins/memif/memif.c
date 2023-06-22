@@ -301,6 +301,37 @@ memif_connect (memif_if_t * mif)
       mq->queue_index =
 	vnet_hw_if_register_tx_queue (vnm, mif->hw_if_index, i);
       clib_spinlock_init (&mq->lockp);
+
+      if (mif->flags & MEMIF_IF_FLAG_USE_DMA)
+	{
+	  memif_dma_info_t *dma_info;
+	  mq->dma_head = 0;
+	  mq->dma_tail = 0;
+	  mq->dma_info_head = 0;
+	  mq->dma_info_tail = 0;
+	  mq->dma_info_size = MEMIF_DMA_INFO_SIZE;
+	  vec_validate_aligned (mq->dma_info, MEMIF_DMA_INFO_SIZE,
+				CLIB_CACHE_LINE_BYTES);
+
+	  vec_foreach (dma_info, mq->dma_info)
+	    {
+	      vec_validate_aligned (dma_info->data.desc_data,
+				    pow2_mask (max_log2_ring_sz),
+				    CLIB_CACHE_LINE_BYTES);
+	      vec_validate_aligned (dma_info->data.desc_len,
+				    pow2_mask (max_log2_ring_sz),
+				    CLIB_CACHE_LINE_BYTES);
+	      vec_validate_aligned (dma_info->data.desc_status,
+				    pow2_mask (max_log2_ring_sz),
+				    CLIB_CACHE_LINE_BYTES);
+	      vec_validate_aligned (dma_info->data.copy_ops, 0,
+				    CLIB_CACHE_LINE_BYTES);
+	      vec_reset_length (dma_info->data.copy_ops);
+	      vec_validate_aligned (dma_info->data.buffers, 0,
+				    CLIB_CACHE_LINE_BYTES);
+	      vec_reset_length (dma_info->data.buffers);
+	    }
+	}
     }
 
   if (vec_len (mif->tx_queues) > 0)
@@ -331,6 +362,37 @@ memif_connect (memif_if_t * mif)
       qi = vnet_hw_if_register_rx_queue (vnm, mif->hw_if_index, i,
 					 VNET_HW_IF_RXQ_THREAD_ANY);
       mq->queue_index = qi;
+
+      if (mif->flags & MEMIF_IF_FLAG_USE_DMA)
+	{
+	  memif_dma_info_t *dma_info;
+	  mq->dma_head = 0;
+	  mq->dma_tail = 0;
+	  mq->dma_info_head = 0;
+	  mq->dma_info_tail = 0;
+	  mq->dma_info_size = MEMIF_DMA_INFO_SIZE;
+	  vec_validate_aligned (mq->dma_info, MEMIF_DMA_INFO_SIZE,
+				CLIB_CACHE_LINE_BYTES);
+	  vec_foreach (dma_info, mq->dma_info)
+	    {
+	      vec_validate_aligned (dma_info->data.desc_data,
+				    pow2_mask (max_log2_ring_sz),
+				    CLIB_CACHE_LINE_BYTES);
+	      vec_validate_aligned (dma_info->data.desc_len,
+				    pow2_mask (max_log2_ring_sz),
+				    CLIB_CACHE_LINE_BYTES);
+	      vec_validate_aligned (dma_info->data.desc_status,
+				    pow2_mask (max_log2_ring_sz),
+				    CLIB_CACHE_LINE_BYTES);
+	      vec_validate_aligned (dma_info->data.copy_ops, 0,
+				    CLIB_CACHE_LINE_BYTES);
+	      vec_reset_length (dma_info->data.copy_ops);
+	      vec_validate_aligned (dma_info->data.buffers, 0,
+				    CLIB_CACHE_LINE_BYTES);
+	      vec_reset_length (dma_info->data.buffers);
+	    }
+	}
+
       if (mq->int_fd > -1)
 	{
 	  template.file_descriptor = mq->int_fd;
@@ -681,6 +743,36 @@ VLIB_REGISTER_NODE (memif_process_node,static) = {
   .name = "memif-process",
 };
 
+/*
+ * Returns an unused socket id, and ~0 if it can't find one.
+ */
+u32
+memif_get_unused_socket_id ()
+{
+  memif_main_t *mm = &memif_main;
+  uword *p;
+  int i, j;
+
+  static u32 seed = 0;
+  /* limit to 1M tries */
+  for (j = 0; j < 1 << 10; j++)
+    {
+      seed = random_u32 (&seed);
+      for (i = 0; i < 1 << 10; i++)
+	{
+	  /* look around randomly generated id */
+	  seed += (2 * (i % 2) - 1) * i;
+	  if (seed == (u32) ~0)
+	    continue;
+	  p = hash_get (mm->socket_file_index_by_sock_id, seed);
+	  if (!p)
+	    return seed;
+	}
+    }
+
+  return ~0;
+}
+
 clib_error_t *
 memif_socket_filename_add_del (u8 is_add, u32 sock_id, char *sock_filename)
 {
@@ -872,6 +964,16 @@ VNET_HW_INTERFACE_CLASS (memif_ip_hw_if_class, static) = {
 };
 /* *INDENT-ON* */
 
+static void
+memif_prepare_dma_args (vlib_dma_config_t *args)
+{
+  args->max_batches = 256;
+  args->max_transfer_size = VLIB_BUFFER_DEFAULT_DATA_SIZE;
+  args->barrier_before_last = 1;
+  args->sw_fallback = 1;
+  args->callback_fn = NULL;
+}
+
 clib_error_t *
 memif_create_if (vlib_main_t *vm, memif_create_if_args_t *args)
 {
@@ -958,6 +1060,20 @@ memif_create_if (vlib_main_t *vm, memif_create_if_args_t *args)
   mif->mode = args->mode;
   if (args->secret)
     mif->secret = vec_dup (args->secret);
+
+  /* register dma config if enabled */
+  if (args->use_dma)
+    {
+      vlib_dma_config_t dma_args;
+      bzero (&dma_args, sizeof (dma_args));
+      memif_prepare_dma_args (&dma_args);
+
+      dma_args.max_transfers = 1 << args->log2_ring_size;
+      dma_args.callback_fn = memif_dma_completion_cb;
+      mif->dma_input_config = vlib_dma_config_add (vm, &dma_args);
+      dma_args.callback_fn = memif_tx_dma_completion_cb;
+      mif->dma_tx_config = vlib_dma_config_add (vm, &dma_args);
+    }
 
   if (mif->mode == MEMIF_INTERFACE_MODE_ETHERNET)
     {
@@ -1046,6 +1162,9 @@ memif_create_if (vlib_main_t *vm, memif_create_if_args_t *args)
       if (args->is_zero_copy)
 	mif->flags |= MEMIF_IF_FLAG_ZERO_COPY;
     }
+
+  if (args->use_dma)
+    mif->flags |= MEMIF_IF_FLAG_USE_DMA;
 
   vnet_hw_if_set_caps (vnm, mif->hw_if_index, VNET_HW_IF_CAP_INT_MODE);
   vnet_hw_if_set_input_node (vnm, mif->hw_if_index, memif_input_node.index);

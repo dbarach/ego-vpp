@@ -128,6 +128,12 @@ set(VPPINFRA_HEADERS
   clib.h
   cpu.h
   crc32.h
+  crypto/sha2.h
+  crypto/ghash.h
+  crypto/aes.h
+  crypto/aes_cbc.h
+  crypto/aes_gcm.h
+  crypto/poly1305.h
   dlist.h
   dlmalloc.h
   elf_clib.h
@@ -158,6 +164,7 @@ set(VPPINFRA_HEADERS
   os.h
   pcap.h
   pcap_funcs.h
+  pcg.h
   perfmon/perfmon.h
   pmalloc.h
   pool.h
@@ -167,7 +174,6 @@ set(VPPINFRA_HEADERS
   random_isaac.h
   rbtree.h
   serialize.h
-  sha2.h
   smp.h
   socket.h
   sparse_vec.h
@@ -247,6 +253,7 @@ if(VPP_BUILD_VPPINFRA_TESTS)
     macros
     maplog
     pmalloc
+    pool_alloc
     pool_iterate
     ptclosure
     random
@@ -273,29 +280,34 @@ if(VPP_BUILD_VPPINFRA_TESTS)
       LINK_LIBRARIES vppinfra Threads::Threads
       )
   endforeach()
+endif(VPP_BUILD_VPPINFRA_TESTS)
 
 set(test_files
-  vector/test/array_mask.c
-  vector/test/compress.c
-  vector/test/count_equal.c
-  vector/test/index_to_ptr.c
-  vector/test/ip_csum.c
-  vector/test/mask_compare.c
-  vector/test/memcpy_x86_64.c
-  vector/test/sha2.c
-  vector/test/toeplitz.c
+  test/aes_cbc.c
+  test/aes_gcm.c
+  test/poly1305.c
+  test/array_mask.c
+  test/compress.c
+  test/count_equal.c
+  test/crc32c.c
+  test/index_to_ptr.c
+  test/ip_csum.c
+  test/mask_compare.c
+  test/memcpy_x86_64.c
+  test/sha2.c
+  test/toeplitz.c
 )
 
-add_vpp_executable(test_vector_funcs
+add_vpp_executable(test_infra
   SOURCES
-  vector/test/test.c
+  test/test.c
   ${test_files}
   LINK_LIBRARIES vppinfra
+  NO_INSTALL
 )
 
-vpp_library_set_multiarch_sources(test_vector_funcs
+vpp_library_set_multiarch_sources(test_infra
   SOURCES
   ${test_files}
 )
 
-endif(VPP_BUILD_VPPINFRA_TESTS)

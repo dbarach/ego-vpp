@@ -63,7 +63,9 @@ layer3 = test_config["L3"]
 def create_test(test_name, test, ip_version, mtu):
     """Create and return a unittest method for a test."""
 
-    @unittest.skipUnless(config.extended, "part of extended tests")
+    @unittest.skipIf(
+        config.skip_netns_tests, "netns not available or disabled from cli"
+    )
     def test_func(self):
         self.logger.debug(f"Starting unittest:{test_name}")
         self.setUpTestToplogy(test=test, ip_version=ip_version)
@@ -98,6 +100,8 @@ def create_test(test_name, test, ip_version, mtu):
 
 def generate_vpp_interface_tests():
     """Generate unittests for testing vpp interfaces."""
+    if config.skip_netns_tests:
+        print("Skipping netns tests")
     for test in tests:
         for ip_version in test_config["ip_versions"]:
             for mtu in test_config["mtus"]:

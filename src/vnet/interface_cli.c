@@ -517,7 +517,8 @@ done:
 /* *INDENT-OFF* */
 VLIB_CLI_COMMAND (show_sw_interfaces_command, static) = {
   .path = "show interface",
-  .short_help = "show interface [address|addr|features|feat|vtr] [<interface> [<interface> [..]]] [verbose]",
+  .short_help = "show interface [address|addr|features|feat|vtr|tag] "
+		"[<interface> [<interface> [..]]] [verbose]",
   .function = show_sw_interfaces,
   .is_mp_safe = 1,
 };
@@ -2384,7 +2385,7 @@ pcap_trace_command_fn (vlib_main_t * vm,
  *   packet capture are preserved, so '<em>any</em>' can be used to reset
  *   the interface setting.
  *
- * - <b>filter</b> - Use the pcap rx / tx / drop trace filter, which
+ * - <b>filter</b> - Use the pcap trace rx / tx / drop filter, which
  *   must be configured. Use <b>classify filter pcap...</b> to configure the
  *   filter. The filter will only be executed if the per-interface or
  *   any-interface tests fail.

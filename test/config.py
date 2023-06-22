@@ -2,6 +2,7 @@ import argparse
 import os
 import psutil
 import time
+from vpp_qemu_utils import can_create_namespaces
 
 
 def positive_int_or_default(default):
@@ -122,7 +123,8 @@ parser.add_argument(
 )
 
 filter_help_string = """\
-expression consists of 3 string selectors separated by '.' separators:
+expression consists of one or more filters separated by commas (',')
+filter consists of 3 string selectors separated by dots ('.')
 
     <file>.<class>.<function>
 
@@ -142,6 +144,8 @@ examples:
    test_add_bfd from test_bfd.py/BFDAPITestCase
 4. '.*.test_add_bfd' selects all test functions named test_add_bfd
    from all files/classes
+5. 'bfd,ip4,..test_icmp_error' selects all test functions in test_bfd.py,
+   test_ip4.py and all test functions named 'test_icmp_error' in all files
 """
 parser.add_argument(
     "--filter", action="store", metavar="FILTER_EXPRESSION", help=filter_help_string
@@ -188,6 +192,11 @@ parser.add_argument(
 )
 
 parser.add_argument("--extended", action="store_true", help="run extended tests")
+parser.add_argument(
+    "--skip-netns-tests",
+    action="store_true",
+    help="skip tests involving netns operations",
+)
 
 parser.add_argument(
     "--sanity", action="store_true", help="perform sanity vpp run before running tests"
@@ -440,6 +449,10 @@ elif config.max_vpp_cpus > 0:
     max_vpp_cpus = min(config.max_vpp_cpus, num_cpus)
 else:
     max_vpp_cpus = num_cpus
+
+if not config.skip_netns_tests:
+    if not can_create_namespaces():
+        config.skip_netns_tests = True
 
 if __name__ == "__main__":
     print("Provided arguments:")

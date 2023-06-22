@@ -2,7 +2,6 @@ package main
 
 import (
 	"flag"
-	"fmt"
 	"io/ioutil"
 	"os"
 	"time"
@@ -14,20 +13,46 @@ import (
 )
 
 const (
-	defaultNetworkNumber int = 1
+	DEFAULT_NETWORK_NUM int = 1
 )
 
-var IsPersistent = flag.Bool("persist", false, "persists topology config")
-var IsVerbose = flag.Bool("verbose", false, "verbose test output")
+var isPersistent = flag.Bool("persist", false, "persists topology config")
+var isVerbose = flag.Bool("verbose", false, "verbose test output")
+var isUnconfiguring = flag.Bool("unconfigure", false, "remove topology")
+var isVppDebug = flag.Bool("debug", false, "attach gdb to vpp")
+var nConfiguredCpus = flag.Int("cpus", 1, "number of CPUs assigned to vpp")
 
 type HstSuite struct {
 	suite.Suite
-	containers    map[string]*Container
-	volumes       []string
-	netConfigs    []NetConfig
-	netInterfaces map[string]*NetInterface
-	addresser     *Addresser
-	testIds       map[string]string
+	containers       map[string]*Container
+	volumes          []string
+	netConfigs       []NetConfig
+	netInterfaces    map[string]*NetInterface
+	ip4AddrAllocator *Ip4AddressAllocator
+	testIds          map[string]string
+	cpuAllocator     *CpuAllocatorT
+	cpuContexts      []*CpuContext
+	cpuPerVpp        int
+}
+
+func (s *HstSuite) SetupSuite() {
+	var err error
+	s.cpuAllocator, err = CpuAllocator()
+	if err != nil {
+		s.FailNow("failed to init cpu allocator: %v", err)
+	}
+	s.cpuPerVpp = *nConfiguredCpus
+}
+
+func (s *HstSuite) AllocateCpus() []int {
+	cpuCtx, err := s.cpuAllocator.Allocate(s.cpuPerVpp)
+	s.assertNil(err)
+	s.AddCpuContext(cpuCtx)
+	return cpuCtx.cpus
+}
+
+func (s *HstSuite) AddCpuContext(cpuCtx *CpuContext) {
+	s.cpuContexts = append(s.cpuContexts, cpuCtx)
 }
 
 func (s *HstSuite) TearDownSuite() {
@@ -35,19 +60,29 @@ func (s *HstSuite) TearDownSuite() {
 }
 
 func (s *HstSuite) TearDownTest() {
-	if *IsPersistent {
+	if *isPersistent {
 		return
 	}
-	s.ResetContainers()
-	s.RemoveVolumes()
+	for _, c := range s.cpuContexts {
+		c.Release()
+	}
+	s.resetContainers()
+	s.removeVolumes()
+}
+
+func (s *HstSuite) skipIfUnconfiguring() {
+	if *isUnconfiguring {
+		s.skip("skipping to unconfigure")
+	}
 }
 
 func (s *HstSuite) SetupTest() {
-	s.SetupVolumes()
-	s.SetupContainers()
+	s.skipIfUnconfiguring()
+	s.setupVolumes()
+	s.setupContainers()
 }
 
-func (s *HstSuite) SetupVolumes() {
+func (s *HstSuite) setupVolumes() {
 	for _, volume := range s.volumes {
 		cmd := "docker volume create --name=" + volume
 		s.log(cmd)
@@ -55,9 +90,9 @@ func (s *HstSuite) SetupVolumes() {
 	}
 }
 
-func (s *HstSuite) SetupContainers() {
+func (s *HstSuite) setupContainers() {
 	for _, container := range s.containers {
-		if container.isOptional == false {
+		if !container.isOptional {
 			container.run()
 		}
 	}
@@ -110,8 +145,8 @@ func (s *HstSuite) assertNotEmpty(object interface{}, msgAndArgs ...interface{})
 }
 
 func (s *HstSuite) log(args ...any) {
-	if *IsVerbose {
-                s.T().Helper()
+	if *isVerbose {
+		s.T().Helper()
 		s.T().Log(args...)
 	}
 }
@@ -121,13 +156,19 @@ func (s *HstSuite) skip(args ...any) {
 	s.T().SkipNow()
 }
 
-func (s *HstSuite) ResetContainers() {
+func (s *HstSuite) SkipIfMultiWorker(args ...any) {
+	if *nConfiguredCpus > 1 {
+		s.skip("test case not supported with multiple vpp workers")
+	}
+}
+
+func (s *HstSuite) resetContainers() {
 	for _, container := range s.containers {
 		container.stop()
 	}
 }
 
-func (s *HstSuite) RemoveVolumes() {
+func (s *HstSuite) removeVolumes() {
 	for _, volumeName := range s.volumes {
 		cmd := "docker volume rm " + volumeName
 		exechelper.Run(cmd)
@@ -149,7 +190,7 @@ func (s *HstSuite) getTransientContainerByName(name string) *Container {
 }
 
 func (s *HstSuite) loadContainerTopology(topologyName string) {
-	data, err := ioutil.ReadFile(ContainerTopologyDir + topologyName + ".yaml")
+	data, err := ioutil.ReadFile(containerTopologyDir + topologyName + ".yaml")
 	if err != nil {
 		s.T().Fatalf("read error: %v", err)
 	}
@@ -167,7 +208,7 @@ func (s *HstSuite) loadContainerTopology(topologyName string) {
 
 	s.containers = make(map[string]*Container)
 	for _, elem := range yamlTopo.Containers {
-		newContainer, err := NewContainer(elem)
+		newContainer, err := newContainer(elem)
 		newContainer.suite = s
 		if err != nil {
 			s.T().Fatalf("container config error: %v", err)
@@ -177,7 +218,7 @@ func (s *HstSuite) loadContainerTopology(topologyName string) {
 }
 
 func (s *HstSuite) loadNetworkTopology(topologyName string) {
-	data, err := ioutil.ReadFile(NetworkTopologyDir + topologyName + ".yaml")
+	data, err := ioutil.ReadFile(networkTopologyDir + topologyName + ".yaml")
 	if err != nil {
 		s.T().Fatalf("read error: %v", err)
 	}
@@ -187,13 +228,13 @@ func (s *HstSuite) loadNetworkTopology(topologyName string) {
 		s.T().Fatalf("unmarshal error: %v", err)
 	}
 
-	s.addresser = NewAddresser(s)
+	s.ip4AddrAllocator = NewIp4AddressAllocator()
 	s.netInterfaces = make(map[string]*NetInterface)
 	for _, elem := range yamlTopo.Devices {
 		switch elem["type"].(string) {
 		case NetNs:
 			{
-				if namespace, err := NewNetNamespace(elem); err == nil {
+				if namespace, err := newNetNamespace(elem); err == nil {
 					s.netConfigs = append(s.netConfigs, &namespace)
 				} else {
 					s.T().Fatalf("network config error: %v", err)
@@ -201,7 +242,7 @@ func (s *HstSuite) loadNetworkTopology(topologyName string) {
 			}
 		case Veth, Tap:
 			{
-				if netIf, err := NewNetworkInterface(elem, s.addresser); err == nil {
+				if netIf, err := newNetworkInterface(elem, s.ip4AddrAllocator); err == nil {
 					s.netConfigs = append(s.netConfigs, netIf)
 					s.netInterfaces[netIf.Name()] = netIf
 				} else {
@@ -210,7 +251,7 @@ func (s *HstSuite) loadNetworkTopology(topologyName string) {
 			}
 		case Bridge:
 			{
-				if bridge, err := NewBridge(elem); err == nil {
+				if bridge, err := newBridge(elem); err == nil {
 					s.netConfigs = append(s.netConfigs, &bridge)
 				} else {
 					s.T().Fatalf("network config error: %v", err)
@@ -223,19 +264,23 @@ func (s *HstSuite) loadNetworkTopology(topologyName string) {
 func (s *HstSuite) configureNetworkTopology(topologyName string) {
 	s.loadNetworkTopology(topologyName)
 
+	if *isUnconfiguring {
+		return
+	}
+
 	for _, nc := range s.netConfigs {
-		if err := nc.Configure(); err != nil {
+		if err := nc.configure(); err != nil {
 			s.T().Fatalf("network config error: %v", err)
 		}
 	}
 }
 
 func (s *HstSuite) unconfigureNetworkTopology() {
-	if *IsPersistent {
+	if *isPersistent {
 		return
 	}
 	for _, nc := range s.netConfigs {
-		nc.Unconfigure()
+		nc.unconfigure()
 	}
 }
 
@@ -247,49 +292,8 @@ func (s *HstSuite) getTestId() string {
 	}
 
 	if _, ok := s.testIds[testName]; !ok {
-		s.testIds[testName] = time.Now().Format(time.RFC3339)
+		s.testIds[testName] = time.Now().Format("2006-01-02_15-04-05")
 	}
 
 	return s.testIds[testName]
-}
-
-type AddressCounter = int
-
-type Addresser struct {
-	networks map[int]AddressCounter
-	suite    *HstSuite
-}
-
-func (a *Addresser) AddNetwork(networkNumber int) {
-	a.networks[networkNumber] = 1
-}
-
-func (a *Addresser) NewIp4Address(inputNetworkNumber ...int) (string, error) {
-	var networkNumber int = 0
-	if len(inputNetworkNumber) > 0 {
-		networkNumber = inputNetworkNumber[0]
-	}
-
-	if _, ok := a.networks[networkNumber]; !ok {
-		a.AddNetwork(networkNumber)
-	}
-
-	numberOfAddresses := a.networks[networkNumber]
-
-	if numberOfAddresses == 254 {
-		return "", fmt.Errorf("no available IPv4 addresses")
-	}
-
-	address := fmt.Sprintf("10.10.%v.%v/24", networkNumber, numberOfAddresses)
-	a.networks[networkNumber] = numberOfAddresses + 1
-
-	return address, nil
-}
-
-func NewAddresser(suite *HstSuite) *Addresser {
-	var addresser = new(Addresser)
-	addresser.suite = suite
-	addresser.networks = make(map[int]AddressCounter)
-	addresser.AddNetwork(0)
-	return addresser
 }

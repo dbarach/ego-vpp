@@ -3,12 +3,12 @@ package main
 import (
 	"fmt"
 	"os"
-	"os/exec"
+	"strings"
 )
 
 func (s *NsSuite) TestHttpTps() {
 	iface := s.netInterfaces[clientInterface]
-	client_ip := iface.IP4AddressString()
+	client_ip := iface.ip4AddressString()
 	port := "8080"
 	finished := make(chan error, 1)
 
@@ -31,7 +31,7 @@ func (s *VethsSuite) TestHttpCli() {
 
 	serverContainer.vppInstance.vppctl("http cli server")
 
-	uri := "http://" + serverVeth.IP4AddressString() + "/80"
+	uri := "http://" + serverVeth.ip4AddressString() + "/80"
 
 	o := clientContainer.vppInstance.vppctl("http cli client" +
 		" uri " + uri + " query /show/version")
@@ -48,52 +48,63 @@ func (s *NoTopoSuite) TestNginxAsServer() {
 	s.assertNil(nginxCont.run())
 
 	vpp := s.getContainerByName("vpp").vppInstance
-	err := vpp.waitForApp("-app", 5)
-	s.assertNil(err)
+	vpp.waitForApp("nginx-", 5)
 
-	serverAddress := s.netInterfaces[tapInterfaceName].Peer().IP4AddressString()
+	serverAddress := s.netInterfaces[tapInterfaceName].peer.ip4AddressString()
 
 	defer func() { os.Remove(query) }()
 	go startWget(finished, serverAddress, "80", query, "")
 	s.assertNil(<-finished)
 }
 
+func parseString(s, pattern string) string {
+	temp := strings.Split(s, "\n")
+	for _, item := range temp {
+		if strings.Contains(item, pattern) {
+			return item
+		}
+	}
+	return ""
+}
+
 func runNginxPerf(s *NoTopoSuite, mode, ab_or_wrk string) error {
 	nRequests := 1000000
-	nClients := 2000
-	var args []string
-	var exeName string
+	nClients := 1000
 
-	serverAddress := s.netInterfaces[tapInterfaceName].Peer().IP4AddressString()
-
-	if ab_or_wrk == "ab" {
-		args = []string{"-n", fmt.Sprintf("%d", nRequests), "-c",
-			fmt.Sprintf("%d", nClients)}
-		if mode == "rps" {
-			args = append(args, "-k")
-		} else if mode != "cps" {
-			return fmt.Errorf("invalid mode %s; expected cps/rps", mode)
-		}
-		args = append(args, "http://"+serverAddress+":80/64B.json")
-		exeName = "ab"
-	} else {
-		args = []string{"-c", fmt.Sprintf("%d", nClients), "-t", "2", "-d", "30",
-			"http://" + serverAddress + ":80/64B.json"}
-		exeName = "wrk"
-	}
+	serverAddress := s.netInterfaces[tapInterfaceName].peer.ip4AddressString()
 
 	vpp := s.getContainerByName("vpp").vppInstance
 
 	nginxCont := s.getContainerByName("nginx")
 	s.assertNil(nginxCont.run())
-	err := vpp.waitForApp("-app", 5)
-	s.assertNil(err)
+	vpp.waitForApp("nginx-", 5)
 
-	cmd := exec.Command(exeName, args...)
-	s.log(cmd)
-	o, _ := cmd.CombinedOutput()
-	s.log(string(o))
-	s.assertNotEmpty(o)
+	if ab_or_wrk == "ab" {
+		abCont := s.getContainerByName("ab")
+		args := fmt.Sprintf("-n %d -c %d", nRequests, nClients)
+		if mode == "rps" {
+			args += " -k"
+		} else if mode != "cps" {
+			return fmt.Errorf("invalid mode %s; expected cps/rps", mode)
+		}
+		// don't exit on socket receive errors
+		args += " -r"
+		args += " http://" + serverAddress + ":80/64B.json"
+		abCont.extraRunningArgs = args
+		o, err := abCont.combinedOutput()
+		rps := parseString(o, "Requests per second:")
+		s.log(rps, err)
+		s.assertNil(err)
+	} else {
+		wrkCont := s.getContainerByName("wrk")
+		args := fmt.Sprintf("-c %d -t 2 -d 30 http://%s:80/64B.json", nClients,
+			serverAddress)
+		wrkCont.extraRunningArgs = args
+		o, err := wrkCont.combinedOutput()
+		rps := parseString(o, "requests")
+		s.log(rps, err)
+		s.assertNil(err)
+	}
 	return nil
 }
 

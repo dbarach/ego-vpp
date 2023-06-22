@@ -35,7 +35,7 @@ func testProxyHttpTcp(s *NsSuite) error {
 		" --retry-on-http-error=503 --tries=10"+
 		" -O %s %s:555/%s",
 		outputFile,
-		clientVeth.IP4AddressString(),
+		clientVeth.ip4AddressString(),
 		srcFile,
 	)
 	s.log(c)
@@ -49,35 +49,45 @@ func testProxyHttpTcp(s *NsSuite) error {
 	return nil
 }
 
-func configureVppProxy(s *NsSuite) error {
+func configureVppProxy(s *NsSuite) {
 	serverVeth := s.netInterfaces[serverInterface]
 	clientVeth := s.netInterfaces[clientInterface]
 
 	testVppProxy := s.getContainerByName("vpp").vppInstance
 	output := testVppProxy.vppctl(
 		"test proxy server server-uri tcp://%s/555 client-uri tcp://%s/666",
-		clientVeth.IP4AddressString(),
-		serverVeth.Peer().IP4AddressString(),
+		clientVeth.ip4AddressString(),
+		serverVeth.peer.ip4AddressString(),
 	)
 	s.log("proxy configured...", output)
-	return nil
 }
 
 func (s *NsSuite) TestVppProxyHttpTcp() {
-	err := configureVppProxy(s)
-	s.assertNil(err)
-	err = testProxyHttpTcp(s)
+	configureVppProxy(s)
+	err := testProxyHttpTcp(s)
 	s.assertNil(err)
 }
 
-func configureEnvoyProxy(s *NsSuite) error {
+func configureEnvoyProxy(s *NsSuite) {
 	envoyContainer := s.getContainerByName("envoy")
-	return envoyContainer.run()
+	envoyContainer.create()
+
+	serverVeth := s.netInterfaces[serverInterface]
+	address := struct {
+		Server string
+	}{
+		Server: serverVeth.peer.ip4AddressString(),
+	}
+	envoyContainer.createConfig(
+		"/etc/envoy/envoy.yaml",
+		"resources/envoy/proxy.yaml",
+		address,
+	)
+	s.assertNil(envoyContainer.start())
 }
 
 func (s *NsSuite) TestEnvoyProxyHttpTcp() {
-	err := configureEnvoyProxy(s)
-	s.assertNil(err)
-	err = testProxyHttpTcp(s)
+	configureEnvoyProxy(s)
+	err := testProxyHttpTcp(s)
 	s.assertNil(err)
 }

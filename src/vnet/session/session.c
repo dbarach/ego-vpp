@@ -59,7 +59,7 @@ session_send_evt_to_thread (void *data, void *args, u32 thread_index,
       evt = (session_event_t *) svm_msg_q_msg_data (mq, &msg);
       evt->session_index = *(u32 *) data;
       break;
-    case SESSION_IO_EVT_BUILTIN_TX:
+    case SESSION_IO_EVT_TX_MAIN:
     case SESSION_CTRL_EVT_CLOSE:
     case SESSION_CTRL_EVT_RESET:
       msg = svm_msg_q_alloc_msg_w_ring (mq, SESSION_MQ_IO_EVT_RING);
@@ -307,8 +307,19 @@ session_cleanup_half_open (session_handle_t ho_handle)
 			 ho->connection_index, ho->app_index /* overloaded */);
     }
   else
-    transport_cleanup_half_open (session_get_transport_proto (ho),
-				 ho->connection_index);
+    {
+      /* Cleanup half-open session lookup table if need be */
+      if (ho->session_state != SESSION_STATE_TRANSPORT_CLOSED)
+	{
+	  transport_connection_t *tc;
+	  tc = transport_get_half_open (session_get_transport_proto (ho),
+					ho->connection_index);
+	  if (tc && !(tc->flags & TRANSPORT_CONNECTION_F_NO_LOOKUP))
+	    session_lookup_del_half_open (tc);
+	}
+      transport_cleanup_half_open (session_get_transport_proto (ho),
+				   ho->connection_index);
+    }
   session_free (ho);
 }
 
@@ -317,9 +328,10 @@ session_half_open_free (session_t *ho)
 {
   app_worker_t *app_wrk;
 
-  ASSERT (vlib_get_thread_index () <= 1);
-  app_wrk = app_worker_get (ho->app_wrk_index);
-  app_worker_del_half_open (app_wrk, ho);
+  ASSERT (vlib_get_thread_index () <= transport_cl_thread ());
+  app_wrk = app_worker_get_if_valid (ho->app_wrk_index);
+  if (app_wrk)
+    app_worker_del_half_open (app_wrk, ho);
   session_free (ho);
 }
 
@@ -333,10 +345,19 @@ session_half_open_free_rpc (void *args)
 void
 session_half_open_delete_notify (transport_connection_t *tc)
 {
+  session_t *ho = ho_session_get (tc->s_index);
+
+  /* Cleanup half-open lookup table if need be */
+  if (ho->session_state != SESSION_STATE_TRANSPORT_CLOSED)
+    {
+      if (!(tc->flags & TRANSPORT_CONNECTION_F_NO_LOOKUP))
+	session_lookup_del_half_open (tc);
+    }
+
   /* Notification from ctrl thread accepted without rpc */
   if (tc->thread_index == transport_cl_thread ())
     {
-      session_half_open_free (ho_session_get (tc->s_index));
+      session_half_open_free (ho);
     }
   else
     {
@@ -350,6 +371,9 @@ void
 session_half_open_migrate_notify (transport_connection_t *tc)
 {
   session_t *ho;
+
+  /* Support half-open migrations only for transports with no lookup */
+  ASSERT (tc->flags & TRANSPORT_CONNECTION_F_NO_LOOKUP);
 
   ho = ho_session_get (tc->s_index);
   ho->flags |= SESSION_F_IS_MIGRATING;
@@ -728,8 +752,10 @@ session_enqueue_notify_inline (session_t * s)
   app_worker_t *app_wrk;
   u32 session_index;
   u8 n_subscribers;
+  u32 thread_index;
 
   session_index = s->session_index;
+  thread_index = s->thread_index;
   n_subscribers = svm_fifo_n_subscribers (s->rx_fifo);
 
   app_wrk = app_worker_get_if_valid (s->app_wrk_index);
@@ -753,7 +779,7 @@ session_enqueue_notify_inline (session_t * s)
 
   if (PREDICT_FALSE (n_subscribers))
     {
-      s = session_get (session_index, vlib_get_thread_index ());
+      s = session_get (session_index, thread_index);
       return session_notify_subscribers (app_wrk->app_index, s,
 					 s->rx_fifo, SESSION_IO_EVT_RX);
     }
@@ -885,6 +911,7 @@ session_stream_connect_notify (transport_connection_t * tc,
   session_lookup_del_half_open (tc);
 
   ho = ho_session_get (tc->s_index);
+  session_set_state (ho, SESSION_STATE_TRANSPORT_CLOSED);
   opaque = ho->opaque;
   app_wrk = app_worker_get_if_valid (ho->app_wrk_index);
   if (!app_wrk)
@@ -1497,7 +1524,14 @@ session_stop_listen (session_t * s)
     return SESSION_E_NONE;
 
   if (!(tc->flags & TRANSPORT_CONNECTION_F_NO_LOOKUP))
-    session_lookup_del_connection (tc);
+    {
+      if (transport_connection_is_cless (tc))
+	{
+	  clib_memset (&tc->rmt_ip, 0, sizeof (tc->rmt_ip));
+	  tc->rmt_port = 0;
+	}
+      session_lookup_del_connection (tc);
+    }
 
   transport_stop_listen (tp, s->connection_index);
   return 0;
@@ -2021,6 +2055,7 @@ session_dma_completion_cb (vlib_main_t *vm, struct vlib_dma_batch *batch)
 static void
 session_prepare_dma_args (vlib_dma_config_t *args)
 {
+  args->max_batches = 16;
   args->max_transfers = DMA_TRANS_SIZE;
   args->max_transfer_size = 65536;
   args->features = 0;
