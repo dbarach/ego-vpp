@@ -65,13 +65,49 @@ void
   /* socket filename */
   mp->socket_filename[ARRAY_LEN (mp->socket_filename) - 1] = 0;
 
-  rv = vnet_api_error (memif_socket_filename_add_del (
+  rv = vnet_get_api_error_and_free (memif_socket_filename_add_del (
     is_add, socket_id, (char *) mp->socket_filename));
 
 reply:
   REPLY_MACRO (VL_API_MEMIF_SOCKET_FILENAME_ADD_DEL_REPLY);
 }
 
+/**
+ * @brief Message handler for memif_socket_filename_add_del API.
+ * @param mp the vl_api_memif_socket_filename_add_del_t API message
+ */
+void
+vl_api_memif_socket_filename_add_del_v2_t_handler (
+  vl_api_memif_socket_filename_add_del_v2_t *mp)
+{
+  vl_api_memif_socket_filename_add_del_v2_reply_t *rmp;
+  memif_main_t *mm = &memif_main;
+  char *socket_filename = 0;
+  u32 socket_id;
+  int rv;
+
+  /* socket_id */
+  socket_id = clib_net_to_host_u32 (mp->socket_id);
+  if (socket_id == 0)
+    {
+      rv = VNET_API_ERROR_INVALID_ARGUMENT;
+      goto reply;
+    }
+
+  /* socket filename */
+  socket_filename = vl_api_from_api_to_new_c_string (&mp->socket_filename);
+  if (mp->is_add && socket_id == (u32) ~0)
+    socket_id = memif_get_unused_socket_id ();
+
+  rv = vnet_get_api_error_and_free (
+    memif_socket_filename_add_del (mp->is_add, socket_id, socket_filename));
+
+  vec_free (socket_filename);
+
+reply:
+  REPLY_MACRO2 (VL_API_MEMIF_SOCKET_FILENAME_ADD_DEL_V2_REPLY,
+		({ rmp->socket_id = htonl (socket_id); }));
+}
 
 /**
  * @brief Message handler for memif_create API.
@@ -154,7 +190,7 @@ vl_api_memif_create_t_handler (vl_api_memif_create_t * mp)
       args.hw_addr_set = 1;
     }
 
-  rv = vnet_api_error (memif_create_if (vm, &args));
+  rv = vnet_get_api_error_and_free (memif_create_if (vm, &args));
 
   vec_free (args.secret);
 
@@ -165,6 +201,98 @@ reply:
       rmp->sw_if_index = htonl (args.sw_if_index);
     }));
   /* *INDENT-ON* */
+}
+
+/**
+ * @brief Message handler for memif_create_v2 API.
+ * @param mp vl_api_memif_create_v2_t * mp the api message
+ */
+void
+vl_api_memif_create_v2_t_handler (vl_api_memif_create_v2_t *mp)
+{
+  memif_main_t *mm = &memif_main;
+  vlib_main_t *vm = vlib_get_main ();
+  vl_api_memif_create_reply_t *rmp;
+  memif_create_if_args_t args = { 0 };
+  u32 ring_size = MEMIF_DEFAULT_RING_SIZE;
+  static const u8 empty_hw_addr[6];
+  int rv = 0;
+  mac_address_t mac;
+
+  /* id */
+  args.id = clib_net_to_host_u32 (mp->id);
+
+  /* socket-id */
+  args.socket_id = clib_net_to_host_u32 (mp->socket_id);
+
+  /* secret */
+  mp->secret[ARRAY_LEN (mp->secret) - 1] = 0;
+  if (strlen ((char *) mp->secret) > 0)
+    {
+      vec_validate (args.secret, strlen ((char *) mp->secret));
+      strncpy ((char *) args.secret, (char *) mp->secret,
+	       vec_len (args.secret));
+    }
+
+  /* role */
+  args.is_master = (ntohl (mp->role) == MEMIF_ROLE_API_MASTER);
+
+  /* mode */
+  args.mode = ntohl (mp->mode);
+
+  args.is_zero_copy = mp->no_zero_copy ? 0 : 1;
+
+  args.use_dma = mp->use_dma;
+
+  /* rx/tx queues */
+  if (args.is_master == 0)
+    {
+      args.rx_queues = MEMIF_DEFAULT_RX_QUEUES;
+      args.tx_queues = MEMIF_DEFAULT_TX_QUEUES;
+      if (mp->rx_queues)
+	{
+	  args.rx_queues = mp->rx_queues;
+	}
+      if (mp->tx_queues)
+	{
+	  args.tx_queues = mp->tx_queues;
+	}
+    }
+
+  /* ring size */
+  if (mp->ring_size)
+    {
+      ring_size = ntohl (mp->ring_size);
+    }
+  if (!is_pow2 (ring_size))
+    {
+      rv = VNET_API_ERROR_INVALID_ARGUMENT;
+      goto reply;
+    }
+  args.log2_ring_size = min_log2 (ring_size);
+
+  /* buffer size */
+  args.buffer_size = MEMIF_DEFAULT_BUFFER_SIZE;
+  if (mp->buffer_size)
+    {
+      args.buffer_size = ntohs (mp->buffer_size);
+    }
+
+  /* MAC address */
+  mac_address_decode (mp->hw_addr, &mac);
+  if (memcmp (&mac, empty_hw_addr, 6) != 0)
+    {
+      memcpy (args.hw_addr, &mac, 6);
+      args.hw_addr_set = 1;
+    }
+
+  rv = vnet_api_error (memif_create_if (vm, &args));
+
+  vec_free (args.secret);
+
+reply:
+  REPLY_MACRO2 (VL_API_MEMIF_CREATE_V2_REPLY,
+		({ rmp->sw_if_index = htonl (args.sw_if_index); }));
 }
 
 /**
@@ -191,7 +319,7 @@ vl_api_memif_delete_t_handler (vl_api_memif_delete_t * mp)
   else
     {
       mif = pool_elt_at_index (mm->interfaces, hi->dev_instance);
-      rv = vnet_api_error (memif_delete_if (vm, mif));
+      rv = vnet_get_api_error_and_free (memif_delete_if (vm, mif));
     }
 
   REPLY_MACRO (VL_API_MEMIF_DELETE_REPLY);

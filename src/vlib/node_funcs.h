@@ -59,7 +59,8 @@ vlib_process_start_switch_stack (vlib_main_t * vm, vlib_process_t * p)
 {
 #ifdef CLIB_SANITIZE_ADDR
   void *stack = p ? (void *) p->stack : vlib_thread_stacks[vm->thread_index];
-  u32 stack_bytes = p ? p->log2_n_stack_bytes : VLIB_THREAD_STACK_SIZE;
+  u32 stack_bytes =
+    p ? (1ULL < p->log2_n_stack_bytes) : VLIB_THREAD_STACK_SIZE;
   __sanitizer_start_switch_fiber (&vm->asan_stack_save, stack, stack_bytes);
 #endif
 }
@@ -251,15 +252,21 @@ vlib_node_set_interrupt_pending (vlib_main_t *vm, u32 node_index)
 {
   vlib_node_main_t *nm = &vm->node_main;
   vlib_node_t *n = vec_elt (nm->nodes, node_index);
+  void *interrupts;
 
-  ASSERT (n->type == VLIB_NODE_TYPE_INPUT);
+  if (n->type == VLIB_NODE_TYPE_INPUT)
+    interrupts = nm->input_node_interrupts;
+  else if (n->type == VLIB_NODE_TYPE_PRE_INPUT)
+    interrupts = nm->pre_input_node_interrupts;
+  else
+    ASSERT (0);
 
   if (vm != vlib_get_main ())
-    clib_interrupt_set_atomic (nm->interrupts, n->runtime_index);
+    clib_interrupt_set_atomic (interrupts, n->runtime_index);
   else
-    clib_interrupt_set (nm->interrupts, n->runtime_index);
+    clib_interrupt_set (interrupts, n->runtime_index);
 
-  __atomic_store_n (nm->pending_interrupts, 1, __ATOMIC_RELEASE);
+  __atomic_store_n (&nm->pending_interrupts, 1, __ATOMIC_RELEASE);
 }
 
 always_inline vlib_process_t *
@@ -998,8 +1005,11 @@ vlib_process_signal_event_helper (vlib_node_main_t * nm,
       p->flags = p_flags | VLIB_PROCESS_RESUME_PENDING;
       vec_add1 (nm->data_from_advancing_timing_wheel, x);
       if (delete_from_wheel)
-	TW (tw_timer_stop) ((TWT (tw_timer_wheel) *) nm->timing_wheel,
-			    p->stop_timer_handle);
+	{
+	  TW (tw_timer_stop)
+	  ((TWT (tw_timer_wheel) *) nm->timing_wheel, p->stop_timer_handle);
+	  p->stop_timer_handle = ~0;
+	}
     }
 
   return data_to_be_written_by_caller;
@@ -1403,6 +1413,31 @@ vlib_frame_bitmap_init (uword *bmp, u32 n_first_bits_set)
 }
 
 static_always_inline void
+vlib_frame_bitmap_set_bit_at_index (uword *bmp, uword bit_index)
+{
+  uword_bitmap_set_bits_at_index (bmp, bit_index, 1);
+}
+
+static_always_inline void
+_vlib_frame_bitmap_clear_bit_at_index (uword *bmp, uword bit_index)
+{
+  uword_bitmap_clear_bits_at_index (bmp, bit_index, 1);
+}
+
+static_always_inline void
+vlib_frame_bitmap_set_bits_at_index (uword *bmp, uword bit_index, uword n_bits)
+{
+  uword_bitmap_set_bits_at_index (bmp, bit_index, n_bits);
+}
+
+static_always_inline void
+vlib_frame_bitmap_clear_bits_at_index (uword *bmp, uword bit_index,
+				       uword n_bits)
+{
+  uword_bitmap_clear_bits_at_index (bmp, bit_index, n_bits);
+}
+
+static_always_inline void
 vlib_frame_bitmap_clear (uword *bmp)
 {
   u32 n_left = VLIB_FRAME_BITMAP_N_UWORDS;
@@ -1434,35 +1469,24 @@ vlib_frame_bitmap_and (uword *bmp, uword *bmp2)
     bmp++[0] &= bmp2++[0];
 }
 
-static_always_inline u32
+static_always_inline uword
 vlib_frame_bitmap_count_set_bits (uword *bmp)
 {
-  u32 n_left = VLIB_FRAME_BITMAP_N_UWORDS;
-  u32 count = 0;
-  while (n_left--)
-    count += count_set_bits (bmp++[0]);
-  return count;
+  return uword_bitmap_count_set_bits (bmp, VLIB_FRAME_BITMAP_N_UWORDS);
 }
 
 static_always_inline uword
 vlib_frame_bitmap_is_bit_set (uword *bmp, uword bit_index)
 {
-  bmp += bit_index / uword_bits;
-  bit_index %= uword_bits;
-  return (bmp[0] >> bit_index) & 1;
+  return uword_bitmap_is_bit_set (bmp, bit_index);
 }
 
-static_always_inline int
+static_always_inline uword
 vlib_frame_bitmap_find_first_set (uword *bmp)
 {
-  uword *b = bmp;
-  while (b[0] == 0)
-    {
-      ASSERT (b - bmp < VLIB_FRAME_BITMAP_N_UWORDS);
-      b++;
-    }
-
-  return (b - bmp) * uword_bits + get_lowest_set_bit_index (b[0]);
+  uword rv = uword_bitmap_find_first_set (bmp);
+  ASSERT (rv < VLIB_FRAME_BITMAP_N_UWORDS * uword_bits);
+  return rv;
 }
 
 #define foreach_vlib_frame_bitmap_set_bit_index(i, v)                         \

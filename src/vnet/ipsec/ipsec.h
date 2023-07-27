@@ -93,8 +93,6 @@ typedef struct
   add_del_sa_sess_cb_t add_del_sa_sess_cb;
   /* check support function */
   check_support_cb_t check_support_cb;
-  /* enable or disable function */
-  enable_disable_cb_t enable_disable_cb;
   u32 esp4_encrypt_node_index;
   u32 esp4_decrypt_node_index;
   u32 esp4_encrypt_next_index;
@@ -347,6 +345,23 @@ ipsec_spinlock_unlock (i32 *lock)
   clib_atomic_release (lock);
 }
 
+/* Special case to drop or hand off packets for sync/async modes.
+ *
+ * Different than sync mode, async mode only enqueue drop or hand-off packets
+ * to next nodes.
+ */
+always_inline void
+ipsec_set_next_index (vlib_buffer_t *b, vlib_node_runtime_t *node,
+		      u32 thread_index, u32 err, u32 ipsec_sa_err, u16 index,
+		      u16 *nexts, u16 drop_next, u32 sa_index)
+{
+  nexts[index] = drop_next;
+  b->error = node->errors[err];
+  if (PREDICT_TRUE (ipsec_sa_err != ~0))
+    vlib_increment_simple_counter (&ipsec_sa_err_counters[ipsec_sa_err],
+				   thread_index, sa_index, 1);
+}
+
 u32 ipsec_register_ah_backend (vlib_main_t * vm, ipsec_main_t * im,
 			       const char *name,
 			       const char *ah4_encrypt_node_name,
@@ -364,8 +379,7 @@ u32 ipsec_register_esp_backend (
   const char *esp6_decrypt_node_name, const char *esp6_decrypt_tun_node_name,
   const char *esp_mpls_encrypt_tun_node_name,
   check_support_cb_t esp_check_support_cb,
-  add_del_sa_sess_cb_t esp_add_del_sa_sess_cb,
-  enable_disable_cb_t enable_disable_cb);
+  add_del_sa_sess_cb_t esp_add_del_sa_sess_cb);
 
 int ipsec_select_ah_backend (ipsec_main_t * im, u32 ah_backend_idx);
 int ipsec_select_esp_backend (ipsec_main_t * im, u32 esp_backend_idx);

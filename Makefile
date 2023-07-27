@@ -56,7 +56,7 @@ endif
 
 ifeq ($(filter ubuntu debian,$(OS_ID)),$(OS_ID))
 PKG=deb
-else ifeq ($(filter rhel centos fedora opensuse-leap,$(OS_ID)),$(OS_ID))
+else ifeq ($(filter rhel centos fedora opensuse-leap rocky,$(OS_ID)),$(OS_ID))
 PKG=rpm
 endif
 
@@ -65,7 +65,7 @@ endif
 DEB_DEPENDS  = curl build-essential autoconf automake ccache
 DEB_DEPENDS += debhelper dkms git libtool libapr1-dev dh-python
 DEB_DEPENDS += libconfuse-dev git-review exuberant-ctags cscope pkg-config
-DEB_DEPENDS += lcov chrpath autoconf libnuma-dev
+DEB_DEPENDS += gcovr lcov chrpath autoconf libnuma-dev
 DEB_DEPENDS += python3-all python3-setuptools check
 DEB_DEPENDS += libffi-dev python3-ply
 DEB_DEPENDS += cmake ninja-build uuid-dev python3-jsonschema python3-yaml
@@ -79,6 +79,7 @@ DEB_DEPENDS += libelf-dev libpcap-dev # for libxdp (af_xdp)
 DEB_DEPENDS += iperf3 # for 'make test TEST=vcl'
 DEB_DEPENDS += nasm
 DEB_DEPENDS += iperf ethtool  # for 'make test TEST=vm_vpp_interfaces'
+DEB_DEPENDS += libpcap-dev
 
 LIBFFI=libffi6 # works on all but 20.04 and debian-testing
 
@@ -111,7 +112,7 @@ endif
 
 DEB_DEPENDS += $(LIBFFI)
 
-RPM_DEPENDS  = redhat-lsb glibc-static
+RPM_DEPENDS  = glibc-static
 RPM_DEPENDS += apr-devel
 RPM_DEPENDS += numactl-devel
 RPM_DEPENDS += check check-devel
@@ -120,7 +121,7 @@ RPM_DEPENDS += ninja-build
 RPM_DEPENDS += libuuid-devel
 RPM_DEPENDS += ccache
 RPM_DEPENDS += xmlto
-RPM_DEPENDS += elfutils-libelf-devel
+RPM_DEPENDS += elfutils-libelf-devel libpcap-devel
 RPM_DEPENDS += libnl3-devel libmnl-devel
 RPM_DEPENDS += nasm
 
@@ -133,6 +134,15 @@ ifeq ($(OS_ID),fedora)
 	RPM_DEPENDS += python3-virtualenv python3-jsonschema
 	RPM_DEPENDS += cmake
 	RPM_DEPENDS_GROUPS = 'C Development Tools and Libraries'
+else ifeq ($(OS_ID),rocky)
+	RPM_DEPENDS += yum-utils
+	RPM_DEPENDS += subunit subunit-devel
+	RPM_DEPENDS += openssl-devel
+	RPM_DEPENDS += python3-devel  # needed for python3 -m pip install psutil
+	RPM_DEPENDS += python3-ply  # for vppapigen
+	RPM_DEPENDS += python3-virtualenv python3-jsonschema
+	RPM_DEPENDS += infiniband-diags llvm clang cmake
+	RPM_DEPENDS_GROUPS = 'Development Tools'
 else ifeq ($(OS_ID)-$(OS_VERSION_ID),centos-8)
 	RPM_DEPENDS += yum-utils
 	RPM_DEPENDS += compat-openssl10 openssl-devel
@@ -167,6 +177,7 @@ RPM_SUSE_BUILDTOOLS_DEPS += clang cmake indent libtool make ninja python3-ply
 
 RPM_SUSE_DEVEL_DEPS = glibc-devel-static libnuma-devel libelf-devel
 RPM_SUSE_DEVEL_DEPS += libopenssl-devel libuuid-devel lsb-release
+RPM_SUSE_DEVEL_DEPS += libpcap-devel llvm-devel
 RPM_SUSE_DEVEL_DEPS += curl libstdc++-devel bison gcc-c++ zlib-devel
 
 RPM_SUSE_PYTHON_DEPS = python3-devel python3-pip python3-rpm-macros
@@ -318,6 +329,12 @@ ifeq ($(OS_ID),rhel)
 	@sudo -E yum groupinstall $(CONFIRM) $(RPM_DEPENDS_GROUPS)
 	@sudo -E yum install $(CONFIRM) $(RPM_DEPENDS)
 	@sudo -E debuginfo-install $(CONFIRM) glibc openssl-libs zlib
+else ifeq ($(OS_ID),rocky)
+	@sudo -E dnf install $(CONFIRM) dnf-plugins-core epel-release
+	@sudo -E dnf config-manager --set-enabled \
+          $(shell dnf repolist all 2>/dev/null|grep -i crb|cut -d' ' -f1|grep -v source)
+	@sudo -E dnf groupinstall $(CONFIRM) $(RPM_DEPENDS_GROUPS)
+	@sudo -E dnf install $(CONFIRM) $(RPM_DEPENDS)
 else ifeq ($(OS_ID)-$(OS_VERSION_ID),centos-8)
 	@sudo -E dnf install $(CONFIRM) dnf-plugins-core epel-release
 	@sudo -E dnf config-manager --set-enabled \
@@ -411,7 +428,7 @@ rebuild-release: wipe-release build-release
 export TEST_DIR ?= $(WS_ROOT)/test
 
 define test
-	$(if $(filter-out $(2),retest),make -C $(BR) PLATFORM=vpp TAG=$(1) vpp-install,)
+	$(if $(filter-out $(2),retest),make -C $(BR) PLATFORM=vpp TAG=$(1) CC=$(CC) vpp-install,)
 	$(eval libs:=lib lib64)
 	make -C test \
 	  VPP_BUILD_DIR=$(BR)/build-$(1)-native/vpp \
@@ -434,9 +451,27 @@ test:
 test-debug:
 	$(call test,vpp_debug,test)
 
-.PHONY: test-gcov
-test-gcov:
+.PHONY: test-cov
+test-cov:
+	$(eval CC=gcc)
+	$(eval TEST_GCOV=1)
+	$(call test,vpp_gcov,cov)
+
+.PHONY: test-cov-build
+test-cov-build:
+	$(eval CC=gcc)
+	$(eval TEST_GCOV=1)
 	$(call test,vpp_gcov,test)
+
+.PHONY: test-cov-prep
+test-cov-prep:
+	$(eval CC=gcc)
+	$(call test,vpp_gcov,cov-prep)
+
+.PHONY: test-cov-post
+test-cov-post:
+	$(eval CC=gcc)
+	$(call test,vpp_gcov,cov-post)
 
 .PHONY: test-all
 test-all:
@@ -447,6 +482,13 @@ test-all:
 test-all-debug:
 	$(eval EXTENDED_TESTS=1)
 	$(call test,vpp_debug,test)
+
+.PHONY: test-all-cov
+test-all-cov:
+	$(eval CC=gcc)
+	$(eval TEST_GCOV=1)
+	$(eval EXTENDED_TESTS=1)
+	$(call test,vpp_gcov,test)
 
 .PHONY: papi-wipe
 papi-wipe: test-wipe-papi
@@ -472,8 +514,10 @@ test-shell:
 test-shell-debug:
 	$(call test,vpp_debug,shell)
 
-.PHONY: test-shell-gcov
-test-shell-gcov:
+.PHONY: test-shell-cov
+test-shell-cov:
+	$(eval CC=gcc)
+	$(eval TEST_GCOV=1)
 	$(call test,vpp_gcov,shell)
 
 .PHONY: test-dep
@@ -490,13 +534,9 @@ test-wipe-doc:
 	@echo "make test-wipe-doc is DEPRECATED"
 	sleep 300
 
-.PHONY: test-cov
-test-cov:
-	$(eval EXTENDED_TESTS=1)
-	$(call test,vpp_gcov,cov)
-
 .PHONY: test-wipe-cov
 test-wipe-cov:
+	$(call make,$(PLATFORM)_gcov,$(addsuffix -wipe,$(TARGETS)))
 	@make -C test wipe-cov
 
 .PHONY: test-wipe-all

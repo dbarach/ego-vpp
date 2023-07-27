@@ -374,6 +374,16 @@ clib_socket_prefix_is_valid (char *s)
   return 0;
 }
 
+__clib_export int
+clib_socket_prefix_get_type (char *s)
+{
+  for (typeof (clib_socket_type_data[0]) *d = clib_socket_type_data;
+       d - clib_socket_type_data < ARRAY_LEN (clib_socket_type_data); d++)
+    if (strncmp (s, d->prefix, strlen (d->prefix)) == 0)
+      return d->type;
+  return 0;
+}
+
 __clib_export clib_error_t *
 clib_socket_init (clib_socket_t *s)
 {
@@ -450,7 +460,11 @@ clib_socket_init (clib_socket_t *s)
 	{
 	  p += 11;
 	  u8 *str = _clib_socket_get_string (&p, 0);
-	  u8 *pathname = format (0, "/var/run/netns/%v%c", str, 0);
+	  u8 *pathname = 0;
+	  if (str[0] == '/')
+	    pathname = format (0, "%v%c", str, 0);
+	  else
+	    pathname = format (0, "/var/run/netns/%v%c", str, 0);
 	  if ((netns_fd = open ((char *) pathname, O_RDONLY)) < 0)
 	    err = clib_error_return_unix (0, "open('%s')", pathname);
 	  vec_free (str);
@@ -724,45 +738,6 @@ done:
 #endif
   vec_free (name);
   return err;
-}
-
-__clib_export clib_error_t *
-clib_socket_init_netns (clib_socket_t *s, u8 *namespace)
-{
-  if (namespace == NULL || namespace[0] == 0)
-    return clib_socket_init (s);
-
-  clib_error_t *error;
-  int old_netns_fd, nfd = -1;
-
-  old_netns_fd = clib_netns_open (NULL /* self */);
-  if (old_netns_fd < 0)
-    return clib_error_return_unix (0, "get current netns failed");
-
-  if ((nfd = clib_netns_open (namespace)) == -1)
-    {
-      error = clib_error_return_unix (0, "clib_netns_open '%s'", namespace);
-      goto done;
-    }
-
-  if (clib_setns (nfd) == -1)
-    {
-      error = clib_error_return_unix (0, "setns '%s'", namespace);
-      goto done;
-    }
-
-  error = clib_socket_init (s);
-
-done:
-  if (clib_setns (old_netns_fd) == -1)
-    clib_warning ("Cannot set old ns");
-
-  close (old_netns_fd);
-
-  if (-1 != nfd)
-    close (nfd);
-
-  return error;
 }
 
 __clib_export clib_error_t *

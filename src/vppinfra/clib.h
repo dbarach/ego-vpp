@@ -74,6 +74,8 @@
 
 #define BITS(x)		(8*sizeof(x))
 #define ARRAY_LEN(x)	(sizeof (x)/sizeof (x[0]))
+#define FOREACH_ARRAY_ELT(a, b)                                               \
+  for (typeof ((b)[0]) *(a) = (b); (a) - (b) < ARRAY_LEN (b); (a)++)
 
 #define _STRUCT_FIELD(t,f) (((t *) 0)->f)
 #define STRUCT_OFFSET_OF(t,f) offsetof(t, f)
@@ -179,7 +181,7 @@
 /* Full memory barrier (read and write). */
 #define CLIB_MEMORY_BARRIER() __sync_synchronize ()
 
-#if __x86_64__
+#if __SSE__
 #define CLIB_MEMORY_STORE_BARRIER() __builtin_ia32_sfence ()
 #else
 #define CLIB_MEMORY_STORE_BARRIER() __sync_synchronize ()
@@ -194,6 +196,15 @@
 #define EXIT_FUNCTION(decl)			\
   decl __attribute ((destructor));		\
   decl
+
+always_inline uword
+pow2_mask (uword x)
+{
+#ifdef __BMI2__
+  return _bzhi_u64 (-1ULL, x);
+#endif
+  return ((uword) 1 << x) - (uword) 1;
+}
 
 #include <vppinfra/bitops.h>
 
@@ -232,15 +243,6 @@ min_log2_u64 (u64 x)
       l += min_log2 (x);
       return l;
     }
-}
-
-always_inline uword
-pow2_mask (uword x)
-{
-#ifdef __BMI2__
-  return _bzhi_u64 (-1ULL, x);
-#endif
-  return ((uword) 1 << x) - (uword) 1;
 }
 
 always_inline uword
@@ -336,6 +338,44 @@ extract_bits (uword x, int start, int count)
   __typeof__ (x) _x = (x);			\
   _x < 0 ? -_x : _x;				\
 })
+
+static_always_inline u64
+u64_add_with_carry (u64 *carry, u64 a, u64 b)
+{
+#if defined(__x86_64__)
+  unsigned long long v;
+  *carry = _addcarry_u64 (*carry, a, b, &v);
+  return (u64) v;
+#elif defined(__clang__)
+  unsigned long long c;
+  u64 rv = __builtin_addcll (a, b, *carry, &c);
+  *carry = c;
+  return rv;
+#else
+  u64 rv = a + b + *carry;
+  *carry = rv < a;
+  return rv;
+#endif
+}
+
+static_always_inline u64
+u64_sub_with_borrow (u64 *borrow, u64 x, u64 y)
+{
+#if defined(__x86_64__)
+  unsigned long long v;
+  *borrow = _subborrow_u64 (*borrow, x, y, &v);
+  return (u64) v;
+#elif defined(__clang__)
+  unsigned long long b;
+  u64 rv = __builtin_subcll (x, y, *borrow, &b);
+  *borrow = b;
+  return rv;
+#else
+  unsigned long long rv = x - (y + *borrow);
+  *borrow = rv >= x;
+  return rv;
+#endif
+}
 
 /* Standard standalone-only function declarations. */
 #ifndef CLIB_UNIX

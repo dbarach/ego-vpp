@@ -173,7 +173,8 @@ typedef enum
   _ (IS_MIGRATING, "migrating")                                               \
   _ (UNIDIRECTIONAL, "unidirectional")                                        \
   _ (CUSTOM_FIFO_TUNING, "custom-fifo-tuning")                                \
-  _ (HALF_OPEN, "half-open")
+  _ (HALF_OPEN, "half-open")                                                  \
+  _ (APP_CLOSED, "app-closed")
 
 typedef enum session_flags_bits_
 {
@@ -347,7 +348,7 @@ typedef enum
   SESSION_IO_EVT_TX,
   SESSION_IO_EVT_TX_FLUSH,
   SESSION_IO_EVT_BUILTIN_RX,
-  SESSION_IO_EVT_BUILTIN_TX,
+  SESSION_IO_EVT_TX_MAIN,
   SESSION_CTRL_EVT_RPC,
   SESSION_CTRL_EVT_HALF_CLOSE,
   SESSION_CTRL_EVT_CLOSE,
@@ -412,7 +413,6 @@ typedef enum
 #define FIFO_EVENT_APP_TX SESSION_IO_EVT_TX
 #define FIFO_EVENT_DISCONNECT SESSION_CTRL_EVT_CLOSE
 #define FIFO_EVENT_BUILTIN_RX SESSION_IO_EVT_BUILTIN_RX
-#define FIFO_EVENT_BUILTIN_TX SESSION_IO_EVT_BUILTIN_TX
 
 typedef enum
 {
@@ -484,9 +484,11 @@ STATIC_ASSERT (sizeof (session_dgram_hdr_t) == (SESSION_CONN_ID_LEN + 10),
   _ (NOLISTEN, "not listening")                                               \
   _ (NOSESSION, "session does not exist")                                     \
   _ (NOAPP, "app not attached")                                               \
+  _ (APP_ATTACHED, "app already attached")                                    \
   _ (PORTINUSE, "lcl port in use")                                            \
   _ (IPINUSE, "ip in use")                                                    \
   _ (ALREADY_LISTENING, "ip port pair already listened on")                   \
+  _ (ADDR_NOT_IN_USE, "address not in use")                                   \
   _ (INVALID, "invalid value")                                                \
   _ (INVALID_RMT_IP, "invalid remote ip")                                     \
   _ (INVALID_APPWRK, "invalid app worker")                                    \
@@ -506,6 +508,8 @@ STATIC_ASSERT (sizeof (session_dgram_hdr_t) == (SESSION_CONN_ID_LEN + 10),
   _ (NOCRYPTOENG, "no crypto engine")                                         \
   _ (NOCRYPTOCKP, "cert key pair not found ")                                 \
   _ (LOCAL_CONNECT, "could not connect with local scope")                     \
+  _ (WRONG_NS_SECRET, "wrong ns secret")                                      \
+  _ (SYSCALL, "system call error")                                            \
   _ (TRANSPORT_NO_REG, "transport was not registered")
 
 typedef enum session_error_p_

@@ -5,41 +5,35 @@ import (
 	"time"
 )
 
-func (s *VethsSuite) TestVclEchoQuic() {
-	s.skip("quic test skipping..")
-	s.testVclEcho("quic")
-}
+func (s *VethsSuite) testVclEcho(proto string) {
+	port := "12345"
+	srvVppCont := s.getContainerByName("server-vpp")
+	srvAppCont := s.getContainerByName("server-app")
 
-func (s *VethsSuite) TestVclEchoUdp() {
-	s.skip("udp echo currently broken in vpp, skipping..")
-	s.testVclEcho("udp")
+	serverVclConfContent := fmt.Sprintf(vclTemplate, srvVppCont.getContainerWorkDir(), "1")
+	srvAppCont.createFile("/vcl.conf", serverVclConfContent)
+	srvAppCont.addEnvVar("VCL_CONFIG", "/vcl.conf")
+	srvAppCont.execServer("vcl_test_server " + port)
+
+	serverVeth := s.netInterfaces[serverInterfaceName]
+	serverVethAddress := serverVeth.ip4AddressString()
+
+	echoClnContainer := s.getTransientContainerByName("client-app")
+	clientVclConfContent := fmt.Sprintf(vclTemplate, echoClnContainer.getContainerWorkDir(), "2")
+	echoClnContainer.createFile("/vcl.conf", clientVclConfContent)
+
+	testClientCommand := "vcl_test_client -p " + proto + " " + serverVethAddress + " " + port
+	echoClnContainer.addEnvVar("VCL_CONFIG", "/vcl.conf")
+	o := echoClnContainer.exec(testClientCommand)
+	s.log(o)
 }
 
 func (s *VethsSuite) TestVclEchoTcp() {
 	s.testVclEcho("tcp")
 }
 
-func (s *VethsSuite) testVclEcho(proto string) {
-	serverVethAddress := s.netInterfaces["vppsrv"].IP4AddressString()
-	uri := proto + "://" + serverVethAddress + "/12344"
-
-	echoSrvContainer := s.getContainerByName("server-application")
-	serverCommand := "vpp_echo server TX=RX" +
-		" socket-name " + echoSrvContainer.GetContainerWorkDir() + "/var/run/app_ns_sockets/1" +
-		" use-app-socket-api" +
-		" uri " + uri
-	s.log(serverCommand)
-	echoSrvContainer.execServer(serverCommand)
-
-	echoClnContainer := s.getContainerByName("client-application")
-
-	clientCommand := "vpp_echo client" +
-		" socket-name " + echoClnContainer.GetContainerWorkDir() + "/var/run/app_ns_sockets/2" +
-		" use-app-socket-api uri " + uri
-	s.log(clientCommand)
-	o := echoClnContainer.exec(clientCommand)
-
-	s.log(o)
+func (s *VethsSuite) TestVclEchoUdp() {
+	s.testVclEcho("udp")
 }
 
 func (s *VethsSuite) TestVclRetryAttach() {
@@ -50,9 +44,9 @@ func (s *VethsSuite) TestVclRetryAttach() {
 func (s *VethsSuite) testRetryAttach(proto string) {
 	srvVppContainer := s.getTransientContainerByName("server-vpp")
 
-	echoSrvContainer := s.getContainerByName("server-application")
+	echoSrvContainer := s.getContainerByName("server-app")
 
-	serverVclConfContent := fmt.Sprintf(vclTemplate, echoSrvContainer.GetContainerWorkDir(), "1")
+	serverVclConfContent := fmt.Sprintf(vclTemplate, echoSrvContainer.getContainerWorkDir(), "1")
 	echoSrvContainer.createFile("/vcl.conf", serverVclConfContent)
 
 	echoSrvContainer.addEnvVar("VCL_CONFIG", "/vcl.conf")
@@ -62,10 +56,10 @@ func (s *VethsSuite) testRetryAttach(proto string) {
 	s.log("... Running first echo client test, before disconnect.")
 
 	serverVeth := s.netInterfaces[serverInterfaceName]
-	serverVethAddress := serverVeth.IP4AddressString()
+	serverVethAddress := serverVeth.ip4AddressString()
 
-	echoClnContainer := s.getTransientContainerByName("client-application")
-	clientVclConfContent := fmt.Sprintf(vclTemplate, echoClnContainer.GetContainerWorkDir(), "2")
+	echoClnContainer := s.getTransientContainerByName("client-app")
+	clientVclConfContent := fmt.Sprintf(vclTemplate, echoClnContainer.getContainerWorkDir(), "2")
 	echoClnContainer.createFile("/vcl.conf", clientVclConfContent)
 
 	testClientCommand := "vcl_test_client -U -p " + proto + " " + serverVethAddress + " 12346"
@@ -95,13 +89,13 @@ func (s *VethsSuite) TestTcpWithLoss() {
 
 	serverVeth := s.netInterfaces[serverInterfaceName]
 	serverVpp.vppctl("test echo server uri tcp://%s/20022",
-		serverVeth.IP4AddressString())
+		serverVeth.ip4AddressString())
 
 	clientVpp := s.getContainerByName("client-vpp").vppInstance
 
 	// Ensure that VPP doesn't abort itself with NSIM enabled
 	// Warning: Removing this ping will make the test fail!
-	clientVpp.vppctl("ping %s", serverVeth.IP4AddressString())
+	clientVpp.vppctl("ping %s", serverVeth.ip4AddressString())
 
 	// Add loss of packets with Network Delay Simulator
 	clientVpp.vppctl("set nsim poll-main-thread delay 0.01 ms bandwidth 40 gbit" +
@@ -111,7 +105,7 @@ func (s *VethsSuite) TestTcpWithLoss() {
 
 	// Do echo test from client-vpp container
 	output := clientVpp.vppctl("test echo client uri tcp://%s/20022 mbytes 50",
-		serverVeth.IP4AddressString())
+		serverVeth.ip4AddressString())
 	s.assertEqual(true, len(output) != 0)
 	s.assertNotContains(output, "failed: timeout")
 	s.log(output)

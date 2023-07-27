@@ -200,6 +200,121 @@ next_with_same_number_of_set_bits (uword x)
        _tmp;                                                                  \
        i = get_lowest_set_bit_index (_tmp = clear_lowest_set_bit (_tmp)))
 
+static_always_inline uword
+uword_bitmap_count_set_bits (uword *bmp, uword n_uwords)
+{
+  uword count = 0;
+  while (n_uwords--)
+    count += count_set_bits (bmp++[0]);
+  return count;
+}
+
+static_always_inline uword
+uword_bitmap_is_bit_set (uword *bmp, uword bit_index)
+{
+  bmp += bit_index / uword_bits;
+  bit_index %= uword_bits;
+  return (bmp[0] >> bit_index) & 1;
+}
+
+static_always_inline void
+uword_bitmap_set_bits_at_index (uword *bmp, uword bit_index, uword n_bits)
+{
+  bmp += bit_index / uword_bits;
+  bit_index %= uword_bits;
+  uword max_bits = uword_bits - bit_index;
+
+  if (n_bits < max_bits)
+    {
+      bmp[0] |= pow2_mask (n_bits) << bit_index;
+      return;
+    }
+
+  bmp++[0] |= pow2_mask (max_bits) << bit_index;
+  n_bits -= max_bits;
+
+  for (; n_bits >= uword_bits; bmp++, n_bits -= uword_bits)
+    bmp[0] = ~0ULL;
+
+  if (n_bits)
+    bmp[0] |= pow2_mask (n_bits);
+}
+
+static_always_inline void
+uword_bitmap_clear_bits_at_index (uword *bmp, uword bit_index, uword n_bits)
+{
+  bmp += bit_index / uword_bits;
+  bit_index %= uword_bits;
+  uword max_bits = uword_bits - bit_index;
+
+  if (n_bits < max_bits)
+    {
+      bmp[0] &= ~(pow2_mask (n_bits) << bit_index);
+      return;
+    }
+
+  bmp++[0] &= ~(pow2_mask (max_bits) << bit_index);
+  n_bits -= max_bits;
+
+  for (; n_bits >= uword_bits; bmp++, n_bits -= uword_bits)
+    bmp[0] = 0ULL;
+
+  if (n_bits)
+    bmp[0] &= ~pow2_mask (n_bits);
+}
+
+static_always_inline int
+uword_bitmap_find_first_set (uword *bmp)
+{
+  uword *b = bmp;
+  while (b[0] == 0)
+    b++;
+
+  return (b - bmp) * uword_bits + get_lowest_set_bit_index (b[0]);
+}
+
+static_always_inline u32
+bit_extract_u32 (u32 v, u32 mask)
+{
+#ifdef __BMI2__
+  return _pext_u32 (v, mask);
+#else
+  u32 rv = 0;
+  u32 bit = 1;
+
+  while (mask)
+    {
+      u32 lowest_mask_bit = get_lowest_set_bit (mask);
+      mask ^= lowest_mask_bit;
+      rv |= (v & lowest_mask_bit) ? bit : 0;
+      bit <<= 1;
+    }
+
+  return rv;
+#endif
+}
+
+static_always_inline u64
+bit_extract_u64 (u64 v, u64 mask)
+{
+#ifdef __BMI2__
+  return _pext_u64 (v, mask);
+#else
+  u64 rv = 0;
+  u64 bit = 1;
+
+  while (mask)
+    {
+      u64 lowest_mask_bit = get_lowest_set_bit (mask);
+      mask ^= lowest_mask_bit;
+      rv |= (v & lowest_mask_bit) ? bit : 0;
+      bit <<= 1;
+    }
+
+  return rv;
+#endif
+}
+
 #else
 #warning "already included"
 #endif /* included_clib_bitops_h */

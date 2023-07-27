@@ -17,6 +17,7 @@
  * @brief Session and session manager
  */
 
+#include <vnet/plugin/plugin.h>
 #include <vnet/session/session.h>
 #include <vnet/session/application.h>
 #include <vnet/dpo/load_balance.h>
@@ -59,7 +60,7 @@ session_send_evt_to_thread (void *data, void *args, u32 thread_index,
       evt = (session_event_t *) svm_msg_q_msg_data (mq, &msg);
       evt->session_index = *(u32 *) data;
       break;
-    case SESSION_IO_EVT_BUILTIN_TX:
+    case SESSION_IO_EVT_TX_MAIN:
     case SESSION_CTRL_EVT_CLOSE:
     case SESSION_CTRL_EVT_RESET:
       msg = svm_msg_q_alloc_msg_w_ring (mq, SESSION_MQ_IO_EVT_RING);
@@ -307,8 +308,19 @@ session_cleanup_half_open (session_handle_t ho_handle)
 			 ho->connection_index, ho->app_index /* overloaded */);
     }
   else
-    transport_cleanup_half_open (session_get_transport_proto (ho),
-				 ho->connection_index);
+    {
+      /* Cleanup half-open session lookup table if need be */
+      if (ho->session_state != SESSION_STATE_TRANSPORT_CLOSED)
+	{
+	  transport_connection_t *tc;
+	  tc = transport_get_half_open (session_get_transport_proto (ho),
+					ho->connection_index);
+	  if (tc && !(tc->flags & TRANSPORT_CONNECTION_F_NO_LOOKUP))
+	    session_lookup_del_half_open (tc);
+	}
+      transport_cleanup_half_open (session_get_transport_proto (ho),
+				   ho->connection_index);
+    }
   session_free (ho);
 }
 
@@ -317,9 +329,10 @@ session_half_open_free (session_t *ho)
 {
   app_worker_t *app_wrk;
 
-  ASSERT (vlib_get_thread_index () <= 1);
-  app_wrk = app_worker_get (ho->app_wrk_index);
-  app_worker_del_half_open (app_wrk, ho);
+  ASSERT (vlib_get_thread_index () <= transport_cl_thread ());
+  app_wrk = app_worker_get_if_valid (ho->app_wrk_index);
+  if (app_wrk)
+    app_worker_del_half_open (app_wrk, ho);
   session_free (ho);
 }
 
@@ -333,10 +346,19 @@ session_half_open_free_rpc (void *args)
 void
 session_half_open_delete_notify (transport_connection_t *tc)
 {
+  session_t *ho = ho_session_get (tc->s_index);
+
+  /* Cleanup half-open lookup table if need be */
+  if (ho->session_state != SESSION_STATE_TRANSPORT_CLOSED)
+    {
+      if (!(tc->flags & TRANSPORT_CONNECTION_F_NO_LOOKUP))
+	session_lookup_del_half_open (tc);
+    }
+
   /* Notification from ctrl thread accepted without rpc */
   if (tc->thread_index == transport_cl_thread ())
     {
-      session_half_open_free (ho_session_get (tc->s_index));
+      session_half_open_free (ho);
     }
   else
     {
@@ -350,6 +372,9 @@ void
 session_half_open_migrate_notify (transport_connection_t *tc)
 {
   session_t *ho;
+
+  /* Support half-open migrations only for transports with no lookup */
+  ASSERT (tc->flags & TRANSPORT_CONNECTION_F_NO_LOOKUP);
 
   ho = ho_session_get (tc->s_index);
   ho->flags |= SESSION_F_IS_MIGRATING;
@@ -728,8 +753,10 @@ session_enqueue_notify_inline (session_t * s)
   app_worker_t *app_wrk;
   u32 session_index;
   u8 n_subscribers;
+  u32 thread_index;
 
   session_index = s->session_index;
+  thread_index = s->thread_index;
   n_subscribers = svm_fifo_n_subscribers (s->rx_fifo);
 
   app_wrk = app_worker_get_if_valid (s->app_wrk_index);
@@ -753,7 +780,7 @@ session_enqueue_notify_inline (session_t * s)
 
   if (PREDICT_FALSE (n_subscribers))
     {
-      s = session_get (session_index, vlib_get_thread_index ());
+      s = session_get (session_index, thread_index);
       return session_notify_subscribers (app_wrk->app_index, s,
 					 s->rx_fifo, SESSION_IO_EVT_RX);
     }
@@ -885,6 +912,7 @@ session_stream_connect_notify (transport_connection_t * tc,
   session_lookup_del_half_open (tc);
 
   ho = ho_session_get (tc->s_index);
+  session_set_state (ho, SESSION_STATE_TRANSPORT_CLOSED);
   opaque = ho->opaque;
   app_wrk = app_worker_get_if_valid (ho->app_wrk_index);
   if (!app_wrk)
@@ -1526,8 +1554,14 @@ session_half_close (session_t *s)
 void
 session_close (session_t * s)
 {
-  if (!s)
+  if (!s || (s->flags & SESSION_F_APP_CLOSED))
     return;
+
+  /* Transports can close and delete their state independent of app closes
+   * and transport initiated state transitions can hide app closes. Instead
+   * of extending the state machine to support separate tracking of app and
+   * transport initiated closes, use a flag. */
+  s->flags |= SESSION_F_APP_CLOSED;
 
   if (s->session_state >= SESSION_STATE_CLOSING)
     {
@@ -1727,6 +1761,22 @@ session_segment_handle (session_t * s)
   f = s->rx_fifo;
   return segment_manager_make_segment_handle (f->segment_manager,
 					      f->segment_index);
+}
+
+void
+session_get_original_dst (transport_endpoint_t *i2o_src,
+			  transport_endpoint_t *i2o_dst,
+			  transport_proto_t transport_proto, u32 *original_dst,
+			  u16 *original_dst_port)
+{
+  session_main_t *smm = vnet_get_session_main ();
+  ip_protocol_t proto =
+    (transport_proto == TRANSPORT_PROTO_TCP ? IPPROTO_TCP : IPPROTO_UDP);
+  if (!smm->original_dst_lookup || !i2o_dst->is_ip4)
+    return;
+  smm->original_dst_lookup (&i2o_src->ip.ip4, i2o_src->port, &i2o_dst->ip.ip4,
+			    i2o_dst->port, proto, original_dst,
+			    original_dst_port);
 }
 
 /* *INDENT-OFF* */
@@ -2015,6 +2065,7 @@ session_dma_completion_cb (vlib_main_t *vm, struct vlib_dma_batch *batch)
 static void
 session_prepare_dma_args (vlib_dma_config_t *args)
 {
+  args->max_batches = 16;
   args->max_transfers = DMA_TRANS_SIZE;
   args->max_transfer_size = 65536;
   args->features = 0;
@@ -2258,6 +2309,11 @@ session_config_fn (vlib_main_t * vm, unformat_input_t * input)
 	smm->no_adaptive = 1;
       else if (unformat (input, "use-dma"))
 	smm->dma_enabled = 1;
+      else if (unformat (input, "nat44-original-dst-enable"))
+	{
+	  smm->original_dst_lookup = vlib_get_plugin_symbol (
+	    "nat_plugin.so", "nat44_original_dst_lookup");
+	}
       /*
        * Deprecated but maintained for compatibility
        */

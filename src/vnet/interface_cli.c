@@ -517,7 +517,8 @@ done:
 /* *INDENT-OFF* */
 VLIB_CLI_COMMAND (show_sw_interfaces_command, static) = {
   .path = "show interface",
-  .short_help = "show interface [address|addr|features|feat|vtr] [<interface> [<interface> [..]]] [verbose]",
+  .short_help = "show interface [address|addr|features|feat|vtr|tag] "
+		"[<interface> [<interface> [..]]] [verbose]",
   .function = show_sw_interfaces,
   .is_mp_safe = 1,
 };
@@ -2384,7 +2385,7 @@ pcap_trace_command_fn (vlib_main_t * vm,
  *   packet capture are preserved, so '<em>any</em>' can be used to reset
  *   the interface setting.
  *
- * - <b>filter</b> - Use the pcap rx / tx / drop trace filter, which
+ * - <b>filter</b> - Use the pcap trace rx / tx / drop filter, which
  *   must be configured. Use <b>classify filter pcap...</b> to configure the
  *   filter. The filter will only be executed if the per-interface or
  *   any-interface tests fail.
@@ -2437,6 +2438,72 @@ VLIB_CLI_COMMAND (pcap_tx_trace_command, static) = {
     .function = pcap_trace_command_fn,
 };
 /* *INDENT-ON* */
+
+static clib_error_t *
+set_pcap_filter_function (vlib_main_t *vm, unformat_input_t *input,
+			  vlib_cli_command_t *cmd)
+{
+  vnet_pcap_t *pp = &vnet_get_main ()->pcap;
+  unformat_input_t _line_input, *line_input = &_line_input;
+  vlib_is_packet_traced_fn_t *res = 0;
+  clib_error_t *error = 0;
+
+  if (!unformat_user (input, unformat_line_input, line_input))
+    return 0;
+
+  while (unformat_check_input (line_input) != (uword) UNFORMAT_END_OF_INPUT)
+    {
+      if (unformat (line_input, "%U", unformat_vlib_trace_filter_function,
+		    &res))
+	;
+      else
+	{
+	  error = clib_error_create (
+	    "expected valid trace filter function, got `%U'",
+	    format_unformat_error, line_input);
+	  goto done;
+	}
+    }
+  pp->current_filter_function = res;
+
+done:
+  unformat_free (line_input);
+
+  return error;
+}
+
+VLIB_CLI_COMMAND (set_pcap_filter_function_cli, static) = {
+  .path = "set pcap filter function",
+  .short_help = "set pcap filter function <func_name>",
+  .function = set_pcap_filter_function,
+};
+
+static clib_error_t *
+show_pcap_filter_function (vlib_main_t *vm, unformat_input_t *input,
+			   vlib_cli_command_t *cmd)
+{
+  vnet_pcap_t *pp = &vnet_get_main ()->pcap;
+  vlib_trace_filter_main_t *tfm = &vlib_trace_filter_main;
+  vlib_is_packet_traced_fn_t *current_trace_filter_fn =
+    pp->current_filter_function;
+  vlib_trace_filter_function_registration_t *reg =
+    tfm->trace_filter_registration;
+
+  while (reg)
+    {
+      vlib_cli_output (vm, "%sname:%s description: %s priority: %u",
+		       reg->function == current_trace_filter_fn ? "(*) " : "",
+		       reg->name, reg->description, reg->priority);
+      reg = reg->next;
+    }
+  return 0;
+}
+
+VLIB_CLI_COMMAND (show_pcap_filter_function_cli, static) = {
+  .path = "show pcap filter function",
+  .short_help = "show pcap filter function",
+  .function = show_pcap_filter_function,
+};
 
 static clib_error_t *
 set_interface_name (vlib_main_t *vm, unformat_input_t *input,

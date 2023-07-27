@@ -1471,8 +1471,7 @@ vlib_main_or_worker_loop (vlib_main_t * vm, int is_main)
   else
     cpu_time_now = clib_cpu_time_now ();
 
-  /* Pre-allocate interupt runtime indices and lock. */
-  vec_validate_aligned (nm->pending_interrupts, 0, CLIB_CACHE_LINE_BYTES);
+  nm->pending_interrupts = 0;
 
   /* Pre-allocate expired nodes. */
   if (!nm->polling_threshold_vector_length)
@@ -1505,6 +1504,7 @@ vlib_main_or_worker_loop (vlib_main_t * vm, int is_main)
   while (1)
     {
       vlib_node_runtime_t *n;
+      u8 pending_interrupts;
 
       if (PREDICT_FALSE (_vec_len (vm->pending_rpc_requests) > 0))
 	{
@@ -1552,6 +1552,27 @@ vlib_main_or_worker_loop (vlib_main_t * vm, int is_main)
 				      /* frame */ 0,
 				      cpu_time_now);
 
+      pending_interrupts =
+	__atomic_load_n (&nm->pending_interrupts, __ATOMIC_ACQUIRE);
+
+      if (pending_interrupts)
+	{
+	  int int_num = -1;
+	  nm->pending_interrupts = 0;
+
+	  while ((int_num = clib_interrupt_get_next (
+		    nm->pre_input_node_interrupts, int_num)) != -1)
+	    {
+	      vlib_node_runtime_t *n;
+	      clib_interrupt_clear (nm->pre_input_node_interrupts, int_num);
+	      n = vec_elt_at_index (
+		nm->nodes_by_type[VLIB_NODE_TYPE_PRE_INPUT], int_num);
+	      cpu_time_now = dispatch_node (vm, n, VLIB_NODE_TYPE_PRE_INPUT,
+					    VLIB_NODE_STATE_INTERRUPT,
+					    /* frame */ 0, cpu_time_now);
+	    }
+	}
+
       /* Next process input nodes. */
       vec_foreach (n, nm->nodes_by_type[VLIB_NODE_TYPE_INPUT])
 	cpu_time_now = dispatch_node (vm, n,
@@ -1563,16 +1584,15 @@ vlib_main_or_worker_loop (vlib_main_t * vm, int is_main)
       if (PREDICT_TRUE (is_main && vm->queue_signal_pending == 0))
 	vm->queue_signal_callback (vm);
 
-      if (__atomic_load_n (nm->pending_interrupts, __ATOMIC_ACQUIRE))
+      if (pending_interrupts)
 	{
 	  int int_num = -1;
-	  *nm->pending_interrupts = 0;
 
-	  while ((int_num =
-		    clib_interrupt_get_next (nm->interrupts, int_num)) != -1)
+	  while ((int_num = clib_interrupt_get_next (nm->input_node_interrupts,
+						     int_num)) != -1)
 	    {
 	      vlib_node_runtime_t *n;
-	      clib_interrupt_clear (nm->interrupts, int_num);
+	      clib_interrupt_clear (nm->input_node_interrupts, int_num);
 	      n = vec_elt_at_index (nm->nodes_by_type[VLIB_NODE_TYPE_INPUT],
 				    int_num);
 	      cpu_time_now = dispatch_node (vm, n, VLIB_NODE_TYPE_INPUT,
@@ -1615,10 +1635,8 @@ vlib_main_or_worker_loop (vlib_main_t * vm, int is_main)
 	  if (PREDICT_FALSE (vm->elog_trace_graph_dispatch))
 	    ed = ELOG_DATA (&vlib_global_main.elog_main, es);
 
-	  nm->data_from_advancing_timing_wheel =
-	    TW (tw_timer_expire_timers_vec)
-	    ((TWT (tw_timer_wheel) *) nm->timing_wheel, vlib_time_now (vm),
-	     nm->data_from_advancing_timing_wheel);
+	  TW (tw_timer_expire_timers)
+	  ((TWT (tw_timer_wheel) *) nm->timing_wheel, vlib_time_now (vm));
 
 	  ASSERT (nm->data_from_advancing_timing_wheel != 0);
 
@@ -1649,6 +1667,7 @@ vlib_main_or_worker_loop (vlib_main_t * vm, int is_main)
 			vlib_get_node (vm, te->process_node_index);
 		      vlib_process_t *p =
 			vec_elt (nm->processes, n->runtime_index);
+		      p->stop_timer_handle = ~0;
 		      void *data;
 		      data =
 			vlib_process_signal_event_helper (nm, n, p,
@@ -1847,6 +1866,23 @@ vl_api_get_elog_trace_api_messages (void)
   return 0;
 }
 
+static void
+process_expired_timer_cb (u32 *expired_timer_handles)
+{
+  vlib_main_t *vm = vlib_get_main ();
+  vlib_node_main_t *nm = &vm->node_main;
+  u32 *handle;
+
+  vec_foreach (handle, expired_timer_handles)
+    {
+      u32 pi = vlib_timing_wheel_data_get_index (*handle);
+      vlib_process_t *p = vec_elt (nm->processes, pi);
+
+      p->stop_timer_handle = ~0;
+    }
+  vec_append (nm->data_from_advancing_timing_wheel, expired_timer_handles);
+}
+
 /* Main function. */
 int
 vlib_main (vlib_main_t * volatile vm, unformat_input_t * input)
@@ -1952,10 +1988,10 @@ vlib_main (vlib_main_t * volatile vm, unformat_input_t * input)
   vec_set_len (nm->data_from_advancing_timing_wheel, 0);
 
   /* Create the process timing wheel */
-  TW (tw_timer_wheel_init) ((TWT (tw_timer_wheel) *) nm->timing_wheel,
-			    0 /* no callback */ ,
-			    10e-6 /* timer period 10us */ ,
-			    ~0 /* max expirations per call */ );
+  TW (tw_timer_wheel_init)
+  ((TWT (tw_timer_wheel) *) nm->timing_wheel,
+   process_expired_timer_cb /* callback */, 10e-6 /* timer period 10us */,
+   ~0 /* max expirations per call */);
 
   vec_validate (vm->pending_rpc_requests, 0);
   vec_set_len (vm->pending_rpc_requests, 0);
@@ -2010,7 +2046,9 @@ vlib_main (vlib_main_t * volatile vm, unformat_input_t * input)
   vlib_main_loop (vm);
 
 done:
+  /* Stop worker threads, barrier will not be released */
   vlib_worker_thread_barrier_sync (vm);
+
   /* Call all exit functions. */
   {
     clib_error_t *sub_error;
@@ -2018,7 +2056,6 @@ done:
     if (sub_error)
       clib_error_report (sub_error);
   }
-  vlib_worker_thread_barrier_release (vm);
 
   if (error)
     clib_error_report (error);

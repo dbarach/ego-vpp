@@ -4,8 +4,7 @@ const (
 	singleTopoContainerVpp   = "vpp"
 	singleTopoContainerNginx = "nginx"
 
-	tapNameVpp  = "vppTap"
-	tapNameHost = "hostTap"
+	tapInterfaceName = "hst_tap_host"
 )
 
 type NoTopoSuite struct {
@@ -13,38 +12,27 @@ type NoTopoSuite struct {
 }
 
 func (s *NoTopoSuite) SetupSuite() {
+	s.HstSuite.SetupSuite()
+	s.loadNetworkTopology("tap")
 	s.loadContainerTopology("single")
-
-	s.addresser = NewAddresser(&s.HstSuite)
-
-	var vppTapDevConfig = NetDevConfig{"name": tapNameVpp}
-	vppTap, _ := NewTap(vppTapDevConfig, s.addresser)
-
-	var hostTapDevConfig = NetDevConfig{"name": tapNameHost}
-	hostTap, _ := NewTap(hostTapDevConfig, s.addresser)
-
-	s.netInterfaces = make(map[string]NetInterface)
-	s.netInterfaces[vppTap.Name()] = &vppTap
-	s.netInterfaces[hostTap.Name()] = &hostTap
 }
 
 func (s *NoTopoSuite) SetupTest() {
-	s.SetupVolumes()
-	s.SetupContainers()
+	s.HstSuite.SetupTest()
 
 	// Setup test conditions
-	var startupConfig Stanza
-	startupConfig.
-		NewStanza("session").
-		Append("enable").
-		Append("use-app-socket-api").Close()
+	var sessionConfig Stanza
+	sessionConfig.
+		newStanza("session").
+		append("enable").
+		append("use-app-socket-api").close()
 
+	cpus := s.AllocateCpus()
 	container := s.getContainerByName(singleTopoContainerVpp)
-	vpp, _ := container.newVppInstance(startupConfig)
+	vpp, _ := container.newVppInstance(cpus, sessionConfig)
 	vpp.start()
 
-	vppTapAddress := s.netInterfaces[tapNameVpp].AddressWithPrefix()
-	hostTapAddress := s.netInterfaces[tapNameHost].IP4AddressWithPrefix()
+	tapInterface := s.netInterfaces[tapInterfaceName]
 
-	vpp.createTap("tap0", hostTapAddress, vppTapAddress)
+	vpp.createTap(tapInterface)
 }

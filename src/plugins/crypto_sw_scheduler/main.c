@@ -25,14 +25,14 @@ crypto_sw_scheduler_set_worker_crypto (u32 worker_idx, u8 enabled)
   crypto_sw_scheduler_main_t *cm = &crypto_sw_scheduler_main;
   vlib_thread_main_t *tm = vlib_get_thread_main ();
   crypto_sw_scheduler_per_thread_data_t *ptd = 0;
-  u32 count = 0, i = vlib_num_workers () > 0;
+  u32 count = 0, i;
 
   if (worker_idx >= vlib_num_workers ())
     {
       return VNET_API_ERROR_INVALID_VALUE;
     }
 
-  for (; i < tm->n_vlib_mains; i++)
+  for (i = 0; i < tm->n_vlib_mains; i++)
     {
       ptd = cm->per_thread_data + i;
       count += ptd->self_crypto_enabled;
@@ -244,7 +244,7 @@ crypto_sw_scheduler_convert_link_crypto (vlib_main_t * vm,
   integ_op->digest = fe->digest;
   integ_op->digest_len = digest_len;
   integ_op->key_index = key->index_integ;
-  integ_op->flags = fe->flags & ~VNET_CRYPTO_OP_FLAG_INIT_IV;
+  integ_op->flags = fe->flags;
   crypto_op->user_data = integ_op->user_data = index;
 }
 

@@ -637,7 +637,8 @@ af_xdp_create_if (vlib_main_t * vm, af_xdp_create_if_args_t * args)
   ad->linux_ifname = (char *) format (0, "%s", args->linux_ifname);
   vec_validate (ad->linux_ifname, IFNAMSIZ - 1);	/* libbpf expects ifname to be at least IFNAMSIZ */
 
-  ad->netns = (char *) format (0, "%s", args->netns);
+  if (args->netns)
+    ad->netns = (char *) format (0, "%s%c", args->netns, 0);
 
   ad->linux_ifindex = if_nametoindex (ad->linux_ifname);
   if (!ad->linux_ifindex)
@@ -649,7 +650,8 @@ af_xdp_create_if (vlib_main_t * vm, af_xdp_create_if_args_t * args)
       goto err1;
     }
 
-  if (args->prog && af_xdp_load_program (args, ad))
+  if (args->prog &&
+      (af_xdp_remove_program (ad) || af_xdp_load_program (args, ad)))
     goto err2;
 
   q_num = clib_max (rxq_num, txq_num);

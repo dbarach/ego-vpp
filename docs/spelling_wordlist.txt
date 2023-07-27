@@ -102,6 +102,7 @@ bms
 Bn
 boolean
 bootup
+bpf
 Brockners
 bsid
 bss
@@ -189,6 +190,7 @@ CPPFLAGS
 cpu
 cPython
 crc
+crcchecker
 crcs
 crit
 criterias
@@ -397,7 +399,6 @@ Gerrit
 gethostbyname
 gettingsources
 gettingstarted
-ggcov
 gid
 Gigabit
 GigE
@@ -746,6 +747,7 @@ netmap
 Netmap
 netplan
 Netplan
+newfile
 nexthop
 nginx
 NIC
@@ -778,6 +780,7 @@ oddbuf
 Oddbuf
 offline
 ofr
+oldfile
 online
 onlink
 ooo
@@ -800,6 +803,7 @@ params
 parsable
 passthrough
 passwordless
+patchset
 pathname
 pbb
 pcap
@@ -992,6 +996,7 @@ seg
 segfault
 selinux
 semodule
+semver
 setjmp
 settingupenvironment
 setUp
@@ -1130,6 +1135,7 @@ tmpl
 Tollet
 toolchain
 toolchains
+toolset
 tos
 tp
 tps
@@ -1146,6 +1152,8 @@ tuntap
 tw
 twovppinstances
 tx
+txq
+TXQ
 txt
 typedef
 ubuntu
@@ -1177,6 +1185,7 @@ unmounting
 Unmounting
 unmounts
 unreachables
+unregister
 unrouteable
 unserialization
 unserialize

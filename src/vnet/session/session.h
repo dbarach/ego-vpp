@@ -40,6 +40,11 @@ typedef enum
     SESSION_N_ERROR,
 } session_input_error_t;
 
+typedef struct session_wrk_stats_
+{
+  u32 errors[SESSION_N_ERRORS];
+} session_wrk_stats_t;
+
 typedef struct session_tx_context_
 {
   CLIB_CACHE_LINE_ALIGN_MARK (cacheline0);
@@ -169,6 +174,8 @@ typedef struct session_worker_
   u16 batch_num;
   vlib_dma_batch_t *batch;
 
+  session_wrk_stats_t stats;
+
 #if SESSION_DEBUG
   /** last event poll time by thread */
   clib_time_type_t last_event_poll;
@@ -186,6 +193,10 @@ extern session_fifo_rx_fn session_tx_fifo_dequeue_internal;
 u8 session_node_lookup_fifo_event (svm_fifo_t * f, session_event_t * e);
 
 typedef void (*session_update_time_fn) (f64 time_now, u8 thread_index);
+typedef void (*nat44_original_dst_lookup_fn) (
+  ip4_address_t *i2o_src, u16 i2o_src_port, ip4_address_t *i2o_dst,
+  u16 i2o_dst_port, ip_protocol_t proto, u32 *original_dst,
+  u16 *original_dst_port);
 
 typedef struct session_main_
 {
@@ -274,6 +285,9 @@ typedef struct session_main_
   u32 preallocated_sessions;
 
   u16 msg_id_base;
+
+  /** Query nat44-ed session to get original dst ip4 & dst port. */
+  nat44_original_dst_lookup_fn original_dst_lookup;
 } session_main_t;
 
 extern session_main_t session_main;
@@ -333,7 +347,7 @@ session_evt_ctrl_data (session_worker_t * wrk, session_evt_elt_t * elt)
 static inline void
 session_evt_ctrl_data_free (session_worker_t * wrk, session_evt_elt_t * elt)
 {
-  ASSERT (elt->evt.event_type > SESSION_IO_EVT_BUILTIN_TX);
+  ASSERT (elt->evt.event_type >= SESSION_CTRL_EVT_RPC);
   pool_put_index (wrk->ctrl_evts_data, elt->evt.ctrl_data_index);
 }
 
@@ -575,6 +589,19 @@ transport_rx_fifo_has_ooo_data (transport_connection_t * tc)
   return svm_fifo_has_ooo_data (s->rx_fifo);
 }
 
+always_inline u32
+transport_tx_fifo_has_dgram (transport_connection_t *tc)
+{
+  session_t *s = session_get (tc->s_index, tc->thread_index);
+  u32 max_deq = svm_fifo_max_dequeue_cons (s->tx_fifo);
+  session_dgram_pre_hdr_t phdr;
+
+  if (max_deq <= sizeof (session_dgram_hdr_t))
+    return 0;
+  svm_fifo_peek (s->tx_fifo, 0, sizeof (phdr), (u8 *) &phdr);
+  return max_deq >= phdr.data_length + sizeof (session_dgram_hdr_t);
+}
+
 always_inline void
 transport_rx_fifo_req_deq_ntf (transport_connection_t *tc)
 {
@@ -732,6 +759,23 @@ session_main_is_enabled ()
   return session_main.is_enabled == 1;
 }
 
+always_inline void
+session_worker_stat_error_inc (session_worker_t *wrk, int error, int value)
+{
+  if ((-(error) >= 0 && -(error) < SESSION_N_ERRORS))
+    wrk->stats.errors[-error] += value;
+  else
+    SESSION_DBG ("unknown session counter");
+}
+
+always_inline void
+session_stat_error_inc (int error, int value)
+{
+  session_worker_t *wrk;
+  wrk = session_main_get_worker (vlib_get_thread_index ());
+  session_worker_stat_error_inc (wrk, error, value);
+}
+
 #define session_cli_return_if_not_enabled()				\
 do {									\
     if (!session_main.is_enabled)					\
@@ -775,6 +819,10 @@ void session_wrk_handle_evts_main_rpc (void *);
 
 session_t *session_alloc_for_connection (transport_connection_t * tc);
 session_t *session_alloc_for_half_open (transport_connection_t *tc);
+void session_get_original_dst (transport_endpoint_t *i2o_src,
+			       transport_endpoint_t *i2o_dst,
+			       transport_proto_t transport_proto,
+			       u32 *original_dst, u16 *original_dst_port);
 
 typedef void (pool_safe_realloc_rpc_fn) (void *rpc_args);
 

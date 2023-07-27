@@ -142,6 +142,7 @@ typedef enum vcl_session_flags_
   VCL_SESSION_F_WR_SHUTDOWN = 1 << 5,
   VCL_SESSION_F_PENDING_DISCONNECT = 1 << 6,
   VCL_SESSION_F_PENDING_FREE = 1 << 7,
+  VCL_SESSION_F_PENDING_LISTEN = 1 << 8,
 } __clib_packed vcl_session_flags_t;
 
 typedef struct vcl_session_
@@ -179,6 +180,9 @@ typedef struct vcl_session_
 #if VCL_ELOG
   elog_track_t elog_track;
 #endif
+
+  u16 original_dst_port; /**< original dst port (network order) */
+  u32 original_dst_ip4;	 /**< original dst ip4 (network order) */
 } vcl_session_t;
 
 typedef struct vppcom_cfg_t_
@@ -207,6 +211,7 @@ typedef struct vppcom_cfg_t_
   u32 tls_engine;
   u8 mt_wrk_supported;
   u8 huge_page;
+  u8 app_original_dst;
 } vppcom_cfg_t;
 
 void vppcom_cfg (vppcom_cfg_t * vcl_cfg);
@@ -659,6 +664,28 @@ vcl_session_clear_attr (vcl_session_t * s, u8 attr)
   s->attributes &= ~(1 << attr);
 }
 
+static inline session_evt_type_t
+vcl_session_dgram_tx_evt (vcl_session_t *s, session_evt_type_t et)
+{
+  return (s->flags & VCL_SESSION_F_CONNECTED) ? et : SESSION_IO_EVT_TX_MAIN;
+}
+
+static inline void
+vcl_session_add_want_deq_ntf (vcl_session_t *s, svm_fifo_deq_ntf_t evt)
+{
+  svm_fifo_t *txf = vcl_session_is_ct (s) ? s->ct_tx_fifo : s->tx_fifo;
+  if (txf)
+    svm_fifo_add_want_deq_ntf (txf, evt);
+}
+
+static inline void
+vcl_session_del_want_deq_ntf (vcl_session_t *s, svm_fifo_deq_ntf_t evt)
+{
+  svm_fifo_t *txf = vcl_session_is_ct (s) ? s->ct_tx_fifo : s->tx_fifo;
+  if (txf)
+    svm_fifo_del_want_deq_ntf (txf, evt);
+}
+
 /*
  * Helpers
  */
@@ -726,6 +753,7 @@ int vcl_segment_attach (u64 segment_handle, char *name,
 			ssvm_segment_type_t type, int fd);
 void vcl_segment_detach (u64 segment_handle);
 void vcl_segment_detach_segments (u32 *seg_indices);
+void vcl_send_session_listen (vcl_worker_t *wrk, vcl_session_t *s);
 void vcl_send_session_unlisten (vcl_worker_t * wrk, vcl_session_t * s);
 
 int vcl_segment_attach_session (uword segment_handle, uword rxf_offset,

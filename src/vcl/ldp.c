@@ -63,6 +63,14 @@
 #define SOCKADDR_GET_SA(__addr) _addr;
 #endif
 
+#ifndef UDP_SEGMENT
+#define UDP_SEGMENT 103
+#endif
+
+#ifndef SO_ORIGINAL_DST
+/* from <linux/netfilter_ipv4.h> */
+#define SO_ORIGINAL_DST 80
+#endif
 typedef struct ldp_worker_ctx_
 {
   u8 *io_buffer;
@@ -155,15 +163,14 @@ ldp_worker_get_current (void)
 static inline void
 ldp_set_app_name (char *app_name)
 {
-  snprintf (ldp->app_name, LDP_APP_NAME_MAX,
-	    "ldp-%d-%s", getpid (), app_name);
+  snprintf (ldp->app_name, LDP_APP_NAME_MAX, "%s-ldp-%d", app_name, getpid ());
 }
 
 static inline char *
 ldp_get_app_name ()
 {
   if (ldp->app_name[0] == '\0')
-    ldp_set_app_name ("app");
+    ldp_set_app_name (program_invocation_short_name);
 
   return ldp->app_name;
 }
@@ -191,31 +198,9 @@ ldp_alloc_workers (void)
   pool_alloc (ldp->workers, LDP_MAX_NWORKERS);
 }
 
-static int
-ldp_init (void)
+static void
+ldp_init_cfg (void)
 {
-  ldp_worker_ctx_t *ldpw;
-  int rv;
-
-  ASSERT (!ldp->init);
-
-  ldp->init = 1;
-  ldp->vcl_needs_real_epoll = 1;
-  rv = vls_app_create (ldp_get_app_name ());
-  if (rv != VPPCOM_OK)
-    {
-      ldp->vcl_needs_real_epoll = 0;
-      if (rv == VPPCOM_EEXIST)
-	return 0;
-      LDBG (2, "\nERROR: ldp_init: vppcom_app_create()"
-	    " failed!  rv = %d (%s)\n", rv, vppcom_retval_str (rv));
-      ldp->init = 0;
-      return rv;
-    }
-  ldp->vcl_needs_real_epoll = 0;
-  ldp_alloc_workers ();
-  ldpw = ldp_worker_get_current ();
-
   char *env_var_str = getenv (LDP_ENV_DEBUG);
   if (env_var_str)
     {
@@ -295,12 +280,39 @@ ldp_init (void)
     {
       ldp->transparent_tls = 1;
     }
+}
 
-  /* *INDENT-OFF* */
+static int
+ldp_init (void)
+{
+  ldp_worker_ctx_t *ldpw;
+  int rv;
+
+  ASSERT (!ldp->init);
+
+  ldp_init_cfg ();
+  ldp->init = 1;
+  ldp->vcl_needs_real_epoll = 1;
+  rv = vls_app_create (ldp_get_app_name ());
+  if (rv != VPPCOM_OK)
+    {
+      ldp->vcl_needs_real_epoll = 0;
+      if (rv == VPPCOM_EEXIST)
+	return 0;
+      LDBG (2,
+	    "\nERROR: ldp_init: vppcom_app_create()"
+	    " failed!  rv = %d (%s)\n",
+	    rv, vppcom_retval_str (rv));
+      ldp->init = 0;
+      return rv;
+    }
+  ldp->vcl_needs_real_epoll = 0;
+  ldp_alloc_workers ();
+  ldpw = ldp_worker_get_current ();
+
   pool_foreach (ldpw, ldp->workers)  {
     clib_memset (&ldpw->clib_time, 0, sizeof (ldpw->clib_time));
   }
-  /* *INDENT-ON* */
 
   LDBG (0, "LDP initialization: done!");
 
@@ -328,16 +340,16 @@ close (int fd)
       epfd = vls_attr (vlsh, VPPCOM_ATTR_GET_LIBC_EPFD, 0, 0);
       if (epfd > 0)
 	{
+	  ldp_worker_ctx_t *ldpw = ldp_worker_get_current ();
+	  u32 size = sizeof (epfd);
+
 	  LDBG (0, "fd %d: calling libc_close: epfd %u", fd, epfd);
 
-	  rv = libc_close (epfd);
-	  if (rv < 0)
-	    {
-	      u32 size = sizeof (epfd);
-	      epfd = 0;
+	  libc_close (epfd);
+	  ldpw->mq_epfd_added = 0;
 
-	      (void) vls_attr (vlsh, VPPCOM_ATTR_SET_LIBC_EPFD, &epfd, &size);
-	    }
+	  epfd = 0;
+	  (void) vls_attr (vlsh, VPPCOM_ATTR_SET_LIBC_EPFD, &epfd, &size);
 	}
       else if (PREDICT_FALSE (epfd < 0))
 	{
@@ -602,7 +614,7 @@ ioctl (int fd, unsigned long int cmd, ...)
 
 	case FIONBIO:
 	  {
-	    u32 flags = va_arg (ap, int) ? O_NONBLOCK : 0;
+	    u32 flags = *(va_arg (ap, int *)) ? O_NONBLOCK : 0;
 	    u32 size = sizeof (flags);
 
 	    /* TBD: When VPPCOM_ATTR_[GS]ET_FLAGS supports flags other than
@@ -1740,6 +1752,7 @@ ldp_make_cmsg (vls_handle_t vlsh, struct msghdr *msg)
   struct cmsghdr *cmsg;
 
   cmsg = CMSG_FIRSTHDR (msg);
+  memset (cmsg, 0, sizeof (*cmsg));
 
   if (!vls_attr (vlsh, VPPCOM_ATTR_GET_IP_PKTINFO, (void *) &optval, &optlen))
     return 0;
@@ -2031,6 +2044,21 @@ getsockopt (int fd, int level, int optname,
 	    default:
 	      LDBG (0, "ERROR: fd %d: getsockopt SOL_TCP: sid %u, "
 		    "optname %d unsupported!", fd, vlsh, optname);
+	      break;
+	    }
+	  break;
+	case SOL_IP:
+	  switch (optname)
+	    {
+	    case SO_ORIGINAL_DST:
+	      rv =
+		vls_attr (vlsh, VPPCOM_ATTR_GET_ORIGINAL_DST, optval, optlen);
+	      break;
+	    default:
+	      LDBG (0,
+		    "ERROR: fd %d: getsockopt SOL_IP: vlsh %u "
+		    "optname %d unsupported!",
+		    fd, vlsh, optname);
 	      break;
 	    }
 	  break;
@@ -2410,8 +2438,10 @@ epoll_ctl (int epfd, int op, int fd, struct epoll_event *event)
        * was acquired outside of the LD_PRELOAD process context.
        * In any case, if we get one, punt it to libc_epoll_ctl.
        */
-      LDBG (1, "epfd %d: calling libc_epoll_ctl: op %d, fd %d"
-	    " event %p", epfd, op, fd, event);
+      LDBG (1,
+	    "epfd %d: calling libc_epoll_ctl: op %d, fd %d"
+	    " events 0x%x",
+	    epfd, op, fd, event ? event->events : 0);
 
       rv = libc_epoll_ctl (epfd, op, fd, event);
       goto done;
@@ -2424,8 +2454,10 @@ epoll_ctl (int epfd, int op, int fd, struct epoll_event *event)
 
   if (vlsh != VLS_INVALID_HANDLE)
     {
-      LDBG (1, "epfd %d: calling vls_epoll_ctl: ep_vlsh %d op %d, vlsh %u,"
-	    " event %p", epfd, vep_vlsh, op, vlsh, event);
+      LDBG (1,
+	    "epfd %d: calling vls_epoll_ctl: ep_vlsh %d op %d, vlsh %u,"
+	    " events 0x%x",
+	    epfd, vep_vlsh, op, vlsh, event ? event->events : 0);
 
       rv = vls_epoll_ctl (vep_vlsh, op, vlsh, event);
       if (rv != VPPCOM_OK)
@@ -2563,8 +2595,9 @@ static inline int
 ldp_epoll_pwait_eventfd (int epfd, struct epoll_event *events,
 			 int maxevents, int timeout, const sigset_t * sigmask)
 {
+  int libc_epfd, rv = 0, num_ev, libc_num_ev, vcl_wups = 0;
+  struct epoll_event *libc_evts;
   ldp_worker_ctx_t *ldpw;
-  int libc_epfd, rv = 0, num_ev;
   vls_handle_t ep_vlsh;
 
   ldp_init_check ();
@@ -2640,7 +2673,11 @@ ldp_epoll_pwait_eventfd (int epfd, struct epoll_event *events,
   /* Request to only drain unhandled to prevent libc_epoll_wait starved */
   rv = vls_epoll_wait (ep_vlsh, events, maxevents, -2);
   if (rv > 0)
-    goto done;
+    {
+      timeout = 0;
+      if (rv >= maxevents)
+	goto done;
+    }
   else if (PREDICT_FALSE (rv < 0))
     {
       errno = -rv;
@@ -2648,26 +2685,40 @@ ldp_epoll_pwait_eventfd (int epfd, struct epoll_event *events,
       goto done;
     }
 
-  rv = libc_epoll_pwait (libc_epfd, events, maxevents, timeout, sigmask);
-  if (rv <= 0)
-    goto done;
-  for (int i = 0; i < rv; i++)
+epoll_again:
+
+  libc_evts = &events[rv];
+  libc_num_ev =
+    libc_epoll_pwait (libc_epfd, libc_evts, maxevents - rv, timeout, sigmask);
+  if (libc_num_ev <= 0)
     {
-      if (events[i].data.fd == ldpw->vcl_mq_epfd)
+      rv = rv >= 0 ? rv : -1;
+      goto done;
+    }
+
+  for (int i = 0; i < libc_num_ev; i++)
+    {
+      if (libc_evts[i].data.fd == ldpw->vcl_mq_epfd)
 	{
 	  /* We should remove mq epoll fd from events. */
-	  rv--;
-	  if (i != rv)
+	  libc_num_ev--;
+	  if (i != libc_num_ev)
 	    {
-	      events[i].events = events[rv].events;
-	      events[i].data.u64 = events[rv].data.u64;
+	      libc_evts[i].events = libc_evts[libc_num_ev].events;
+	      libc_evts[i].data.u64 = libc_evts[libc_num_ev].data.u64;
 	    }
-	  num_ev = vls_epoll_wait (ep_vlsh, &events[rv], maxevents - rv, 0);
+	  num_ev = vls_epoll_wait (ep_vlsh, &libc_evts[libc_num_ev],
+				   maxevents - libc_num_ev, 0);
 	  if (PREDICT_TRUE (num_ev > 0))
 	    rv += num_ev;
+	  /* Woken up by vcl but no events generated. Accept it once */
+	  if (rv == 0 && libc_num_ev == 0 && timeout && vcl_wups++ < 1)
+	    goto epoll_again;
 	  break;
 	}
     }
+
+  rv += libc_num_ev;
 
 done:
   return rv;

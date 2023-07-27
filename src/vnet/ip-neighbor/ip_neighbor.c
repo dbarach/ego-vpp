@@ -1598,8 +1598,8 @@ ip_neighbour_age_out (index_t ipni, f64 now, f64 * wait)
 	}
       else
 	{
-	  ip_neighbor_probe_dst (ip_neighbor_get_sw_if_index (ipn), af,
-				 vlib_get_thread_index (),
+	  ip_neighbor_probe_dst (ip_neighbor_get_sw_if_index (ipn),
+				 vlib_get_thread_index (), af,
 				 &ip_addr_46 (&ipn->ipn_key->ipnk_ip));
 
 	  ipn->ipn_n_probes++;
@@ -1755,6 +1755,17 @@ ip_neighbor_config (ip_address_family_t af, u32 limit, u32 age, bool recycle)
 			      ip4_neighbor_age_process_node.index :
 			      ip6_neighbor_age_process_node.index),
 			     IP_NEIGHBOR_AGE_PROCESS_WAKEUP, 0);
+
+  return (0);
+}
+
+int
+ip_neighbor_get_config (ip_address_family_t af, u32 *limit, u32 *age,
+			bool *recycle)
+{
+  *limit = ip_neighbor_db[af].ipndb_limit;
+  *age = ip_neighbor_db[af].ipndb_age;
+  *recycle = ip_neighbor_db[af].ipndb_recycle;
 
   return (0);
 }

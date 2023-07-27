@@ -25,6 +25,8 @@
 #include <vnet/dpo/load_balance.h>
 #include <math.h>
 
+#include <vlib/stats/stats.h>
+
 tcp_main_t tcp_main;
 
 typedef struct
@@ -489,6 +491,14 @@ tcp_session_reset (u32 conn_index, u32 thread_index)
 {
   tcp_connection_t *tc;
   tc = tcp_connection_get (conn_index, thread_index);
+
+  /* For half-opens just cleanup */
+  if (tc->state == TCP_STATE_SYN_SENT)
+    {
+      tcp_connection_cleanup (tc);
+      return;
+    }
+
   tcp_send_reset (tc);
   tcp_connection_timers_reset (tc);
   tcp_cong_recovery_off (tc);
@@ -764,11 +774,13 @@ tcp_connection_init_vars (tcp_connection_t * tc)
 }
 
 static int
-tcp_alloc_custom_local_endpoint (tcp_main_t * tm, ip46_address_t * lcl_addr,
-				 u16 * lcl_port, u8 is_ip4)
+tcp_alloc_custom_local_endpoint (ip46_address_t *lcl_addr, u16 *lcl_port,
+				 transport_endpoint_cfg_t *rmt)
 {
+  tcp_main_t *tm = vnet_get_tcp_main ();
   int index, port;
-  if (is_ip4)
+
+  if (rmt->is_ip4)
     {
       index = tm->last_v4_addr_rotor++;
       if (tm->last_v4_addr_rotor >= vec_len (tcp_cfg.ip4_src_addrs))
@@ -784,7 +796,7 @@ tcp_alloc_custom_local_endpoint (tcp_main_t * tm, ip46_address_t * lcl_addr,
       clib_memcpy_fast (&lcl_addr->ip6, &tcp_cfg.ip6_src_addrs[index],
 			sizeof (ip6_address_t));
     }
-  port = transport_alloc_local_port (TRANSPORT_PROTO_TCP, lcl_addr);
+  port = transport_alloc_local_port (TRANSPORT_PROTO_TCP, lcl_addr, rmt);
   if (port < 1)
     return SESSION_E_NOPORT;
   *lcl_port = port;
@@ -794,7 +806,6 @@ tcp_alloc_custom_local_endpoint (tcp_main_t * tm, ip46_address_t * lcl_addr,
 static int
 tcp_session_open (transport_endpoint_cfg_t * rmt)
 {
-  tcp_main_t *tm = vnet_get_tcp_main ();
   tcp_connection_t *tc;
   ip46_address_t lcl_addr;
   u16 lcl_port;
@@ -805,27 +816,13 @@ tcp_session_open (transport_endpoint_cfg_t * rmt)
    */
   if ((rmt->is_ip4 && vec_len (tcp_cfg.ip4_src_addrs))
       || (!rmt->is_ip4 && vec_len (tcp_cfg.ip6_src_addrs)))
-    rv = tcp_alloc_custom_local_endpoint (tm, &lcl_addr, &lcl_port,
-					  rmt->is_ip4);
+    rv = tcp_alloc_custom_local_endpoint (&lcl_addr, &lcl_port, rmt);
   else
-    rv = transport_alloc_local_endpoint (TRANSPORT_PROTO_TCP,
-					 rmt, &lcl_addr, &lcl_port);
+    rv = transport_alloc_local_endpoint (TRANSPORT_PROTO_TCP, rmt, &lcl_addr,
+					 &lcl_port);
 
   if (rv)
-    {
-      if (rv != SESSION_E_PORTINUSE)
-	return rv;
-
-      if (session_lookup_connection (rmt->fib_index, &lcl_addr, &rmt->ip,
-				     lcl_port, rmt->port, TRANSPORT_PROTO_TCP,
-				     rmt->is_ip4))
-	return SESSION_E_PORTINUSE;
-
-      /* 5-tuple is available so increase lcl endpoint refcount and proceed
-       * with connection allocation */
-      transport_share_local_endpoint (TRANSPORT_PROTO_TCP, &lcl_addr,
-				      lcl_port);
-    }
+    return rv;
 
   /*
    * Create connection and send SYN
@@ -1463,6 +1460,51 @@ tcp_initialize_iss_seed (tcp_main_t * tm)
   tm->iss_seed.second = random_u64 (&time_now);
 }
 
+static void
+tcp_stats_collector_fn (vlib_stats_collector_data_t *d)
+{
+  tcp_main_t *tm = vnet_get_tcp_main ();
+  counter_t **counters = d->entry->data;
+  counter_t *cb = counters[0];
+  tcp_wrk_stats_t acc = {};
+  tcp_worker_ctx_t *wrk;
+
+  vec_foreach (wrk, tm->wrk_ctx)
+    {
+#define _(name, type, str) acc.name += wrk->stats.name;
+      foreach_tcp_wrk_stat
+#undef _
+    }
+
+#define _(name, type, str) cb[TCP_STAT_##name] = acc.name;
+  foreach_tcp_wrk_stat
+#undef _
+}
+
+static void
+tcp_counters_init (tcp_main_t *tm)
+{
+  vlib_stats_collector_reg_t r = {};
+  u32 idx;
+
+  if (tm->counters_init)
+    return;
+
+  r.entry_index = idx = vlib_stats_add_counter_vector ("/sys/tcp");
+  r.collect_fn = tcp_stats_collector_fn;
+  vlib_stats_validate (idx, 0, TCP_STAT_no_buffer);
+
+#define _(name, type, str)                                                    \
+  vlib_stats_add_symlink (idx, TCP_STAT_##name, "/sys/tcp/%s",                \
+			  CLIB_STRING_MACRO (name));
+  foreach_tcp_wrk_stat
+#undef _
+
+    vlib_stats_register_collector_fn (&r);
+
+  tm->counters_init = 1;
+}
+
 static clib_error_t *
 tcp_main_enable (vlib_main_t * vm)
 {
@@ -1539,10 +1581,8 @@ tcp_main_enable (vlib_main_t * vm)
   tm->bytes_per_buffer = vlib_buffer_get_default_data_size (vm);
   tm->cc_last_type = TCP_CC_LAST;
 
-  tm->ipl_next_node[0] = vlib_node_get_next (vm, session_queue_node.index,
-					     ip4_lookup_node.index);
-  tm->ipl_next_node[1] = vlib_node_get_next (vm, session_queue_node.index,
-					     ip6_lookup_node.index);
+  tcp_counters_init (tm);
+
   return error;
 }
 
