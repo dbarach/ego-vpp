@@ -427,12 +427,13 @@ ec_init (vlib_main_t *vm)
 
   vlib_worker_thread_barrier_sync (vm);
   vnet_session_enable_disable (vm, 1 /* turn on session and transports */);
-  vlib_worker_thread_barrier_release (vm);
 
   /* Turn on the builtin client input nodes */
   foreach_vlib_main ()
     vlib_node_set_state (this_vlib_main, echo_clients_node.index,
 			 VLIB_NODE_STATE_POLLING);
+
+  vlib_worker_thread_barrier_release (vm);
 
   return 0;
 }
@@ -705,10 +706,8 @@ ec_session_rx_callback (session_t *s)
   receive_data_chunk (wrk, es);
 
   if (svm_fifo_max_dequeue_cons (s->rx_fifo))
-    {
-      if (svm_fifo_set_event (s->rx_fifo))
-	session_send_io_evt_to_thread (s->rx_fifo, SESSION_IO_EVT_BUILTIN_RX);
-    }
+    session_enqueue_notify (s);
+
   return 0;
 }
 

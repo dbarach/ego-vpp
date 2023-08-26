@@ -784,12 +784,10 @@ quic_on_stream_destroy (quicly_stream_t * stream, int err)
   quic_stream_data_t *stream_data = (quic_stream_data_t *) stream->data;
   quic_ctx_t *sctx = quic_ctx_get (stream_data->ctx_id,
 				   stream_data->thread_index);
-  session_t *stream_session = session_get (sctx->c_s_index,
-					   sctx->c_thread_index);
   QUIC_DBG (2, "DESTROYED_STREAM: session 0x%lx (%U)",
 	    session_handle (stream_session), quic_format_err, err);
 
-  stream_session->session_state = SESSION_STATE_CLOSED;
+  session_transport_closing_notify (&sctx->connection);
   session_transport_delete_notify (&sctx->connection);
 
   quic_increment_counter (QUIC_ERROR_CLOSED_STREAM, 1);
@@ -832,7 +830,7 @@ quic_on_receive (quicly_stream_t * stream, size_t off, const void *src,
 		 size_t len)
 {
   QUIC_DBG (3, "received data: %lu bytes, offset %lu", len, off);
-  u32 max_enq, rv;
+  u32 max_enq;
   quic_ctx_t *sctx;
   session_t *stream_session;
   app_worker_t *app_wrk;
@@ -897,10 +895,7 @@ quic_on_receive (quicly_stream_t * stream, size_t off, const void *src,
       app_wrk = app_worker_get_if_valid (stream_session->app_wrk_index);
       if (PREDICT_TRUE (app_wrk != 0))
 	{
-	  rv = app_worker_lock_and_send_event (app_wrk, stream_session,
-					       SESSION_IO_EVT_RX);
-	  if (rv)
-	    QUIC_ERR ("Failed to ping app for RX");
+	  app_worker_rx_notify (app_wrk, stream_session);
 	}
       quic_ack_rx_data (stream_session);
     }

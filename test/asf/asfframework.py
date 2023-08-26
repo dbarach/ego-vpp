@@ -924,7 +924,7 @@ class VppTestCase(CPUInterface, unittest.TestCase):
     @classmethod
     def pg_start(cls, trace=True):
         """Enable the PG, wait till it is done, then clean up"""
-        for (intf, worker) in cls._old_pcaps:
+        for intf, worker in cls._old_pcaps:
             intf.handle_old_pcap_file(intf.get_in_path(worker), intf.in_history_counter)
         cls._old_pcaps = []
         if trace:
@@ -1190,7 +1190,11 @@ class VppTestCase(CPUInterface, unittest.TestCase):
             c = c[thread][index]
         else:
             c = sum(x[index] for x in c)
-        self.assert_equal(c, expected_value, "counter `%s'" % counter)
+        self.logger.debug(
+            "validate counter `%s[%s]', expected: %s, real value: %s"
+            % (counter, index, expected_value, c)
+        )
+        self.assert_equal(c, expected_value, "counter `%s[%s]'" % (counter, index))
 
     def assert_packet_counter_equal(self, counter, expected_value):
         counter_value = self.get_counter(counter)
@@ -1204,7 +1208,6 @@ class VppTestCase(CPUInterface, unittest.TestCase):
 
     @classmethod
     def sleep(cls, timeout, remark=None):
-
         # /* Allow sleep(0) to maintain win32 semantics, and as decreed
         #  * by Guido, only the main thread can be interrupted.
         # */

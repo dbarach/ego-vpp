@@ -26,7 +26,6 @@ from os import popen
 
 
 class IPsecIPv4Params:
-
     addr_type = socket.AF_INET
     addr_any = "0.0.0.0"
     addr_bcast = "255.255.255.255"
@@ -74,7 +73,6 @@ class IPsecIPv4Params:
 
 
 class IPsecIPv6Params:
-
     addr_type = socket.AF_INET6
     addr_any = "0::0"
     addr_bcast = "ffff:ffff:ffff:ffff:ffff:ffff:ffff:ffff"
@@ -122,7 +120,7 @@ class IPsecIPv6Params:
 
 
 def mk_scapy_crypt_key(p):
-    if p.crypt_algo in ("AES-GCM", "AES-CTR"):
+    if p.crypt_algo in ("AES-GCM", "AES-CTR", "AES-NULL-GMAC"):
         return p.crypt_key + struct.pack("!I", p.salt)
     else:
         return p.crypt_key
@@ -342,7 +340,7 @@ class IpsecTra4(object):
         return count
 
     def get_hash_failed_counts(self, p):
-        if ESP == self.encryption_type and p.crypt_algo == "AES-GCM":
+        if ESP == self.encryption_type and p.crypt_algo in ("AES-GCM", "AES-NULL-GMAC"):
             hash_failed_node_name = (
                 "/err/%s/decryption_failed" % self.tra4_decrypt_node_name[p.async_mode]
             )
@@ -638,7 +636,7 @@ class IpsecTra4(object):
             undersize_node_name = "/err/%s/runt" % self.tra4_decrypt_node_name[0]
             undersize_count = self.statistics.get_err_counter(undersize_node_name)
             # For AES-GCM an error in the hash is reported as a decryption failure
-            if p.crypt_algo == "AES-GCM":
+            if p.crypt_algo in ("AES-GCM", "AES-NULL-GMAC"):
                 hash_err = "decryption_failed"
         # In async mode, we don't report errors in the hash.
         if p.async_mode:

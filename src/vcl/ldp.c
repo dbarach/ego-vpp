@@ -67,6 +67,10 @@
 #define UDP_SEGMENT 103
 #endif
 
+#ifndef SO_ORIGINAL_DST
+/* from <linux/netfilter_ipv4.h> */
+#define SO_ORIGINAL_DST 80
+#endif
 typedef struct ldp_worker_ctx_
 {
   u8 *io_buffer;
@@ -284,7 +288,11 @@ ldp_init (void)
   ldp_worker_ctx_t *ldpw;
   int rv;
 
-  ASSERT (!ldp->init);
+  if (ldp->init)
+    {
+      LDBG (0, "LDP is initialized already");
+      return 0;
+    }
 
   ldp_init_cfg ();
   ldp->init = 1;
@@ -1748,6 +1756,7 @@ ldp_make_cmsg (vls_handle_t vlsh, struct msghdr *msg)
   struct cmsghdr *cmsg;
 
   cmsg = CMSG_FIRSTHDR (msg);
+  memset (cmsg, 0, sizeof (*cmsg));
 
   if (!vls_attr (vlsh, VPPCOM_ATTR_GET_IP_PKTINFO, (void *) &optval, &optlen))
     return 0;
@@ -2039,6 +2048,21 @@ getsockopt (int fd, int level, int optname,
 	    default:
 	      LDBG (0, "ERROR: fd %d: getsockopt SOL_TCP: sid %u, "
 		    "optname %d unsupported!", fd, vlsh, optname);
+	      break;
+	    }
+	  break;
+	case SOL_IP:
+	  switch (optname)
+	    {
+	    case SO_ORIGINAL_DST:
+	      rv =
+		vls_attr (vlsh, VPPCOM_ATTR_GET_ORIGINAL_DST, optval, optlen);
+	      break;
+	    default:
+	      LDBG (0,
+		    "ERROR: fd %d: getsockopt SOL_IP: vlsh %u "
+		    "optname %d unsupported!",
+		    fd, vlsh, optname);
 	      break;
 	    }
 	  break;
@@ -2657,6 +2681,7 @@ ldp_epoll_pwait_eventfd (int epfd, struct epoll_event *events,
       timeout = 0;
       if (rv >= maxevents)
 	goto done;
+      maxevents -= rv;
     }
   else if (PREDICT_FALSE (rv < 0))
     {
@@ -2669,7 +2694,7 @@ epoll_again:
 
   libc_evts = &events[rv];
   libc_num_ev =
-    libc_epoll_pwait (libc_epfd, libc_evts, maxevents - rv, timeout, sigmask);
+    libc_epoll_pwait (libc_epfd, libc_evts, maxevents, timeout, sigmask);
   if (libc_num_ev <= 0)
     {
       rv = rv >= 0 ? rv : -1;

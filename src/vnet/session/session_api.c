@@ -136,6 +136,13 @@ mq_send_session_accepted_cb (session_t * s)
       m.mq_index = s->thread_index;
     }
 
+  if (application_original_dst_is_enabled (app))
+    {
+      session_get_original_dst (&m.lcl, &m.rmt,
+				session_get_transport_proto (s),
+				&m.original_dst_ip4, &m.original_dst_port);
+    }
+
   app_wrk_send_ctrl_evt (app_wrk, SESSION_CTRL_EVT_ACCEPTED, &m, sizeof (m));
 
   return 0;
@@ -453,6 +460,52 @@ mq_send_session_cleanup_cb (session_t * s, session_cleanup_ntf_t ntf)
   app_wrk_send_ctrl_evt (app_wrk, SESSION_CTRL_EVT_CLEANUP, &m, sizeof (m));
 }
 
+static int
+mq_send_io_rx_event (session_t *s)
+{
+  session_event_t *mq_evt;
+  svm_msg_q_msg_t mq_msg;
+  app_worker_t *app_wrk;
+  svm_msg_q_t *mq;
+
+  if (svm_fifo_has_event (s->rx_fifo))
+    return 0;
+
+  app_wrk = app_worker_get (s->app_wrk_index);
+  mq = app_wrk->event_queue;
+
+  mq_msg = svm_msg_q_alloc_msg_w_ring (mq, SESSION_MQ_IO_EVT_RING);
+  mq_evt = svm_msg_q_msg_data (mq, &mq_msg);
+
+  mq_evt->event_type = SESSION_IO_EVT_RX;
+  mq_evt->session_index = s->rx_fifo->shr->client_session_index;
+
+  (void) svm_fifo_set_event (s->rx_fifo);
+
+  svm_msg_q_add_raw (mq, &mq_msg);
+
+  return 0;
+}
+
+static int
+mq_send_io_tx_event (session_t *s)
+{
+  app_worker_t *app_wrk = app_worker_get (s->app_wrk_index);
+  svm_msg_q_t *mq = app_wrk->event_queue;
+  session_event_t *mq_evt;
+  svm_msg_q_msg_t mq_msg;
+
+  mq_msg = svm_msg_q_alloc_msg_w_ring (mq, SESSION_MQ_IO_EVT_RING);
+  mq_evt = svm_msg_q_msg_data (mq, &mq_msg);
+
+  mq_evt->event_type = SESSION_IO_EVT_TX;
+  mq_evt->session_index = s->tx_fifo->shr->client_session_index;
+
+  svm_msg_q_add_raw (mq, &mq_msg);
+
+  return 0;
+}
+
 static session_cb_vft_t session_mq_cb_vft = {
   .session_accept_callback = mq_send_session_accepted_cb,
   .session_disconnect_callback = mq_send_session_disconnected_cb,
@@ -462,6 +515,8 @@ static session_cb_vft_t session_mq_cb_vft = {
   .session_cleanup_callback = mq_send_session_cleanup_cb,
   .add_segment_callback = mq_send_add_segment_cb,
   .del_segment_callback = mq_send_del_segment_cb,
+  .builtin_app_rx_callback = mq_send_io_rx_event,
+  .builtin_app_tx_callback = mq_send_io_tx_event,
 };
 
 static void
@@ -527,7 +582,8 @@ vl_api_app_attach_t_handler (vl_api_app_attach_t * mp)
 
   if ((rv = vnet_application_attach (a)))
     {
-      clib_warning ("attach returned: %d", rv);
+      clib_warning ("attach returned: %U", format_session_error, rv);
+      rv = VNET_API_ERROR_UNSPECIFIED;
       vec_free (a->namespace_id);
       goto done;
     }
@@ -634,7 +690,9 @@ vl_api_app_worker_add_del_t_handler (vl_api_app_worker_add_del_t * mp)
   rv = vnet_app_worker_add_del (&args);
   if (rv)
     {
-      clib_warning ("app worker add/del returned: %d", rv);
+      clib_warning ("app worker add/del returned: %U", format_session_error,
+		    rv);
+      rv = VNET_API_ERROR_UNSPECIFIED;
       goto done;
     }
 
@@ -702,6 +760,12 @@ vl_api_application_detach_t_handler (vl_api_application_detach_t * mp)
       a->app_index = app->app_index;
       a->api_client_index = mp->client_index;
       rv = vnet_application_detach (a);
+      if (rv)
+	{
+	  clib_warning ("vnet_application_detach: %U", format_session_error,
+			rv);
+	  rv = VNET_API_ERROR_UNSPECIFIED;
+	}
     }
 
 done:
@@ -927,7 +991,10 @@ vl_api_session_rule_add_del_t_handler (vl_api_session_rule_add_del_t * mp)
 
   rv = vnet_session_rule_add_del (&args);
   if (rv)
-    clib_warning ("rule add del returned: %d", rv);
+    {
+      clib_warning ("rule add del returned: %U", format_session_error, rv);
+      rv = VNET_API_ERROR_UNSPECIFIED;
+    }
   vec_free (table_args->tag);
   REPLY_MACRO (VL_API_SESSION_RULE_ADD_DEL_REPLY);
 }
@@ -1142,6 +1209,12 @@ vl_api_app_del_cert_key_pair_t_handler (vl_api_app_del_cert_key_pair_t * mp)
     }
   ckpair_index = clib_net_to_host_u32 (mp->index);
   rv = vnet_app_del_cert_key_pair (ckpair_index);
+  if (rv)
+    {
+      clib_warning ("vnet_app_del_cert_key_pair: %U", format_session_error,
+		    rv);
+      rv = VNET_API_ERROR_UNSPECIFIED;
+    }
 
 done:
   REPLY_MACRO (VL_API_APP_DEL_CERT_KEY_PAIR_REPLY);
@@ -1221,6 +1294,8 @@ static session_cb_vft_t session_mq_sapi_cb_vft = {
   .session_cleanup_callback = mq_send_session_cleanup_cb,
   .add_segment_callback = mq_send_add_segment_sapi_cb,
   .del_segment_callback = mq_send_del_segment_sapi_cb,
+  .builtin_app_rx_callback = mq_send_io_rx_event,
+  .builtin_app_tx_callback = mq_send_io_tx_event,
 };
 
 static void
@@ -1360,7 +1435,7 @@ sapi_add_del_worker_handler (app_namespace_t * app_ns,
   app = application_get_if_valid (mp->app_index);
   if (!app)
     {
-      rv = VNET_API_ERROR_INVALID_VALUE;
+      rv = SESSION_E_INVALID;
       goto done;
     }
 
@@ -1375,7 +1450,8 @@ sapi_add_del_worker_handler (app_namespace_t * app_ns,
   rv = vnet_app_worker_add_del (&args);
   if (rv)
     {
-      clib_warning ("app worker add/del returned: %d", rv);
+      clib_warning ("app worker add/del returned: %U", format_session_error,
+		    rv);
       goto done;
     }
 
@@ -1723,7 +1799,7 @@ appns_sapi_add_ns_socket (app_namespace_t * app_ns)
       if (err)
 	{
 	  clib_error_report (err);
-	  return VNET_API_ERROR_SYSCALL_ERROR_1;
+	  return SESSION_E_SYSCALL;
 	}
     }
 

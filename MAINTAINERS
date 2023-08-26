@@ -571,6 +571,11 @@ M:	Dave Barach <vpp@barachs.net>
 M:	Florin Coras <fcoras@cisco.com>
 F:	src/plugins/unittest/
 
+Plugin - IDPF Device driver
+I:      idpf
+M:      Ting Xu <ting.xu@intel.com>
+F:      src/plugins/idpf/
+
 Plugin - Intel DMA engines
 I:      dma_intel
 M:      Marvin Liu <yong.liu@intel.com>
@@ -805,6 +810,16 @@ Plugin - Prom
 I:	prom
 M:	Florin Coras <fcoras@cisco.com>
 F:	src/plugins/prom
+
+Plugin - BPF Trace Filter
+I:      bpf_trace_filter
+M:      Mohammed Hawari <mohammed@hawari.fr>
+F:      src/plugins/bpf_trace_filter
+
+Plugin - NPTv6
+I:      npt66
+M:      Ole Troan <otroan@employees.org>
+F:      src/plugins/npt66
 
 cJSON
 I:	cjson

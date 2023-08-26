@@ -102,6 +102,7 @@ bms
 Bn
 boolean
 bootup
+bpf
 Brockners
 bsid
 bss
@@ -189,6 +190,7 @@ CPPFLAGS
 cpu
 cPython
 crc
+crcchecker
 crcs
 crit
 criterias
@@ -397,7 +399,6 @@ Gerrit
 gethostbyname
 gettingsources
 gettingstarted
-ggcov
 gid
 Gigabit
 GigE
@@ -409,6 +410,7 @@ Golang
 Goncalves
 govpp
 gpe
+graphviz
 gre
 grep
 grepping
@@ -467,6 +469,8 @@ IBverbs
 iccrg
 icmp
 icmpr
+idpf
+Idpf
 ietf
 iface
 ifndef
@@ -746,6 +750,7 @@ netmap
 Netmap
 netplan
 Netplan
+newfile
 nexthop
 nginx
 NIC
@@ -757,6 +762,8 @@ nodaemon
 noevaluate
 nonaddress
 nosyslog
+npt
+npt66
 ns
 nsess
 nsh
@@ -778,6 +785,7 @@ oddbuf
 Oddbuf
 offline
 ofr
+oldfile
 online
 onlink
 ooo
@@ -800,6 +808,7 @@ params
 parsable
 passthrough
 passwordless
+patchset
 pathname
 pbb
 pcap
@@ -992,6 +1001,7 @@ seg
 segfault
 selinux
 semodule
+semver
 setjmp
 settingupenvironment
 setUp

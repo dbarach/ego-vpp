@@ -351,6 +351,11 @@ vcl_session_accepted_handler (vcl_worker_t * wrk, session_accepted_msg_t * mp,
 
   session->vpp_handle = mp->handle;
   session->session_state = VCL_STATE_READY;
+  if (mp->rmt.is_ip4)
+    {
+      session->original_dst_ip4 = mp->original_dst_ip4;
+      session->original_dst_port = mp->original_dst_port;
+    }
   session->transport.rmt_port = mp->rmt.port;
   session->transport.is_ip4 = mp->rmt.is_ip4;
   clib_memcpy_fast (&session->transport.rmt_ip, &mp->rmt.ip,
@@ -508,9 +513,9 @@ vcl_session_reset_handler (vcl_worker_t * wrk,
     }
 
   /* Caught a reset before actually accepting the session */
-  if (session->session_state == VCL_STATE_LISTEN)
+  if (session->session_state == VCL_STATE_LISTEN ||
+      session->session_state == VCL_STATE_LISTEN_NO_MQ)
     {
-
       if (!vcl_flag_accepted_session (session, reset_msg->handle,
 				      VCL_ACCEPTED_F_RESET))
 	VDBG (0, "session was not accepted!");
@@ -701,7 +706,8 @@ vcl_session_disconnected_handler (vcl_worker_t * wrk,
     return 0;
 
   /* Caught a disconnect before actually accepting the session */
-  if (session->session_state == VCL_STATE_LISTEN)
+  if (session->session_state == VCL_STATE_LISTEN ||
+      session->session_state == VCL_STATE_LISTEN_NO_MQ)
     {
       if (!vcl_flag_accepted_session (session, msg->handle,
 				      VCL_ACCEPTED_F_CLOSED))
@@ -1048,7 +1054,15 @@ vcl_handle_mq_event (vcl_worker_t * wrk, session_event_t * e)
 	break;
       if (s->session_state == VCL_STATE_CLOSED)
 	break;
-      if (vcl_session_has_attr (s, VCL_SESS_ATTR_NONBLOCK))
+      /* We do not postpone for blocking sessions or listen sessions because:
+       * 1. Blocking sessions are not part of epoll instead they're used in a
+       *    synchronous manner, such as read/write and etc.
+       * 2. Listen sessions that have not yet been accepted can't change to
+       *    VPP_CLOSING state instead can been marked as ACCEPTED_F_CLOSED.
+       */
+      if (vcl_session_has_attr (s, VCL_SESS_ATTR_NONBLOCK) &&
+	  !(s->session_state == VCL_STATE_LISTEN ||
+	    s->session_state == VCL_STATE_LISTEN_NO_MQ))
 	{
 	  s->session_state = VCL_STATE_VPP_CLOSING;
 	  s->flags |= VCL_SESSION_F_PENDING_DISCONNECT;
@@ -1069,7 +1083,15 @@ vcl_handle_mq_event (vcl_worker_t * wrk, session_event_t * e)
 	break;
       if (s->session_state == VCL_STATE_CLOSED)
 	break;
-      if (vcl_session_has_attr (s, VCL_SESS_ATTR_NONBLOCK))
+      /* We do not postpone for blocking sessions or listen sessions because:
+       * 1. Blocking sessions are not part of epoll instead they're used in a
+       *    synchronous manner, such as read/write and etc.
+       * 2. Listen sessions that have not yet been accepted can't change to
+       *    DISCONNECT state instead can been marked as ACCEPTED_F_RESET.
+       */
+      if (vcl_session_has_attr (s, VCL_SESS_ATTR_NONBLOCK) &&
+	  !(s->session_state == VCL_STATE_LISTEN ||
+	    s->session_state == VCL_STATE_LISTEN_NO_MQ))
 	{
 	  s->flags |= VCL_SESSION_F_PENDING_DISCONNECT;
 	  s->session_state = VCL_STATE_DISCONNECT;
@@ -2425,10 +2447,24 @@ vcl_select_handle_mq_event (vcl_worker_t * wrk, session_event_t * e,
       vcl_session_add_want_deq_ntf (s, SVM_FIFO_WANT_DEQ_NOTIF_IF_FULL);
       break;
     case SESSION_CTRL_EVT_DISCONNECTED:
-      disconnected_msg = (session_disconnected_msg_t *) e->data;
-      s = vcl_session_disconnected_handler (wrk, disconnected_msg);
-      if (!s)
-	break;
+      if (!e->postponed)
+	{
+	  disconnected_msg = (session_disconnected_msg_t *) e->data;
+	  s = vcl_session_disconnected_handler (wrk, disconnected_msg);
+	  if (!s)
+	    break;
+	}
+      else
+	{
+	  s = vcl_session_get (wrk, e->session_index);
+	  s->flags &= ~VCL_SESSION_F_PENDING_DISCONNECT;
+	}
+      if (vcl_session_is_closed (s))
+	{
+	  if (s && (s->flags & VCL_SESSION_F_PENDING_FREE))
+	    vcl_session_free (wrk, s);
+	  break;
+	}
       sid = s->session_index;
       if (sid < n_bits && except_map)
 	{
@@ -2437,7 +2473,24 @@ vcl_select_handle_mq_event (vcl_worker_t * wrk, session_event_t * e,
 	}
       break;
     case SESSION_CTRL_EVT_RESET:
-      sid = vcl_session_reset_handler (wrk, (session_reset_msg_t *) e->data);
+      if (!e->postponed)
+	{
+	  sid =
+	    vcl_session_reset_handler (wrk, (session_reset_msg_t *) e->data);
+	  s = vcl_session_get (wrk, sid);
+	}
+      else
+	{
+	  sid = e->session_index;
+	  s = vcl_session_get (wrk, sid);
+	  s->flags &= ~VCL_SESSION_F_PENDING_DISCONNECT;
+	}
+      if (vcl_session_is_closed (s))
+	{
+	  if (s && (s->flags & VCL_SESSION_F_PENDING_FREE))
+	    vcl_session_free (wrk, s);
+	  break;
+	}
       if (sid < n_bits && except_map)
 	{
 	  clib_bitmap_set_no_check ((uword *) except_map, sid, 1);
@@ -3604,6 +3657,33 @@ vppcom_session_attr (uint32_t session_handle, uint32_t op,
 		" port %d",
 		session_handle, ep->is_ip4, vcl_format_ip46_address,
 		&session->transport.lcl_ip,
+		ep->is_ip4 ? IP46_TYPE_IP4 : IP46_TYPE_IP6,
+		clib_net_to_host_u16 (ep->port));
+	}
+      else
+	rv = VPPCOM_EINVAL;
+      break;
+
+    case VPPCOM_ATTR_GET_ORIGINAL_DST:
+      if (!session->transport.is_ip4)
+	{
+	  /* now original dst only support ipv4*/
+	  rv = VPPCOM_EAFNOSUPPORT;
+	  break;
+	}
+      if (PREDICT_TRUE (buffer && buflen && (*buflen >= sizeof (*ep)) &&
+			ep->ip))
+	{
+	  ep->is_ip4 = session->transport.is_ip4;
+	  ep->port = session->original_dst_port;
+	  clib_memcpy_fast (ep->ip, &session->original_dst_ip4,
+			    sizeof (ip4_address_t));
+	  *buflen = sizeof (*ep);
+	  VDBG (1,
+		"VPPCOM_ATTR_GET_ORIGINAL_DST: sh %u, is_ip4 = %u, addr = %U"
+		" port %d",
+		session_handle, ep->is_ip4, vcl_format_ip4_address,
+		(ip4_address_t *) (&session->original_dst_ip4),
 		ep->is_ip4 ? IP46_TYPE_IP4 : IP46_TYPE_IP6,
 		clib_net_to_host_u16 (ep->port));
 	}
