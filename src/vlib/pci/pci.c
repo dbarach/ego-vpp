@@ -176,11 +176,7 @@ vlib_pci_function_level_reset (vlib_main_t *vm, vlib_pci_dev_handle_t h)
     return err;
 
   offset = cfg.cap_ptr;
-  /* Make gcc happy, otherwise gcc fails build due to cap not set if offset ==
-   * 0 */
-  cap = (pci_capability_pcie_t *) (cfg.data + offset);
-
-  while (offset)
+  do
     {
       cap = (pci_capability_pcie_t *) (cfg.data + offset);
 
@@ -189,6 +185,7 @@ vlib_pci_function_level_reset (vlib_main_t *vm, vlib_pci_dev_handle_t h)
 
       offset = cap->next_offset;
     }
+  while (offset);
 
   if (cap->capability_id != PCI_CAP_ID_PCIE)
     return clib_error_return (0, "PCIe capability config not found");
@@ -302,7 +299,7 @@ _vlib_pci_link_speed (u8 *s, u8 speed, u8 width)
     [1] = "2.5", [2] = "5.0", [3] = "8.0", [4] = "16.0", [5] = "32.0"
   };
 
-  if (speed > ARRAY_LEN (speeds) || speeds[speed] == 0)
+  if (speed >= ARRAY_LEN (speeds) || speeds[speed] == 0)
     s = format (s, "unknown speed");
   else
     s = format (s, "%s GT/s", speeds[speed]);

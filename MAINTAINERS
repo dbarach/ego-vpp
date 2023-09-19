@@ -428,6 +428,11 @@ Y:	src/plugins/flowprobe/FEATURE.yaml
 M:	Ole Troan <otroan@employees.org>
 F:	src/plugins/flowprobe/
 
+Plugin - fateshare
+I:	fateshare
+M:	Andrew Yourtchenko <ayourtch@gmail.com>
+F:	src/plugins/fateshare/
+
 Plugin - http_static
 I:	http_static
 M:	Dave Barach <vpp@barachs.net>
@@ -820,6 +825,11 @@ Plugin - NPTv6
 I:      npt66
 M:      Ole Troan <otroan@employees.org>
 F:      src/plugins/npt66
+
+Plugin - Trace node
+I:	tracenode
+M:	Maxime Peim <mpeim@cisco.com>
+F:	src/plugins/tracenode
 
 cJSON
 I:	cjson

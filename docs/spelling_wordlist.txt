@@ -347,6 +347,7 @@ extranet
 Extranets
 failover
 fallback
+fateshare
 favour
 favoured
 favours
@@ -1148,6 +1149,8 @@ tpv
 TPv
 tracedump
 Tracedump
+tracenode
+Tracenode
 TRex
 Tsou
 ttl
@@ -1349,6 +1352,7 @@ XXhash
 xxx
 XXX
 xyz
+xz
 yaml
 Yaml
 YYMM
