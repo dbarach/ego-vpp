@@ -110,6 +110,7 @@ bufferindex
 bufmon
 Bufmon
 bugfixing
+buildinfo
 buildingrst
 builtin
 builtinurl
@@ -247,6 +248,7 @@ Dest
 det
 dev
 devbind
+dev_iavf
 df
 dhcp
 dhcp
@@ -347,6 +349,7 @@ extranet
 Extranets
 failover
 fallback
+fateshare
 favour
 favoured
 favours
@@ -410,6 +413,7 @@ Golang
 Goncalves
 govpp
 gpe
+graphviz
 gre
 grep
 grepping
@@ -462,12 +466,15 @@ ia
 iacl
 iAcl
 iACL
+iavf
 iBGP
 ibverb
 IBverbs
 iccrg
 icmp
 icmpr
+idpf
+Idpf
 ietf
 iface
 ifndef
@@ -759,6 +766,8 @@ nodaemon
 noevaluate
 nonaddress
 nosyslog
+npt
+npt66
 ns
 nsess
 nsh
@@ -1143,6 +1152,8 @@ tpv
 TPv
 tracedump
 Tracedump
+tracenode
+Tracenode
 TRex
 Tsou
 ttl
@@ -1344,6 +1355,7 @@ XXhash
 xxx
 XXX
 xyz
+xz
 yaml
 Yaml
 YYMM

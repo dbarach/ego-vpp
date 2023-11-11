@@ -5,6 +5,7 @@ import (
 	"os"
 	"os/exec"
 	"os/signal"
+	"strconv"
 	"strings"
 	"syscall"
 	"time"
@@ -136,10 +137,9 @@ func (vpp *VppInstance) start() error {
 			cont <- true
 		}()
 
-		// Start VPP in GDB and wait for user to attach it
-		vpp.container.execServer("su -c \"gdb -ex run --args vpp -c " + startupFileName + " &> /proc/1/fd/1\"")
+		vpp.container.execServer("su -c \"vpp -c " + startupFileName + " &> /proc/1/fd/1\"")
 		fmt.Println("run following command in different terminal:")
-		fmt.Println("docker exec -it " + vpp.container.name + " gdb -ex \"attach $(docker exec " + vpp.container.name + " pidof gdb)\"")
+		fmt.Println("docker exec -it " + vpp.container.name + " gdb -ex \"attach $(docker exec " + vpp.container.name + " pidof vpp)\"")
 		fmt.Println("Afterwards press CTRL+C to continue")
 		<-cont
 		fmt.Println("continuing...")
@@ -190,6 +190,23 @@ func (vpp *VppInstance) vppctl(command string, arguments ...any) string {
 	vpp.getSuite().assertNil(err)
 
 	return string(output)
+}
+
+func (vpp *VppInstance) GetSessionStat(stat string) int {
+	o := vpp.vppctl("show session stats")
+	vpp.getSuite().log(o)
+	for _, line := range strings.Split(o, "\n") {
+		if strings.Contains(line, stat) {
+			tokens := strings.Split(strings.TrimSpace(line), " ")
+			val, err := strconv.Atoi(tokens[0])
+			if err != nil {
+				vpp.getSuite().FailNow("failed to parse stat value %s", err)
+				return 0
+			}
+			return val
+		}
+	}
+	return 0
 }
 
 func (vpp *VppInstance) waitForApp(appName string, timeout int) {

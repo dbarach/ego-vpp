@@ -513,9 +513,9 @@ vcl_session_reset_handler (vcl_worker_t * wrk,
     }
 
   /* Caught a reset before actually accepting the session */
-  if (session->session_state == VCL_STATE_LISTEN)
+  if (session->session_state == VCL_STATE_LISTEN ||
+      session->session_state == VCL_STATE_LISTEN_NO_MQ)
     {
-
       if (!vcl_flag_accepted_session (session, reset_msg->handle,
 				      VCL_ACCEPTED_F_RESET))
 	VDBG (0, "session was not accepted!");
@@ -545,6 +545,7 @@ vcl_session_bound_handler (vcl_worker_t * wrk, session_bound_msg_t * mp)
 	{
 	  session->session_state = VCL_STATE_DETACHED;
 	  session->vpp_handle = mp->handle;
+	  session->vpp_error = mp->retval;
 	  return sid;
 	}
       else
@@ -706,7 +707,8 @@ vcl_session_disconnected_handler (vcl_worker_t * wrk,
     return 0;
 
   /* Caught a disconnect before actually accepting the session */
-  if (session->session_state == VCL_STATE_LISTEN)
+  if (session->session_state == VCL_STATE_LISTEN ||
+      session->session_state == VCL_STATE_LISTEN_NO_MQ)
     {
       if (!vcl_flag_accepted_session (session, msg->handle,
 				      VCL_ACCEPTED_F_CLOSED))
@@ -1053,7 +1055,15 @@ vcl_handle_mq_event (vcl_worker_t * wrk, session_event_t * e)
 	break;
       if (s->session_state == VCL_STATE_CLOSED)
 	break;
-      if (vcl_session_has_attr (s, VCL_SESS_ATTR_NONBLOCK))
+      /* We do not postpone for blocking sessions or listen sessions because:
+       * 1. Blocking sessions are not part of epoll instead they're used in a
+       *    synchronous manner, such as read/write and etc.
+       * 2. Listen sessions that have not yet been accepted can't change to
+       *    VPP_CLOSING state instead can been marked as ACCEPTED_F_CLOSED.
+       */
+      if (vcl_session_has_attr (s, VCL_SESS_ATTR_NONBLOCK) &&
+	  !(s->session_state == VCL_STATE_LISTEN ||
+	    s->session_state == VCL_STATE_LISTEN_NO_MQ))
 	{
 	  s->session_state = VCL_STATE_VPP_CLOSING;
 	  s->flags |= VCL_SESSION_F_PENDING_DISCONNECT;
@@ -1074,7 +1084,15 @@ vcl_handle_mq_event (vcl_worker_t * wrk, session_event_t * e)
 	break;
       if (s->session_state == VCL_STATE_CLOSED)
 	break;
-      if (vcl_session_has_attr (s, VCL_SESS_ATTR_NONBLOCK))
+      /* We do not postpone for blocking sessions or listen sessions because:
+       * 1. Blocking sessions are not part of epoll instead they're used in a
+       *    synchronous manner, such as read/write and etc.
+       * 2. Listen sessions that have not yet been accepted can't change to
+       *    DISCONNECT state instead can been marked as ACCEPTED_F_RESET.
+       */
+      if (vcl_session_has_attr (s, VCL_SESS_ATTR_NONBLOCK) &&
+	  !(s->session_state == VCL_STATE_LISTEN ||
+	    s->session_state == VCL_STATE_LISTEN_NO_MQ))
 	{
 	  s->flags |= VCL_SESSION_F_PENDING_DISCONNECT;
 	  s->session_state = VCL_STATE_DISCONNECT;
@@ -1144,7 +1162,10 @@ vppcom_wait_for_session_state_change (u32 session_index,
 	}
       if (session->session_state == VCL_STATE_DETACHED)
 	{
-	  return VPPCOM_ECONNREFUSED;
+	  if (session->vpp_error == SESSION_E_ALREADY_LISTENING)
+	    return VPPCOM_EADDRINUSE;
+	  else
+	    return VPPCOM_ECONNREFUSED;
 	}
 
       if (svm_msg_q_sub (wrk->app_event_queue, &msg, SVM_Q_NOWAIT, 0))
@@ -1661,7 +1682,7 @@ vppcom_session_bind (uint32_t session_handle, vppcom_endpt_t * ep)
   vcl_evt (VCL_EVT_BIND, session);
 
   if (session->session_type == VPPCOM_PROTO_UDP)
-    vppcom_session_listen (session_handle, 10);
+    return vppcom_session_listen (session_handle, 10);
 
   return VPPCOM_OK;
 }
@@ -2035,13 +2056,13 @@ vppcom_session_read_internal (uint32_t session_handle, void *buf, int n,
 
   if (svm_fifo_is_empty_cons (rx_fifo))
     {
+      if (is_ct)
+	svm_fifo_unset_event (s->rx_fifo);
+      svm_fifo_unset_event (rx_fifo);
       if (is_nonblocking)
 	{
 	  if (vcl_session_is_closing (s))
 	    return vcl_session_closing_error (s);
-	  if (is_ct)
-	    svm_fifo_unset_event (s->rx_fifo);
-	  svm_fifo_unset_event (rx_fifo);
 	  return VPPCOM_EWOULDBLOCK;
 	}
       while (svm_fifo_is_empty_cons (rx_fifo))
@@ -2147,11 +2168,13 @@ vppcom_session_read_segments (uint32_t session_handle,
 
   if (svm_fifo_is_empty_cons (rx_fifo))
     {
+      if (is_ct)
+	svm_fifo_unset_event (s->rx_fifo);
+      svm_fifo_unset_event (rx_fifo);
       if (is_nonblocking)
 	{
-	  if (is_ct)
-	    svm_fifo_unset_event (s->rx_fifo);
-	  svm_fifo_unset_event (rx_fifo);
+	  if (vcl_session_is_closing (s))
+	    return vcl_session_closing_error (s);
 	  return VPPCOM_EWOULDBLOCK;
 	}
       while (svm_fifo_is_empty_cons (rx_fifo))
@@ -2430,10 +2453,24 @@ vcl_select_handle_mq_event (vcl_worker_t * wrk, session_event_t * e,
       vcl_session_add_want_deq_ntf (s, SVM_FIFO_WANT_DEQ_NOTIF_IF_FULL);
       break;
     case SESSION_CTRL_EVT_DISCONNECTED:
-      disconnected_msg = (session_disconnected_msg_t *) e->data;
-      s = vcl_session_disconnected_handler (wrk, disconnected_msg);
-      if (!s)
-	break;
+      if (!e->postponed)
+	{
+	  disconnected_msg = (session_disconnected_msg_t *) e->data;
+	  s = vcl_session_disconnected_handler (wrk, disconnected_msg);
+	  if (!s)
+	    break;
+	}
+      else
+	{
+	  s = vcl_session_get (wrk, e->session_index);
+	  s->flags &= ~VCL_SESSION_F_PENDING_DISCONNECT;
+	}
+      if (vcl_session_is_closed (s))
+	{
+	  if (s && (s->flags & VCL_SESSION_F_PENDING_FREE))
+	    vcl_session_free (wrk, s);
+	  break;
+	}
       sid = s->session_index;
       if (sid < n_bits && except_map)
 	{
@@ -2442,7 +2479,24 @@ vcl_select_handle_mq_event (vcl_worker_t * wrk, session_event_t * e,
 	}
       break;
     case SESSION_CTRL_EVT_RESET:
-      sid = vcl_session_reset_handler (wrk, (session_reset_msg_t *) e->data);
+      if (!e->postponed)
+	{
+	  sid =
+	    vcl_session_reset_handler (wrk, (session_reset_msg_t *) e->data);
+	  s = vcl_session_get (wrk, sid);
+	}
+      else
+	{
+	  sid = e->session_index;
+	  s = vcl_session_get (wrk, sid);
+	  s->flags &= ~VCL_SESSION_F_PENDING_DISCONNECT;
+	}
+      if (vcl_session_is_closed (s))
+	{
+	  if (s && (s->flags & VCL_SESSION_F_PENDING_FREE))
+	    vcl_session_free (wrk, s);
+	  break;
+	}
       if (sid < n_bits && except_map)
 	{
 	  clib_bitmap_set_no_check ((uword *) except_map, sid, 1);

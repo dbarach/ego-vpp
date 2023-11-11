@@ -61,13 +61,6 @@ option(VPP_UNLIKELY_MULTIARCH "Disable unlikely CPU variant compiles" OFF)
 
 option(VPP_BUILD_NATIVE_ONLY "Build only for native CPU." OFF)
 
-if(VPP_BUILD_NATIVE_ONLY)
-  check_c_compiler_flag("-march=native" compiler_flag_march_native)
-  if(NOT compiler_flag_march_native)
-    message(FATAL_ERROR "Native-only build not supported by compiler")
-  endif()
-endif()
-
 macro(add_vpp_march_variant v)
   cmake_parse_arguments(ARG
     "OFF"
@@ -114,7 +107,14 @@ macro(add_vpp_march_variant v)
 endmacro()
 
 if(VPP_BUILD_NATIVE_ONLY)
-  set(VPP_DEFAULT_MARCH_FLAGS -march=native)
+  set(VPP_BUILD_NATIVE_ARCH "native" CACHE STRING "native CPU -march= value.")
+  set(VPP_DEFAULT_MARCH_FLAGS -march=${VPP_BUILD_NATIVE_ARCH})
+  if(VPP_BUILD_NATIVE_ONLY)
+    check_c_compiler_flag(${VPP_DEFAULT_MARCH_FLAGS} compiler_flag_march)
+    if(NOT compiler_flag_march)
+      message(FATAL_ERROR "Native-only build with ${VPP_DEFAULT_MARCH_FLAGS} is not supported by compiler")
+    endif()
+  endif()
   set(MARCH_VARIANTS_NAMES "native-only")
 elseif(CMAKE_SYSTEM_PROCESSOR MATCHES "amd64.*|x86_64.*|AMD64.*")
   set(VPP_DEFAULT_MARCH_FLAGS -march=corei7 -mtune=corei7-avx)
@@ -195,6 +195,12 @@ elseif(CMAKE_SYSTEM_PROCESSOR MATCHES "^(aarch64.*|AARCH64.*)")
     FLAGS -march=armv8.2-a+crc+crypto -mtune=neoverse-n1
     N_PREFETCHES 6
     CACHE_PREFETCH_BYTES 64
+  )
+  add_vpp_march_variant(neoversen2
+    FLAGS -march=armv9-a+crypto -mtune=neoverse-n2
+    N_PREFETCHES 6
+    CACHE_PREFETCH_BYTES 64
+    OFF
   )
 endif()
 

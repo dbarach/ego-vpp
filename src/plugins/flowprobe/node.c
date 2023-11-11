@@ -701,6 +701,7 @@ flowprobe_export_entry (vlib_main_t * vm, flowprobe_entry_t * e)
   ipfix_exporter_t *exp = pool_elt_at_index (flow_report_main.exporters, 0);
   vlib_buffer_t *b0;
   bool collect_ip4 = false, collect_ip6 = false;
+  bool collect_l4 = false;
   flowprobe_variant_t which = e->key.which;
   flowprobe_record_t flags = fm->context[which].flags;
   u16 offset =
@@ -719,6 +720,10 @@ flowprobe_export_entry (vlib_main_t * vm, flowprobe_entry_t * e)
       collect_ip4 = which == FLOW_VARIANT_L2_IP4 || which == FLOW_VARIANT_IP4;
       collect_ip6 = which == FLOW_VARIANT_L2_IP6 || which == FLOW_VARIANT_IP6;
     }
+  if (flags & FLOW_RECORD_L4)
+    {
+      collect_l4 = (which != FLOW_VARIANT_L2);
+    }
 
   offset += flowprobe_common_add (b0, e, offset);
 
@@ -728,13 +733,14 @@ flowprobe_export_entry (vlib_main_t * vm, flowprobe_entry_t * e)
     offset += flowprobe_l3_ip6_add (b0, e, offset);
   if (collect_ip4)
     offset += flowprobe_l3_ip4_add (b0, e, offset);
-  if (flags & FLOW_RECORD_L4)
+  if (collect_l4)
     offset += flowprobe_l4_add (b0, e, offset);
 
   /* Reset per flow-export counters */
   e->packetcount = 0;
   e->octetcount = 0;
   e->last_exported = vlib_time_now (vm);
+  e->prot.tcp.flags = 0;
 
   b0->current_length = offset;
 
@@ -955,8 +961,7 @@ flowprobe_flush_callback_l2 (void)
   flush_record (FLOW_VARIANT_L2_IP6);
 }
 
-
-static void
+void
 flowprobe_delete_by_index (u32 my_cpu_number, u32 poolindex)
 {
   flowprobe_main_t *fm = &flowprobe_main;

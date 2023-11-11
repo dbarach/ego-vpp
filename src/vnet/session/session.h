@@ -23,23 +23,6 @@
 #include <svm/fifo_segment.h>
 #include <vlib/dma/dma.h>
 
-#define foreach_session_input_error                                    	\
-_(NO_SESSION, "No session drops")                                       \
-_(NO_LISTENER, "No listener for dst port drops")                        \
-_(ENQUEUED, "Packets pushed into rx fifo")                              \
-_(NOT_READY, "Session not ready packets")                               \
-_(FIFO_FULL, "Packets dropped for lack of rx fifo space")               \
-_(EVENT_FIFO_FULL, "Events not sent for lack of event fifo space")      \
-_(API_QUEUE_FULL, "Sessions not created for lack of API queue space")   \
-
-typedef enum
-{
-#define _(sym,str) SESSION_ERROR_##sym,
-  foreach_session_input_error
-#undef _
-    SESSION_N_ERROR,
-} session_input_error_t;
-
 typedef struct session_wrk_stats_
 {
   u32 errors[SESSION_N_ERRORS];
@@ -117,8 +100,8 @@ typedef struct session_worker_
   /** Convenience pointer to this worker's vlib_main */
   vlib_main_t *vm;
 
-  /** Per-proto vector of sessions to enqueue */
-  u32 **session_to_enqueue;
+  /** Per-proto vector of session handles to enqueue */
+  session_handle_t **session_to_enqueue;
 
   /** Timerfd used to periodically signal wrk session queue node */
   int timerfd;
@@ -164,6 +147,9 @@ typedef struct session_worker_
 
   /** List head for first worker evts pending handling on main */
   clib_llist_index_t evts_pending_main;
+
+  /** Per-app-worker bitmap of pending notifications */
+  uword *app_wrks_pending_ntf;
 
   int config_index;
   u8 dma_enabled;
@@ -281,6 +267,10 @@ typedef struct session_main_
   u32 local_endpoints_table_memory;
   u32 local_endpoints_table_buckets;
 
+  /** Transport source port allocation range */
+  u16 port_allocator_min_src_port;
+  u16 port_allocator_max_src_port;
+
   /** Preallocate session config parameter */
   u32 preallocated_sessions;
 
@@ -292,6 +282,7 @@ typedef struct session_main_
 
 extern session_main_t session_main;
 extern vlib_node_registration_t session_queue_node;
+extern vlib_node_registration_t session_input_node;
 extern vlib_node_registration_t session_queue_process_node;
 extern vlib_node_registration_t session_queue_pre_input_node;
 
@@ -375,7 +366,8 @@ int session_wrk_handle_mq (session_worker_t *wrk, svm_msg_q_t *mq);
 
 session_t *session_alloc (u32 thread_index);
 void session_free (session_t * s);
-void session_free_w_fifos (session_t * s);
+void session_cleanup (session_t *s);
+void session_program_cleanup (session_t *s);
 void session_cleanup_half_open (session_handle_t ho_handle);
 u8 session_is_valid (u32 si, u8 thread_index);
 
@@ -469,8 +461,9 @@ void session_transport_reset (session_t * s);
 void session_transport_cleanup (session_t * s);
 int session_send_io_evt_to_thread (svm_fifo_t * f,
 				   session_evt_type_t evt_type);
-int session_enqueue_notify (session_t * s);
+int session_enqueue_notify (session_t *s);
 int session_dequeue_notify (session_t * s);
+int session_enqueue_notify_cl (session_t *s);
 int session_send_io_evt_to_thread_custom (void *data, u32 thread_index,
 					  session_evt_type_t evt_type);
 void session_send_rpc_evt_to_thread (u32 thread_index, void *fp,
@@ -502,6 +495,10 @@ int session_enqueue_dgram_connection (session_t * s,
 				      session_dgram_hdr_t * hdr,
 				      vlib_buffer_t * b, u8 proto,
 				      u8 queue_event);
+int session_enqueue_dgram_connection_cl (session_t *s,
+					 session_dgram_hdr_t *hdr,
+					 vlib_buffer_t *b, u8 proto,
+					 u8 queue_event);
 int session_stream_connect_notify (transport_connection_t * tc,
 				   session_error_t err);
 int session_dgram_connect_notify (transport_connection_t * tc,
@@ -519,6 +516,7 @@ int session_stream_accept (transport_connection_t * tc, u32 listener_index,
 			   u32 thread_index, u8 notify);
 int session_dgram_accept (transport_connection_t * tc, u32 listener_index,
 			  u32 thread_index);
+
 /**
  * Initialize session layer for given transport proto and ip version
  *
@@ -782,8 +780,8 @@ do {									\
       return clib_error_return (0, "session layer is not enabled");	\
 } while (0)
 
-int session_main_flush_enqueue_events (u8 proto, u32 thread_index);
-int session_main_flush_all_enqueue_events (u8 transport_proto);
+void session_main_flush_enqueue_events (transport_proto_t transport_proto,
+					u32 thread_index);
 void session_queue_run_on_main_thread (vlib_main_t * vm);
 
 /**
@@ -816,6 +814,8 @@ fifo_segment_t *session_main_get_wrk_mqs_segment (void);
 void session_node_enable_disable (u8 is_en);
 clib_error_t *vnet_session_enable_disable (vlib_main_t * vm, u8 is_en);
 void session_wrk_handle_evts_main_rpc (void *);
+void session_wrk_program_app_wrk_evts (session_worker_t *wrk,
+				       u32 app_wrk_index);
 
 session_t *session_alloc_for_connection (transport_connection_t * tc);
 session_t *session_alloc_for_half_open (transport_connection_t *tc);

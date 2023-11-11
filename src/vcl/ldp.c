@@ -288,7 +288,11 @@ ldp_init (void)
   ldp_worker_ctx_t *ldpw;
   int rv;
 
-  ASSERT (!ldp->init);
+  if (ldp->init)
+    {
+      LDBG (0, "LDP is initialized already");
+      return 0;
+    }
 
   ldp_init_cfg ();
   ldp->init = 1;
@@ -1890,7 +1894,7 @@ recvmsg (int fd, struct msghdr * msg, int flags)
     {
       struct iovec *iov = msg->msg_iov;
       ssize_t max_deq, total = 0;
-      int i, rv;
+      int i, rv = 0;
 
       max_deq = vls_attr (vlsh, VPPCOM_ATTR_GET_NREAD, 0, 0);
       if (!max_deq)
@@ -2677,6 +2681,7 @@ ldp_epoll_pwait_eventfd (int epfd, struct epoll_event *events,
       timeout = 0;
       if (rv >= maxevents)
 	goto done;
+      maxevents -= rv;
     }
   else if (PREDICT_FALSE (rv < 0))
     {
@@ -2689,7 +2694,7 @@ epoll_again:
 
   libc_evts = &events[rv];
   libc_num_ev =
-    libc_epoll_pwait (libc_epfd, libc_evts, maxevents - rv, timeout, sigmask);
+    libc_epoll_pwait (libc_epfd, libc_evts, maxevents, timeout, sigmask);
   if (libc_num_ev <= 0)
     {
       rv = rv >= 0 ? rv : -1;

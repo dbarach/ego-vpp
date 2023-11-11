@@ -74,10 +74,10 @@ V=0
 endif
 
 PYTHON_VERSION=$(shell $(PYTHON_INTERP) -c 'import sys; print(sys.version_info.major)')
-PIP_VERSION=22.0.4
+PIP_VERSION=23.3.1
 # Keep in sync with requirements.txt
-PIP_TOOLS_VERSION=6.6.0
-PIP_SETUPTOOLS_VERSION=62.1.0
+PIP_TOOLS_VERSION=7.3.0
+PIP_SETUPTOOLS_VERSION=68.1.0
 PYTHON_DEPENDS=requirements-$(PYTHON_VERSION).txt
 SCAPY_SOURCE=$(shell find $(VENV_PATH)/lib/python* -name site-packages)
 BUILD_COV_DIR=$(BR)/test-coverage
@@ -131,7 +131,7 @@ $(PAPI_INSTALL_DONE): $(PIP_PATCH_DONE)
 	@touch $@
 
 .PHONY: refresh-deps
-refresh-deps: clean-deps $(PYTHON_DEPENDS)
+refresh-deps: clean-deps $(PIP_INSTALL_DONE) $(PYTHON_DEPENDS)
 
 .PHONY: clean-deps
 clean-deps:
@@ -200,7 +200,7 @@ ARG6=--step
 endif
 
 ARG7=
-ifneq ($(findstring $(TESTS_GCOV),1 y yes),)
+ifneq ($(findstring $(TEST_GCOV),1 y yes),)
 ARG7=--gcov
 endif
 
@@ -254,9 +254,22 @@ ifneq ($(EXTERN_APIDIR),)
 ARG17=--extern-apidir=$(EXTERN_APIDIR)
 endif
 
-EXTRA_ARGS=$(ARG0) $(ARG1) $(ARG2) $(ARG3) $(ARG4) $(ARG5) $(ARG6) $(ARG7) $(ARG8) $(ARG9) $(ARG10) $(ARG11) $(ARG12) $(ARG13) $(ARG14) $(ARG15) $(ARG16) $(ARG17)
+ARG18=
+ifneq ($(findstring $(DECODE_PCAPS),1 y yes),)
+ARG18=--decode-pcaps
+endif
 
-RUN_TESTS_ARGS=--failed-dir=$(FAILED_DIR) --verbose=$(V) --jobs=$(TEST_JOBS) --filter=$(TEST) --retries=$(RETRIES) --venv-dir=$(VENV_PATH) --vpp-ws-dir=$(WS_ROOT) --vpp-tag=$(TAG) --rnd-seed=$(RND_SEED) --vpp-worker-count="$(VPP_WORKER_COUNT)" --keep-pcaps $(PLUGIN_PATH_ARGS) $(TEST_PLUGIN_PATH_ARGS) $(EXTRA_ARGS)
+EXC_PLUGINS_ARG=
+ifneq ($(VPP_EXCLUDED_PLUGINS),)
+# convert the comma-separated list into N invocations of the argument to exclude a plugin
+EXC_PLUGINS_ARG=$(shell echo "${VPP_EXCLUDED_PLUGINS}" | sed 's/\([^,]*\)/--excluded-plugin=\1/g; s/,/ /g')
+endif
+
+
+
+EXTRA_ARGS=$(ARG0) $(ARG1) $(ARG2) $(ARG3) $(ARG4) $(ARG5) $(ARG6) $(ARG7) $(ARG8) $(ARG9) $(ARG10) $(ARG11) $(ARG12) $(ARG13) $(ARG14) $(ARG15) $(ARG16) $(ARG17) $(ARG18)
+
+RUN_TESTS_ARGS=--failed-dir=$(FAILED_DIR) --verbose=$(V) --jobs=$(TEST_JOBS) --filter=$(TEST) --retries=$(RETRIES) --venv-dir=$(VENV_PATH) --vpp-ws-dir=$(WS_ROOT) --vpp-tag=$(TAG) --rnd-seed=$(RND_SEED) --vpp-worker-count="$(VPP_WORKER_COUNT)" --keep-pcaps $(PLUGIN_PATH_ARGS) $(EXC_PLUGINS_ARG) $(TEST_PLUGIN_PATH_ARGS) $(EXTRA_ARGS)
 RUN_SCRIPT_ARGS=--python-opts=$(PYTHON_OPTS)
 
 define retest-func
@@ -342,6 +355,9 @@ cov-post: wipe-cov $(BUILD_COV_DIR)
 		--output-file $(BUILD_COV_DIR)/extern-coverage.info
 	@lcov --remove $(BUILD_COV_DIR)/coverage.info \
 		"/usr/include/*" "*/build-root/*" "/opt/*" "/usr/lib/*" \
+		"*_test.*" "*vat*" "*rdma*" "*/vpp-api/client/*" "*/plugins/af_packet/*" \
+		"*/plugins/af_xdp/*" "*/plugins/avf/*" "*/plugins/dma_intel/*" \
+		"*/plugins/hs_apps/*" "*/plugins/vmxnet3/*" "*/vnet/devices/virtio/*" \
 		-o $(BUILD_COV_DIR)/coverage-filtered.info
 	@genhtml $(BUILD_COV_DIR)/coverage-filtered.info \
 		--output-directory $(BUILD_COV_DIR)/html

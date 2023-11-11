@@ -40,6 +40,7 @@ unix { 									\
 	$(if $(wildcard startup.vpp),"exec startup.vpp",)		\
 }									\
 $(if $(DPDK_CONFIG), "dpdk { $(DPDK_CONFIG) }",)			\
+$(if $(EXTRA_VPP_CONFIG), "$(EXTRA_VPP_CONFIG)",)			\
 $(call disable_plugins,$(DISABLED_PLUGINS))				\
 "
 
@@ -54,7 +55,7 @@ OS_ID        = $(shell grep '^ID=' /etc/os-release | cut -f2- -d= | sed -e 's/\"
 OS_VERSION_ID= $(shell grep '^VERSION_ID=' /etc/os-release | cut -f2- -d= | sed -e 's/\"//g')
 endif
 
-ifeq ($(filter ubuntu debian,$(OS_ID)),$(OS_ID))
+ifeq ($(filter ubuntu debian linuxmint,$(OS_ID)),$(OS_ID))
 PKG=deb
 else ifeq ($(filter rhel centos fedora opensuse-leap rocky,$(OS_ID)),$(OS_ID))
 PKG=rpm
@@ -68,7 +69,7 @@ DEB_DEPENDS += libconfuse-dev git-review exuberant-ctags cscope pkg-config
 DEB_DEPENDS += gcovr lcov chrpath autoconf libnuma-dev
 DEB_DEPENDS += python3-all python3-setuptools check
 DEB_DEPENDS += libffi-dev python3-ply
-DEB_DEPENDS += cmake ninja-build uuid-dev python3-jsonschema python3-yaml
+DEB_DEPENDS += cmake ninja-build python3-jsonschema python3-yaml
 DEB_DEPENDS += python3-venv  # ensurepip
 DEB_DEPENDS += python3-dev python3-pip
 DEB_DEPENDS += libnl-3-dev libnl-route-3-dev libmnl-dev
@@ -80,6 +81,7 @@ DEB_DEPENDS += iperf3 # for 'make test TEST=vcl'
 DEB_DEPENDS += nasm
 DEB_DEPENDS += iperf ethtool  # for 'make test TEST=vm_vpp_interfaces'
 DEB_DEPENDS += libpcap-dev
+DEB_DEPENDS += tshark
 
 LIBFFI=libffi6 # works on all but 20.04 and debian-testing
 
@@ -118,7 +120,6 @@ RPM_DEPENDS += numactl-devel
 RPM_DEPENDS += check check-devel
 RPM_DEPENDS += selinux-policy selinux-policy-devel
 RPM_DEPENDS += ninja-build
-RPM_DEPENDS += libuuid-devel
 RPM_DEPENDS += ccache
 RPM_DEPENDS += xmlto
 RPM_DEPENDS += elfutils-libelf-devel libpcap-devel
@@ -176,7 +177,7 @@ RPM_SUSE_BUILDTOOLS_DEPS = autoconf automake ccache check-devel chrpath
 RPM_SUSE_BUILDTOOLS_DEPS += clang cmake indent libtool make ninja python3-ply
 
 RPM_SUSE_DEVEL_DEPS = glibc-devel-static libnuma-devel libelf-devel
-RPM_SUSE_DEVEL_DEPS += libopenssl-devel libuuid-devel lsb-release
+RPM_SUSE_DEVEL_DEPS += libopenssl-devel lsb-release
 RPM_SUSE_DEVEL_DEPS += libpcap-devel llvm-devel
 RPM_SUSE_DEVEL_DEPS += curl libstdc++-devel bison gcc-c++ zlib-devel
 
@@ -197,6 +198,7 @@ ifneq ($(wildcard $(STARTUP_DIR)/startup.conf),)
 endif
 
 ifeq ($(findstring y,$(UNATTENDED)),y)
+DEBIAN_FRONTEND=noninteractive
 CONFIRM=-y
 FORCE=--allow-downgrades --allow-remove-essential --allow-change-held-packages
 endif
@@ -292,7 +294,7 @@ $(BR)/.deps.ok:
 ifeq ($(findstring y,$(UNATTENDED)),y)
 	make install-dep
 endif
-ifeq ($(filter ubuntu debian,$(OS_ID)),$(OS_ID))
+ifeq ($(filter ubuntu debian linuxmint,$(OS_ID)),$(OS_ID))
 	@MISSING=$$(apt-get install -y -qq -s $(DEB_DEPENDS) | grep "^Inst ") ; \
 	if [ -n "$$MISSING" ] ; then \
 	  echo "\nPlease install missing packages: \n$$MISSING\n" ; \
@@ -320,7 +322,7 @@ bootstrap:
 
 .PHONY: install-dep
 install-dep:
-ifeq ($(filter ubuntu debian,$(OS_ID)),$(OS_ID))
+ifeq ($(filter ubuntu debian linuxmint,$(OS_ID)),$(OS_ID))
 	@sudo -E apt-get update
 	@sudo -E apt-get $(APT_ARGS) $(CONFIRM) $(FORCE) install $(DEB_DEPENDS)
 else ifneq ("$(wildcard /etc/redhat-release)","")
@@ -435,6 +437,7 @@ define test
 	  VPP_BIN=$(BR)/install-$(1)-native/vpp/bin/vpp \
 	  VPP_INSTALL_PATH=$(BR)/install-$(1)-native/ \
 	  EXTENDED_TESTS=$(EXTENDED_TESTS) \
+	  TEST_GCOV=$(TEST_GCOV) \
 	  PYTHON=$(PYTHON) \
 	  OS_ID=$(OS_ID) \
 	  RND_SEED=$(RND_SEED) \
