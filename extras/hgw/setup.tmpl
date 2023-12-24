@@ -68,7 +68,7 @@ $(FEATURE_IP6) { dhcp6 pd client $(TRUNK) prefix group hgw }
 $(FEATURE_IP6) { set ip6 address bvi0 prefix group hgw ::1/64 }
 $(FEATURE_IP6) { ip6 nd address autoconfig bvi0 default-route }
 comment { iPhones seem to need lots of RA messages... }
-$(FEATURE_IP6) { ip6 nd bvi0 ra-managed-config-flag ra-other-config-flag ra-interval 5 3 ra-lifetime 180 }
+$(FEATURE_IP6) { ip6 nd bvi0 ra-managed-config-flag ra-other-config-flag ra-interval 30 20 ra-lifetime 180 }
 comment { ip6 nd bvi0 prefix 0::0/0  ra-lifetime 100000 }
 
 comment { responder profile }
@@ -101,5 +101,11 @@ $(FEATURE_MACTIME) { bin mactime_enable_disable $(INSIDE_PORT1) }
 $(FEATURE_MACTIME) { bin mactime_enable_disable $(INSIDE_PORT2) }
 $(FEATURE_MACTIME) { bin mactime_enable_disable $(INSIDE_PORT3) }
 $(FEATURE_MACTIME) { bin mactime_enable_disable $(INSIDE_PORT4) }
+comment { no more late night with David Shitterman }
+comment { $(FEATURE_MACTIME) { bin mactime_add_del_range name swan-chromecast mac 20:1f:3b:05:38:4f drop-range Sun - Sat  00:30 - 6:30 } }
 
 $(FEATURE_MODEM_ROUTE) { ip route add 192.168.100.1/32 via $(TRUNK) }
+
+$(FEATURE_HGNAT) { set interface hgnat in bvi0 out $(TRUNK) }
+$(FEATURE_HGNAT) { set hgnat static port 22342 dst 192.168.$(INSIDE_SUBNET).2 p\
+roto tcp }
