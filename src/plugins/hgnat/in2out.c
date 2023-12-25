@@ -47,13 +47,13 @@ static u8 * format_hgnat_in2out_trace (u8 * s, va_list * args)
   return s;
 }
 
-#define foreach_hgnat_error \
-  _(HGNAT_IN2OUT_TRANSLATED, "Translated Packets") \
-  _(HGNAT_IN2OUT_DROP, "Dropped Packets") \
-  _(HGNAT_IN2OUT_NO_OUTSIDE_ADDR, "Trunk port address unresolved") \
-  _(HGNAT_IN2OUT_UNKNOWN_PROTOCOL, "Unknown protocol not translated") \
-  _(HGNAT_IN2OUT_SESSIONS_ADDED, "Sessions added") \
-  _(HGNAT_IN2OUT_TTL_DROP, "Traceroute first-hop pkts (ttl drop)")
+#define foreach_hgnat_error                                                   \
+  _ (HGNAT_IN2OUT_TRANSLATED, "Translated Packets")                           \
+  _ (HGNAT_IN2OUT_DROP, "Dropped Packets")                                    \
+  _ (HGNAT_IN2OUT_NO_OUTSIDE_ADDR, "Trunk port address unresolved")           \
+  _ (HGNAT_IN2OUT_UNKNOWN_PROTOCOL, "Unknown protocol not translated")        \
+  _ (HGNAT_IN2OUT_SESSIONS_ADDED, "Sessions added")                           \
+  _ (HGNAT_IN2OUT_TTL_DROP, "Traceroute first-hop pkts (ttl drop)")
 
 typedef enum
 {
@@ -199,14 +199,15 @@ in2out_inline (vlib_main_t * vm,
         }
 
       /* TTL drop (traceroute)? */
-      if (PREDICT_FALSE(ip->ttl == 1))
-        {
-          ttl_drops ++;
-          icmp4_error_set_vnet_buffer (b[0], 11 /* TTL exceeded */,
-          0 /* code 0 = "in transit" */, 0 /* data unused */);
-          next[0] = HGNAT_NEXT_ICMP_ERROR;
-          goto trace;
-        }
+      if (PREDICT_FALSE (ip->ttl == 1))
+	{
+	  ttl_drops++;
+	  icmp4_error_set_vnet_buffer (b[0], 11 /* TTL exceeded */,
+				       0 /* code 0 = "in transit" */,
+				       0 /* data unused */);
+	  next[0] = HGNAT_NEXT_ICMP_ERROR;
+	  goto trace;
+	}
 
       /*
        * Untranslated cases: unknown protocols, don't nat inside network
@@ -353,8 +354,7 @@ in2out_inline (vlib_main_t * vm,
 			       HGNAT_ERROR_HGNAT_IN2OUT_UNKNOWN_PROTOCOL,
 			       unknown_protocol);
   vlib_node_increment_counter (vm, node->node_index,
-			       HGNAT_ERROR_HGNAT_IN2OUT_TTL_DROP,
-			       ttl_drops);
+			       HGNAT_ERROR_HGNAT_IN2OUT_TTL_DROP, ttl_drops);
   vlib_node_increment_counter (vm, node->node_index,
 			       HGNAT_ERROR_HGNAT_IN2OUT_SESSIONS_ADDED,
 			       sessions_added);

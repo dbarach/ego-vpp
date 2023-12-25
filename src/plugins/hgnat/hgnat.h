@@ -118,13 +118,13 @@ typedef struct
 
 #define HGNAT_HASH_BUCKET_DEFAULT 8192
 #define HGNAT_HASH_MEMORY_DEFAULT (128<<20)
-#define HGNAT_TRANSLATION_TIMEOUT_DEFAULT 600.0 /* ten mins */
-#define HGNAT_TRANSLATION_RECLAIM_IF_EXPIRED_DEFAULT (2<<10) /* 2K active */
+#define HGNAT_TRANSLATION_TIMEOUT_DEFAULT	     600.0     /* ten mins */
+#define HGNAT_TRANSLATION_RECLAIM_IF_EXPIRED_DEFAULT (2 << 10) /* 2K active   \
+								*/
 #define HGNAT_TRANSLATION_LIMIT_DEFAULT (128<<10)
 void hgnat_maybe_reclaim_translations (hgnat_main_t *hgm, int all);
-u16
-hgnat_icmp_compute_checksum (vlib_main_t * vm, vlib_buffer_t * p0,
-                             ip4_header_t * ip0);
+u16 hgnat_icmp_compute_checksum (vlib_main_t *vm, vlib_buffer_t *p0,
+				 ip4_header_t *ip0);
 
 extern hgnat_main_t hgnat_main;
 extern char *hgnat_protocol_strings[];
