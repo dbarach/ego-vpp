@@ -47,15 +47,13 @@ static u8 * format_hgnat_in2out_trace (u8 * s, va_list * args)
   return s;
 }
 
-vlib_node_registration_t hgnat_in2out_node;
-
-
 #define foreach_hgnat_error \
   _(HGNAT_IN2OUT_TRANSLATED, "Translated Packets") \
   _(HGNAT_IN2OUT_DROP, "Dropped Packets") \
   _(HGNAT_IN2OUT_NO_OUTSIDE_ADDR, "Trunk port address unresolved") \
   _(HGNAT_IN2OUT_UNKNOWN_PROTOCOL, "Unknown protocol not translated") \
-  _(HGNAT_IN2OUT_SESSIONS_ADDED, "Sessions added")
+  _(HGNAT_IN2OUT_SESSIONS_ADDED, "Sessions added") \
+  _(HGNAT_IN2OUT_TTL_DROP, "Traceroute first-hop pkts (ttl drop)")
 
 typedef enum
 {
@@ -76,6 +74,7 @@ typedef enum
 {
   HGNAT_NEXT_DROP,
   HGNAT_NEXT_LOOKUP,
+  HGNAT_NEXT_ICMP_ERROR,
   HGNAT_N_NEXT,
 } hgnat_next_t;
 
@@ -116,65 +115,6 @@ static u16 hgm_alloc_port (ip4_address_t addr, u8 proto)
   return (0xffff);
 }
 
-void hgnat_maybe_reclaim_translations (hgnat_main_t *hgm, int all)
-{
-  dlist_elt_t *lru, *head;
-  hgnat_session_t *s;
-  u32 removed_session_list_index;
-  clib_bihash_kv_8_8_t kv;
-  f64 now = vlib_time_now (hgm->vlib_main);
-  f64 delta;
-
-  if (all == 0 &&
-      hgm->active_translations < hgm->translation_reclaim_if_expired)
-    return;
-
-  head = pool_elt_at_index(hgm->list_pool,
-                           hgm->global_lru_list_head_index);
-  while (1)
-    {
-      lru = pool_elt_at_index(hgm->list_pool, head->next);
-
-      /*
-       * Note: static translations are counted in hgm->active_translations,
-       * but are not on the LRU list. This check is necessary
-       * when clearing all [dynamic] translations.
-       */
-      if (lru == head)
-	break;
-
-      /* Least-recently used session */
-      s = pool_elt_at_index (hgm->session_pool, lru->value);
-
-      delta = now - s->last_heard;
-
-      if ((all == 0) && (delta < hgm->translation_timeout &&
-                         hgm->active_translations <= hgm->translation_limit))
-        break;
-
-      removed_session_list_index =
-	clib_dlist_remove_head (hgm->list_pool,
-				hgm->global_lru_list_head_index);
-
-      ASSERT(s->global_lru_list_index == removed_session_list_index);
-      pool_put_index (hgm->list_pool, removed_session_list_index);
-
-      hgm->active_translations --;
-      hgm->reclaims ++;
-      kv.key = s->in2out.as_u64;
-      clib_bihash_add_del_8_8 (&hgm->in2out, &kv, 0 /* is_add */);
-
-      kv.key = s->out2in.as_u64;
-      if (0)
-	  clib_warning ("del out2in map for %U, port %d",
-			format_ip4_address, &hgm->outside_addr,
-			clib_net_to_host_u16(s->out2in.port));
-
-      clib_bihash_add_del_8_8 (&hgm->out2in, &kv, 0 /* is_add */);
-      pool_put (hgm->session_pool, s);
-    }
-}
-
 always_inline uword
 in2out_inline (vlib_main_t * vm,
      		 vlib_node_runtime_t * node, vlib_frame_t * frame,
@@ -190,6 +130,7 @@ in2out_inline (vlib_main_t * vm,
   u32 no_outside_address = 0;
   u32 unknown_protocol = 0;
   u32 sessions_added = 0;
+  u32 ttl_drops = 0;
 
   /* Go lookup the outside interface address */
   addr = ip4_interface_first_address (hgm->ip4_main,
@@ -254,6 +195,16 @@ in2out_inline (vlib_main_t * vm,
         {
 	  unknown_protocol++;
           next[0] = HGNAT_NEXT_LOOKUP;
+          goto trace;
+        }
+
+      /* TTL drop (traceroute)? */
+      if (PREDICT_FALSE(ip->ttl == 1))
+        {
+          ttl_drops ++;
+          icmp4_error_set_vnet_buffer (b[0], 11 /* TTL exceeded */,
+          0 /* code 0 = "in transit" */, 0 /* data unused */);
+          next[0] = HGNAT_NEXT_ICMP_ERROR;
           goto trace;
         }
 
@@ -402,6 +353,9 @@ in2out_inline (vlib_main_t * vm,
 			       HGNAT_ERROR_HGNAT_IN2OUT_UNKNOWN_PROTOCOL,
 			       unknown_protocol);
   vlib_node_increment_counter (vm, node->node_index,
+			       HGNAT_ERROR_HGNAT_IN2OUT_TTL_DROP,
+			       ttl_drops);
+  vlib_node_increment_counter (vm, node->node_index,
 			       HGNAT_ERROR_HGNAT_IN2OUT_SESSIONS_ADDED,
 			       sessions_added);
   return frame->n_vectors;
@@ -435,9 +389,11 @@ VLIB_REGISTER_NODE (in2out_node) =
   .next_nodes = {
     [HGNAT_NEXT_LOOKUP] = "ip4-lookup",
     [HGNAT_NEXT_DROP] = "error-drop",
+    [HGNAT_NEXT_ICMP_ERROR] = "ip4-icmp-error",
   },
 };
 /* *INDENT-ON* */
+
 /*
  * fd.io coding-style-patch-verification: ON
  *

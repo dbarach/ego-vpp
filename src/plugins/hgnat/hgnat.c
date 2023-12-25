@@ -32,6 +32,132 @@
 
 hgnat_main_t hgnat_main;
 
+/* Compute ICMP4 checksum with multibuffer support. */
+u16
+hgnat_icmp_compute_checksum (vlib_main_t * vm, vlib_buffer_t * p0,
+			   ip4_header_t * ip0)
+{
+  ip_csum_t sum0;
+  u32 ip_header_length, payload_length_host_byte_order;
+  u32 n_this_buffer, n_bytes_left, n_ip_bytes_this_buffer;
+  u16 sum16;
+  void *data_this_buffer;
+
+  ip_header_length = ip4_header_bytes (ip0);
+  payload_length_host_byte_order =
+    clib_net_to_host_u16 (ip0->length) - ip_header_length;
+
+  /* ICMP4 checksum does not include the IP header */
+  sum0 = 0;
+
+  n_bytes_left = n_this_buffer = payload_length_host_byte_order;
+  data_this_buffer = (void *) ip0 + ip_header_length;
+  n_ip_bytes_this_buffer =
+    p0->current_length - (((u8 *) ip0 - p0->data) - p0->current_data);
+  if (n_this_buffer + ip_header_length > n_ip_bytes_this_buffer)
+    {
+      n_this_buffer = n_ip_bytes_this_buffer > ip_header_length ?
+	n_ip_bytes_this_buffer - ip_header_length : 0;
+    }
+  while (1)
+    {
+      sum0 = ip_incremental_checksum (sum0, data_this_buffer, n_this_buffer);
+      n_bytes_left -= n_this_buffer;
+      if (n_bytes_left == 0)
+	break;
+
+      ASSERT (p0->flags & VLIB_BUFFER_NEXT_PRESENT);
+      p0 = vlib_get_buffer (vm, p0->next_buffer);
+      data_this_buffer = vlib_buffer_get_current (p0);
+      n_this_buffer = p0->current_length;
+    }
+
+  sum16 = ~ip_csum_fold (sum0);
+
+  return sum16;
+}
+
+void hgnat_maybe_reclaim_translations (hgnat_main_t *hgm, int all)
+{
+  dlist_elt_t *lru, *head;
+  hgnat_session_t *s;
+  u32 removed_session_list_index;
+  clib_bihash_kv_8_8_t kv;
+  f64 now = vlib_time_now (hgm->vlib_main);
+  f64 delta;
+
+  if (all == 0 &&
+      hgm->active_translations < hgm->translation_reclaim_if_expired)
+    return;
+
+  head = pool_elt_at_index(hgm->list_pool,
+                           hgm->global_lru_list_head_index);
+  while (1)
+    {
+      lru = pool_elt_at_index(hgm->list_pool, head->next);
+
+      /*
+       * Note: static translations are counted in hgm->active_translations,
+       * but are not on the LRU list. This check is necessary
+       * when clearing all [dynamic] translations.
+       */
+      if (lru == head)
+	break;
+
+      /* Least-recently used session */
+      s = pool_elt_at_index (hgm->session_pool, lru->value);
+
+      delta = now - s->last_heard;
+
+      if ((all == 0) && (delta < hgm->translation_timeout &&
+                         hgm->active_translations <= hgm->translation_limit))
+        break;
+
+      removed_session_list_index =
+	clib_dlist_remove_head (hgm->list_pool,
+				hgm->global_lru_list_head_index);
+
+      ASSERT(s->global_lru_list_index == removed_session_list_index);
+      pool_put_index (hgm->list_pool, removed_session_list_index);
+
+      hgm->active_translations --;
+      hgm->reclaims ++;
+      kv.key = s->in2out.as_u64;
+      clib_bihash_add_del_8_8 (&hgm->in2out, &kv, 0 /* is_add */);
+
+      kv.key = s->out2in.as_u64;
+      if (0)
+	  clib_warning ("del out2in map for %U, port %d",
+			format_ip4_address, &hgm->outside_addr,
+			clib_net_to_host_u16(s->out2in.port));
+
+      clib_bihash_add_del_8_8 (&hgm->out2in, &kv, 0 /* is_add */);
+      pool_put (hgm->session_pool, s);
+    }
+}
+
+static uword
+hgnat_ager_process (vlib_main_t * vm,
+                    vlib_node_runtime_t * node, vlib_frame_t * f)
+{
+  hgnat_main_t *hgm = &hgnat_main;
+  uword event_type, *event_data = 0;
+
+  while (1)
+    {
+      vlib_process_wait_for_event_or_clock (vm, hgm->translation_timeout);
+      event_type = vlib_process_get_events (vm, &event_data);
+      switch (event_type)
+        {
+        case ~0:
+          hgnat_maybe_reclaim_translations (hgm, 0 /* remove all xlations */);
+          break;
+        }
+      vec_reset_length (event_data);
+    }
+  return 0; /* or not */
+}
+
 char *hgnat_protocol_strings[] =
   {
     "udp",
@@ -216,6 +342,11 @@ hgnat_feature_command_fn (vlib_main_t * vm,
           pool_get (hgm->list_pool, lru_listhead);
           clib_dlist_init (hgm->list_pool, lru_listhead - hgm->list_pool);
           hgm->global_lru_list_head_index = lru_listhead - hgm->list_pool;
+
+          hgm->ager_process_node_index =
+            vlib_process_create (hgm->vlib_main, "hgnat-ager-process",
+                                 hgnat_ager_process,
+                                 16 /* log2_n_stack_bytes */ );
           hgm->table_init_done = 1;
         }
     }

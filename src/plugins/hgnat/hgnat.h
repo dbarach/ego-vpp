@@ -73,10 +73,8 @@ typedef struct {
   /* API message ID base */
   u16 msg_id_base;
 
-  /* on/off switch for the periodic function */
-  u8 periodic_timer_enabled;
-  /* Node index, non-zero if the periodic process has been created */
-  u32 periodic_node_index;
+  /* Non-zero if the periodic process has been created */
+  u32 ager_process_node_index;
 
   /* convenience */
   vlib_main_t * vlib_main;
@@ -99,7 +97,6 @@ typedef struct {
   /* config params */
   u32 hash_buckets;
   u32 hash_memory_size;
-  u8 table_init_done;
   u32 translation_reclaim_if_expired;
   u32 translation_limit;
   f64 translation_timeout;
@@ -108,6 +105,8 @@ typedef struct {
   u64 active_translations;
   u64 reclaims;
 
+  /* Table / ager process init complete */
+  u8 table_init_done;
 } hgnat_main_t;
 
 typedef struct
@@ -119,13 +118,18 @@ typedef struct
 
 #define HGNAT_HASH_BUCKET_DEFAULT 8192
 #define HGNAT_HASH_MEMORY_DEFAULT (128<<20)
-#define HGNAT_TRANSLATION_TIMEOUT_DEFAULT 600.0
-#define HGNAT_TRANSLATION_RECLAIM_IF_EXPIRED_DEFAULT (32<<10)
+#define HGNAT_TRANSLATION_TIMEOUT_DEFAULT 600.0 /* ten mins */
+#define HGNAT_TRANSLATION_RECLAIM_IF_EXPIRED_DEFAULT (2<<10) /* 2K active */
 #define HGNAT_TRANSLATION_LIMIT_DEFAULT (128<<10)
 void hgnat_maybe_reclaim_translations (hgnat_main_t *hgm, int all);
+u16
+hgnat_icmp_compute_checksum (vlib_main_t * vm, vlib_buffer_t * p0,
+                             ip4_header_t * ip0);
 
 extern hgnat_main_t hgnat_main;
 extern char *hgnat_protocol_strings[];
+extern vlib_node_registration_t out2in_node;
+extern vlib_node_registration_t in2out_node;
 
 #endif /* __included_hgnat_h__ */
 

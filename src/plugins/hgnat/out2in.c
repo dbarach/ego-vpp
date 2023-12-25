@@ -43,8 +43,7 @@ static u8 * format_hgnat_out2in_trace (u8 * s, va_list * args)
                 t->next_index, hgnat_protocol_strings[t->protocol]);
   return s;
 }
-
-vlib_node_registration_t hgnat_out2in_node;
+vlib_node_registration_t out2in_node;
 
 #define foreach_hgnat_error \
 _(HGNAT_OUT2IN_TRANSLATED, "Translated Packets") \
@@ -71,51 +70,6 @@ typedef enum
   HGNAT_OUT2IN_NEXT_LOOKUP,
   HGNAT_OUT2IN_N_NEXT,
 } hgnat_next_t;
-
-/* Compute ICMP4 checksum with multibuffer support. */
-u16
-ip4_icmp_compute_checksum (vlib_main_t * vm, vlib_buffer_t * p0,
-			   ip4_header_t * ip0)
-{
-  ip_csum_t sum0;
-  u32 ip_header_length, payload_length_host_byte_order;
-  u32 n_this_buffer, n_bytes_left, n_ip_bytes_this_buffer;
-  u16 sum16;
-  void *data_this_buffer;
-
-  ip_header_length = ip4_header_bytes (ip0);
-  payload_length_host_byte_order =
-    clib_net_to_host_u16 (ip0->length) - ip_header_length;
-
-  /* ICMP4 checksum does not include the IP header */
-  sum0 = 0;
-
-  n_bytes_left = n_this_buffer = payload_length_host_byte_order;
-  data_this_buffer = (void *) ip0 + ip_header_length;
-  n_ip_bytes_this_buffer =
-    p0->current_length - (((u8 *) ip0 - p0->data) - p0->current_data);
-  if (n_this_buffer + ip_header_length > n_ip_bytes_this_buffer)
-    {
-      n_this_buffer = n_ip_bytes_this_buffer > ip_header_length ?
-	n_ip_bytes_this_buffer - ip_header_length : 0;
-    }
-  while (1)
-    {
-      sum0 = ip_incremental_checksum (sum0, data_this_buffer, n_this_buffer);
-      n_bytes_left -= n_this_buffer;
-      if (n_bytes_left == 0)
-	break;
-
-      ASSERT (p0->flags & VLIB_BUFFER_NEXT_PRESENT);
-      p0 = vlib_get_buffer (vm, p0->next_buffer);
-      data_this_buffer = vlib_buffer_get_current (p0);
-      n_this_buffer = p0->current_length;
-    }
-
-  sum16 = ~ip_csum_fold (sum0);
-
-  return sum16;
-}
 
 static never_inline hgnat_session_t *
 out2in_slowpath (hgnat_main_t *hgm, vlib_buffer_t *b,
@@ -206,7 +160,7 @@ out2in_slowpath (hgnat_main_t *hgm, vlib_buffer_t *b,
 
           /* Fix the icmp checksum. */
           icmp->checksum = 0;
-          sum16 = ip4_icmp_compute_checksum (hgm->vlib_main, b, ip);
+          sum16 = hgnat_icmp_compute_checksum (hgm->vlib_main, b, ip);
           icmp->checksum = sum16;
           return s;
         }
@@ -511,6 +465,7 @@ VLIB_REGISTER_NODE (out2in_node) =
     [HGNAT_OUT2IN_NEXT_DROP] = "error-drop",
   },
 };
+
 /* *INDENT-ON* */
 /*
  * fd.io coding-style-patch-verification: ON
