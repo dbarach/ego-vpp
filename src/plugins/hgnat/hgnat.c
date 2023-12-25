@@ -347,7 +347,7 @@ hgnat_feature_command_fn (vlib_main_t * vm,
 	    hgm->vlib_main, "hgnat-ager-process", hgnat_ager_process,
 	    16 /* log2_n_stack_bytes */);
 	  hgm->table_init_done = 1;
-        }
+	}
     }
 
   return error;
@@ -616,45 +616,6 @@ VLIB_CLI_COMMAND (set_hgnat_command, static) = {
   .function = set_hgnat_command_fn,
   .short_help = "set hgnat static port NN proto [tcp | udp] dst <ip4> [del]"
 };
-
-#if 0
-/* Horrifying checksum ordeal */
-static u8 csum_test[68] =
-{
-    0x03, 0x03, 0 /* 0x5b */, 0 /*0xad*/, 0x00, 0x00, 0x00, 0x00,
-    0x45, 0x00, 0x00, 0x3c, 0xd5, 0xc8, 0x00, 0x00,
-    0x02, 0x11, 0xd2, 0xf0, 0x0a, 0x1a, 0x44, 0x2c,
-    0xc0, 0xa8, 0x01, 0x0a, 0xd8, 0x37, 0x82, 0xa1,
-    0x00, 0x28, 0x00, 0x00, 0x40, 0x41, 0x42, 0x43,
-    0x44, 0x45, 0x46, 0x47, 0x48, 0x49, 0x4a, 0x4b,
-    0x4c, 0x4d, 0x4e, 0x4f, 0x50, 0x51, 0x52, 0x53,
-    0x54, 0x55, 0x56, 0x57, 0x58, 0x59, 0x5a, 0x5b,
-    0x5c, 0x5d, 0x5e, 0x5f,
-};
-
-
-static clib_error_t *test_hgnat_command_fn (vlib_main_t * vm,
-                       unformat_input_t * input,
-                       vlib_cli_command_t * cmd)
-{
-  ip_csum_t sum = 0;
-  u16 sum16;
-
-  sum = ip_incremental_checksum (sum, csum_test, 68);
-  sum16 = ~ip_csum_fold(sum);
-  vlib_cli_output (vm, "checksum %x", clib_host_to_net_u16(sum16));
-  return 0;
-}
-
-VLIB_CLI_COMMAND (test_hgnat_command, static) = {
-  .path = "test hgnat",
-  .function = test_hgnat_command_fn,
-  .short_help = "test hgnat",
-};
-#endif
-
-
-
 
 /* *INDENT-OFF* */
 VLIB_PLUGIN_REGISTER () =

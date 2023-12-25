@@ -162,8 +162,8 @@ out2in_slowpath (hgnat_main_t *hgm, vlib_buffer_t *b,
           icmp->checksum = 0;
 	  sum16 = hgnat_icmp_compute_checksum (hgm->vlib_main, b, ip);
 	  icmp->checksum = sum16;
-          return s;
-        }
+	  return s;
+	}
     }
 
   /* Look for a static mapping */
