@@ -152,6 +152,9 @@ hgnat_ager_process (vlib_main_t *vm, vlib_node_runtime_t *node,
 	case ~0:
 	  hgnat_maybe_reclaim_translations (hgm, 0 /* remove all xlations */);
 	  break;
+        case HGNAT_AGER_TRANSLATION_TIMEOUT_RESET:
+          /* sleep for a different amount of time */
+          break;
 	}
       vec_reset_length (event_data);
     }
@@ -514,9 +517,9 @@ VLIB_CLI_COMMAND (clear_hgnat_command, static) = {
 };
 
 static clib_error_t *
-set_hgnat_command_fn (vlib_main_t * vm,
-                      unformat_input_t * input,
-                      vlib_cli_command_t * cmd)
+set_hgnat_static_command_fn (vlib_main_t * vm,
+                             unformat_input_t * input,
+                             vlib_cli_command_t * cmd)
 {
   hgnat_main_t * hgm = &hgnat_main;
   unformat_input_t _line_input, *line_input = &_line_input;
@@ -611,10 +614,136 @@ set_hgnat_command_fn (vlib_main_t * vm,
   return 0;
 }
 
-VLIB_CLI_COMMAND (set_hgnat_command, static) = {
+VLIB_CLI_COMMAND (set_hgnat_static_command, static) = {
   .path = "set hgnat static",
-  .function = set_hgnat_command_fn,
+  .function = set_hgnat_static_command_fn,
   .short_help = "set hgnat static port NN proto [tcp | udp] dst <ip4> [del]"
+};
+
+static clib_error_t *
+set_hgnat_config_command_fn (vlib_main_t * vm,
+                             unformat_input_t * input,
+                             vlib_cli_command_t * cmd)
+{
+  hgnat_main_t * hgm = &hgnat_main;
+  unformat_input_t _line_input, *line_input = &_line_input;
+  f64 translation_timeout;
+  uword translation_reclaim_if_expired;
+  uword translation_limit;
+  u8 translation_limit_set = 0;
+  u8 translation_reclaim_if_expired_set = 0;
+  u8 translation_timeout_set = 0;
+  clib_error_t *error = 0;
+
+  /* Get a line of input. */
+  if (!unformat_user (input, unformat_line_input, line_input))
+    return clib_error_return (0, "no input");
+
+  while (unformat_check_input (line_input) != UNFORMAT_END_OF_INPUT)
+    {
+      if (unformat (line_input, "translation timeout %f",
+                    &translation_timeout))
+        translation_timeout_set = 1;
+      else if (unformat (line_input, "translation limit %d",
+                         &translation_limit))
+        translation_limit_set = 1;
+      else if (unformat (line_input, "translation reclaim expired %d",
+                         &translation_reclaim_if_expired))
+        translation_reclaim_if_expired_set = 1;
+      else
+	error = clib_error_return (0, "unknown input '%U'",
+                                   format_unformat_error, line_input);
+    }
+
+  unformat_free (line_input);
+
+  if (error)
+    return error;
+
+
+  if (translation_limit_set)
+    {
+      if (translation_limit > 10 && translation_limit < 1000000)
+        {
+          hgm->translation_limit = translation_limit;
+        }
+      else
+        {
+          return clib_error_return (0, "translation limit %d out of range",
+                                    translation_limit);
+        }
+    }
+
+  if (translation_reclaim_if_expired_set)
+    {
+      if (translation_reclaim_if_expired > 10 &&
+          translation_reclaim_if_expired < 1000000)
+        {
+          hgm->translation_reclaim_if_expired = translation_reclaim_if_expired;
+        }
+      else
+        {
+          return clib_error_return
+            (0, "translation reclaim expired %d out of range",
+             translation_reclaim_if_expired);
+        }
+    }
+
+
+  if (translation_timeout_set)
+    {
+      if (translation_timeout >= 5.0)
+        {
+          hgm->translation_timeout = translation_timeout;
+          if (hgm->table_init_done)
+            {
+              vlib_process_signal_event (vm, hgm->ager_process_node_index,
+                                         HGNAT_AGER_TRANSLATION_TIMEOUT_RESET,
+                                         0 /* data */);
+            }
+        }
+      else
+        {
+          return clib_error_return (0, "timeout %f too short",
+                                    translation_timeout);
+        }
+    }
+  return 0;
+}
+
+VLIB_CLI_COMMAND (set_hgnat_config, static) = {
+  .path = "set hgnat config",
+  .function = set_hgnat_config_command_fn,
+  .short_help = "set hgnat config translation [limit <nn>] \
+                                              [reclaim expired <nn>]  \
+                                              [timeout <nnn>]",
+};
+
+
+static clib_error_t *
+show_hgnat_config_command_fn (vlib_main_t * vm,
+                              unformat_input_t * input,
+                              vlib_cli_command_t * cmd)
+{
+  hgnat_main_t * hgm = &hgnat_main;
+
+  vlib_cli_output (vm, "hgnat current configuration:");
+  vlib_cli_output (vm, " boot time parameters:");
+  vlib_cli_output (vm, "  hash buckets %d hash memory size %U",
+                   hgm->hash_buckets, format_memory_size,
+                   (uword) hgm->hash_memory_size);
+  vlib_cli_output (vm, " settable parameters:");
+  vlib_cli_output (vm, "  translation limit %d translation timeout %f",
+                   hgm->translation_limit, hgm->translation_timeout);
+  vlib_cli_output (vm, "  translation reclaim if expired %d",
+                   hgm->translation_reclaim_if_expired);
+  return 0;
+}
+
+VLIB_CLI_COMMAND (show_hgnat_config, static) = {
+  .path = "show hgnat config",
+  .function = show_hgnat_config_command_fn,
+  .short_help = "show hgnat config",
 };
 
 /* *INDENT-OFF* */
@@ -624,6 +753,8 @@ VLIB_PLUGIN_REGISTER () =
   .description = "Home Gateway NAT44",
 };
 /* *INDENT-ON* */
+
+
 
 /*
  * fd.io coding-style-patch-verification: ON

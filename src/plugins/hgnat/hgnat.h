@@ -123,6 +123,10 @@ typedef struct
   (2 << 10) /* 2K active                                                      \
 	     */
 #define HGNAT_TRANSLATION_LIMIT_DEFAULT (128<<10)
+
+/* ager process event */
+#define HGNAT_AGER_TRANSLATION_TIMEOUT_RESET 1
+
 void hgnat_maybe_reclaim_translations (hgnat_main_t *hgm, int all);
 u16 hgnat_icmp_compute_checksum (vlib_main_t *vm, vlib_buffer_t *p0,
 				 ip4_header_t *ip0);
