@@ -133,8 +133,6 @@ u16 hgnat_icmp_compute_checksum (vlib_main_t *vm, vlib_buffer_t *p0,
 
 extern hgnat_main_t hgnat_main;
 extern char *hgnat_protocol_strings[];
-extern vlib_node_registration_t out2in_node;
-extern vlib_node_registration_t in2out_node;
 
 #endif /* __included_hgnat_h__ */
 

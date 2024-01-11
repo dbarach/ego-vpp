@@ -473,6 +473,18 @@ VLIB_REGISTER_NODE (out2in_node) =
 };
 #endif /*  CLIB_MARCH_VARIANT */
 
+#ifndef CLIB_MARCH_VARIANT
+/* Dummy init function to get us linked in. */
+static clib_error_t *
+hgnat_dummy_init (vlib_main_t * vm)
+{
+  return 0;
+}
+
+VLIB_INIT_FUNCTION (hgnat_dummy_init);
+#endif /* CLIB_MARCH_VARIANT */
+
+
 /* *INDENT-ON* */
 /*
  * fd.io coding-style-patch-verification: ON
