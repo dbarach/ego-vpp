@@ -16,8 +16,10 @@ add_vpp_plugin(hgnat
   SOURCES
   hgnat.c
   hgnat.h
-  in2out.c
+
+  MULTIARCH_SOURCES
   out2in.c
+  in2out.c
 
   API_FILES
   hgnat.api

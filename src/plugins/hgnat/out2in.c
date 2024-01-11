@@ -27,6 +27,8 @@ typedef struct
   u32 next_index;
 } hgnat_out2in_trace_t;
 
+#ifndef CLIB_MARCH_VARIANT
+
 /* packet trace format function */
 static u8 * format_hgnat_out2in_trace (u8 * s, va_list * args)
 {
@@ -44,6 +46,7 @@ static u8 * format_hgnat_out2in_trace (u8 * s, va_list * args)
   return s;
 }
 vlib_node_registration_t out2in_node;
+#endif /*  CLIB_MARCH_VARIANT */
 
 #define foreach_hgnat_error \
 _(HGNAT_OUT2IN_TRANSLATED, "Translated Packets") \
@@ -57,12 +60,14 @@ typedef enum
   HGNAT_N_ERROR,
 } hgnat_error_t;
 
+#ifndef CLIB_MARCH_VARIANT
 static char * hgnat_out2in_error_strings[] =
 {
 #define _(sym,string) string,
   foreach_hgnat_error
 #undef _
 };
+#endif /*  CLIB_MARCH_VARIANT */
 
 typedef enum
 {
@@ -447,6 +452,7 @@ VLIB_NODE_FN (out2in_node) (vlib_main_t * vm, vlib_node_runtime_t * node,
 }
 
 /* *INDENT-OFF* */
+#ifndef CLIB_MARCH_VARIANT
 VLIB_REGISTER_NODE (out2in_node) =
 {
   .name = "hgnat-out2in",
@@ -465,6 +471,7 @@ VLIB_REGISTER_NODE (out2in_node) =
     [HGNAT_OUT2IN_NEXT_DROP] = "error-drop",
   },
 };
+#endif /*  CLIB_MARCH_VARIANT */
 
 /* *INDENT-ON* */
 /*
