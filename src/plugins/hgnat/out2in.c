@@ -20,6 +20,8 @@
 #include <vppinfra/error.h>
 #include <hgnat/hgnat.h>
 
+static f64 hgnat_out2in_now;
+
 typedef struct
 {
   u32 protocol;
@@ -268,187 +270,180 @@ out2in_slowpath (hgnat_main_t *hgm, vlib_buffer_t *b,
 
 
 always_inline uword
-out2in_inline (vlib_main_t * vm,
-     		 vlib_node_runtime_t * node, vlib_frame_t * frame,
-		 int is_ip4, int is_trace)
+out2in_inline (vlib_main_t * vm, vlib_node_runtime_t * node,
+               vlib_buffer_t *b, int is_trace)
 {
-  u32 n_left_from, *from;
-  vlib_buffer_t *bufs[VLIB_FRAME_SIZE], **b;
-  u16 nexts[VLIB_FRAME_SIZE], *next;
   hgnat_main_t *hgm = &hgnat_main;
-  f64 now = vlib_time_now (vm);
   u32 translated = 0;
   u32 dropped = 0;
+  u32 next;
 
-  from = vlib_frame_vector_args (frame);
-  n_left_from = frame->n_vectors;
+  ip4_header_t * ip;
+  ip_csum_t sum;
+  u32 new_addr, old_addr;
+  u16 old_port, new_port;
+  udp_header_t * udp;
+  tcp_header_t * tcp;
+  icmp46_header_t * icmp;
+  icmp_echo_header_t *echo;
+  hgnat_session_key_t key;
+  u32 proto;
+  hgnat_session_t * s;
+  clib_bihash_kv_8_8_t kv, value;
+  u32 feature_next;
 
-  vlib_get_buffers (vm, from, bufs, n_left_from);
-  b = bufs;
-  next = nexts;
+  /* Initial guess: send to next on feature arc */
+  vnet_feature_next(&feature_next, b);
+  next = (u16) feature_next;
 
-  while (n_left_from > 0)
+  ip = vlib_buffer_get_current (b);
+  udp = ip4_next_header (ip);
+  tcp = (tcp_header_t *) udp;
+  icmp = (icmp46_header_t *) udp;
+  echo = (icmp_echo_header_t *)(icmp + 1);
+
+  proto = HGNAT_PROTOCOL_UNKNOWN;
+  proto = (ip->protocol == IP_PROTOCOL_UDP)
+    ? HGNAT_PROTOCOL_UDP : proto;
+  proto = (ip->protocol == IP_PROTOCOL_TCP)
+    ? HGNAT_PROTOCOL_TCP : proto;
+  proto = (ip->protocol == IP_PROTOCOL_ICMP)
+    ? HGNAT_PROTOCOL_ICMP : proto;
+
+  /* Not a protocol we deal with? Don't translate */
+  if (PREDICT_FALSE(proto == HGNAT_PROTOCOL_UNKNOWN))
     {
-      ip4_header_t * ip;
-      ip_csum_t sum;
-      u32 new_addr, old_addr;
-      u16 old_port, new_port;
-      udp_header_t * udp;
-      tcp_header_t * tcp;
-      icmp46_header_t * icmp;
-      icmp_echo_header_t *echo;
-      hgnat_session_key_t key;
-      u32 proto;
-      hgnat_session_t * s;
-      clib_bihash_kv_8_8_t kv, value;
-      u32 feature_next;
+      next = HGNAT_OUT2IN_NEXT_LOOKUP;
+      goto trace;
+    }
+  s = 0; /* for trace */
 
-      /* Initial guess: send to next on feature arc */
-      vnet_feature_next(&feature_next, b[0]);
-      next[0] = (u16) feature_next;
+  key.as_u64 = 0;
+  key.addr = ip->src_address;
+  key.port = (proto != HGNAT_PROTOCOL_ICMP) ?
+    udp->dst_port : echo->identifier;
+  key.protocol = proto;
+  kv.key = key.as_u64;
 
-      ip = vlib_buffer_get_current (b[0]);
-      udp = ip4_next_header (ip);
-      tcp = (tcp_header_t *) udp;
-      icmp = (icmp46_header_t *) udp;
-      echo = (icmp_echo_header_t *)(icmp + 1);
+  if (clib_bihash_search_8_8 (&hgm->out2in, &kv, &value))
+    {
+      s = out2in_slowpath (hgm, b, ip, udp, tcp, icmp, echo, proto);
 
-      proto = HGNAT_PROTOCOL_UNKNOWN;
-      proto = (ip->protocol == IP_PROTOCOL_UDP)
-        ? HGNAT_PROTOCOL_UDP : proto;
-      proto = (ip->protocol == IP_PROTOCOL_TCP)
-        ? HGNAT_PROTOCOL_TCP : proto;
-      proto = (ip->protocol == IP_PROTOCOL_ICMP)
-        ? HGNAT_PROTOCOL_ICMP : proto;
+      if (s)
+        goto send_packet;
 
-      /* Not a protocol we deal with? Don't translate */
-      if (PREDICT_FALSE(proto == HGNAT_PROTOCOL_UNKNOWN))
-        {
-          next[0] = HGNAT_OUT2IN_NEXT_LOOKUP;
-          goto trace;
-        }
-      s = 0; /* for trace */
+      if (0)
+        clib_warning("Couldn't find addr %U port %d",
+                     format_ip4_address, &ip->src_address,
+                     clib_net_to_host_u16(key.port));
+      /* No such translation, packet goes to the shitter */
+      next = HGNAT_OUT2IN_NEXT_DROP;
+      dropped++;
+      goto trace;
+    }
+  else
+    s = pool_elt_at_index (hgm->session_pool, value.value);
 
-      key.as_u64 = 0;
-      key.addr = ip->src_address;
-      key.port = (proto != HGNAT_PROTOCOL_ICMP) ?
-        udp->dst_port : echo->identifier;
-      key.protocol = proto;
-      kv.key = key.as_u64;
+  old_addr = ip->dst_address.as_u32;
+  ip->dst_address = s->in2out.addr;
+  new_addr = ip->dst_address.as_u32;
 
-      if (clib_bihash_search_8_8 (&hgm->out2in, &kv, &value))
-        {
-          s = out2in_slowpath (hgm, b[0], ip, udp, tcp, icmp, echo, proto);
+  sum = ip->checksum;
+  sum = ip_csum_update (sum, old_addr, new_addr,
+                        ip4_header_t,
+                        dst_address /* changed member */);
+  ip->checksum = ip_csum_fold (sum);
 
-          if (s)
-            goto send_packet;
+  if (PREDICT_TRUE(proto == HGNAT_PROTOCOL_TCP))
+    {
+      old_port = tcp->dst_port;
+      tcp->dst_port = s->in2out.port;
+      new_port = tcp->dst_port;
 
-	  if (0)
-	    clib_warning("Couldn't find addr %U port %d",
-			 format_ip4_address, &ip->src_address,
-			 clib_net_to_host_u16(key.port));
-          /* No such translation, packet goes to the shitter */
-          next[0] = HGNAT_OUT2IN_NEXT_DROP;
-	  dropped++;
-          goto trace;
-        }
-      else
-          s = pool_elt_at_index (hgm->session_pool, value.value);
-
-      old_addr = ip->dst_address.as_u32;
-      ip->dst_address = s->in2out.addr;
-      new_addr = ip->dst_address.as_u32;
-
-      sum = ip->checksum;
+      sum = tcp->checksum;
       sum = ip_csum_update (sum, old_addr, new_addr,
                             ip4_header_t,
                             dst_address /* changed member */);
-      ip->checksum = ip_csum_fold (sum);
+      sum = ip_csum_update (sum, old_port, new_port,
+                            ip4_header_t /* cheat */,
+                            length /* changed member */);
+      tcp->checksum = ip_csum_fold(sum);
+    }
+  else if (proto == HGNAT_PROTOCOL_UDP)
+    {
+      old_port = udp->dst_port;
+      udp->dst_port = s->in2out.port;
+      udp->checksum = 0;
+    }
+  else /* HGNAT_PROTO_ICMP */
+    {
+      u16 old_id, new_id;
 
-      if (PREDICT_TRUE(proto == HGNAT_PROTOCOL_TCP))
-        {
-          old_port = tcp->dst_port;
-          tcp->dst_port = s->in2out.port;
-          new_port = tcp->dst_port;
+      old_id = echo->identifier;
+      new_id = s->in2out.port;
+      echo->identifier = new_id;
 
-          sum = tcp->checksum;
-          sum = ip_csum_update (sum, old_addr, new_addr,
-                                ip4_header_t,
-                                dst_address /* changed member */);
-          sum = ip_csum_update (sum, old_port, new_port,
-                                ip4_header_t /* cheat */,
-                                length /* changed member */);
-          tcp->checksum = ip_csum_fold(sum);
-        }
-      else if (proto == HGNAT_PROTOCOL_UDP)
-        {
-          old_port = udp->dst_port;
-          udp->dst_port = s->in2out.port;
-          udp->checksum = 0;
-        }
-      else /* HGNAT_PROTO_ICMP */
-        {
-          u16 old_id, new_id;
-
-          old_id = echo->identifier;
-          new_id = s->in2out.port;
-          echo->identifier = new_id;
-
-          sum = icmp->checksum;
-          sum = ip_csum_update (sum, old_id, new_id, icmp_echo_header_t,
-                                identifier);
-          icmp->checksum = ip_csum_fold (sum);
-        }
-
-    send_packet:
-      s->last_heard = now;
-      s->total_pkts ++;
-      s->total_bytes += vlib_buffer_length_in_chain (hgm->vlib_main, b[0]);
-      /* Static sessions don't have LRU list elements */
-      ASSERT (s->global_lru_list_index != ~0);
-      clib_dlist_remove (hgm->list_pool, s->global_lru_list_index);
-      clib_dlist_addtail (hgm->list_pool, hgm->global_lru_list_head_index,
-                          s->global_lru_list_index);
-      translated++;
-
-    trace:
-
-      if (is_trace)
-	{
-	  if (b[0]->flags & VLIB_BUFFER_IS_TRACED)
-	    {
-	      hgnat_out2in_trace_t *t =
-                    vlib_add_trace (vm, node, b[0], sizeof (*t));
-              t->protocol = proto;
-              t->session_index = s ? s - hgm->session_pool : ~0;
-              t->next_index = next[0];
-	    }
-	}
-
-      b += 1;
-      next += 1;
-      n_left_from -= 1;
+      sum = icmp->checksum;
+      sum = ip_csum_update (sum, old_id, new_id, icmp_echo_header_t,
+                            identifier);
+      icmp->checksum = ip_csum_fold (sum);
     }
 
-  vlib_buffer_enqueue_to_next (vm, node, from, nexts, frame->n_vectors);
+ send_packet:
+  s->last_heard = hgnat_out2in_now;
+  s->total_pkts ++;
+  s->total_bytes += vlib_buffer_length_in_chain (hgm->vlib_main, b);
+  /* Static sessions don't have LRU list elements */
+  ASSERT (s->global_lru_list_index != ~0);
+  clib_dlist_remove (hgm->list_pool, s->global_lru_list_index);
+  clib_dlist_addtail (hgm->list_pool, hgm->global_lru_list_head_index,
+                      s->global_lru_list_index);
+  translated++;
+
+ trace:
+
+  if (is_trace)
+    {
+      if (b->flags & VLIB_BUFFER_IS_TRACED)
+        {
+          hgnat_out2in_trace_t *t =
+            vlib_add_trace (vm, node, b, sizeof (*t));
+          t->protocol = proto;
+          t->session_index = s ? s - hgm->session_pool : ~0;
+          t->next_index = next;
+        }
+    }
 
   vlib_node_increment_counter (vm, node->node_index,
 			       HGNAT_ERROR_HGNAT_OUT2IN_TRANSLATED, translated);
   vlib_node_increment_counter (vm, node->node_index,
 			       HGNAT_ERROR_HGNAT_OUT2IN_DROP, dropped);
-
-  return frame->n_vectors;
+  return next;
 }
+
+#define NSTAGES 2
+#define stage0 generic_stage0
+
+static never_inline u32
+last_stage (vlib_main_t *vm, vlib_node_runtime_t *node, vlib_buffer_t *b)
+{
+
+
+  if (PREDICT_FALSE (node->flags & VLIB_NODE_FLAG_TRACE))
+    return out2in_inline (vm, node, b, 1 /* is_trace */ );
+  else
+    return out2in_inline (vm, node, b, 0 /* is_trace */ );
+}
+
+#define NSTAGES 2
+
+#include <vnet/pipeline.h>
 
 VLIB_NODE_FN (out2in_node) (vlib_main_t * vm, vlib_node_runtime_t * node,
                             vlib_frame_t * frame)
 {
-  if (PREDICT_FALSE (node->flags & VLIB_NODE_FLAG_TRACE))
-    return out2in_inline (vm, node, frame, 1 /* is_ip4 */ ,
-                          1 /* is_trace */ );
-  else
-    return out2in_inline (vm, node, frame, 1 /* is_ip4 */ ,
-                          0 /* is_trace */ );
+  hgnat_out2in_now = vlib_time_now(vm);
+  return dispatch_pipeline(vm, node, frame);
 }
 
 /* *INDENT-OFF* */
