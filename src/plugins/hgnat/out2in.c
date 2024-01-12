@@ -294,7 +294,7 @@ out2in_inline (vlib_main_t * vm, vlib_node_runtime_t * node,
 
   /* Initial guess: send to next on feature arc */
   vnet_feature_next(&feature_next, b);
-  next = (u16) feature_next;
+  next = feature_next;
 
   ip = vlib_buffer_get_current (b);
   udp = ip4_next_header (ip);
@@ -421,14 +421,9 @@ out2in_inline (vlib_main_t * vm, vlib_node_runtime_t * node,
   return next;
 }
 
-#define NSTAGES 2
-#define stage0 generic_stage0
-
 static never_inline u32
 last_stage (vlib_main_t *vm, vlib_node_runtime_t *node, vlib_buffer_t *b)
 {
-
-
   if (PREDICT_FALSE (node->flags & VLIB_NODE_FLAG_TRACE))
     return out2in_inline (vm, node, b, 1 /* is_trace */ );
   else
@@ -436,6 +431,7 @@ last_stage (vlib_main_t *vm, vlib_node_runtime_t *node, vlib_buffer_t *b)
 }
 
 #define NSTAGES 2
+#define stage0 generic_stage0
 
 #include <vnet/pipeline.h>
 
@@ -469,7 +465,7 @@ VLIB_REGISTER_NODE (out2in_node) =
 #endif /*  CLIB_MARCH_VARIANT */
 
 #ifndef CLIB_MARCH_VARIANT
-/* Dummy init function to get us linked in. */
+/* Dummy init function to force the linker to include this file */
 static clib_error_t *
 hgnat_dummy_init (vlib_main_t * vm)
 {

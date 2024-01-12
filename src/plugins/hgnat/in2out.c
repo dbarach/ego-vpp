@@ -21,6 +21,8 @@
 #include <vppinfra/random.h>
 #include <hgnat/hgnat.h>
 
+static f64 hgnat_in2out_now;
+
 typedef struct
 {
   u32 protocol;
@@ -113,239 +115,214 @@ static u16 hgm_alloc_port (ip4_address_t addr, u8 proto)
           return clib_host_to_net_u16((u16) rn);
         }
     }
-  /* $$$ FIXME: completely out of ports on the outside address... */
-  ASSERT (0);
+  /* Completely out of ports on the outside address... */
+  abort();
   /* not so much */
   return (0xffff);
 }
 
 always_inline uword
-in2out_inline (vlib_main_t * vm,
-     		 vlib_node_runtime_t * node, vlib_frame_t * frame,
-		 int is_ip4, int is_trace)
+in2out_inline (vlib_main_t * vm, vlib_node_runtime_t * node,
+               vlib_buffer_t *b, int is_trace)
 {
-  u32 n_left_from, *from;
-  vlib_buffer_t *bufs[VLIB_FRAME_SIZE], **b;
-  u16 nexts[VLIB_FRAME_SIZE], *next;
   hgnat_main_t *hgm = &hgnat_main;
-  ip4_address_t *addr;
   u32 translated = 0;
   u32 dropped = 0;
   u32 no_outside_address = 0;
   u32 unknown_protocol = 0;
   u32 sessions_added = 0;
   u32 ttl_drops = 0;
+  ip4_header_t * ip;
+  u32 next;
+  ip_csum_t sum;
+  u32 new_addr, old_addr;
+  u16 old_port, new_port;
+  udp_header_t * udp;
+  tcp_header_t * tcp;
+  icmp46_header_t * icmp;
+  icmp_echo_header_t *echo;
+  hgnat_session_key_t key;
+  u32 proto;
+  hgnat_session_t * s;
+  clib_bihash_kv_8_8_t kv, value;
+  dlist_elt_t *lru;
+  u32 feature_next;
 
-  /* Go lookup the outside interface address */
-  addr = ip4_interface_first_address (hgm->ip4_main,
-                                      hgm->outside_sw_if_index, 0);
-  hgm->outside_addr.as_u32 = addr ? addr->as_u32 : 0;
 
-  f64 now = vlib_time_now (vm);
-  from = vlib_frame_vector_args (frame);
-  n_left_from = frame->n_vectors;
+  /* Initial guess: send to next on feature arc */
+  vnet_feature_next(&feature_next, b);
+  next = feature_next;
 
-  vlib_get_buffers (vm, from, bufs, n_left_from);
-  b = bufs;
-  next = nexts;
+  ip = vlib_buffer_get_current (b);
+  udp = ip4_next_header (ip);
+  tcp = (tcp_header_t *) udp;
+  icmp = (icmp46_header_t *) udp;
+  echo = (icmp_echo_header_t *)(icmp + 1);
+  s = 0; /* for tracing */
 
-  while (n_left_from > 0)
+  /* Waiting on DHCP resolution? */
+  if (PREDICT_FALSE (hgm->outside_addr.as_u32 == 0))
     {
-      ip4_header_t * ip;
-      ip_csum_t sum;
-      u32 new_addr, old_addr;
-      u16 old_port, new_port;
-      udp_header_t * udp;
-      tcp_header_t * tcp;
-      icmp46_header_t * icmp;
-      icmp_echo_header_t *echo;
-      hgnat_session_key_t key;
-      u32 proto;
-      hgnat_session_t * s;
-      clib_bihash_kv_8_8_t kv, value;
-      dlist_elt_t *lru;
-      u32 feature_next;
+      b->error = HGNAT_ERROR_HGNAT_IN2OUT_NO_OUTSIDE_ADDR;
+      next = HGNAT_NEXT_DROP;
+      no_outside_address++;
+      goto trace;
+    }
 
-      /* Initial guess: send to next on feature arc */
-      vnet_feature_next(&feature_next, b[0]);
-      next[0] = (u16) feature_next;
+  proto = HGNAT_PROTOCOL_UNKNOWN;
+  proto = (ip->protocol == IP_PROTOCOL_UDP)
+    ? HGNAT_PROTOCOL_UDP : proto;
+  proto = (ip->protocol == IP_PROTOCOL_TCP)
+    ? HGNAT_PROTOCOL_TCP : proto;
+  proto = (ip->protocol == IP_PROTOCOL_ICMP)
+    ? HGNAT_PROTOCOL_ICMP : proto;
 
-      ip = vlib_buffer_get_current (b[0]);
-      udp = ip4_next_header (ip);
-      tcp = (tcp_header_t *) udp;
-      icmp = (icmp46_header_t *) udp;
-      echo = (icmp_echo_header_t *)(icmp + 1);
-      s = 0; /* for tracing */
+  /* Not a protocol we deal with? Don't translate */
+  if (PREDICT_FALSE(proto == HGNAT_PROTOCOL_UNKNOWN))
+    {
+      unknown_protocol++;
+      next = HGNAT_NEXT_LOOKUP;
+      goto trace;
+    }
 
-      /* Waiting on DHCP resolution? */
-      if (PREDICT_FALSE (hgm->outside_addr.as_u32 == 0))
-        {
-          b[0]->error = HGNAT_ERROR_HGNAT_IN2OUT_NO_OUTSIDE_ADDR;
-          next[0] = HGNAT_NEXT_DROP;
-	  no_outside_address++;
-          goto trace;
-        }
+  /* TTL drop (traceroute)? */
+  if (PREDICT_FALSE (ip->ttl == 1))
+    {
+      ttl_drops++;
+      icmp4_error_set_vnet_buffer (b, 11 /* TTL exceeded */,
+                                   0 /* code 0 = "in transit" */,
+                                   0 /* data unused */);
+      next = HGNAT_NEXT_ICMP_ERROR;
+      goto trace;
+    }
 
-      proto = HGNAT_PROTOCOL_UNKNOWN;
-      proto = (ip->protocol == IP_PROTOCOL_UDP)
-        ? HGNAT_PROTOCOL_UDP : proto;
-      proto = (ip->protocol == IP_PROTOCOL_TCP)
-        ? HGNAT_PROTOCOL_TCP : proto;
-      proto = (ip->protocol == IP_PROTOCOL_ICMP)
-        ? HGNAT_PROTOCOL_ICMP : proto;
+  /*
+   * Untranslated cases: unknown protocols, don't nat inside network
+   * addresses. Ought to work harder on the netmask, someday.
+   */
+  if (PREDICT_FALSE
+      ((clib_net_to_host_u32 (ip->dst_address.as_u32) & 0xFFFFFF00)
+       ==
+       (clib_net_to_host_u32 (ip->src_address.as_u32) & 0xFFFFFF00)))
+    {
+      /* next set to next feature on arc... */
+      goto trace;
+    }
 
-      /* Not a protocol we deal with? Don't translate */
-      if (PREDICT_FALSE(proto == HGNAT_PROTOCOL_UNKNOWN))
-        {
-	  unknown_protocol++;
-          next[0] = HGNAT_NEXT_LOOKUP;
-          goto trace;
-        }
+  key.as_u64 = 0;
+  key.addr = ip->src_address;
+  key.port = (proto != HGNAT_PROTOCOL_ICMP) ? udp->src_port : echo->identifier;
+  key.protocol = proto;
+  kv.key = key.as_u64;
 
-      /* TTL drop (traceroute)? */
-      if (PREDICT_FALSE (ip->ttl == 1))
-	{
-	  ttl_drops++;
-	  icmp4_error_set_vnet_buffer (b[0], 11 /* TTL exceeded */,
-				       0 /* code 0 = "in transit" */,
-				       0 /* data unused */);
-	  next[0] = HGNAT_NEXT_ICMP_ERROR;
-	  goto trace;
-	}
+  if (clib_bihash_search_8_8 (&hgm->in2out, &kv, &value))
+    {
+      /* Clean up stale translations? */
+      hgnat_maybe_reclaim_translations(hgm, 0 /* all */);
+      /* No such translation (yet), add one */
+      pool_get (hgm->session_pool, s);
+      memset (s, 0, sizeof (*s));
+      kv.value = s - hgm->session_pool;
 
-      /*
-       * Untranslated cases: unknown protocols, don't nat inside network
-       * addresses. Ought to work harder on the netmask, someday.
-       */
-      if (PREDICT_FALSE ((clib_net_to_host_u32 (ip->dst_address.as_u32) & 0xFFFFFF00)
-                         ==
-                         (clib_net_to_host_u32 (ip->src_address.as_u32) & 0xFFFFFF00)))
-        {
-          /* next[0] set to next feature on arc... */
-          goto trace;
-        }
+      memset(s, 0, sizeof(*s));
+      s->in2out = key;
+      clib_bihash_add_del_8_8 (&hgm->in2out, &kv, 1 /* is_add */);
 
-      key.as_u64 = 0;
-      key.addr = ip->src_address;
-      key.port = (proto != HGNAT_PROTOCOL_ICMP) ? udp->src_port : echo->identifier;
-      key.protocol = proto;
+      /* Form out-to-in translation */
+      key.addr = ip->dst_address;
+      key.port = hgm_alloc_port(ip->dst_address, proto);
       kv.key = key.as_u64;
+      s->out2in = key;
+      if (0)
+        clib_warning ("add out2in map for %U, port %d",
+                      format_ip4_address, &key.addr,
+                      clib_net_to_host_u16(key.port));
 
-      if (clib_bihash_search_8_8 (&hgm->in2out, &kv, &value))
-        {
-          /* Clean up stale translations? */
-          hgnat_maybe_reclaim_translations(hgm, 0 /* all */);
-          /* No such translation (yet), add one */
-          pool_get (hgm->session_pool, s);
-          memset (s, 0, sizeof (*s));
-          kv.value = s - hgm->session_pool;
+      clib_bihash_add_del_8_8 (&hgm->out2in, &kv, 1 /* is_add */);
 
-          memset(s, 0, sizeof(*s));
-          s->in2out = key;
-          clib_bihash_add_del_8_8 (&hgm->in2out, &kv, 1 /* is_add */);
-
-          /* Form out-to-in translation */
-          key.addr = ip->dst_address;
-          key.port = hgm_alloc_port(ip->dst_address, proto);
-          kv.key = key.as_u64;
-          s->out2in = key;
-	  if (0)
-	      clib_warning ("add out2in map for %U, port %d",
-			    format_ip4_address, &key.addr,
-			    clib_net_to_host_u16(key.port));
-
-          clib_bihash_add_del_8_8 (&hgm->out2in, &kv, 1 /* is_add */);
-
-          pool_get (hgm->list_pool, lru);
-	  clib_dlist_init (hgm->list_pool, lru - hgm->list_pool);
-          lru->value = s - hgm->session_pool;
-	  s->global_lru_list_index = lru - hgm->list_pool;
-          clib_dlist_addtail (hgm->list_pool, hgm->global_lru_list_head_index,
-                              s->global_lru_list_index);
-
-          /* for convenience when fixing ICMP error replies */
-          s->orig_src_port = udp->src_port;
-          s->orig_dst_port = udp->dst_port;
-          hgm->active_translations ++;
-	  sessions_added ++;
-        }
-      else
-          s = pool_elt_at_index (hgm->session_pool, value.value);
-
-      old_addr = ip->src_address.as_u32;
-      ip->src_address = hgm->outside_addr;
-      new_addr = ip->src_address.as_u32;
-
-      sum = ip->checksum;
-      sum = ip_csum_update (sum, old_addr, new_addr,
-                            ip4_header_t,
-                            src_address /* changed member */);
-      ip->checksum = ip_csum_fold (sum);
-
-      if (PREDICT_TRUE(proto == HGNAT_PROTOCOL_TCP))
-        {
-          old_port = tcp->src_port;
-          tcp->src_port = s->out2in.port;
-          new_port = tcp->src_port;
-
-          sum = tcp->checksum;
-          sum = ip_csum_update (sum, old_addr, new_addr,
-                                ip4_header_t,
-                                dst_address /* changed member */);
-          sum = ip_csum_update (sum, old_port, new_port,
-                                ip4_header_t /* cheat */,
-                                length /* changed member */);
-          tcp->checksum = ip_csum_fold(sum);
-        }
-      else if (proto == HGNAT_PROTOCOL_UDP)
-        {
-          old_port = udp->src_port;
-          udp->src_port = s->out2in.port;
-	  new_port = udp->src_port;
-          udp->checksum = 0;
-        }
-      else /* HGNAT_PROTO_ICMP */
-        {
-          u16 old_id, new_id;
-          old_id = echo->identifier;
-          new_id = s->out2in.port;
-          echo->identifier = new_id;
-
-          sum = icmp->checksum;
-          sum = ip_csum_update (sum, old_id, new_id, icmp_echo_header_t,
-                                identifier);
-          icmp->checksum = ip_csum_fold (sum);
-        }
-
-      translated++;
-
-      s->last_heard = now;
-      s->total_pkts ++;
-      s->total_bytes += vlib_buffer_length_in_chain (hgm->vlib_main, b[0]);
-      clib_dlist_remove (hgm->list_pool, s->global_lru_list_index);
+      pool_get (hgm->list_pool, lru);
+      clib_dlist_init (hgm->list_pool, lru - hgm->list_pool);
+      lru->value = s - hgm->session_pool;
+      s->global_lru_list_index = lru - hgm->list_pool;
       clib_dlist_addtail (hgm->list_pool, hgm->global_lru_list_head_index,
                           s->global_lru_list_index);
 
-    trace:
+      /* for convenience when fixing ICMP error replies */
+      s->orig_src_port = udp->src_port;
+      s->orig_dst_port = udp->dst_port;
+      hgm->active_translations ++;
+      sessions_added ++;
+    }
+  else
+    s = pool_elt_at_index (hgm->session_pool, value.value);
 
-      if (is_trace)
-	{
-	  if (b[0]->flags & VLIB_BUFFER_IS_TRACED)
-	    {
-	      hgnat_in2out_trace_t *t =
-                    vlib_add_trace (vm, node, b[0], sizeof (*t));
-              t->session_index = s ? s - hgm->session_pool : ~0;
-	      t->next_index = next[0];
-              t->protocol = proto;
-	    }
-	}
+  old_addr = ip->src_address.as_u32;
+  ip->src_address = hgm->outside_addr;
+  new_addr = ip->src_address.as_u32;
 
-      b += 1;
-      next += 1;
-      n_left_from -= 1;
+  sum = ip->checksum;
+  sum = ip_csum_update (sum, old_addr, new_addr,
+                        ip4_header_t,
+                        src_address /* changed member */);
+  ip->checksum = ip_csum_fold (sum);
+
+  if (PREDICT_TRUE(proto == HGNAT_PROTOCOL_TCP))
+    {
+      old_port = tcp->src_port;
+      tcp->src_port = s->out2in.port;
+      new_port = tcp->src_port;
+
+      sum = tcp->checksum;
+      sum = ip_csum_update (sum, old_addr, new_addr,
+                            ip4_header_t,
+                            dst_address /* changed member */);
+      sum = ip_csum_update (sum, old_port, new_port,
+                            ip4_header_t /* cheat */,
+                            length /* changed member */);
+      tcp->checksum = ip_csum_fold(sum);
+    }
+  else if (proto == HGNAT_PROTOCOL_UDP)
+    {
+      old_port = udp->src_port;
+      udp->src_port = s->out2in.port;
+      new_port = udp->src_port;
+      udp->checksum = 0;
+    }
+  else /* HGNAT_PROTO_ICMP */
+    {
+      u16 old_id, new_id;
+      old_id = echo->identifier;
+      new_id = s->out2in.port;
+      echo->identifier = new_id;
+
+      sum = icmp->checksum;
+      sum = ip_csum_update (sum, old_id, new_id, icmp_echo_header_t,
+                            identifier);
+      icmp->checksum = ip_csum_fold (sum);
     }
 
-  vlib_buffer_enqueue_to_next (vm, node, from, nexts, frame->n_vectors);
+  translated++;
+
+  s->last_heard = hgnat_in2out_now;
+  s->total_pkts ++;
+  s->total_bytes += vlib_buffer_length_in_chain (hgm->vlib_main, b);
+  clib_dlist_remove (hgm->list_pool, s->global_lru_list_index);
+  clib_dlist_addtail (hgm->list_pool, hgm->global_lru_list_head_index,
+                      s->global_lru_list_index);
+
+ trace:
+
+  if (is_trace)
+    {
+      if (b->flags & VLIB_BUFFER_IS_TRACED)
+        {
+          hgnat_in2out_trace_t *t =
+            vlib_add_trace (vm, node, b, sizeof (*t));
+          t->session_index = s ? s - hgm->session_pool : ~0;
+          t->next_index = next;
+          t->protocol = proto;
+        }
+    }
 
   vlib_node_increment_counter (vm, node->node_index,
 			       HGNAT_ERROR_HGNAT_IN2OUT_TRANSLATED, translated);
@@ -362,18 +339,36 @@ in2out_inline (vlib_main_t * vm,
   vlib_node_increment_counter (vm, node->node_index,
 			       HGNAT_ERROR_HGNAT_IN2OUT_SESSIONS_ADDED,
 			       sessions_added);
-  return frame->n_vectors;
+  return next;
 }
+
+static never_inline u32
+last_stage (vlib_main_t *vm, vlib_node_runtime_t *node, vlib_buffer_t *b)
+{
+  if (PREDICT_FALSE (node->flags & VLIB_NODE_FLAG_TRACE))
+    return in2out_inline (vm, node, b, 1 /* is_trace */ );
+  else
+    return in2out_inline (vm, node, b, 0 /* is_trace */ );
+}
+
+#define NSTAGES 2
+#define stage0 generic_stage0
+
+#include <vnet/pipeline.h>
 
 VLIB_NODE_FN (in2out_node) (vlib_main_t * vm, vlib_node_runtime_t * node,
                             vlib_frame_t * frame)
 {
-  if (PREDICT_FALSE (node->flags & VLIB_NODE_FLAG_TRACE))
-    return in2out_inline (vm, node, frame, 1 /* is_ip4 */ ,
-                          1 /* is_trace */ );
-  else
-    return in2out_inline (vm, node, frame, 1 /* is_ip4 */ ,
-                          0 /* is_trace */ );
+  hgnat_main_t *hgm = &hgnat_main;
+  hgnat_in2out_now = vlib_time_now(vm);
+  ip4_address_t *addr;
+
+  /* lookup the outside interface address */
+  addr = ip4_interface_first_address (hgm->ip4_main,
+                                      hgm->outside_sw_if_index, 0);
+  hgm->outside_addr.as_u32 = addr ? addr->as_u32 : 0;
+
+  return dispatch_pipeline(vm, node, frame);
 }
 
 /* *INDENT-OFF* */

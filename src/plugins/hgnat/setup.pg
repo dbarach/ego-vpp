@@ -9,6 +9,8 @@ set int state loop1 up
 
 set interface hgnat in loop1 out loop0
 
-packet-generator new { name in2out limit 1 size 128-128 interface loop1 node ethernet-input data { IP4: 1.2.3 -> 4.5.6 UDP: 192.168.1.10 -> 11.22.33.44 UDP: 1234 -> 2345 incrementing 114 } }
+comment { set up 10 sessions }
+packet-generator new { name in2out limit 10 size 128-128 interface loop1 node ethernet-input data { IP4: 1.2.3 -> 4.5.6 UDP: 192.168.1.10 - 192.168.1.20 -> 11.22.33.44 UDP: 1234 -> 2345 incrementing 114 } }
 
-packet-generator new { name out2in limit 1 size 128-128 interface loop0 node ethernet-input data { IP4: 1.2.3 -> 4.5.6 UDP: 11.22.33.44 -> 1.2.3.4 UDP: 2345 -> 62303 incrementing 114 } }
+comment { out2in traffic on the first session }
+packet-generator new { name out2in limit 0 size 128-128 interface loop0 node ethernet-input data { IP4: 1.2.3 -> 4.5.6 UDP: 11.22.33.44 -> 1.2.3.4 UDP: 2345 -> 62303 incrementing 114 } }
