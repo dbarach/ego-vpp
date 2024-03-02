@@ -190,7 +190,6 @@ void vl_msg_api_post_mortem_dump (void);
 void vl_msg_api_post_mortem_dump_enable_disable (int enable);
 void vl_msg_api_register_pd_handler (void *handler,
 				     u16 msg_id_host_byte_order);
-int vl_msg_api_pd_handler (void *mp, int rv);
 
 void vl_msg_api_set_first_available_msg_id (u16 first_avail);
 u16 vl_msg_api_get_msg_ids (const char *name, int n);
@@ -355,6 +354,8 @@ typedef struct api_main_t
 
   /** client message index hash table */
   uword *msg_index_by_name_and_crc;
+  /** plugin JSON representation vector table */
+  u8 **json_api_repr;
 
   /** api version list */
   api_version_t *api_version_list;

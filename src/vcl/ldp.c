@@ -195,7 +195,7 @@ ldp_alloc_workers (void)
 {
   if (ldp->workers)
     return;
-  pool_alloc (ldp->workers, LDP_MAX_NWORKERS);
+  ldp->workers = vec_new (ldp_worker_ctx_t, LDP_MAX_NWORKERS);
 }
 
 static void
@@ -312,11 +312,9 @@ ldp_init (void)
     }
   ldp->vcl_needs_real_epoll = 0;
   ldp_alloc_workers ();
-  ldpw = ldp_worker_get_current ();
 
-  pool_foreach (ldpw, ldp->workers)  {
+  vec_foreach (ldpw, ldp->workers)
     clib_memset (&ldpw->clib_time, 0, sizeof (ldpw->clib_time));
-  }
 
   LDBG (0, "LDP initialization: done!");
 
@@ -1867,7 +1865,6 @@ sendmmsg (int fd, struct mmsghdr *vmessages, unsigned int vlen, int flags)
       if (size < 0)
 	{
 	  int errno_val = errno;
-	  perror (func_str);
 	  clib_warning ("LDP<%d>: ERROR: fd %d (0x%x): %s() failed! "
 			"rv %d, errno = %d", getpid (), fd, fd,
 			func_str, size, errno_val);
@@ -1894,7 +1891,7 @@ recvmsg (int fd, struct msghdr * msg, int flags)
     {
       struct iovec *iov = msg->msg_iov;
       ssize_t max_deq, total = 0;
-      int i, rv;
+      int i, rv = 0;
 
       max_deq = vls_attr (vlsh, VPPCOM_ATTR_GET_NREAD, 0, 0);
       if (!max_deq)

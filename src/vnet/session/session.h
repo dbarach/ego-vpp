@@ -267,6 +267,10 @@ typedef struct session_main_
   u32 local_endpoints_table_memory;
   u32 local_endpoints_table_buckets;
 
+  /** Transport source port allocation range */
+  u16 port_allocator_min_src_port;
+  u16 port_allocator_max_src_port;
+
   /** Preallocate session config parameter */
   u32 preallocated_sessions;
 
@@ -491,6 +495,9 @@ int session_enqueue_dgram_connection (session_t * s,
 				      session_dgram_hdr_t * hdr,
 				      vlib_buffer_t * b, u8 proto,
 				      u8 queue_event);
+int session_enqueue_dgram_connection2 (session_t *s, session_dgram_hdr_t *hdr,
+				       vlib_buffer_t *b, u8 proto,
+				       u8 queue_event);
 int session_enqueue_dgram_connection_cl (session_t *s,
 					 session_dgram_hdr_t *hdr,
 					 vlib_buffer_t *b, u8 proto,

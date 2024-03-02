@@ -7,7 +7,7 @@ from vpp_qemu_utils import can_create_namespaces
 
 def positive_int_or_default(default):
     def positive_integer(v):
-        if v is None or v == "":
+        if v is None or v == "" or int(v) == default:
             return default
         if int(v) <= 0:
             raise ValueError("value must be positive")
@@ -18,7 +18,7 @@ def positive_int_or_default(default):
 
 def positive_float_or_default(default):
     def positive_float(v):
-        if v is None or v == "":
+        if v is None or v == "" or float(v) == default:
             return default
         if float(v) <= 0:
             raise ValueError("value must be positive")
@@ -201,6 +201,7 @@ parser.add_argument(
 parser.add_argument(
     "--sanity", action="store_true", help="perform sanity vpp run before running tests"
 )
+parser.add_argument("--api-preload", action="store_true", help="preload API files")
 
 parser.add_argument(
     "--force-foreground",
@@ -387,6 +388,15 @@ parser.add_argument(
 )
 
 parser.add_argument(
+    "--excluded-plugin",
+    dest="excluded_plugins",
+    required=False,
+    action="append",
+    default=[],
+    help="Exclude the tests that indicate they require this plugin(s)",
+)
+
+parser.add_argument(
     "-d",
     "--socket-dir",
     dest="socket_dir",
@@ -397,6 +407,14 @@ parser.add_argument(
     "The directory must contain VPP's socket files:api.sock & stats.sock.\n"
     "Default: /var/run/vpp if VPP is started as the root user, else "
     "/var/run/user/${uid}/vpp.",
+)
+
+default_decode_pcaps = False
+parser.add_argument(
+    "--decode-pcaps",
+    action="store_true",
+    default=default_decode_pcaps,
+    help=f"if set, decode all pcap files from a test run (default: {default_decode_pcaps})",
 )
 
 config = parser.parse_args()

@@ -65,14 +65,15 @@ openssl_ctx_free (tls_ctx_t * ctx)
   openssl_ctx_t *oc = (openssl_ctx_t *) ctx;
 
   /* Cleanup ssl ctx unless migrated */
-  if (!ctx->is_migrated)
+  if (!(ctx->flags & TLS_CONN_F_MIGRATED))
     {
-      if (SSL_is_init_finished (oc->ssl) && !ctx->is_passive_close)
+      if (SSL_is_init_finished (oc->ssl) &&
+	  !(ctx->flags & TLS_CONN_F_PASSIVE_CLOSE))
 	SSL_shutdown (oc->ssl);
 
       SSL_free (oc->ssl);
       vec_free (ctx->srv_hostname);
-
+      SSL_CTX_free (oc->client_ssl_ctx);
 #ifdef HAVE_OPENSSL_ASYNC
   openssl_evt_free (ctx->evt_index, ctx->c_thread_index);
 #endif
@@ -163,7 +164,7 @@ openssl_lctx_get (u32 lctx_index)
     return -1;
 
 static int
-openssl_read_from_ssl_into_fifo (svm_fifo_t * f, SSL * ssl)
+openssl_read_from_ssl_into_fifo (svm_fifo_t *f, SSL *ssl, u32 max_len)
 {
   int read, rv, n_fs, i;
   const int n_segs = 2;
@@ -174,6 +175,7 @@ openssl_read_from_ssl_into_fifo (svm_fifo_t * f, SSL * ssl)
   if (!max_enq)
     return 0;
 
+  max_enq = clib_min (max_len, max_enq);
   n_fs = svm_fifo_provision_chunks (f, fs, n_segs, max_enq);
   if (n_fs < 0)
     return 0;
@@ -276,7 +278,7 @@ openssl_handle_handshake_failure (tls_ctx_t * ctx)
 	  ctx->c_s_index = SESSION_INVALID_INDEX;
 	  tls_disconnect_transport (ctx);
 	}
-      ctx->no_app_session = 1;
+      ctx->flags |= TLS_CONN_F_NO_APP_SESSION;
     }
   else
     {
@@ -296,9 +298,9 @@ openssl_ctx_handshake_rx (tls_ctx_t * ctx, session_t * tls_session)
 
   while (SSL_in_init (oc->ssl))
     {
-      if (ctx->resume)
+      if (ctx->flags & TLS_CONN_F_RESUME)
 	{
-	  ctx->resume = 0;
+	  ctx->flags &= ~TLS_CONN_F_RESUME;
 	}
       else if (!svm_fifo_max_dequeue_cons (tls_session->rx_fifo))
 	break;
@@ -363,7 +365,7 @@ openssl_ctx_handshake_rx (tls_ctx_t * ctx, session_t * tls_session)
   else
     {
       /* Need to check transport status */
-      if (ctx->is_passive_close)
+      if (ctx->flags & TLS_CONN_F_PASSIVE_CLOSE)
 	{
 	  openssl_handle_handshake_failure (ctx);
 	  return -1;
@@ -440,7 +442,8 @@ openssl_ctx_write_tls (tls_ctx_t *ctx, session_t *app_session,
 
 check_tls_fifo:
 
-  if (PREDICT_FALSE (ctx->app_closed && BIO_ctrl_pending (oc->rbio) <= 0))
+  if (PREDICT_FALSE ((ctx->flags & TLS_CONN_F_APP_CLOSED) &&
+		     BIO_ctrl_pending (oc->rbio) <= 0))
     openssl_confirm_app_close (ctx);
 
   /* Deschedule and wait for deq notification if fifo is almost full */
@@ -512,7 +515,7 @@ done:
   if (read)
     tls_add_vpp_q_tx_evt (us);
 
-  if (PREDICT_FALSE (ctx->app_closed &&
+  if (PREDICT_FALSE ((ctx->flags & TLS_CONN_F_APP_CLOSED) &&
 		     !svm_fifo_max_enqueue_prod (us->rx_fifo)))
     openssl_confirm_app_close (ctx);
 
@@ -533,9 +536,10 @@ static inline int
 openssl_ctx_read_tls (tls_ctx_t *ctx, session_t *tls_session)
 {
   openssl_ctx_t *oc = (openssl_ctx_t *) ctx;
+  const u32 max_len = 128 << 10;
   session_t *app_session;
-  int read;
   svm_fifo_t *f;
+  int read;
 
   if (PREDICT_FALSE (SSL_in_init (oc->ssl)))
     {
@@ -549,7 +553,7 @@ openssl_ctx_read_tls (tls_ctx_t *ctx, session_t *tls_session)
   app_session = session_get_from_handle (ctx->app_session_handle);
   f = app_session->rx_fifo;
 
-  read = openssl_read_from_ssl_into_fifo (f, oc->ssl);
+  read = openssl_read_from_ssl_into_fifo (f, oc->ssl, max_len);
 
   /* Unrecoverable protocol error. Reset connection */
   if (PREDICT_FALSE (read < 0))
@@ -558,8 +562,7 @@ openssl_ctx_read_tls (tls_ctx_t *ctx, session_t *tls_session)
       return 0;
     }
 
-  /* If handshake just completed, session may still be in accepting state */
-  if (read && app_session->session_state >= SESSION_STATE_READY)
+  if (read)
     tls_notify_app_enqueue (ctx, app_session);
 
   if ((SSL_pending (oc->ssl) > 0) ||
@@ -738,30 +741,31 @@ openssl_ctx_init_client (tls_ctx_t * ctx)
       return -1;
     }
 
-  oc->ssl_ctx = SSL_CTX_new (method);
-  if (oc->ssl_ctx == NULL)
+  oc->client_ssl_ctx = SSL_CTX_new (method);
+  if (oc->client_ssl_ctx == NULL)
     {
       TLS_DBG (1, "SSL_CTX_new returned null");
       return -1;
     }
 
-  SSL_CTX_set_ecdh_auto (oc->ssl_ctx, 1);
-  SSL_CTX_set_mode (oc->ssl_ctx, SSL_MODE_ENABLE_PARTIAL_WRITE);
+  SSL_CTX_set_ecdh_auto (oc->client_ssl_ctx, 1);
+  SSL_CTX_set_mode (oc->client_ssl_ctx, SSL_MODE_ENABLE_PARTIAL_WRITE);
 #ifdef HAVE_OPENSSL_ASYNC
   if (om->async)
-    SSL_CTX_set_mode (oc->ssl_ctx, SSL_MODE_ASYNC);
+    SSL_CTX_set_mode (oc->client_ssl_ctx, SSL_MODE_ASYNC);
 #endif
-  rv = SSL_CTX_set_cipher_list (oc->ssl_ctx, (const char *) om->ciphers);
+  rv =
+    SSL_CTX_set_cipher_list (oc->client_ssl_ctx, (const char *) om->ciphers);
   if (rv != 1)
     {
       TLS_DBG (1, "Couldn't set cipher");
       return -1;
     }
 
-  SSL_CTX_set_options (oc->ssl_ctx, flags);
-  SSL_CTX_set_cert_store (oc->ssl_ctx, om->cert_store);
+  SSL_CTX_set_options (oc->client_ssl_ctx, flags);
+  SSL_CTX_set1_cert_store (oc->client_ssl_ctx, om->cert_store);
 
-  oc->ssl = SSL_new (oc->ssl_ctx);
+  oc->ssl = SSL_new (oc->client_ssl_ctx);
   if (oc->ssl == NULL)
     {
       TLS_DBG (1, "Couldn't initialize ssl struct");
@@ -1057,6 +1061,22 @@ openssl_transport_close (tls_ctx_t * ctx)
 }
 
 static int
+openssl_transport_reset (tls_ctx_t *ctx)
+{
+  if (!openssl_handshake_is_over (ctx))
+    {
+      openssl_handle_handshake_failure (ctx);
+      return 0;
+    }
+
+  session_transport_reset_notify (&ctx->connection);
+  session_transport_closed_notify (&ctx->connection);
+  tls_disconnect_transport (ctx);
+
+  return 0;
+}
+
+static int
 openssl_app_close (tls_ctx_t * ctx)
 {
   openssl_ctx_t *oc = (openssl_ctx_t *) ctx;
@@ -1067,8 +1087,6 @@ openssl_app_close (tls_ctx_t * ctx)
   if (BIO_ctrl_pending (oc->rbio) <= 0
       && !svm_fifo_max_dequeue_cons (app_session->tx_fifo))
     openssl_confirm_app_close (ctx);
-  else
-    ctx->app_closed = 1;
   return 0;
 }
 
@@ -1149,6 +1167,7 @@ const static tls_engine_vft_t openssl_engine = {
   .ctx_start_listen = openssl_start_listen,
   .ctx_stop_listen = openssl_stop_listen,
   .ctx_transport_close = openssl_transport_close,
+  .ctx_transport_reset = openssl_transport_reset,
   .ctx_app_close = openssl_app_close,
   .ctx_reinit_cachain = openssl_reinit_ca_chain,
 };

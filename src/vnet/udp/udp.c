@@ -43,6 +43,14 @@ udp_connection_register_port (u16 lcl_port, u8 is_ip4)
 		      __ATOMIC_RELAXED);
 }
 
+void
+udp_connection_share_port (u16 lcl_port, u8 is_ip4)
+{
+  udp_main_t *um = &udp_main;
+  __atomic_add_fetch (&um->transport_ports_refcnt[is_ip4][lcl_port], 1,
+		      __ATOMIC_RELAXED);
+}
+
 static void
 udp_connection_unregister_port (u16 lcl_port, u8 is_ip4)
 {
@@ -91,10 +99,9 @@ udp_connection_free (udp_connection_t * uc)
 static void
 udp_connection_cleanup (udp_connection_t * uc)
 {
-  /* Unregister port from udp_local only if refcount went to zero */
-  if (!transport_release_local_endpoint (TRANSPORT_PROTO_UDP, &uc->c_lcl_ip,
-					 uc->c_lcl_port))
-    udp_connection_unregister_port (uc->c_lcl_port, uc->c_is_ip4);
+  transport_release_local_endpoint (TRANSPORT_PROTO_UDP, &uc->c_lcl_ip,
+				    uc->c_lcl_port);
+  udp_connection_unregister_port (uc->c_lcl_port, uc->c_is_ip4);
   udp_connection_free (uc);
 }
 

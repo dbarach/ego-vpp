@@ -14,7 +14,7 @@
 export WS_ROOT=$(CURDIR)
 export BR=$(WS_ROOT)/build-root
 CCACHE_DIR?=$(BR)/.ccache
-SHELL:=/bin/bash
+SHELL:=$(shell which bash)
 GDB?=gdb
 PLATFORM?=vpp
 SAMPLE_PLUGIN?=no
@@ -57,7 +57,7 @@ endif
 
 ifeq ($(filter ubuntu debian linuxmint,$(OS_ID)),$(OS_ID))
 PKG=deb
-else ifeq ($(filter rhel centos fedora opensuse-leap rocky,$(OS_ID)),$(OS_ID))
+else ifeq ($(filter rhel centos fedora opensuse-leap rocky almalinux,$(OS_ID)),$(OS_ID))
 PKG=rpm
 endif
 
@@ -81,6 +81,7 @@ DEB_DEPENDS += iperf3 # for 'make test TEST=vcl'
 DEB_DEPENDS += nasm
 DEB_DEPENDS += iperf ethtool  # for 'make test TEST=vm_vpp_interfaces'
 DEB_DEPENDS += libpcap-dev
+DEB_DEPENDS += tshark
 
 LIBFFI=libffi6 # works on all but 20.04 and debian-testing
 
@@ -105,6 +106,12 @@ else ifeq ($(OS_ID)-$(OS_VERSION_ID),debian-11)
 	DEB_DEPENDS += virtualenv
 	DEB_DEPENDS += clang clang-format-11
 	LIBFFI=libffi7
+else ifeq ($(OS_ID)-$(OS_VERSION_ID),debian-12)
+	DEB_DEPENDS += virtualenv
+	DEB_DEPENDS += clang-14 clang-format-14
+	# for extras/scripts/checkstyle.sh
+	export CLANG_FORMAT_VER=14
+	LIBFFI=libffi8
 else
 	DEB_DEPENDS += clang-11 clang-format-11
 	LIBFFI=libffi7
@@ -135,6 +142,15 @@ ifeq ($(OS_ID),fedora)
 	RPM_DEPENDS += cmake
 	RPM_DEPENDS_GROUPS = 'C Development Tools and Libraries'
 else ifeq ($(OS_ID),rocky)
+	RPM_DEPENDS += yum-utils
+	RPM_DEPENDS += subunit subunit-devel
+	RPM_DEPENDS += openssl-devel
+	RPM_DEPENDS += python3-devel  # needed for python3 -m pip install psutil
+	RPM_DEPENDS += python3-ply  # for vppapigen
+	RPM_DEPENDS += python3-virtualenv python3-jsonschema
+	RPM_DEPENDS += infiniband-diags llvm clang cmake
+	RPM_DEPENDS_GROUPS = 'Development Tools'
+else ifeq ($(OS_ID),almalinux)
 	RPM_DEPENDS += yum-utils
 	RPM_DEPENDS += subunit subunit-devel
 	RPM_DEPENDS += openssl-devel
@@ -197,6 +213,7 @@ ifneq ($(wildcard $(STARTUP_DIR)/startup.conf),)
 endif
 
 ifeq ($(findstring y,$(UNATTENDED)),y)
+DEBIAN_FRONTEND=noninteractive
 CONFIRM=-y
 FORCE=--allow-downgrades --allow-remove-essential --allow-change-held-packages
 endif
@@ -290,7 +307,7 @@ help:
 
 $(BR)/.deps.ok:
 ifeq ($(findstring y,$(UNATTENDED)),y)
-	make install-dep
+	$(MAKE) install-dep
 endif
 ifeq ($(filter ubuntu debian linuxmint,$(OS_ID)),$(OS_ID))
 	@MISSING=$$(apt-get install -y -qq -s $(DEB_DEPENDS) | grep "^Inst ") ; \
@@ -363,7 +380,7 @@ endif
 install-deps: install-dep
 
 define make
-	@make -C $(BR) PLATFORM=$(PLATFORM) TAG=$(1) $(2)
+	@$(MAKE) -C $(BR) PLATFORM=$(PLATFORM) TAG=$(1) $(2)
 endef
 
 $(BR)/scripts/.version:
@@ -466,9 +483,9 @@ libexpand = $(subst $(subst ,, ),:,$(foreach lib,$(1),$(BR)/install-$(2)-native/
 export TEST_DIR ?= $(WS_ROOT)/test
 
 define test
-	$(if $(filter-out $(2),retest),make -C $(BR) PLATFORM=vpp TAG=$(1) CC=$(CC) vpp-install,)
+	$(if $(filter-out $(2),retest),$(MAKE) -C $(BR) PLATFORM=vpp TAG=$(1) CC=$(CC) vpp-install,)
 	$(eval libs:=lib lib64)
-	make -C test \
+	$(MAKE) -C test \
 	  VPP_BUILD_DIR=$(BR)/build-$(1)-native/vpp \
 	  VPP_BIN=$(BR)/install-$(1)-native/vpp/bin/vpp \
 	  VPP_INSTALL_PATH=$(BR)/install-$(1)-native/ \
@@ -484,10 +501,16 @@ endef
 
 .PHONY: test
 test:
+ifeq ($(CC),cc)
+	$(eval CC=clang)
+endif
 	$(call test,vpp,test)
 
 .PHONY: test-debug
 test-debug:
+ifeq ($(CC),cc)
+	$(eval CC=clang)
+endif
 	$(call test,vpp_debug,test)
 
 .PHONY: test-cov
@@ -535,15 +558,15 @@ papi-wipe: test-wipe-papi
 
 .PHONY: test-wipe-papi
 test-wipe-papi:
-	@make -C test wipe-papi
+	@$(MAKE) -C test wipe-papi
 
 .PHONY: test-help
 test-help:
-	@make -C test help
+	@$(MAKE) -C test help
 
 .PHONY: test-wipe
 test-wipe:
-	@make -C test wipe
+	@$(MAKE) -C test wipe
 
 .PHONY: test-shell
 test-shell:
@@ -576,27 +599,27 @@ test-wipe-doc:
 .PHONY: test-wipe-cov
 test-wipe-cov:
 	$(call make,$(PLATFORM)_gcov,$(addsuffix -wipe,$(TARGETS)))
-	@make -C test wipe-cov
+	@$(MAKE) -C test wipe-cov
 
 .PHONY: test-wipe-all
 test-wipe-all:
-	@make -C test wipe-all
+	@$(MAKE) -C test wipe-all
 
 # Note: All python venv consolidated in test/Makefile, test/requirements*.txt
 .PHONY: test-checkstyle
 test-checkstyle:
 	$(warning test-checkstyle is deprecated. Running checkstyle-python.")
-	@make -C test checkstyle-python-all
+	@$(MAKE) -C test checkstyle-python-all
 
 # Note: All python venv consolidated in test/Makefile, test/requirements*.txt
 .PHONY: test-checkstyle-diff
 test-checkstyle-diff:
 	$(warning test-checkstyle-diff is deprecated. Running checkstyle-python.")
-	@make -C test checkstyle-python-all
+	@$(MAKE) -C test checkstyle-python-all
 
 .PHONY: test-refresh-deps
 test-refresh-deps:
-	@make -C test refresh-deps
+	@$(MAKE) -C test refresh-deps
 
 .PHONY: retest
 retest:
@@ -658,7 +681,7 @@ debug:
 .PHONY: build-coverity
 build-coverity:
 	$(call make,$(PLATFORM)_coverity,install-packages)
-	@make -C build-root PLATFORM=vpp TAG=vpp_coverity libmemif-install
+	@$(MAKE) -C build-root PLATFORM=vpp TAG=vpp_coverity libmemif-install
 
 .PHONY: debug-release
 debug-release:
@@ -696,15 +719,15 @@ pkg-deb-debug:
 
 .PHONY: pkg-rpm
 pkg-rpm: dist
-	make -C extras/rpm
+	$(MAKE) -C extras/rpm
 
 .PHONY: pkg-srpm
 pkg-srpm: dist
-	make -C extras/rpm srpm
+	$(MAKE) -C extras/rpm srpm
 
 .PHONY: install-ext-deps
 install-ext-deps:
-	make -C build/external install-$(PKG)
+	$(MAKE) -C build/external install-$(PKG)
 
 .PHONY: install-ext-dep
 install-ext-dep: install-ext-deps
@@ -751,12 +774,12 @@ checkstyle-commit:
 .PHONY: checkstyle-test
 checkstyle-test:
 	$(warning test-checkstyle is deprecated. Running checkstyle-python.")
-	@make -C test checkstyle-python-all
+	@$(MAKE) -C test checkstyle-python-all
 
 # Note: All python venv consolidated in test/Makefile, test/requirements*.txt
 .PHONY: checkstyle-python
 checkstyle-python:
-	@make -C test checkstyle-python-all
+	@$(MAKE) -C test checkstyle-python-all
 
 .PHONY: checkstyle-all
 checkstyle-all: checkstyle-commit checkstyle checkstyle-python docs-spell
@@ -768,7 +791,7 @@ fixstyle:
 # Note: All python venv consolidated in test/Makefile, test/requirements*.txt
 .PHONY: fixstyle-python
 fixstyle-python:
-	@make -C test fixstyle-python-all
+	@$(MAKE) -C test fixstyle-python-all
 
 .PHONY: checkstyle-api
 checkstyle-api:
@@ -812,22 +835,22 @@ wipe-doxygen:
 
 .PHONY: docs-%
 docs-%:
-	@make -C $(WS_ROOT)/docs $*
+	@$(MAKE) -C $(WS_ROOT)/docs $*
 
 .PHONY: docs
 docs:
-	@make -C $(WS_ROOT)/docs docs
+	@$(MAKE) -C $(WS_ROOT)/docs docs
 
 .PHONY: pkg-verify
 pkg-verify: install-dep $(BR)/.deps.ok install-ext-deps
 	$(call banner,"Building for PLATFORM=vpp")
-	@make -C build-root PLATFORM=vpp TAG=vpp wipe-all install-packages
+	@$(MAKE) -C build-root PLATFORM=vpp TAG=vpp wipe-all install-packages
 	$(call banner,"Building sample-plugin")
-	@make -C build-root PLATFORM=vpp TAG=vpp sample-plugin-install
+	@$(MAKE) -C build-root PLATFORM=vpp TAG=vpp sample-plugin-install
 	$(call banner,"Building libmemif")
-	@make -C build-root PLATFORM=vpp TAG=vpp libmemif-install
+	@$(MAKE) -C build-root PLATFORM=vpp TAG=vpp libmemif-install
 	$(call banner,"Building $(PKG) packages")
-	@make pkg-$(PKG)
+	@$(MAKE) pkg-$(PKG)
 
 # Note: 'make verify' target is not used by ci-management scripts
 MAKE_VERIFY_GATE_OS ?= ubuntu-22.04
@@ -837,11 +860,11 @@ ifeq ($(OS_ID)-$(OS_VERSION_ID),$(MAKE_VERIFY_GATE_OS))
 	$(call banner,"Testing vppapigen")
 	@src/tools/vppapigen/test_vppapigen.py
 	$(call banner,"Running tests")
-	@make COMPRESS_FAILED_TEST_LOGS=yes RETRIES=3 test
+	@$(MAKE) COMPRESS_FAILED_TEST_LOGS=yes RETRIES=3 test
 else
 	$(call banner,"Skipping tests. Tests under 'make verify' supported on $(MAKE_VERIFY_GATE_OS)")
 endif
 
 .PHONY: check-dpdk-mlx
 check-dpdk-mlx:
-	@[ $$(make -sC build/external dpdk-show-DPDK_MLX_DEFAULT) = y ]
+	@[ $$($(MAKE) -sC build/external dpdk-show-DPDK_MLX_DEFAULT) = y ]

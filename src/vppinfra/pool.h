@@ -268,7 +268,8 @@ _pool_put_will_expand (void *p, uword index, uword elt_sz)
   return 0;
 }
 
-#define pool_put_will_expand(P, E) _pool_put_will_expand (P, (E) - (P), sizeof ((P)[0])
+#define pool_put_will_expand(P, E)                                            \
+  _pool_put_will_expand (P, (E) - (P), sizeof ((P)[0]))
 
 /** Use free bitmap to query whether given element is free. */
 static_always_inline int
@@ -571,9 +572,10 @@ do {									\
 /* works only for pool of pointers, e is declared inside macro */
 #define pool_foreach_pointer(e, p)                                            \
   if (p)                                                                      \
-    for (typeof ((p)[0]) *_t = (p) + pool_get_first_index (p), (e) = *_t;     \
-	 _t < vec_end (p);                                                    \
-	 _t = (p) + pool_get_next_index (p, _t - (p)), (e) = *_t)
+    for (typeof ((p)[0]) *_t = (p) + pool_get_first_index (p), (e) = *_t,     \
+			 *_end = vec_end (p);                                 \
+	 _t < _end; _t = (p) + pool_get_next_index (p, _t - (p)),             \
+			 (e) = _t < _end ? *_t : (e))
 
 /**
  * @brief Remove all elements from a pool in a safe way

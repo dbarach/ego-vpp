@@ -26,6 +26,21 @@ list(APPEND VNET_SOURCES
   config.c
   devices/devices.c
   devices/netlink.c
+  dev/api.c
+  dev/args.c
+  dev/cli.c
+  dev/config.c
+  dev/counters.c
+  dev/dev.c
+  dev/dev_api.c
+  dev/error.c
+  dev/format.c
+  dev/handlers.c
+  dev/pci.c
+  dev/port.c
+  dev/process.c
+  dev/queue.c
+  dev/runtime.c
   error.c
   flow/flow.c
   flow/flow_cli.c
@@ -59,6 +74,7 @@ list(APPEND VNET_HEADERS
   config.h
   devices/devices.h
   devices/netlink.h
+  dev/dev.h
   flow/flow.h
   global_funcs.h
   interface/rx_queue_funcs.h
@@ -83,6 +99,7 @@ list(APPEND VNET_HEADERS
 )
 
 list(APPEND VNET_API_FILES
+  dev/dev.api
   interface.api
   interface_types.api
   ip/ip_types.api
@@ -978,6 +995,7 @@ list(APPEND VNET_API_FILES
 # tap interface (with virtio backend)
 ##############################################################################
 
+if("${CMAKE_SYSTEM_NAME}" STREQUAL "Linux")
 list(APPEND VNET_SOURCES
   devices/tap/cli.c
   devices/tap/tap.c
@@ -991,6 +1009,7 @@ list(APPEND VNET_HEADERS
 list(APPEND VNET_API_FILES
   devices/tap/tapv2.api
 )
+endif()
 
 ##############################################################################
 # tap interface (with virtio backend)
@@ -1088,6 +1107,7 @@ list(APPEND VNET_API_FILES feature/feature.api)
 
 # FIXME: unix/hgshm.c
 
+if("${CMAKE_SYSTEM_NAME}" STREQUAL "Linux")
 list(APPEND VNET_SOURCES
   unix/gdb_funcs.c
   unix/tuntap.c
@@ -1096,6 +1116,7 @@ list(APPEND VNET_SOURCES
 list(APPEND VNET_HEADERS
   unix/tuntap.h
 )
+endif()
 
 ##############################################################################
 # FIB

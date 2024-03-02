@@ -192,12 +192,15 @@ vnet_crypto_is_set_handler (vnet_crypto_alg_t alg)
   vnet_crypto_op_id_t opt = 0;
   int i;
 
-  if (alg > vec_len (cm->algs))
+  if (alg >= vec_len (cm->algs))
     return 0;
 
   for (i = 0; i < VNET_CRYPTO_OP_N_TYPES; i++)
     if ((opt = cm->algs[alg].op_by_type[i]) != 0)
       break;
+
+  if (opt >= vec_len (cm->ops_handlers))
+    return 0;
 
   return NULL != cm->ops_handlers[opt];
 }
@@ -478,6 +481,17 @@ vnet_crypto_key_del (vlib_main_t * vm, vnet_crypto_key_index_t index)
     }
 
   pool_put (cm->keys, key);
+}
+
+void
+vnet_crypto_key_update (vlib_main_t *vm, vnet_crypto_key_index_t index)
+{
+  vnet_crypto_main_t *cm = &crypto_main;
+  vnet_crypto_engine_t *engine;
+
+  vec_foreach (engine, cm->engines)
+    if (engine->key_op_handler)
+      engine->key_op_handler (vm, VNET_CRYPTO_KEY_OP_MODIFY, index);
 }
 
 vnet_crypto_async_alg_t

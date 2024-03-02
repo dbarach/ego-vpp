@@ -98,6 +98,11 @@ I:	policer
 M:	Neale Ranns <neale@graphiant.com>
 F:	src/vnet/policer/
 
+VNET New Device Drivers Infra
+I:	dev
+M:	Damjan Marion <damarion@cisco.com>
+F:	src/vnet/dev/
+
 VNET Device Drivers
 I:	devices
 Y:	src/vnet/devices/pipe/FEATURE.yaml
@@ -194,7 +199,7 @@ VNET IPSec
 I:	ipsec
 M:	Neale Ranns <neale@graphiant.com>
 M:	Radu Nicolau <radu.nicolau@intel.com>
-M:	Fan Zhang <roy.fan.zhang@intel.com>
+M:	Fan Zhang <fanzhang.oss@gmail.com>
 F:	src/vnet/ipsec/
 
 VNET Crypto Infra
@@ -226,12 +231,12 @@ F:	src/plugins/crypto_openssl/
 Plugin - Crypto - ipsecmb
 I:	crypto-ipsecmb
 M:	Neale Ranns <neale@graphiant.com>
-M:      Fan Zhang <roy.fan.zhang@intel.com>
+M:      Fan Zhang <fanzhang.oss@gmail.com>
 F:	src/plugins/crypto_ipsecmb/
 
 Plugin - Crypto - sw_scheduler
 I:	crypto-sw-scheduler
-M:	Fan Zhang <roy.fan.zhang@intel.com>
+M:	Fan Zhang <fanzhang.oss@gmail.com>
 F:	src/plugs/crypto_sw_scheduler/
 
 VNET L2
@@ -405,6 +410,22 @@ I:	avf
 M:	Damjan Marion <damarion@cisco.com>
 F:	src/plugins/avf/
 
+Plugin - IAVF Device driver
+I:	iavf
+M:	Damjan Marion <damarion@cisco.com>
+F:	src/plugins/dev_iavf/
+
+Plugin - Amazon Elastic Network Adapter (ENA) device driver
+I:	ena
+M:	Damjan Marion <damarion@cisco.com>
+F:	src/plugins/dev_ena/
+
+Plugin - Marvell Octeon device driver
+I:	octeon
+M:	Monendra Singh Kushwaha <kmonendra@marvell.com>
+M:	Damjan Marion <damarion@cisco.com>
+F:	src/plugins/dev_octeon/
+
 Plugin - Dispatch Trace PCAP
 I:	dispatch-trace
 M:	Dave Barach <vpp@barachs.net>
@@ -419,7 +440,7 @@ F:	src/plugins/dpdk/
 Plugin - DPDK Crypto
 I:	dpdk-cryptodev
 M:	Radu Nicolau <radu.nicolau@intel.com>
-M:	Fan Zhang <roy.fan.zhang@intel.com>
+M:	Fan Zhang <fanzhang.oss@gmail.com>
 F:	src/plugins/dpdk/cryptodev/
 
 Plugin - flowprobe
@@ -665,7 +686,7 @@ F:	src/plugins/snort/
 
 libmemif
 I:	libmemif
-M:	Damjan Marion <damarion@cisco.com>
+M:	Mohsin Kazmi <sykazmi@cisco.com>
 F:	extras/libmemif
 
 gomemif
@@ -751,7 +772,7 @@ F:	src/plugins/cnat
 Plugin - Wireguard
 I:	wireguard
 M:	Artem Glazychev <artem.glazychev@xored.com>
-M:	Fan Zhang <roy.fan.zhang@intel.com>
+M:	Fan Zhang <fanzhang.oss@gmail.com>
 F:	src/plugins/wireguard
 
 Packetforge
@@ -854,7 +875,7 @@ F:	src/extras/rpm/opensuse
 
 VPP StrongSwan Daemon
 I:	vpp-swan
-M:	Fan Zhang <roy.fan.zhang@intel.com>
+M:	Fan Zhang <fanzhang.oss@gmail.com>
 M:	Gabriel Oginski <gabrielx.oginski@intel.com>
 F:	extras/strongswan/vpp_sswan
 

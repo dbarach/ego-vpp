@@ -1,7 +1,8 @@
 import unittest
 
-from framework import VppTestCase, VppTestRunner
-from template_ipsec import TemplateIpsec, IPsecIPv4Params
+from framework import VppTestCase
+from asfframework import VppTestRunner
+from template_ipsec import IPsecIPv4Params
 from vpp_papi import VppEnum
 
 from vpp_ipsec import VppIpsecSA
@@ -121,7 +122,7 @@ class IpsecApiTestCase(VppTestCase):
 
     def __check_sa_binding(self, sa_id, thread_index):
         found_sa = False
-        sa_dumps = self.vapi.ipsec_sa_v4_dump()
+        sa_dumps = self.vapi.ipsec_sa_v5_dump()
         for dump in sa_dumps:
             if dump.entry.sad_id == sa_id:
                 self.assertEqual(dump.thread_index, thread_index)

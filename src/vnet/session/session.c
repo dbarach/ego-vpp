@@ -209,7 +209,7 @@ session_alloc (u32 thread_index)
   clib_memset (s, 0, sizeof (*s));
   s->session_index = s - wrk->sessions;
   s->thread_index = thread_index;
-  s->app_index = APP_INVALID_INDEX;
+  s->al_index = APP_INVALID_INDEX;
 
   return s;
 }
@@ -318,7 +318,7 @@ session_cleanup_half_open (session_handle_t ho_handle)
 	}
       /* Migrated transports are no longer half-opens */
       transport_cleanup (session_get_transport_proto (ho),
-			 ho->connection_index, ho->app_index /* overloaded */);
+			 ho->connection_index, ho->al_index /* overloaded */);
     }
   else if (ho->session_state != SESSION_STATE_TRANSPORT_DELETED)
     {
@@ -410,8 +410,8 @@ session_half_open_migrated_notify (transport_connection_t *tc)
       return -1;
     }
   ho->connection_index = tc->c_index;
-  /* Overload app index for half-open with new thread */
-  ho->app_index = tc->thread_index;
+  /* Overload al_index for half-open with new thread */
+  ho->al_index = tc->thread_index;
   return 0;
 }
 
@@ -596,7 +596,7 @@ session_program_io_event (app_worker_t *app_wrk, session_t *s,
       /* Special events for connectionless sessions */
       et += SESSION_IO_EVT_BUILTIN_RX - SESSION_IO_EVT_RX;
 
-      ASSERT (s->thread_index == 0);
+      ASSERT (s->thread_index == 0 || et == SESSION_IO_EVT_TX_MAIN);
       session_event_t evt = {
 	.event_type = et,
 	.session_handle = session_handle (s),
@@ -705,7 +705,7 @@ session_main_flush_enqueue_events (transport_proto_t transport_proto,
   session_worker_t *wrk = session_main_get_worker (thread_index);
   session_handle_t *handles;
   session_t *s;
-  u32 i;
+  u32 i, is_cl;
 
   handles = wrk->session_to_enqueue[transport_proto];
 
@@ -714,8 +714,12 @@ session_main_flush_enqueue_events (transport_proto_t transport_proto,
       s = session_get_from_handle (handles[i]);
       session_fifo_tuning (s, s->rx_fifo, SESSION_FT_ACTION_ENQUEUED,
 			   0 /* TODO/not needed */);
-      session_enqueue_notify_inline (s,
-				     s->thread_index != thread_index ? 1 : 0);
+      is_cl =
+	s->thread_index != thread_index || (s->flags & SESSION_F_IS_CLESS);
+      if (!is_cl)
+	session_enqueue_notify_inline (s, 0);
+      else
+	session_enqueue_notify_inline (s, 1);
     }
 
   vec_reset_length (handles);
@@ -863,11 +867,22 @@ session_enqueue_dgram_connection (session_t *s, session_dgram_hdr_t *hdr,
 }
 
 int
+session_enqueue_dgram_connection2 (session_t *s, session_dgram_hdr_t *hdr,
+				   vlib_buffer_t *b, u8 proto, u8 queue_event)
+{
+  return session_enqueue_dgram_connection_inline (s, hdr, b, proto,
+						  queue_event, 1 /* is_cl */);
+}
+
+int
 session_enqueue_dgram_connection_cl (session_t *s, session_dgram_hdr_t *hdr,
 				     vlib_buffer_t *b, u8 proto,
 				     u8 queue_event)
 {
-  return session_enqueue_dgram_connection_inline (s, hdr, b, proto,
+  session_t *awls;
+
+  awls = app_listener_select_wrk_cl_session (s, hdr);
+  return session_enqueue_dgram_connection_inline (awls, hdr, b, proto,
 						  queue_event, 1 /* is_cl */);
 }
 
@@ -1180,6 +1195,9 @@ session_transport_closed_notify (transport_connection_t * tc)
   if (!(s = session_get_if_valid (tc->s_index, tc->thread_index)))
     return;
 
+  if (s->session_state >= SESSION_STATE_TRANSPORT_CLOSED)
+    return;
+
   /* Transport thinks that app requested close but it actually didn't.
    * Can happen for tcp:
    * 1)if fin and rst are received in close succession.
@@ -1345,6 +1363,8 @@ session_open_cl (session_endpoint_cfg_t *rmt, session_handle_t *rsh)
   s->app_wrk_index = app_wrk->wrk_index;
   s->opaque = rmt->opaque;
   session_set_state (s, SESSION_STATE_OPENED);
+  if (transport_connection_is_cless (tc))
+    s->flags |= SESSION_F_IS_CLESS;
   if (app_worker_init_connected (app_wrk, s))
     {
       session_free (s);
@@ -1470,6 +1490,8 @@ session_listen (session_t * ls, session_endpoint_cfg_t * sep)
   ls = listen_session_get (s_index);
   ls->connection_index = tc_index;
   ls->opaque = sep->opaque;
+  if (transport_connection_is_cless (session_get_transport (ls)))
+    ls->flags |= SESSION_F_IS_CLESS;
 
   return 0;
 }
@@ -2171,6 +2193,8 @@ session_main_init (vlib_main_t * vm)
   smm->use_private_rx_mqs = 0;
   smm->no_adaptive = 0;
   smm->last_transport_proto_type = TRANSPORT_PROTO_HTTP;
+  smm->port_allocator_min_src_port = 1024;
+  smm->port_allocator_max_src_port = 65535;
 
   return 0;
 }
@@ -2268,6 +2292,10 @@ session_config_fn (vlib_main_t * vm, unformat_input_t * input)
       else if (unformat (input, "local-endpoints-table-buckets %d",
 			 &smm->local_endpoints_table_buckets))
 	;
+      else if (unformat (input, "min-src-port %d", &tmp))
+	smm->port_allocator_min_src_port = tmp;
+      else if (unformat (input, "max-src-port %d", &tmp))
+	smm->port_allocator_max_src_port = tmp;
       else if (unformat (input, "enable"))
 	smm->session_enable_asap = 1;
       else if (unformat (input, "use-app-socket-api"))

@@ -19,7 +19,11 @@
 #include <sys/stat.h>
 #include <fcntl.h>
 #include <net/if.h>
+#ifdef __linux__
 #include <linux/if_tun.h>
+#elif __FreeBSD__
+#include <net/if_tun.h>
+#endif /* __linux */
 #include <sys/ioctl.h>
 #include <sys/eventfd.h>
 
@@ -202,6 +206,19 @@ virtio_get_len (vnet_virtio_vring_t *vring, const int packed, const int hdr_sz,
     return vring->used->ring[last & mask].len - hdr_sz;
 }
 
+#define virtio_packed_check_n_left(vring, last)                               \
+  do                                                                          \
+    {                                                                         \
+      vnet_virtio_vring_packed_desc_t *d = &vring->packed_desc[last];         \
+      u16 flags = d->flags;                                                   \
+      if ((flags & VRING_DESC_F_AVAIL) != (vring->used_wrap_counter << 7) ||  \
+	  (flags & VRING_DESC_F_USED) != (vring->used_wrap_counter << 15))    \
+	{                                                                     \
+	  n_left = 0;                                                         \
+	}                                                                     \
+    }                                                                         \
+  while (0)
+
 #define increment_last(last, packed, vring)                                   \
   do                                                                          \
     {                                                                         \
@@ -257,6 +274,11 @@ virtio_device_input_gso_inline (vlib_main_t *vm, vlib_node_runtime_t *node,
   u16 n_left = virtio_n_left_to_process (vring, packed);
   vlib_buffer_t bt = {};
 
+  if (packed)
+    {
+      virtio_packed_check_n_left (vring, last);
+    }
+
   if (n_left == 0)
     return 0;
 
@@ -271,7 +293,7 @@ virtio_device_input_gso_inline (vlib_main_t *vm, vlib_node_runtime_t *node,
 	next_index = vif->per_interface_next_index;
 
       /* only for l2, redirect if feature path enabled */
-      vnet_feature_start_device_input_x1 (vif->sw_if_index, &next_index, &bt);
+      vnet_feature_start_device_input (vif->sw_if_index, &next_index, &bt);
     }
 
   while (n_left)

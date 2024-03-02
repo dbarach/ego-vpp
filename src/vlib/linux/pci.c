@@ -238,7 +238,8 @@ vlib_pci_get_device_info (vlib_main_t * vm, vlib_pci_addr_t * addr,
 
   /* You can only read more that 64 bytes of config space as root; so we try to
      read the full space but fall back to just the first 64 bytes. */
-  if (read (fd, &di->config, sizeof (di->config)) < sizeof (di->config))
+  if (read (fd, &di->config, sizeof (di->config)) <
+      sizeof (vlib_pci_config_hdr_t))
     {
       err = clib_error_return_unix (0, "read `%s'", f);
       close (fd);
@@ -647,33 +648,14 @@ vfio_set_irqs (vlib_main_t * vm, linux_pci_device_t * p, u32 index, u32 start,
 {
   int data_len = efds ? count * sizeof (int) : 0;
   u8 buf[sizeof (struct vfio_irq_set) + data_len];
-  struct vfio_irq_info ii = { 0 };
   struct vfio_irq_set *irq_set = (struct vfio_irq_set *) buf;
-
-
-  ii.argsz = sizeof (struct vfio_irq_info);
-  ii.index = index;
-
-  if (ioctl (p->fd, VFIO_DEVICE_GET_IRQ_INFO, &ii) < 0)
-    return clib_error_return_unix (0, "ioctl(VFIO_DEVICE_GET_IRQ_INFO) "
-				   "'%U'", format_vlib_pci_addr, &p->addr);
-
-  log_debug (p, "%s index:%u count:%u flags: %s%s%s%s(0x%x)", __func__,
-	     ii.index, ii.count,
-	     ii.flags & VFIO_IRQ_INFO_EVENTFD ? "eventfd " : "",
-	     ii.flags & VFIO_IRQ_INFO_MASKABLE ? "maskable " : "",
-	     ii.flags & VFIO_IRQ_INFO_AUTOMASKED ? "automasked " : "",
-	     ii.flags & VFIO_IRQ_INFO_NORESIZE ? "noresize " : "", ii.flags);
-
-  if (ii.count < start + count)
-    return clib_error_return_unix (0, "vfio_set_irq: unexistng interrupt on "
-				   "'%U'", format_vlib_pci_addr, &p->addr);
-
 
   if (efds)
     {
+      int *data = (int *) irq_set->data;
       flags |= VFIO_IRQ_SET_DATA_EVENTFD;
-      clib_memcpy_fast (&irq_set->data, efds, data_len);
+      for (u32 i = 0; i < count; i++)
+	data[i] = efds[i];
     }
   else
     flags |= VFIO_IRQ_SET_DATA_NONE;
@@ -688,11 +670,11 @@ vfio_set_irqs (vlib_main_t * vm, linux_pci_device_t * p, u32 index, u32 start,
   irq_set->flags = flags;
 
   if (ioctl (p->fd, VFIO_DEVICE_SET_IRQS, irq_set) < 0)
-    return clib_error_return_unix (0, "%U:ioctl(VFIO_DEVICE_SET_IRQS) "
-				   "[index = %u, start = %u, count = %u, "
-				   "flags = 0x%x]",
+    return clib_error_return_unix (0, "%U:ioctl(VFIO_DEVICE_SET_IRQS)\n%U",
 				   format_vlib_pci_addr, &p->addr,
-				   index, start, count, flags);
+				   format_vfio_irq_set, irq_set);
+
+  log_debug (p, "%s:\n%U", __func__, format_vfio_irq_set, irq_set);
   return 0;
 }
 
@@ -885,6 +867,27 @@ vlib_pci_register_intx_handler (vlib_main_t * vm, vlib_pci_dev_handle_t h,
 }
 
 clib_error_t *
+vlib_pci_unregister_intx_handler (vlib_main_t *vm, vlib_pci_dev_handle_t h)
+{
+  linux_pci_device_t *p = linux_pci_get_device (h);
+  linux_pci_irq_t *irq = &p->intx_irq;
+
+  if (irq->intx_handler == 0)
+    return 0;
+
+  clib_file_del_by_index (&file_main, irq->clib_file_index);
+  if (p->type == LINUX_PCI_DEVICE_TYPE_VFIO)
+    {
+      close (irq->fd);
+      irq->fd = -1;
+    }
+
+  irq->intx_handler = 0;
+
+  return 0;
+}
+
+clib_error_t *
 vlib_pci_register_msix_handler (vlib_main_t * vm, vlib_pci_dev_handle_t h,
 				u32 start, u32 count,
 				pci_msix_handler_function_t * msix_handler)
@@ -942,6 +945,33 @@ error:
 }
 
 clib_error_t *
+vlib_pci_unregister_msix_handler (vlib_main_t *vm, vlib_pci_dev_handle_t h,
+				  u32 start, u32 count)
+{
+  clib_error_t *err = 0;
+  linux_pci_device_t *p = linux_pci_get_device (h);
+  u32 i;
+
+  if (p->type != LINUX_PCI_DEVICE_TYPE_VFIO)
+    return clib_error_return (0, "vfio driver is needed for MSI-X interrupt "
+				 "support");
+
+  for (i = start; i < start + count; i++)
+    {
+      linux_pci_irq_t *irq = vec_elt_at_index (p->msix_irqs, i);
+
+      if (irq->fd != -1)
+	{
+	  clib_file_del_by_index (&file_main, irq->clib_file_index);
+	  close (irq->fd);
+	  irq->fd = -1;
+	}
+    }
+
+  return err;
+}
+
+clib_error_t *
 vlib_pci_enable_msix_irq (vlib_main_t * vm, vlib_pci_dev_handle_t h,
 			  u16 start, u16 count)
 {
@@ -953,9 +983,9 @@ vlib_pci_enable_msix_irq (vlib_main_t * vm, vlib_pci_dev_handle_t h,
     return clib_error_return (0, "vfio driver is needed for MSI-X interrupt "
 			      "support");
 
-  for (i = start; i < start + count; i++)
+  for (i = 0; i < count; i++)
     {
-      linux_pci_irq_t *irq = vec_elt_at_index (p->msix_irqs, i);
+      linux_pci_irq_t *irq = vec_elt_at_index (p->msix_irqs, start + i);
       fds[i] = irq->fd;
     }
 

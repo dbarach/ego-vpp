@@ -110,6 +110,7 @@ bufferindex
 bufmon
 Bufmon
 bugfixing
+buildinfo
 buildingrst
 builtin
 builtinurl
@@ -247,6 +248,8 @@ Dest
 det
 dev
 devbind
+dev_iavf
+dev_octeon
 df
 dhcp
 dhcp
@@ -312,6 +315,7 @@ elts
 emacs
 emerg
 emphasise
+ena
 enablement
 encap
 encap
@@ -464,6 +468,7 @@ ia
 iacl
 iAcl
 iACL
+iavf
 iBGP
 ibverb
 IBverbs
@@ -782,6 +787,7 @@ O'Driscoll
 oacl
 oam
 OAM
+octeon
 oddbuf
 Oddbuf
 offline
@@ -901,6 +907,7 @@ py
 pypi
 qemu
 Qemu
+qdisc
 qos
 QoS
 qs

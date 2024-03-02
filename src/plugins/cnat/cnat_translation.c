@@ -18,6 +18,7 @@
 #include <vnet/fib/fib_entry_track.h>
 #include <vnet/dpo/load_balance.h>
 #include <vnet/dpo/drop_dpo.h>
+#include <vnet/dpo/dpo.h>
 
 #include <cnat/cnat_translation.h>
 #include <cnat/cnat_maglev.h>
@@ -83,6 +84,7 @@ cnat_tracker_release (cnat_ep_trk_t * trk)
   /* We only track fully resolved endpoints */
   if (!(trk->ct_flags & CNAT_TRK_ACTIVE))
     return;
+  dpo_reset (&trk->ct_dpo); // undo fib_entry_contribute_forwarding
   fib_entry_untrack (trk->ct_fei, trk->ct_sibling);
 }
 
@@ -221,8 +223,11 @@ cnat_translation_stack (cnat_translation_t * ct)
     if (trk->ct_flags & CNAT_TRK_ACTIVE)
       vec_add1 (ct->ct_active_paths, *trk);
 
+  flow_hash_config_t fhc = IP_FLOW_HASH_DEFAULT;
+  if (ct->fhc != 0)
+    fhc = ct->fhc;
   lbi = load_balance_create (vec_len (ct->ct_active_paths),
-			     fib_proto_to_dpo (fproto), IP_FLOW_HASH_DEFAULT);
+			     fib_proto_to_dpo (fproto), fhc);
 
   ep_idx = 0;
   vec_foreach (trk, ct->ct_active_paths)
@@ -263,8 +268,9 @@ cnat_translation_delete (u32 id)
 u32
 cnat_translation_update (cnat_endpoint_t *vip, ip_protocol_t proto,
 			 cnat_endpoint_tuple_t *paths, u8 flags,
-			 cnat_lb_type_t lb_type)
+			 cnat_lb_type_t lb_type, flow_hash_config_t fhc)
 {
+  const dpo_id_t tmp = DPO_INVALID;
   cnat_endpoint_tuple_t *path;
   const cnat_client_t *cc;
   cnat_translation_t *ct;
@@ -296,6 +302,7 @@ cnat_translation_update (cnat_endpoint_t *vip, ip_protocol_t proto,
       ct->ct_cci = cci;
       ct->index = ct - cnat_translation_pool;
       ct->lb_type = lb_type;
+      ct->fhc = fhc;
 
       cnat_add_translation_to_db (cci, vip, proto, ct->index);
       cnat_client_translation_added (cci);
@@ -336,6 +343,7 @@ cnat_translation_update (cnat_endpoint_t *vip, ip_protocol_t proto,
     clib_memcpy (&trk->ct_ep[VLIB_RX], &path->src_ep,
 		 sizeof (trk->ct_ep[VLIB_RX]));
     trk->ct_flags = path->ep_flags;
+    trk->ct_dpo = tmp;
 
     cnat_tracker_track (ct->index, trk);
   }
@@ -383,6 +391,11 @@ format_cnat_translation (u8 * s, va_list * args)
   s = format (s, "%U %U ", format_cnat_endpoint, &ct->ct_vip,
 	      format_ip_protocol, ct->ct_proto);
   s = format (s, "lb:%U ", format_cnat_lb_type, ct->lb_type);
+
+  if ((ct->fhc == 0) || (ct->fhc == IP_FLOW_HASH_DEFAULT))
+    s = format (s, "fhc:0x%x(default)", IP_FLOW_HASH_DEFAULT);
+  else
+    s = format (s, "fhc:0x%x", ct->fhc);
 
   vec_foreach (ck, ct->ct_paths)
     s = format (s, "\n%U", format_cnat_ep_trk, ck, 2);
@@ -576,8 +589,9 @@ cnat_translation_cli_add_del (vlib_main_t * vm,
 	}
     }
 
+  flow_hash_config_t fhc = 0;
   if (INDEX_INVALID == del_index)
-    cnat_translation_update (&vip, proto, paths, flags, lb_type);
+    cnat_translation_update (&vip, proto, paths, flags, lb_type, fhc);
   else
     cnat_translation_delete (del_index);
 

@@ -6,12 +6,14 @@ import (
 	"os/exec"
 	"strings"
 	"text/template"
+	"time"
 
 	"github.com/edwarnicke/exechelper"
 )
 
 const (
-	logDir string = "/tmp/hs-test/"
+	logDir    string = "/tmp/hs-test/"
+	volumeDir string = "/volumes"
 )
 
 var (
@@ -36,7 +38,7 @@ type Container struct {
 	vppInstance      *VppInstance
 }
 
-func newContainer(yamlInput ContainerConfig) (*Container, error) {
+func newContainer(suite *HstSuite, yamlInput ContainerConfig) (*Container, error) {
 	containerName := yamlInput["name"].(string)
 	if len(containerName) == 0 {
 		err := fmt.Errorf("container name must not be blank")
@@ -47,6 +49,7 @@ func newContainer(yamlInput ContainerConfig) (*Container, error) {
 	container.volumes = make(map[string]Volume)
 	container.envVars = make(map[string]string)
 	container.name = containerName
+	container.suite = suite
 
 	if image, ok := yamlInput["image"]; ok {
 		container.image = image.(string)
@@ -73,19 +76,20 @@ func newContainer(yamlInput ContainerConfig) (*Container, error) {
 	}
 
 	if _, ok := yamlInput["volumes"]; ok {
-		r := strings.NewReplacer("$HST_DIR", workDir)
+		workingVolumeDir := logDir + container.suite.T().Name() + volumeDir
+		workDirReplacer := strings.NewReplacer("$HST_DIR", workDir)
+		volDirReplacer := strings.NewReplacer("$HST_VOLUME_DIR", workingVolumeDir)
 		for _, volu := range yamlInput["volumes"].([]interface{}) {
 			volumeMap := volu.(ContainerConfig)
-			hostDir := r.Replace(volumeMap["host-dir"].(string))
+			hostDir := workDirReplacer.Replace(volumeMap["host-dir"].(string))
+			hostDir = volDirReplacer.Replace(hostDir)
 			containerDir := volumeMap["container-dir"].(string)
 			isDefaultWorkDir := false
 
 			if isDefault, ok := volumeMap["is-default-work-dir"]; ok {
 				isDefaultWorkDir = isDefault.(bool)
 			}
-
 			container.addVolume(hostDir, containerDir, isDefaultWorkDir)
-
 		}
 	}
 
@@ -137,6 +141,18 @@ func (c *Container) getContainerArguments() string {
 	return args
 }
 
+func (c *Container) runWithRetry(cmd string) error {
+	nTries := 5
+	for i := 0; i < nTries; i++ {
+		err := exechelper.Run(cmd)
+		if err == nil {
+			return nil
+		}
+		time.Sleep(1 * time.Second)
+	}
+	return fmt.Errorf("failed to run container command")
+}
+
 func (c *Container) create() error {
 	cmd := "docker create " + c.getContainerArguments()
 	c.suite.log(cmd)
@@ -146,7 +162,7 @@ func (c *Container) create() error {
 func (c *Container) start() error {
 	cmd := "docker start " + c.name
 	c.suite.log(cmd)
-	return exechelper.Run(cmd)
+	return c.runWithRetry(cmd)
 }
 
 func (c *Container) prepareCommand() (string, error) {
@@ -179,8 +195,7 @@ func (c *Container) run() error {
 	if err != nil {
 		return err
 	}
-
-	return exechelper.Run(cmd)
+	return c.runWithRetry(cmd)
 }
 
 func (c *Container) addVolume(hostDir string, containerDir string, isDefaultWorkDir bool) {
@@ -270,7 +285,7 @@ func (c *Container) exec(command string, arguments ...any) string {
 	c.suite.T().Helper()
 	c.suite.log(containerExecCommand)
 	byteOutput, err := exechelper.CombinedOutput(containerExecCommand)
-	c.suite.assertNil(err)
+	c.suite.assertNil(err, err)
 	return string(byteOutput)
 }
 
@@ -309,12 +324,18 @@ func (c *Container) saveLogs() {
 	f.Close()
 }
 
-func (c *Container) log() string {
-	cmd := "docker logs " + c.name
+// Outputs logs from docker containers. Set 'maxLines' to 0 to output the full log.
+func (c *Container) log(maxLines int) (string, error) {
+	var cmd string
+	if maxLines == 0 {
+		cmd = "docker logs " + c.name
+	} else {
+		cmd = fmt.Sprintf("docker logs --tail %d %s", maxLines, c.name)
+	}
+
 	c.suite.log(cmd)
 	o, err := exechelper.CombinedOutput(cmd)
-	c.suite.assertNil(err)
-	return string(o)
+	return string(o), err
 }
 
 func (c *Container) stop() error {
@@ -330,15 +351,15 @@ func (c *Container) stop() error {
 func (c *Container) createConfig(targetConfigName string, templateName string, values any) {
 	template := template.Must(template.ParseFiles(templateName))
 
-	f, err := os.CreateTemp("/tmp/hs-test/", "hst-config")
-	c.suite.assertNil(err)
+	f, err := os.CreateTemp(logDir, "hst-config")
+	c.suite.assertNil(err, err)
 	defer os.Remove(f.Name())
 
 	err = template.Execute(f, values)
-	c.suite.assertNil(err)
+	c.suite.assertNil(err, err)
 
 	err = f.Close()
-	c.suite.assertNil(err)
+	c.suite.assertNil(err, err)
 
 	c.copy(f.Name(), targetConfigName)
 }

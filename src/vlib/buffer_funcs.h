@@ -181,7 +181,6 @@ vlib_buffer_copy_indices_to_ring (u32 * ring, u32 * src, u32 start,
     }
 }
 
-STATIC_ASSERT_OFFSET_OF (vlib_buffer_t, template_end, 64);
 static_always_inline void
 vlib_buffer_copy_template (vlib_buffer_t * b, vlib_buffer_t * bt)
 {
@@ -754,6 +753,23 @@ vlib_buffer_pool_put (vlib_main_t * vm, u8 buffer_pool_index,
   clib_spinlock_unlock (&bp->lock);
 }
 
+/** \brief return unused buffers back to pool
+    This function can be used to return buffers back to pool without going
+    through vlib_buffer_free. Buffer metadata must not be modified in any
+    way before buffers are returned.
+
+    @param vm - (vlib_main_t *) vlib main data structure pointer
+    @param buffers - (u32 * ) buffer index array
+    @param n_buffers - (u32) number of buffers to free
+    @param buffer_pool_index - (u8) buffer pool index
+*/
+always_inline void
+vlib_buffer_unalloc_to_pool (vlib_main_t *vm, u32 *buffers, u32 n_buffers,
+			     u8 buffer_pool_index)
+{
+  vlib_buffer_pool_put (vm, buffer_pool_index, buffers, n_buffers);
+}
+
 static_always_inline void
 vlib_buffer_free_inline (vlib_main_t * vm, u32 * buffers, u32 n_buffers,
 			 int maybe_next)
@@ -762,7 +778,7 @@ vlib_buffer_free_inline (vlib_main_t * vm, u32 * buffers, u32 n_buffers,
   vlib_buffer_pool_t *bp = 0;
   u8 buffer_pool_index = ~0;
   u32 n_queue = 0, queue[queue_size + 4];
-  vlib_buffer_t bt = { };
+  vlib_buffer_template_t bt = {};
 #if defined(CLIB_HAVE_VEC128)
   vlib_buffer_t bpi_mask = {.buffer_pool_index = ~0 };
   vlib_buffer_t bpi_vec = {};
@@ -778,7 +794,7 @@ vlib_buffer_free_inline (vlib_main_t * vm, u32 * buffers, u32 n_buffers,
   vlib_buffer_t *b = vlib_get_buffer (vm, buffers[0]);
   buffer_pool_index = b->buffer_pool_index;
   bp = vlib_get_buffer_pool (vm, buffer_pool_index);
-  vlib_buffer_copy_template (&bt, &bp->buffer_template);
+  bt = bp->buffer_template;
 #if defined(CLIB_HAVE_VEC128)
   bpi_vec.buffer_pool_index = buffer_pool_index;
 #endif
@@ -870,14 +886,14 @@ vlib_buffer_free_inline (vlib_main_t * vm, u32 * buffers, u32 n_buffers,
 
 #if defined(CLIB_HAVE_VEC512)
       vlib_buffer_copy_indices (queue + n_queue, buffers, 8);
-      vlib_buffer_copy_template (b[0], &bt);
-      vlib_buffer_copy_template (b[1], &bt);
-      vlib_buffer_copy_template (b[2], &bt);
-      vlib_buffer_copy_template (b[3], &bt);
-      vlib_buffer_copy_template (b[4], &bt);
-      vlib_buffer_copy_template (b[5], &bt);
-      vlib_buffer_copy_template (b[6], &bt);
-      vlib_buffer_copy_template (b[7], &bt);
+      b[0]->template = bt;
+      b[1]->template = bt;
+      b[2]->template = bt;
+      b[3]->template = bt;
+      b[4]->template = bt;
+      b[5]->template = bt;
+      b[6]->template = bt;
+      b[7]->template = bt;
       n_queue += 8;
 
       vlib_buffer_validate (vm, b[0]);
@@ -899,10 +915,10 @@ vlib_buffer_free_inline (vlib_main_t * vm, u32 * buffers, u32 n_buffers,
       VLIB_BUFFER_TRACE_TRAJECTORY_INIT (b[7]);
 #else
       vlib_buffer_copy_indices (queue + n_queue, buffers, 4);
-      vlib_buffer_copy_template (b[0], &bt);
-      vlib_buffer_copy_template (b[1], &bt);
-      vlib_buffer_copy_template (b[2], &bt);
-      vlib_buffer_copy_template (b[3], &bt);
+      b[0]->template = bt;
+      b[1]->template = bt;
+      b[2]->template = bt;
+      b[3]->template = bt;
       n_queue += 4;
 
       vlib_buffer_validate (vm, b[0]);
@@ -952,7 +968,7 @@ vlib_buffer_free_inline (vlib_main_t * vm, u32 * buffers, u32 n_buffers,
 	  bpi_vec.buffer_pool_index = buffer_pool_index;
 #endif
 	  bp = vlib_get_buffer_pool (vm, buffer_pool_index);
-	  vlib_buffer_copy_template (&bt, &bp->buffer_template);
+	  bt = bp->buffer_template;
 	}
 
       vlib_buffer_validate (vm, b[0]);
@@ -961,7 +977,7 @@ vlib_buffer_free_inline (vlib_main_t * vm, u32 * buffers, u32 n_buffers,
 
       if (clib_atomic_sub_fetch (&b[0]->ref_count, 1) == 0)
 	{
-	  vlib_buffer_copy_template (b[0], &bt);
+	  b[0]->template = bt;
 	  queue[n_queue++] = bi;
 	}
 

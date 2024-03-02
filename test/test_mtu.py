@@ -11,10 +11,8 @@
 import unittest
 from scapy.layers.inet6 import IPv6, Ether, IP, UDP, ICMPv6PacketTooBig
 from scapy.layers.inet import ICMP
-from framework import VppTestCase, VppTestRunner
-from vpp_ip import DpoProto
-from vpp_ip_route import VppIpRoute, VppRoutePath, FibPathProto
-from socket import AF_INET, AF_INET6, inet_pton
+from framework import VppTestCase
+from asfframework import VppTestRunner
 from util import reassemble4
 
 
@@ -115,6 +113,8 @@ class TestMTU(VppTestCase):
             # n.show2()
             self.validate_bytes(bytes(p[1]), icmp4_reply)
 
+        self.assert_error_counter_equal("/err/ip4-input/mtu_exceeded", 11)
+
         # Now with DF off. Expect fragments.
         # First go with 1500 byte packets.
         p_payload = UDP(sport=1234, dport=1234) / self.payload(1500 - 20 - 8)
@@ -192,6 +192,8 @@ class TestMTU(VppTestCase):
         rx = self.send_and_expect_some(self.pg0, p6 * 9, self.pg0)
         for p in rx:
             self.validate_bytes(bytes(p[1]), icmp6_reply_str)
+
+        self.assert_error_counter_equal("/err/ip6-input/mtu_exceeded", 9)
 
         # Reset MTU
         self.vapi.sw_interface_set_mtu(self.pg1.sw_if_index, [current_mtu, 0, 0, 0])

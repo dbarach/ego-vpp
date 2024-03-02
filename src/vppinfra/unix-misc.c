@@ -152,6 +152,7 @@ clib_file_get_resolved_basename (char *fmt, ...)
   if (r < 1)
     return 0;
 
+  buffer[r] = 0;
   p = buffer + r - 1;
   while (p > buffer && p[-1] != '/')
     p--;
@@ -159,6 +160,7 @@ clib_file_get_resolved_basename (char *fmt, ...)
   while (p[0])
     vec_add1 (s, p++[0]);
 
+  vec_add1 (s, 0);
   return s;
 }
 

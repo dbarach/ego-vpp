@@ -222,7 +222,12 @@ vlib_thread_init (vlib_main_t * vm)
       cpu_set_t cpuset;
       CPU_ZERO (&cpuset);
       CPU_SET (tm->main_lcore, &cpuset);
-      pthread_setaffinity_np (pthread_self (), sizeof (cpu_set_t), &cpuset);
+      if (pthread_setaffinity_np (pthread_self (), sizeof (cpu_set_t),
+				  &cpuset))
+	{
+	  return clib_error_return (0, "could not pin main thread to cpu %u",
+				    tm->main_lcore);
+	}
     }
 
   /* Set up thread 0 */
@@ -304,7 +309,8 @@ vlib_thread_init (vlib_main_t * vm)
 	      if (c == ~0)
 		return clib_error_return (0,
 					  "no available cpus to be used for"
-					  " the '%s' thread", tr->name);
+					  " the '%s' thread #%u",
+					  tr->name, tr->count);
 
 	      avail_cpu = clib_bitmap_set (avail_cpu, 0, avail_c0);
 	      avail_cpu = clib_bitmap_set (avail_cpu, c, 0);
@@ -801,25 +807,26 @@ start_workers (vlib_main_t * vm)
 	{
 	  for (j = 0; j < tr->count; j++)
 	    {
+
 	      w = vlib_worker_threads + worker_thread_index++;
 	      err = vlib_launch_thread_int (vlib_worker_thread_bootstrap_fn,
 					    w, 0);
 	      if (err)
-		clib_error_report (err);
+		clib_unix_error ("%U, thread %s init on cpu %d failed",
+				 format_clib_error, err, tr->name, 0);
 	    }
 	}
       else
 	{
 	  uword c;
-          /* *INDENT-OFF* */
           clib_bitmap_foreach (c, tr->coremask)  {
             w = vlib_worker_threads + worker_thread_index++;
 	    err = vlib_launch_thread_int (vlib_worker_thread_bootstrap_fn,
 					  w, c);
 	    if (err)
-	      clib_error_report (err);
-          }
-          /* *INDENT-ON* */
+	      clib_unix_error ("%U, thread %s init on cpu %d failed",
+			       format_clib_error, err, tr->name, c);
+	    }
 	}
     }
   vlib_worker_thread_barrier_sync (vm);
@@ -1512,6 +1519,7 @@ vlib_workers_sync (void)
       u32 thread_index = vlib_get_thread_index ();
       vlib_rpc_call_main_thread (vlib_worker_sync_rpc, (u8 *) &thread_index,
 				 sizeof (thread_index));
+      vlib_worker_flush_pending_rpc_requests (vlib_get_main ());
     }
 
   /* Wait until main thread asks for barrier */
@@ -1577,6 +1585,19 @@ vlib_worker_wait_one_loop (void)
 
   vec_free (counts);
   return;
+}
+
+void
+vlib_worker_flush_pending_rpc_requests (vlib_main_t *vm)
+{
+  vlib_main_t *vm_global = vlib_get_first_main ();
+
+  ASSERT (vm != vm_global);
+
+  clib_spinlock_lock_if_init (&vm_global->pending_rpc_lock);
+  vec_append (vm_global->pending_rpc_requests, vm->pending_rpc_requests);
+  vec_reset_length (vm->pending_rpc_requests);
+  clib_spinlock_unlock_if_init (&vm_global->pending_rpc_lock);
 }
 
 void

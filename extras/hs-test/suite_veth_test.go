@@ -6,8 +6,8 @@ import (
 
 const (
 	// These correspond to names used in yaml config
-	serverInterfaceName = "vppsrv"
-	clientInterfaceName = "vppcln"
+	serverInterfaceName = "srv"
+	clientInterfaceName = "cln"
 )
 
 type VethsSuite struct {
@@ -36,8 +36,8 @@ func (s *VethsSuite) SetupTest() {
 	serverContainer := s.getContainerByName("server-vpp")
 
 	cpus := s.AllocateCpus()
-	serverVpp, _ := serverContainer.newVppInstance(cpus, sessionConfig)
-	s.assertNotNil(serverVpp)
+	serverVpp, err := serverContainer.newVppInstance(cpus, sessionConfig)
+	s.assertNotNil(serverVpp, err)
 
 	s.setupServerVpp()
 
@@ -45,40 +45,28 @@ func (s *VethsSuite) SetupTest() {
 	clientContainer := s.getContainerByName("client-vpp")
 
 	cpus = s.AllocateCpus()
-	clientVpp, _ := clientContainer.newVppInstance(cpus, sessionConfig)
-	s.assertNotNil(clientVpp)
+	clientVpp, err := clientContainer.newVppInstance(cpus, sessionConfig)
+	s.assertNotNil(clientVpp, err)
 
 	s.setupClientVpp()
 }
 
 func (s *VethsSuite) setupServerVpp() {
 	serverVpp := s.getContainerByName("server-vpp").vppInstance
-
-	err := serverVpp.start()
-	s.assertNil(err)
+	s.assertNil(serverVpp.start())
 
 	serverVeth := s.netInterfaces[serverInterfaceName]
 	idx, err := serverVpp.createAfPacket(serverVeth)
-	s.assertNil(err)
+	s.assertNil(err, err)
 	s.assertNotEqual(0, idx)
-
-	namespaceSecret := "1"
-	err = serverVpp.addAppNamespace(1, idx, namespaceSecret)
-	s.assertNil(err)
 }
 
 func (s *VethsSuite) setupClientVpp() {
 	clientVpp := s.getContainerByName("client-vpp").vppInstance
-
-	err := clientVpp.start()
-	s.assertNil(err)
+	s.assertNil(clientVpp.start())
 
 	clientVeth := s.netInterfaces[clientInterfaceName]
 	idx, err := clientVpp.createAfPacket(clientVeth)
-	s.assertNil(err)
+	s.assertNil(err, err)
 	s.assertNotEqual(0, idx)
-
-	clientNamespaceSecret := "2"
-	err = clientVpp.addAppNamespace(2, idx, clientNamespaceSecret)
-	s.assertNil(err)
 }

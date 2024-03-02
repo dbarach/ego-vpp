@@ -2,8 +2,8 @@ package main
 
 const (
 	// These correspond to names used in yaml config
-	clientInterface = "hst_client_vpp"
-	serverInterface = "hst_server_vpp"
+	clientInterface = "hclnvpp"
+	serverInterface = "hsrvvpp"
 )
 
 type NsSuite struct {
@@ -31,14 +31,14 @@ func (s *NsSuite) SetupTest() {
 	cpus := s.AllocateCpus()
 	container := s.getContainerByName("vpp")
 	vpp, _ := container.newVppInstance(cpus, sessionConfig)
-	vpp.start()
+	s.assertNil(vpp.start())
 
 	idx, err := vpp.createAfPacket(s.netInterfaces[serverInterface])
-	s.assertNil(err)
+	s.assertNil(err, err)
 	s.assertNotEqual(0, idx)
 
 	idx, err = vpp.createAfPacket(s.netInterfaces[clientInterface])
-	s.assertNil(err)
+	s.assertNil(err, err)
 	s.assertNotEqual(0, idx)
 
 	container.exec("chmod 777 -R %s", container.getContainerWorkDir())

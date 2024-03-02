@@ -456,6 +456,7 @@ session_mq_accepted_reply_handler (session_worker_t *wrk,
       a->app_index = mp->context;
       a->handle = mp->handle;
       vnet_disconnect_session (a);
+      s->app_wrk_index = SESSION_INVALID_INDEX;
       return;
     }
 
@@ -1419,9 +1420,12 @@ session_tx_fifo_read_and_snd_i (session_worker_t * wrk,
       ctx->sp.max_burst_size = max_burst;
       n_custom_tx = ctx->transport_vft->custom_tx (ctx->tc, &ctx->sp);
       *n_tx_packets += n_custom_tx;
-      if (PREDICT_FALSE
-	  (ctx->s->session_state >= SESSION_STATE_TRANSPORT_CLOSED))
-	return SESSION_TX_OK;
+      if (PREDICT_FALSE (ctx->s->session_state >=
+			 SESSION_STATE_TRANSPORT_CLOSED))
+	{
+	  svm_fifo_unset_event (ctx->s->tx_fifo);
+	  return SESSION_TX_OK;
+	}
       max_burst -= n_custom_tx;
       if (!max_burst || (ctx->s->flags & SESSION_F_CUSTOM_TX))
 	{
@@ -1611,7 +1615,9 @@ session_tx_fifo_dequeue_internal (session_worker_t * wrk,
   clib_llist_index_t ei;
   u32 n_packets;
 
-  if (PREDICT_FALSE (s->session_state >= SESSION_STATE_TRANSPORT_CLOSED))
+  if (PREDICT_FALSE ((s->session_state >= SESSION_STATE_TRANSPORT_CLOSED) ||
+		     (s->session_state == SESSION_STATE_CONNECTING &&
+		      (s->flags & SESSION_F_HALF_OPEN))))
     return 0;
 
   /* Clear custom-tx flag used to request reschedule for tx */
@@ -1784,7 +1790,7 @@ session_event_dispatch_io (session_worker_t * wrk, vlib_node_runtime_t * node,
       break;
     case SESSION_IO_EVT_RX:
       s = session_event_get_session (wrk, e);
-      if (!s)
+      if (!s || s->session_state >= SESSION_STATE_TRANSPORT_CLOSED)
 	break;
       transport_app_rx_evt (session_get_transport_proto (s),
 			    s->connection_index, s->thread_index);

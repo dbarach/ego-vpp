@@ -9,6 +9,7 @@
 #include <vnet/ip/ip6_packet.h>
 
 #include <npt66/npt66.h>
+#include <npt66/npt66.api_enum.h>
 
 typedef struct
 {
@@ -158,6 +159,69 @@ done:
   return rv;
 }
 
+static int
+npt66_icmp6_translate (vlib_buffer_t *b, ip6_header_t *outer_ip,
+		       icmp46_header_t *icmp, npt66_binding_t *binding,
+		       int dir)
+{
+  ip6_header_t *ip = (ip6_header_t *) (icmp + 2);
+  int rv = 0;
+  vlib_main_t *vm = vlib_get_main ();
+
+  if (clib_net_to_host_u16 (outer_ip->payload_length) <
+      sizeof (icmp46_header_t) + 4 + sizeof (ip6_header_t))
+    {
+      clib_warning ("ICMP6 payload too short");
+      return -1;
+    }
+
+  // Validate checksums
+  int bogus_length;
+  u16 sum16;
+  sum16 = ip6_tcp_udp_icmp_compute_checksum (vm, b, outer_ip, &bogus_length);
+  if (sum16 != 0 && sum16 != 0xffff)
+    {
+      clib_warning ("ICMP6 checksum failed");
+      return -1;
+    }
+  if (dir == VLIB_RX)
+    {
+      if (!ip6_prefix_cmp (ip->src_address, binding->external,
+			   binding->external_plen))
+	{
+	  clib_warning (
+	    "npt66_icmp6_translate: src address is not internal (%U -> %U)",
+	    format_ip6_address, &ip->src_address, format_ip6_address,
+	    &ip->dst_address);
+	  goto done;
+	}
+      ip->src_address = ip6_prefix_copy (ip->src_address, binding->internal,
+					 binding->internal_plen);
+      /* Checksum neutrality */
+      rv = npt66_adjust_checksum (binding->internal_plen, true, binding->delta,
+				  &ip->src_address);
+    }
+  else
+    {
+      if (!ip6_prefix_cmp (ip->dst_address, binding->external,
+			   binding->external_plen))
+	{
+	  clib_warning (
+	    "npt66_icmp6_translate: dst address is not external (%U -> %U)",
+	    format_ip6_address, &ip->src_address, format_ip6_address,
+	    &ip->dst_address);
+	  goto done;
+	}
+      ip->dst_address = ip6_prefix_copy (ip->dst_address, binding->internal,
+					 binding->internal_plen);
+      rv = npt66_adjust_checksum (binding->internal_plen, false,
+				  binding->delta, &ip->dst_address);
+    }
+done:
+
+  return rv;
+}
+
 /*
  * Lookup the packet tuple in the flow cache, given the lookup mask.
  * If a binding is found, rewrite the packet according to instructions,
@@ -193,15 +257,33 @@ npt66_node_inline (vlib_main_t *vm, vlib_node_runtime_t *node,
 
       /* By default pass packet to next node in the feature chain */
       vnet_feature_next_u16 (next, b[0]);
+      int rv;
+      icmp46_header_t *icmp = (icmp46_header_t *) (ip + 1);
+      if (ip->protocol == IP_PROTOCOL_ICMP6 && icmp->type < 128)
+	{
+	  rv = npt66_icmp6_translate (b[0], ip, icmp, binding, dir);
+	  if (rv < 0)
+	    {
+	      clib_warning ("ICMP6 npt66_translate failed");
+	      *next = NPT66_NEXT_DROP;
+	      goto next;
+	    }
+	}
+      rv = npt66_translate (ip, binding, dir);
 
-      int rv = npt66_translate (ip, binding, dir);
       if (rv < 0)
 	{
-	  clib_warning ("npt66_translate failed");
+	  vlib_node_increment_counter (vm, node->node_index,
+				       NPT66_ERROR_TRANSLATION, 1);
 	  *next = NPT66_NEXT_DROP;
+	  goto next;
 	}
+      else if (dir == VLIB_TX)
+	vlib_node_increment_counter (vm, node->node_index, NPT66_ERROR_TX, 1);
+      else
+	vlib_node_increment_counter (vm, node->node_index, NPT66_ERROR_RX, 1);
 
-      /*next: */
+    next:
       next += 1;
       n_left_from -= 1;
       b += 1;
@@ -260,8 +342,8 @@ VLIB_REGISTER_NODE(npt66_input_node) = {
     .vector_size = sizeof(u32),
     .format_trace = format_npt66_trace,
     .type = VLIB_NODE_TYPE_INTERNAL,
-    // .n_errors = NPT66_N_ERROR,
-    // .error_counters = npt66_error_counters,
+    .n_errors = NPT66_N_ERROR,
+    .error_counters = npt66_error_counters,
     .n_next_nodes = NPT66_N_NEXT,
     .next_nodes =
         {
@@ -274,8 +356,8 @@ VLIB_REGISTER_NODE (npt66_output_node) = {
   .vector_size = sizeof (u32),
   .format_trace = format_npt66_trace,
   .type = VLIB_NODE_TYPE_INTERNAL,
-  // .n_errors = npt66_N_ERROR,
-  // .error_counters = npt66_error_counters,
+  .n_errors = NPT66_N_ERROR,
+  .error_counters = npt66_error_counters,
   .sibling_of = "npt66-input",
 };
 

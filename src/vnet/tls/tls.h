@@ -39,15 +39,16 @@
 /* *INDENT-OFF* */
 typedef struct tls_cxt_id_
 {
-  union {
-    session_handle_t app_session_handle;
-    u32 parent_app_api_ctx;
-  };
+  session_handle_t app_session_handle;
   session_handle_t tls_session_handle;
   void *migrate_ctx;
   u32 parent_app_wrk_index;
   u32 ssl_ctx;
-  u32 listener_ctx_index;
+  union
+  {
+    u32 listener_ctx_index;
+    u32 parent_app_api_ctx;
+  };
   u8 tcp_is_ip4;
   u8 tls_engine_id;
 } tls_ctx_id_t;
@@ -55,6 +56,28 @@ typedef struct tls_cxt_id_
 
 STATIC_ASSERT (sizeof (tls_ctx_id_t) <= TRANSPORT_CONN_ID_LEN,
 	       "ctx id must be less than TRANSPORT_CONN_ID_LEN");
+
+#define foreach_tls_conn_flags                                                \
+  _ (HO_DONE, "ho-done")                                                      \
+  _ (PASSIVE_CLOSE, "passive-close")                                          \
+  _ (APP_CLOSED, "app-closed")                                                \
+  _ (MIGRATED, "migrated")                                                    \
+  _ (NO_APP_SESSION, "no-app-session")                                        \
+  _ (RESUME, "resume")
+
+typedef enum tls_conn_flags_bit_
+{
+#define _(sym, str) TLS_CONN_F_BIT_##sym,
+  foreach_tls_conn_flags
+#undef _
+} tls_conn_flags_bit_t;
+
+typedef enum tls_conn_flags_
+{
+#define _(sym, str) TLS_CONN_F_##sym = 1 << TLS_CONN_F_BIT_##sym,
+  foreach_tls_conn_flags
+#undef _
+} __clib_packed tls_conn_flags_t;
 
 typedef struct tls_ctx_
 {
@@ -76,11 +99,7 @@ typedef struct tls_ctx_
 #define parent_app_api_context c_tls_ctx_id.parent_app_api_ctx
 #define migration_ctx	       c_tls_ctx_id.migrate_ctx
 
-  u8 is_passive_close;
-  u8 resume;
-  u8 app_closed;
-  u8 no_app_session;
-  u8 is_migrated;
+  tls_conn_flags_t flags;
   u8 *srv_hostname;
   u32 evt_index;
   u32 ckpair_index;
@@ -92,6 +111,8 @@ typedef struct tls_main_
   u32 app_index;
   tls_ctx_t *listener_ctx_pool;
   tls_ctx_t *half_open_ctx_pool;
+  u32 *postponed_ho_free;
+  u32 *ho_free_list;
   u8 **rx_bufs;
   u8 **tx_bufs;
 
@@ -123,6 +144,7 @@ typedef struct tls_engine_vft_
   int (*ctx_start_listen) (tls_ctx_t * ctx);
   int (*ctx_stop_listen) (tls_ctx_t * ctx);
   int (*ctx_transport_close) (tls_ctx_t * ctx);
+  int (*ctx_transport_reset) (tls_ctx_t *ctx);
   int (*ctx_app_close) (tls_ctx_t * ctx);
   int (*ctx_reinit_cachain) (void);
 } tls_engine_vft_t;
@@ -140,6 +162,10 @@ void tls_notify_app_enqueue (tls_ctx_t * ctx, session_t * app_session);
 void tls_notify_app_io_error (tls_ctx_t *ctx);
 void tls_disconnect_transport (tls_ctx_t * ctx);
 int tls_reinit_ca_chain (crypto_engine_type_t tls_engine_id);
+
+void tls_add_postponed_ho_cleanups (u32 ho_index);
+void tls_flush_postponed_ho_cleanups ();
+
 #endif /* SRC_VNET_TLS_TLS_H_ */
 
 /*

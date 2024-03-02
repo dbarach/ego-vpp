@@ -92,7 +92,7 @@ vl_api_dhcp6_duid_ll_set_t_handler (vl_api_dhcp6_duid_ll_set_t * mp)
   int rv = 0;
 
   duid = (dhcpv6_duid_ll_string_t *) mp->duid_ll;
-  if (duid->duid_type != htonl (DHCPV6_DUID_LL))
+  if (duid->duid_type != htons (DHCPV6_DUID_LL))
     {
       rv = VNET_API_ERROR_INVALID_VALUE;
       goto reply;
@@ -645,6 +645,31 @@ call_dhcp6_reply_event_callbacks (void *data,
   return error;
 }
 
+static void
+vl_api_dhcp_client_detect_enable_disable_t_handler (
+  vl_api_dhcp_client_detect_enable_disable_t *mp)
+{
+  vl_api_dhcp_client_detect_enable_disable_reply_t *rmp;
+  int rv = 0;
+  VALIDATE_SW_IF_INDEX (mp);
+
+  if (mp->enable)
+    {
+      vnet_feature_enable_disable ("ip4-unicast", "ip4-dhcp-client-detect",
+				   clib_net_to_host_u32 (mp->sw_if_index),
+				   1 /* enable */, 0, 0);
+    }
+  else
+    {
+      vnet_feature_enable_disable ("ip4-unicast", "ip4-dhcp-client-detect",
+				   clib_net_to_host_u32 (mp->sw_if_index),
+				   0 /* disable */, 0, 0);
+    }
+
+  BAD_SW_IF_INDEX_LABEL;
+
+  REPLY_MACRO (VL_API_DHCP_CLIENT_DETECT_ENABLE_DISABLE_REPLY);
+}
 static uword
 dhcp6_reply_process (vlib_main_t * vm, vlib_node_runtime_t * rt,
 		     vlib_frame_t * f)

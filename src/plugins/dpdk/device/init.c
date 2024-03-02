@@ -360,12 +360,13 @@ dpdk_lib_init (dpdk_main_t * dm)
 			       pci_dev->addr.devid, pci_dev->addr.function);
 	  else
 	    xd->name = format (xd->name, "%u", port_id);
-	}
 
-      /* Handle representor devices that share the same PCI ID */
-      if ((di.switch_info.domain_id != RTE_ETH_DEV_SWITCH_DOMAIN_ID_INVALID) &&
-	  (di.switch_info.port_id != (uint16_t) -1))
-	xd->name = format (xd->name, "/%d", di.switch_info.port_id);
+	  /* Handle representor devices that share the same PCI ID */
+	  if ((di.switch_info.domain_id !=
+	       RTE_ETH_DEV_SWITCH_DOMAIN_ID_INVALID) &&
+	      (di.switch_info.port_id != (uint16_t) -1))
+	    xd->name = format (xd->name, "/%d", di.switch_info.port_id);
+	}
 
       /* number of RX and TX queues */
       if (devconf->num_tx_queues > 0)
@@ -457,7 +458,7 @@ dpdk_lib_init (dpdk_main_t * dm)
 	hi->numa_node = xd->cpu_socket = numa_node;
       sw = vnet_get_hw_sw_interface (vnm, xd->hw_if_index);
       xd->sw_if_index = sw->sw_if_index;
-      dpdk_log_debug ("[%u] interface %s created", port_id, hi->name);
+      dpdk_log_debug ("[%u] interface %v created", port_id, hi->name);
 
       if (devconf->tag)
 	vnet_set_sw_interface_tag (vnm, devconf->tag, sw->sw_if_index);
@@ -640,7 +641,8 @@ dpdk_bind_devices_to_uio (dpdk_config_main_t * conf)
 	     (d->device_id == 0x0443 || d->device_id == 0x18a1 ||
 	      d->device_id == 0x19e3 || d->device_id == 0x37c9 ||
 	      d->device_id == 0x6f55 || d->device_id == 0x18ef ||
-	      d->device_id == 0x4941))
+	      d->device_id == 0x4941 || d->device_id == 0x4943 ||
+	      d->device_id == 0x4945))
       ;
     /* Cisco VIC */
     else if (d->vendor_id == 0x1137 &&
@@ -668,10 +670,28 @@ dpdk_bind_devices_to_uio (dpdk_config_main_t * conf)
       {
         continue;
       }
-    /* Mellanox CX6, CX6VF, CX6DX, CX6DXVF */
-    else if (d->vendor_id == 0x15b3 && d->device_id >= 0x101b && d->device_id <= 0x101e)
+    /* Mellanox CX6, CX6VF, CX6DX, CX6DXVF, CX6LX */
+    else if (d->vendor_id == 0x15b3 &&
+	     (d->device_id >= 0x101b && d->device_id <= 0x101f))
       {
-        continue;
+	continue;
+      }
+    /* Mellanox CX7 */
+    else if (d->vendor_id == 0x15b3 && d->device_id == 0x1021)
+      {
+	continue;
+      }
+    /* Mellanox BF, BFVF */
+    else if (d->vendor_id == 0x15b3 &&
+	     (d->device_id >= 0xa2d2 && d->device_id <= 0Xa2d3))
+      {
+	continue;
+      }
+    /* Mellanox BF2, BF3 */
+    else if (d->vendor_id == 0x15b3 &&
+	     (d->device_id == 0xa2d6 || d->device_id == 0xa2dc))
+      {
+	continue;
       }
     /* Broadcom NetXtreme S, and E series only */
     else if (d->vendor_id == 0x14e4 &&

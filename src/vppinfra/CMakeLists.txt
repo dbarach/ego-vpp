@@ -71,9 +71,6 @@ set(VPPINFRA_SRCS
   mhash.c
   mpcap.c
   pcap.c
-  perfmon/bundle_default.c
-  perfmon/bundle_core_power.c
-  perfmon/perfmon.c
   pmalloc.c
   pool.c
   ptclosure.c
@@ -132,6 +129,7 @@ set(VPPINFRA_HEADERS
   crypto/ghash.h
   crypto/aes.h
   crypto/aes_cbc.h
+  crypto/aes_ctr.h
   crypto/aes_gcm.h
   crypto/poly1305.h
   dlist.h
@@ -219,6 +217,15 @@ if("${CMAKE_SYSTEM_NAME}" STREQUAL "Linux")
     linux/mem.c
     linux/sysfs.c
     linux/netns.c
+# TODO: Temporarily don't build perfmon on non-Linux
+    perfmon/bundle_default.c
+    perfmon/bundle_core_power.c
+    perfmon/perfmon.c
+   )
+elseif("${CMAKE_SYSTEM_NAME}" STREQUAL "FreeBSD")
+  list(APPEND VPPINFRA_SRCS
+    elf_clib.c
+    freebsd/mem.c
    )
 endif()
 
@@ -249,6 +256,7 @@ if(VPP_BUILD_VPPINFRA_TESTS)
     fpool
     hash
     heap
+    interrupt
     longjmp
     macros
     maplog
@@ -284,6 +292,7 @@ endif(VPP_BUILD_VPPINFRA_TESTS)
 
 set(test_files
   test/aes_cbc.c
+  test/aes_ctr.c
   test/aes_gcm.c
   test/poly1305.c
   test/array_mask.c

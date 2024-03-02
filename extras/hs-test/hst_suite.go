@@ -1,10 +1,10 @@
 package main
 
 import (
+	"bufio"
 	"errors"
 	"flag"
 	"fmt"
-	"io/ioutil"
 	"os"
 	"os/exec"
 	"strings"
@@ -103,7 +103,54 @@ func (s *HstSuite) setupContainers() {
 	}
 }
 
+func logVppInstance(container *Container, maxLines int){
+	if container.vppInstance == nil{
+		return
+	}
+
+	logSource := container.getHostWorkDir() + defaultLogFilePath
+	file, err := os.Open(logSource)
+
+	if err != nil{
+		return
+	}
+	defer file.Close()
+
+	scanner := bufio.NewScanner(file)
+	var lines []string
+	var counter int
+
+	for scanner.Scan(){
+		lines = append(lines, scanner.Text())
+		counter++
+		if counter > maxLines {
+			lines = lines[1:]
+			counter--
+		}
+	}
+
+	fmt.Println("vvvvvvvvvvvvvvv " + container.name + " [VPP instance]:")
+	for _, line := range lines{
+		fmt.Println(line)
+	}
+	fmt.Printf("^^^^^^^^^^^^^^^\n\n")
+
+}
+
 func (s *HstSuite) hstFail() {
+	fmt.Println("Containers: " + fmt.Sprint(s.containers))
+	for _, container := range s.containers{
+		out, err := container.log(20)
+		if err != nil{
+			fmt.Printf("An error occured while obtaining '%s' container logs: %s\n", container.name, fmt.Sprint(err))
+			break
+		}
+		fmt.Printf("\nvvvvvvvvvvvvvvv " +
+					container.name + ":\n" +
+					out +
+					"^^^^^^^^^^^^^^^\n\n")
+		logVppInstance(container, 20)
+	}
 	s.T().FailNow()
 }
 
@@ -209,7 +256,7 @@ func (s *HstSuite) getTransientContainerByName(name string) *Container {
 }
 
 func (s *HstSuite) loadContainerTopology(topologyName string) {
-	data, err := ioutil.ReadFile(containerTopologyDir + topologyName + ".yaml")
+	data, err := os.ReadFile(containerTopologyDir + topologyName + ".yaml")
 	if err != nil {
 		s.T().Fatalf("read error: %v", err)
 	}
@@ -222,13 +269,15 @@ func (s *HstSuite) loadContainerTopology(topologyName string) {
 	for _, elem := range yamlTopo.Volumes {
 		volumeMap := elem["volume"].(VolumeConfig)
 		hostDir := volumeMap["host-dir"].(string)
+		workingVolumeDir := logDir + s.T().Name() + volumeDir
+		volDirReplacer := strings.NewReplacer("$HST_VOLUME_DIR", workingVolumeDir)
+		hostDir = volDirReplacer.Replace(hostDir)
 		s.volumes = append(s.volumes, hostDir)
 	}
 
 	s.containers = make(map[string]*Container)
 	for _, elem := range yamlTopo.Containers {
-		newContainer, err := newContainer(elem)
-		newContainer.suite = s
+		newContainer, err := newContainer(s, elem)
 		if err != nil {
 			s.T().Fatalf("container config error: %v", err)
 		}
@@ -237,7 +286,7 @@ func (s *HstSuite) loadContainerTopology(topologyName string) {
 }
 
 func (s *HstSuite) loadNetworkTopology(topologyName string) {
-	data, err := ioutil.ReadFile(networkTopologyDir + topologyName + ".yaml")
+	data, err := os.ReadFile(networkTopologyDir + topologyName + ".yaml")
 	if err != nil {
 		s.T().Fatalf("read error: %v", err)
 	}
@@ -368,7 +417,7 @@ func (s *HstSuite) startHttpServer(running chan struct{}, done chan struct{}, ad
 	err := cmd.Start()
 	s.log(cmd)
 	if err != nil {
-		fmt.Println("Failed to start http server")
+		fmt.Println("Failed to start http server: " + fmt.Sprint(err))
 		return
 	}
 	running <- struct{}{}

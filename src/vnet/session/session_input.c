@@ -77,10 +77,12 @@ app_worker_flush_events_inline (app_worker_t *app_wrk, u32 thread_index,
 {
   application_t *app = application_get (app_wrk->app_index);
   svm_msg_q_t *mq = app_wrk->event_queue;
+  u8 ring_index, mq_is_cong;
+  session_state_t old_state;
   session_event_t *evt;
   u32 n_evts = 128, i;
-  u8 ring_index, mq_is_cong;
   session_t *s;
+  int rv;
 
   n_evts = clib_min (n_evts, clib_fifo_elts (app_wrk->wrk_evts[thread_index]));
 
@@ -113,16 +115,20 @@ app_worker_flush_events_inline (app_worker_t *app_wrk, u32 thread_index,
 	  s = session_get (evt->session_index, thread_index);
 	  s->flags &= ~SESSION_F_RX_EVT;
 	  /* Application didn't confirm accept yet */
-	  if (PREDICT_FALSE (s->session_state == SESSION_STATE_ACCEPTING))
+	  if (PREDICT_FALSE (s->session_state == SESSION_STATE_ACCEPTING ||
+			     s->session_state == SESSION_STATE_CONNECTING))
 	    break;
 	  app->cb_fns.builtin_app_rx_callback (s);
 	  break;
 	/* Handle sessions that might not be on current thread */
 	case SESSION_IO_EVT_BUILTIN_RX:
 	  s = session_get_from_handle_if_valid (evt->session_handle);
-	  if (!s || s->session_state == SESSION_STATE_ACCEPTING)
+	  if (!s)
 	    break;
 	  s->flags &= ~SESSION_F_RX_EVT;
+	  if (PREDICT_FALSE (s->session_state == SESSION_STATE_ACCEPTING ||
+			     s->session_state == SESSION_STATE_CONNECTING))
+	    break;
 	  app->cb_fns.builtin_app_rx_callback (s);
 	  break;
 	case SESSION_IO_EVT_TX:
@@ -139,37 +145,72 @@ app_worker_flush_events_inline (app_worker_t *app_wrk, u32 thread_index,
 	  /* No app cb function currently */
 	  if (is_builtin)
 	    break;
-	  mq_send_session_bound_cb (app_wrk->wrk_index, evt->as_u64[1] >> 32,
-				    evt->session_handle,
-				    evt->as_u64[1] & 0xffffffff);
+	  app->cb_fns.session_listened_callback (
+	    app_wrk->wrk_index, evt->as_u64[1] >> 32, evt->session_handle,
+	    evt->as_u64[1] & 0xffffffff);
 	  break;
 	case SESSION_CTRL_EVT_ACCEPTED:
 	  s = session_get (evt->session_index, thread_index);
-	  app->cb_fns.session_accept_callback (s);
+	  old_state = s->session_state;
+	  if (app->cb_fns.session_accept_callback (s))
+	    {
+	      session_close (s);
+	      s->app_wrk_index = SESSION_INVALID_INDEX;
+	      break;
+	    }
+	  if (is_builtin)
+	    {
+	      if (old_state >= SESSION_STATE_TRANSPORT_CLOSING)
+		{
+		  session_set_state (s,
+				     clib_max (old_state, s->session_state));
+		  if (!(s->flags & SESSION_F_APP_CLOSED))
+		    app->cb_fns.session_disconnect_callback (s);
+		}
+	    }
 	  break;
 	case SESSION_CTRL_EVT_CONNECTED:
 	  if (!(evt->as_u64[1] & 0xffffffff))
-	    s = session_get (evt->session_index, thread_index);
+	    {
+	      s = session_get (evt->session_index, thread_index);
+	      old_state = s->session_state;
+	    }
 	  else
 	    s = 0;
-	  app->cb_fns.session_connected_callback (app_wrk->wrk_index,
-						  evt->as_u64[1] >> 32, s,
-						  evt->as_u64[1] & 0xffffffff);
+	  rv = app->cb_fns.session_connected_callback (
+	    app_wrk->wrk_index, evt->as_u64[1] >> 32, s,
+	    evt->as_u64[1] & 0xffffffff);
+	  if (!s)
+	    break;
+	  if (rv)
+	    {
+	      session_close (s);
+	      s->app_wrk_index = SESSION_INVALID_INDEX;
+	      break;
+	    }
+	  if (old_state >= SESSION_STATE_TRANSPORT_CLOSING)
+	    {
+	      session_set_state (s, clib_max (old_state, s->session_state));
+	      if (!(s->flags & SESSION_F_APP_CLOSED))
+		app->cb_fns.session_disconnect_callback (s);
+	    }
 	  break;
 	case SESSION_CTRL_EVT_DISCONNECTED:
 	  s = session_get (evt->session_index, thread_index);
-	  app->cb_fns.session_disconnect_callback (s);
+	  if (!(s->flags & SESSION_F_APP_CLOSED))
+	    app->cb_fns.session_disconnect_callback (s);
 	  break;
 	case SESSION_CTRL_EVT_RESET:
 	  s = session_get (evt->session_index, thread_index);
-	  app->cb_fns.session_reset_callback (s);
+	  if (!(s->flags & SESSION_F_APP_CLOSED))
+	    app->cb_fns.session_reset_callback (s);
 	  break;
 	case SESSION_CTRL_EVT_UNLISTEN_REPLY:
 	  if (is_builtin)
 	    break;
-	  mq_send_unlisten_reply (app_wrk, evt->session_handle,
-				  evt->as_u64[1] >> 32,
-				  evt->as_u64[1] & 0xffffffff);
+	  app->cb_fns.session_unlistened_callback (
+	    app_wrk->wrk_index, evt->session_handle, evt->as_u64[1] >> 32,
+	    evt->as_u64[1] & 0xffffffff);
 	  break;
 	case SESSION_CTRL_EVT_MIGRATED:
 	  s = session_get (evt->session_index, thread_index);

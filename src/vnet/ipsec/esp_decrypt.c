@@ -161,6 +161,9 @@ esp_remove_tail (vlib_main_t * vm, vlib_buffer_t * b, vlib_buffer_t * last,
 {
   vlib_buffer_t *before_last = b;
 
+  if (b != last)
+    b->total_length_not_including_first_buffer -= tail;
+
   if (last->current_length > tail)
     {
       last->current_length -= tail;
@@ -176,6 +179,37 @@ esp_remove_tail (vlib_main_t * vm, vlib_buffer_t * b, vlib_buffer_t * last,
   before_last->current_length -= tail - last->current_length;
   vlib_buffer_free_one (vm, before_last->next_buffer);
   before_last->flags &= ~VLIB_BUFFER_NEXT_PRESENT;
+}
+
+always_inline void
+esp_remove_tail_and_tfc_padding (vlib_main_t *vm, vlib_node_runtime_t *node,
+				 const esp_decrypt_packet_data_t *pd,
+				 vlib_buffer_t *b, vlib_buffer_t *last,
+				 u16 *next, u16 tail, int is_ip6)
+{
+  const u16 total_buffer_length = vlib_buffer_length_in_chain (vm, b);
+  u16 ip_packet_length;
+  if (is_ip6)
+    {
+      const ip6_header_t *ip6 = vlib_buffer_get_current (b);
+      ip_packet_length =
+	clib_net_to_host_u16 (ip6->payload_length) + sizeof (ip6_header_t);
+    }
+  else
+    {
+      const ip4_header_t *ip4 = vlib_buffer_get_current (b);
+      ip_packet_length = clib_net_to_host_u16 (ip4->length);
+    }
+  /* In case of TFC padding, the size of the buffer data needs to be adjusted
+   * to the ip packet length */
+  if (PREDICT_FALSE (total_buffer_length < ip_packet_length + tail))
+    {
+      esp_decrypt_set_next_index (b, node, vm->thread_index,
+				  ESP_DECRYPT_ERROR_NO_TAIL_SPACE, 0, next,
+				  ESP_DECRYPT_NEXT_DROP, pd->sa_index);
+      return;
+    }
+  esp_remove_tail (vm, b, last, total_buffer_length - ip_packet_length);
 }
 
 /* ICV is splitted in last two buffers so move it to the last buffer and
@@ -203,9 +237,12 @@ esp_move_icv (vlib_main_t * vm, vlib_buffer_t * first,
   before_last->current_length -= first_sz;
   if (before_last == first)
     pd->current_length -= first_sz;
+  else
+    first->total_length_not_including_first_buffer -= first_sz;
   clib_memset (vlib_buffer_get_tail (before_last), 0, first_sz);
   if (dif)
     dif[0] = first_sz;
+  first->total_length_not_including_first_buffer -= last_sz;
   pd2->lb = before_last;
   pd2->icv_removed = 1;
   pd2->free_buffer_index = before_last->next_buffer;
@@ -745,6 +782,7 @@ esp_decrypt_post_crypto (vlib_main_t *vm, vlib_node_runtime_t *node,
   const u8 tun_flags = IPSEC_SA_FLAG_IS_TUNNEL | IPSEC_SA_FLAG_IS_TUNNEL_V6;
   u8 pad_length = 0, next_header = 0;
   u16 icv_sz;
+  u64 n_lost;
 
   /*
    * redo the anti-reply check
@@ -753,32 +791,47 @@ esp_decrypt_post_crypto (vlib_main_t *vm, vlib_node_runtime_t *node,
    * check above we did so against the state of the window (W),
    * after packet s-1. So each of the packets in the sequence will be
    * accepted.
-   * This time s will be cheked against Ws-1, s+1 chceked against Ws
-   * (i.e. the window state is updated/advnaced)
-   * so this time the successive s+! packet will be dropped.
+   * This time s will be cheked against Ws-1, s+1 checked against Ws
+   * (i.e. the window state is updated/advanced)
+   * so this time the successive s+1 packet will be dropped.
    * This is a consequence of batching the decrypts. If the
-   * check-dcrypt-advance process was done for each packet it would
+   * check-decrypt-advance process was done for each packet it would
    * be fine. But we batch the decrypts because it's much more efficient
    * to do so in SW and if we offload to HW and the process is async.
    *
    * You're probably thinking, but this means an attacker can send the
-   * above sequence and cause VPP to perform decrpyts that will fail,
+   * above sequence and cause VPP to perform decrypts that will fail,
    * and that's true. But if the attacker can determine s (a valid
    * sequence number in the window) which is non-trivial, it can generate
    * a sequence s, s+1, s+2, s+3, ... s+n and nothing will prevent any
    * implementation, sequential or batching, from decrypting these.
    */
-  if (ipsec_sa_anti_replay_and_sn_advance (sa0, pd->seq, pd->seq_hi, true,
-					   NULL))
+  if (PREDICT_FALSE (ipsec_sa_is_set_ANTI_REPLAY_HUGE (sa0)))
     {
-      esp_decrypt_set_next_index (b, node, vm->thread_index,
-				  ESP_DECRYPT_ERROR_REPLAY, 0, next,
-				  ESP_DECRYPT_NEXT_DROP, pd->sa_index);
-      return;
+      if (ipsec_sa_anti_replay_and_sn_advance (sa0, pd->seq, pd->seq_hi, true,
+					       NULL, true))
+	{
+	  esp_decrypt_set_next_index (b, node, vm->thread_index,
+				      ESP_DECRYPT_ERROR_REPLAY, 0, next,
+				      ESP_DECRYPT_NEXT_DROP, pd->sa_index);
+	  return;
+	}
+      n_lost = ipsec_sa_anti_replay_advance (sa0, vm->thread_index, pd->seq,
+					     pd->seq_hi, true);
     }
-
-  u64 n_lost =
-    ipsec_sa_anti_replay_advance (sa0, vm->thread_index, pd->seq, pd->seq_hi);
+  else
+    {
+      if (ipsec_sa_anti_replay_and_sn_advance (sa0, pd->seq, pd->seq_hi, true,
+					       NULL, false))
+	{
+	  esp_decrypt_set_next_index (b, node, vm->thread_index,
+				      ESP_DECRYPT_ERROR_REPLAY, 0, next,
+				      ESP_DECRYPT_NEXT_DROP, pd->sa_index);
+	  return;
+	}
+      n_lost = ipsec_sa_anti_replay_advance (sa0, vm->thread_index, pd->seq,
+					     pd->seq_hi, false);
+    }
 
   vlib_prefetch_simple_counter (&ipsec_sa_err_counters[IPSEC_SA_ERROR_LOST],
 				vm->thread_index, pd->sa_index);
@@ -841,8 +894,7 @@ esp_decrypt_post_crypto (vlib_main_t *vm, vlib_node_runtime_t *node,
   u16 tail = sizeof (esp_footer_t) + pad_length + icv_sz;
   u16 tail_orig = sizeof (esp_footer_t) + pad_length + pd->icv_sz;
   b->flags &=
-    ~(VLIB_BUFFER_TOTAL_LENGTH_VALID | VNET_BUFFER_F_L4_CHECKSUM_COMPUTED |
-      VNET_BUFFER_F_L4_CHECKSUM_CORRECT);
+    ~(VNET_BUFFER_F_L4_CHECKSUM_COMPUTED | VNET_BUFFER_F_L4_CHECKSUM_CORRECT);
 
   if ((pd->flags & tun_flags) == 0 && !is_tun)	/* transport mode */
     {
@@ -892,14 +944,16 @@ esp_decrypt_post_crypto (vlib_main_t *vm, vlib_node_runtime_t *node,
 	  next[0] = ESP_DECRYPT_NEXT_IP4_INPUT;
 	  b->current_data = pd->current_data + adv;
 	  b->current_length = pd->current_length - adv;
-	  esp_remove_tail (vm, b, lb, tail);
+	  esp_remove_tail_and_tfc_padding (vm, node, pd, b, lb, next, tail,
+					   false);
 	}
       else if (next_header == IP_PROTOCOL_IPV6)
 	{
 	  next[0] = ESP_DECRYPT_NEXT_IP6_INPUT;
 	  b->current_data = pd->current_data + adv;
 	  b->current_length = pd->current_length - adv;
-	  esp_remove_tail (vm, b, lb, tail);
+	  esp_remove_tail_and_tfc_padding (vm, node, pd, b, lb, next, tail,
+					   true);
 	}
       else if (next_header == IP_PROTOCOL_MPLS_IN_IP)
 	{
@@ -1046,6 +1100,7 @@ esp_decrypt_inline (vlib_main_t *vm, vlib_node_runtime_t *node,
   u32 current_sa_index = ~0, current_sa_bytes = 0, current_sa_pkts = 0;
   const u8 esp_sz = sizeof (esp_header_t);
   ipsec_sa_t *sa0 = 0;
+  bool anti_replay_result;
   vnet_crypto_op_t _op, *op = &_op;
   vnet_crypto_op_t **crypto_ops;
   vnet_crypto_op_t **integ_ops;
@@ -1163,8 +1218,18 @@ esp_decrypt_inline (vlib_main_t *vm, vlib_node_runtime_t *node,
       pd->current_length = b[0]->current_length;
 
       /* anti-reply check */
-      if (ipsec_sa_anti_replay_and_sn_advance (sa0, pd->seq, ~0, false,
-					       &pd->seq_hi))
+      if (PREDICT_FALSE (ipsec_sa_is_set_ANTI_REPLAY_HUGE (sa0)))
+	{
+	  anti_replay_result = ipsec_sa_anti_replay_and_sn_advance (
+	    sa0, pd->seq, ~0, false, &pd->seq_hi, true);
+	}
+      else
+	{
+	  anti_replay_result = ipsec_sa_anti_replay_and_sn_advance (
+	    sa0, pd->seq, ~0, false, &pd->seq_hi, false);
+	}
+
+      if (anti_replay_result)
 	{
 	  err = ESP_DECRYPT_ERROR_REPLAY;
 	  esp_decrypt_set_next_index (b[0], node, thread_index, err, n_noop,
