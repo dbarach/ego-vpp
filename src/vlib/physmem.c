@@ -22,7 +22,6 @@
 #include <unistd.h>
 
 #include <vppinfra/clib.h>
-#include <vppinfra/linux/sysfs.h>
 #include <vlib/vlib.h>
 #include <vlib/physmem.h>
 #include <vlib/unix/unix.h>
@@ -163,13 +162,11 @@ show_physmem (vlib_main_t * vm,
   return 0;
 }
 
-/* *INDENT-OFF* */
 VLIB_CLI_COMMAND (show_physmem_command, static) = {
   .path = "show physmem",
   .short_help = "show physmem [verbose | detail | map]",
   .function = show_physmem,
 };
-/* *INDENT-ON* */
 
 static clib_error_t *
 vlib_physmem_config (vlib_main_t * vm, unformat_input_t * input)

@@ -53,6 +53,24 @@ clib_error_t *clib_file_contents (char *file, u8 ** result);
 /* As above but for /proc file system on Linux. */
 clib_error_t *unix_proc_file_contents (char *file, u8 ** result);
 
+/* Retrieve bitmap of online cpu cures */
+clib_bitmap_t *os_get_online_cpu_core_bitmap ();
+
+/* Retrieve bitmap of cpus vpp has affinity to */
+clib_bitmap_t *os_get_cpu_affinity_bitmap (int pid);
+
+/* Retrieve bitmap of online cpu nodes (sockets) */
+clib_bitmap_t *os_get_online_cpu_node_bitmap ();
+
+/* Retrieve bitmap of cpus with memory */
+clib_bitmap_t *os_get_cpu_with_memory_bitmap ();
+
+/* Retrieve bitmap of cpus on specific node */
+clib_bitmap_t *os_get_cpu_on_node_bitmap (int node);
+
+/* Retrieve physical core id of specific cpu, -1 if not available */
+int os_get_cpu_phys_core_id (int cpu);
+
 #endif /* included_clib_unix_h */
 
 /*

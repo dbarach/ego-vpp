@@ -52,9 +52,8 @@ ip6_ll_fib_create (u32 sw_if_index)
   vnet_main_t *vnm = vnet_get_main ();
   u8 *desc;
 
-  desc = format (NULL, "IP6-link-local:%U",
-		 format_vnet_sw_interface_name,
-		 vnm, vnet_get_sw_interface (vnm, sw_if_index));
+  desc = format (NULL, "IP6-link-local:%U", format_vnet_sw_if_index_name, vnm,
+		 sw_if_index);
 
   ip6_ll_table.ilt_fibs[sw_if_index] =
     ip6_fib_table_create_and_lock (FIB_SOURCE_IP6_ND,
@@ -64,7 +63,6 @@ ip6_ll_fib_create (u32 sw_if_index)
    * leave the default route as a drop, but fix fe::/10 to be a glean
    * via the interface.
    */
-    /* *INDENT-OFF* */
     fib_prefix_t pfx = {
 	.fp_proto = FIB_PROTOCOL_IP6,
 	.fp_len = 10,
@@ -90,7 +88,6 @@ ip6_ll_fib_create (u32 sw_if_index)
         1,
         NULL,
         FIB_ROUTE_PATH_FLAG_NONE);
-    /* *INDENT-ON* */
 }
 
 static void
@@ -350,13 +347,11 @@ ip6_ll_show_fib (vlib_main_t * vm,
   return 0;
 }
 
-/* *INDENT-OFF* */
 VLIB_CLI_COMMAND (ip6_show_fib_command, static) = {
     .path = "show ip6-ll",
     .short_help = "show ip6-ll [summary] [interface] [<ip6-addr>[/<width>]] [detail]",
     .function = ip6_ll_show_fib,
 };
-/* *INDENT-ON* */
 
 static clib_error_t *
 ip6_ll_sw_interface_add_del (vnet_main_t *vnm, u32 sw_if_index, u32 is_add)

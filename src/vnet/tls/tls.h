@@ -36,7 +36,6 @@
 #define TLS_DBG(_lvl, _fmt, _args...)
 #endif
 
-/* *INDENT-OFF* */
 typedef struct tls_cxt_id_
 {
   session_handle_t app_session_handle;
@@ -52,7 +51,6 @@ typedef struct tls_cxt_id_
   u8 tcp_is_ip4;
   u8 tls_engine_id;
 } tls_ctx_id_t;
-/* *INDENT-ON* */
 
 STATIC_ASSERT (sizeof (tls_ctx_id_t) <= TRANSPORT_CONN_ID_LEN,
 	       "ctx id must be less than TRANSPORT_CONN_ID_LEN");
@@ -63,7 +61,8 @@ STATIC_ASSERT (sizeof (tls_ctx_id_t) <= TRANSPORT_CONN_ID_LEN,
   _ (APP_CLOSED, "app-closed")                                                \
   _ (MIGRATED, "migrated")                                                    \
   _ (NO_APP_SESSION, "no-app-session")                                        \
-  _ (RESUME, "resume")
+  _ (RESUME, "resume")                                                        \
+  _ (HS_DONE, "handshake-done")
 
 typedef enum tls_conn_flags_bit_
 {

@@ -22,7 +22,9 @@
 #include <sched.h>
 
 #include <vppinfra/format.h>
+#ifdef __linux__
 #include <vppinfra/linux/sysfs.h>
+#endif
 #include <vppinfra/mem.h>
 #include <vppinfra/hash.h>
 #include <vppinfra/pmalloc.h>
@@ -631,7 +633,6 @@ format_pmalloc (u8 * s, va_list * va)
 		format_clib_error, pm->error);
 
 
-  /* *INDENT-OFF* */
   pool_foreach (a, pm->arenas)
     {
       u32 *page_index;
@@ -649,7 +650,6 @@ format_pmalloc (u8 * s, va_list * va)
 			format_pmalloc_page, pp, verbose);
 	  }
     }
-  /* *INDENT-ON* */
 
   return s;
 }

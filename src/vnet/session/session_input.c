@@ -154,8 +154,7 @@ app_worker_flush_events_inline (app_worker_t *app_wrk, u32 thread_index,
 	  old_state = s->session_state;
 	  if (app->cb_fns.session_accept_callback (s))
 	    {
-	      session_close (s);
-	      s->app_wrk_index = SESSION_INVALID_INDEX;
+	      session_detach_app (s);
 	      break;
 	    }
 	  if (is_builtin)
@@ -184,8 +183,7 @@ app_worker_flush_events_inline (app_worker_t *app_wrk, u32 thread_index,
 	    break;
 	  if (rv)
 	    {
-	      session_close (s);
-	      s->app_wrk_index = SESSION_INVALID_INDEX;
+	      session_detach_app (s);
 	      break;
 	    }
 	  if (old_state >= SESSION_STATE_TRANSPORT_CLOSING)
@@ -225,13 +223,20 @@ app_worker_flush_events_inline (app_worker_t *app_wrk, u32 thread_index,
 	  break;
 	case SESSION_CTRL_EVT_TRANSPORT_CLOSED:
 	  s = session_get (evt->session_index, thread_index);
+	  /* Notification enqueued before session was refused by app */
+	  if (PREDICT_FALSE (s->app_wrk_index == APP_INVALID_INDEX))
+	    break;
 	  if (app->cb_fns.session_transport_closed_callback)
 	    app->cb_fns.session_transport_closed_callback (s);
 	  break;
 	case SESSION_CTRL_EVT_CLEANUP:
 	  s = session_get (evt->as_u64[0] & 0xffffffff, thread_index);
-	  if (app->cb_fns.session_cleanup_callback)
-	    app->cb_fns.session_cleanup_callback (s, evt->as_u64[0] >> 32);
+	  /* Notification enqueued before session was refused by app */
+	  if (PREDICT_TRUE (s->app_wrk_index != APP_INVALID_INDEX))
+	    {
+	      if (app->cb_fns.session_cleanup_callback)
+		app->cb_fns.session_cleanup_callback (s, evt->as_u64[0] >> 32);
+	    }
 	  if (evt->as_u64[0] >> 32 != SESSION_CLEANUP_SESSION)
 	    break;
 	  uword_to_pointer (evt->as_u64[1], void (*) (session_t * s)) (s);

@@ -548,7 +548,6 @@ dpdk_bind_devices_to_uio (dpdk_config_main_t * conf)
   int i;
 
   addrs = vlib_pci_get_all_dev_addrs ();
-  /* *INDENT-OFF* */
   vec_foreach (addr, addrs)
     {
     dpdk_device_config_t * devconf = 0;
@@ -734,7 +733,6 @@ dpdk_bind_devices_to_uio (dpdk_config_main_t * conf)
 	clib_error_report (error);
       }
   }
-  /* *INDENT-ON* */
   vec_free (pci_addr);
   vlib_pci_free_device_info (d);
 }
@@ -749,7 +747,6 @@ dpdk_bind_vmbus_devices_to_uio (dpdk_config_main_t * conf)
 
   addrs = vlib_vmbus_get_all_dev_addrs ();
 
-  /* *INDENT-OFF* */
   vec_foreach (addr, addrs)
     {
       dpdk_device_config_t *devconf = 0;
@@ -814,7 +811,6 @@ dpdk_bind_vmbus_devices_to_uio (dpdk_config_main_t * conf)
 	  clib_error_report (error);
 	}
     }
-  /* *INDENT-ON* */
 }
 
 uword
@@ -1010,6 +1006,26 @@ dpdk_log_read_ready (clib_file_t * uf)
 }
 
 static clib_error_t *
+dpdk_set_stat_poll_interval (f64 interval)
+{
+  if (interval < DPDK_MIN_STATS_POLL_INTERVAL)
+    return clib_error_return (0, "wrong stats-poll-interval value");
+
+  dpdk_main.stat_poll_interval = interval;
+  return 0;
+}
+
+static clib_error_t *
+dpdk_set_link_state_poll_interval (f64 interval)
+{
+  if (interval < DPDK_MIN_LINK_POLL_INTERVAL)
+    return clib_error_return (0, "wrong link-state-poll-interval value");
+
+  dpdk_main.link_state_poll_interval = interval;
+  return 0;
+}
+
+static clib_error_t *
 dpdk_config (vlib_main_t * vm, unformat_input_t * input)
 {
   dpdk_main_t *dm = &dpdk_main;
@@ -1033,6 +1049,7 @@ dpdk_config (vlib_main_t * vm, unformat_input_t * input)
   u32 vendor, device, domain, bus, func;
   void *fmt_func;
   void *fmt_addr;
+  f64 poll_interval;
 
   huge_dir_path =
     format (0, "%s/hugepages%c", vlib_unix_get_runtime_dir (), 0);
@@ -1071,6 +1088,18 @@ dpdk_config (vlib_main_t * vm, unformat_input_t * input)
       else if (unformat (input, "max-simd-bitwidth %U",
 			 unformat_max_simd_bitwidth, &conf->max_simd_bitwidth))
 	;
+      else if (unformat (input, "link-state-poll-interval %f", &poll_interval))
+	{
+	  error = dpdk_set_link_state_poll_interval (poll_interval);
+	  if (error != 0)
+	    return error;
+	}
+      else if (unformat (input, "stats-poll-interval %f", &poll_interval))
+	{
+	  error = dpdk_set_stat_poll_interval (poll_interval);
+	  if (error != 0)
+	    return error;
+	}
       else if (unformat (input, "dev default %U", unformat_vlib_cli_sub_input,
 			 &sub_input))
 	{
@@ -1221,7 +1250,6 @@ dpdk_config (vlib_main_t * vm, unformat_input_t * input)
 
       default_hugepage_sz = clib_mem_get_default_hugepage_size ();
 
-      /* *INDENT-OFF* */
       clib_bitmap_foreach (x, tm->cpu_socket_bitmap)
 	{
 	  clib_error_t *e;
@@ -1234,7 +1262,6 @@ dpdk_config (vlib_main_t * vm, unformat_input_t * input)
 	  if ((e = clib_sysfs_prealloc_hugepages(x, 0, n_pages)))
 	    clib_error_report (e);
         }
-      /* *INDENT-ON* */
     }
 
   /* on/off dpdk's telemetry thread */
@@ -1499,15 +1526,16 @@ dpdk_process (vlib_main_t * vm, vlib_node_runtime_t * rt, vlib_frame_t * f)
     dpdk_update_link_state (xd, now);
   }
 
+  f64 timeout =
+    clib_min (dm->link_state_poll_interval, dm->stat_poll_interval);
+
   while (1)
     {
-      /*
-       * check each time through the loop in case intervals are changed
-       */
-      f64 min_wait = dm->link_state_poll_interval < dm->stat_poll_interval ?
-	dm->link_state_poll_interval : dm->stat_poll_interval;
-
+      f64 min_wait = clib_max (timeout, DPDK_MIN_POLL_INTERVAL);
       vlib_process_wait_for_event_or_clock (vm, min_wait);
+
+      timeout =
+	clib_min (dm->link_state_poll_interval, dm->stat_poll_interval);
 
       if (dm->admin_up_down_in_progress)
 	/* skip the poll if an admin up down is in progress (on any interface) */
@@ -1522,19 +1550,25 @@ dpdk_process (vlib_main_t * vm, vlib_node_runtime_t * rt, vlib_frame_t * f)
 	  dpdk_update_link_state (xd, now);
 
       }
-    }
 
+      now = vlib_time_now (vm);
+      vec_foreach (xd, dm->devices)
+	{
+	  timeout = clib_min (timeout, xd->time_last_stats_update +
+					 dm->stat_poll_interval - now);
+	  timeout = clib_min (timeout, xd->time_last_link_update +
+					 dm->link_state_poll_interval - now);
+	}
+    }
   return 0;
 }
 
-/* *INDENT-OFF* */
 VLIB_REGISTER_NODE (dpdk_process_node,static) = {
     .function = dpdk_process,
     .type = VLIB_NODE_TYPE_PROCESS,
     .name = "dpdk-process",
     .process_log2_n_stack_bytes = 17,
 };
-/* *INDENT-ON* */
 
 static clib_error_t *
 dpdk_init (vlib_main_t * vm)

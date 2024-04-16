@@ -15,10 +15,13 @@
 #include <base/roc_api.h>
 #include <dev_octeon/hw_defs.h>
 
+#define OCT_BATCH_ALLOC_IOVA0_MASK 0xFFFFFFFFFFFFFF80
+
 typedef enum
 {
   OCT_DEVICE_TYPE_UNKNOWN = 0,
   OCT_DEVICE_TYPE_RVU_PF,
+  OCT_DEVICE_TYPE_RVU_VF,
   OCT_DEVICE_TYPE_CPT_VF,
 } __clib_packed oct_device_type_t;
 
@@ -71,12 +74,14 @@ typedef struct
 typedef struct
 {
   CLIB_ALIGN_MARK (cl, 128);
-  union
-  {
-    struct npa_batch_alloc_status_s status;
-    u64 iova[16];
-  };
+  u64 iova[16];
 } oct_npa_batch_alloc_cl128_t;
+
+typedef union
+{
+  struct npa_batch_alloc_status_s status;
+  u64 as_u64;
+} oct_npa_batch_alloc_status_t;
 
 STATIC_ASSERT_SIZEOF (oct_npa_batch_alloc_cl128_t, 128);
 

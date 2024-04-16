@@ -97,6 +97,13 @@ session_send_io_evt_to_thread_custom (void *data, u32 thread_index,
 }
 
 int
+session_program_tx_io_evt (session_handle_tu_t sh, session_evt_type_t evt_type)
+{
+  return session_send_evt_to_thread ((void *) &sh.session_index, 0,
+				     (u32) sh.thread_index, evt_type);
+}
+
+int
 session_send_ctrl_evt_to_thread (session_t * s, session_evt_type_t evt_type)
 {
   /* only events supported are disconnect, shutdown and reset */
@@ -1432,13 +1439,11 @@ session_open_app (session_endpoint_cfg_t *rmt, session_handle_t *rsh)
 typedef int (*session_open_service_fn) (session_endpoint_cfg_t *,
 					session_handle_t *);
 
-/* *INDENT-OFF* */
 static session_open_service_fn session_open_srv_fns[TRANSPORT_N_SERVICES] = {
   session_open_vc,
   session_open_cl,
   session_open_app,
 };
-/* *INDENT-ON* */
 
 /**
  * Ask transport to open connection to remote transport endpoint.
@@ -1589,6 +1594,20 @@ session_reset (session_t * s)
     svm_fifo_dequeue_drop_all (s->tx_fifo);
   session_set_state (s, SESSION_STATE_CLOSING);
   session_program_transport_ctrl_evt (s, SESSION_CTRL_EVT_RESET);
+}
+
+void
+session_detach_app (session_t *s)
+{
+  if (s->session_state < SESSION_STATE_TRANSPORT_CLOSING)
+    session_close (s);
+  else if (s->session_state < SESSION_STATE_TRANSPORT_CLOSED)
+    session_set_state (s, SESSION_STATE_APP_CLOSED);
+  else if (s->session_state < SESSION_STATE_CLOSED)
+    session_set_state (s, SESSION_STATE_CLOSED);
+
+  s->flags |= SESSION_F_APP_CLOSED;
+  s->app_wrk_index = APP_INVALID_INDEX;
 }
 
 /**
@@ -1771,14 +1790,12 @@ session_get_original_dst (transport_endpoint_t *i2o_src,
 			    original_dst_port);
 }
 
-/* *INDENT-OFF* */
 static session_fifo_rx_fn *session_tx_fns[TRANSPORT_TX_N_FNS] = {
     session_tx_fifo_peek_and_snd,
     session_tx_fifo_dequeue_and_snd,
     session_tx_fifo_dequeue_internal,
     session_tx_fifo_dequeue_and_snd
 };
-/* *INDENT-ON* */
 
 void
 session_register_transport (transport_proto_t transport_proto,

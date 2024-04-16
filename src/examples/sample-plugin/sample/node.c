@@ -690,7 +690,6 @@ VLIB_NODE_FN (sample_node) (vlib_main_t * vm, vlib_node_runtime_t * node,
 }
 #endif
 
-/* *INDENT-OFF* */
 VLIB_REGISTER_NODE (sample_node) =
 {
   .name = "sample",
@@ -708,7 +707,6 @@ VLIB_REGISTER_NODE (sample_node) =
     [SAMPLE_NEXT_INTERFACE_OUTPUT] = "interface-output",
   },
 };
-/* *INDENT-ON* */
 
 /*
  * fd.io coding-style-patch-verification: ON

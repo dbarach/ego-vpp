@@ -1266,7 +1266,7 @@ vppcom_session_unbind (u32 session_handle)
 	session->vpp_handle);
   vcl_evt (VCL_EVT_UNBIND, session);
 
-  session->vpp_handle = ~0;
+  session->vpp_handle = SESSION_INVALID_HANDLE;
   session->session_state = VCL_STATE_DISCONNECT;
 
   return VPPCOM_OK;
@@ -1440,12 +1440,10 @@ vppcom_app_destroy (void)
 
   current_wrk = vcl_worker_get_current ();
 
-  /* *INDENT-OFF* */
   pool_foreach (wrk, vcm->workers)  {
     if (current_wrk != wrk)
       vcl_worker_cleanup (wrk, 0 /* notify vpp */ );
   }
-  /* *INDENT-ON* */
 
   vcl_api_detach (current_wrk);
   vcl_worker_cleanup (current_wrk, 0 /* notify vpp */ );
@@ -1473,7 +1471,7 @@ vppcom_session_create (u8 proto, u8 is_nonblocking)
 
   session->session_type = proto;
   session->session_state = VCL_STATE_CLOSED;
-  session->vpp_handle = ~0;
+  session->vpp_handle = SESSION_INVALID_HANDLE;
   session->is_dgram = vcl_proto_is_dgram (proto);
   session->vpp_error = SESSION_E_NONE;
 
@@ -2820,7 +2818,7 @@ vppcom_epoll_create (void)
   vep_session->vep.vep_sh = ~0;
   vep_session->vep.next_sh = ~0;
   vep_session->vep.prev_sh = ~0;
-  vep_session->vpp_handle = ~0;
+  vep_session->vpp_handle = SESSION_INVALID_HANDLE;
 
   vcl_evt (VCL_EVT_EPOLL_CREATE, vep_session, vep_session->session_index);
   VDBG (0, "Created vep_idx %u", vep_session->session_index);
@@ -3587,7 +3585,19 @@ vppcom_session_attr (uint32_t session_handle, uint32_t op,
       VDBG (2, "VPPCOM_ATTR_GET_NWRITE: sh %u, nwrite = %d", session_handle,
 	    rv);
       break;
-
+    case VPPCOM_ATTR_GET_NWRITEQ:
+      if (PREDICT_FALSE (!buffer || !buflen || *buflen != sizeof (int)))
+	{
+	  rv = VPPCOM_EINVAL;
+	  break;
+	}
+      if (!session->tx_fifo || session->session_state == VCL_STATE_DETACHED)
+	{
+	  rv = VPPCOM_EINVAL;
+	  break;
+	}
+      *(int *) buffer = svm_fifo_max_dequeue (session->tx_fifo);
+      break;
     case VPPCOM_ATTR_GET_FLAGS:
       if (PREDICT_TRUE (buffer && buflen && (*buflen >= sizeof (*flags))))
 	{

@@ -263,22 +263,18 @@ openssl_check_async_status (tls_ctx_t * ctx, openssl_resume_handler * handler,
 static void
 openssl_handle_handshake_failure (tls_ctx_t * ctx)
 {
-  session_t *app_session;
+  /* Failed to renegotiate handshake */
+  if (ctx->flags & TLS_CONN_F_HS_DONE)
+    {
+      tls_notify_app_io_error (ctx);
+      tls_disconnect_transport (ctx);
+      return;
+    }
 
   if (SSL_is_server (((openssl_ctx_t *) ctx)->ssl))
     {
-      /*
-       * Cleanup pre-allocated app session and close transport
-       */
-      app_session =
-	session_get_if_valid (ctx->c_s_index, ctx->c_thread_index);
-      if (app_session)
-	{
-	  session_free (app_session);
-	  ctx->c_s_index = SESSION_INVALID_INDEX;
-	  tls_disconnect_transport (ctx);
-	}
       ctx->flags |= TLS_CONN_F_NO_APP_SESSION;
+      tls_disconnect_transport (ctx);
     }
   else
     {
@@ -334,6 +330,10 @@ openssl_ctx_handshake_rx (tls_ctx_t * ctx, session_t * tls_session)
   if (SSL_in_init (oc->ssl))
     return -1;
 
+  /* Renegotiated handshake, app must not be notified */
+  if (PREDICT_FALSE (ctx->flags & TLS_CONN_F_HS_DONE))
+    return 0;
+
   /*
    * Handshake complete
    */
@@ -379,7 +379,7 @@ openssl_ctx_handshake_rx (tls_ctx_t * ctx, session_t * tls_session)
 	  return -1;
 	}
     }
-
+  ctx->flags |= TLS_CONN_F_HS_DONE;
   TLS_DBG (1, "Handshake for %u complete. TLS cipher is %s",
 	   oc->openssl_ctx_index, SSL_get_cipher (oc->ssl));
   return rv;
@@ -455,8 +455,11 @@ check_tls_fifo:
       sp->flags |= TRANSPORT_SND_F_DESCHED;
     }
   else
-    /* Request tx reschedule of the app session */
-    app_session->flags |= SESSION_F_CUSTOM_TX;
+    {
+      /* Request tx reschedule of the app session */
+      if (wrote)
+	app_session->flags |= SESSION_F_CUSTOM_TX;
+    }
 
   return wrote;
 }
@@ -1231,12 +1234,10 @@ tls_openssl_init (vlib_main_t * vm)
 
   return error;
 }
-/* *INDENT-OFF* */
 VLIB_INIT_FUNCTION (tls_openssl_init) =
 {
   .runs_after = VLIB_INITS("tls_init"),
 };
-/* *INDENT-ON* */
 
 #ifdef HAVE_OPENSSL_ASYNC
 static clib_error_t *
@@ -1307,22 +1308,18 @@ tls_openssl_set_command_fn (vlib_main_t * vm, unformat_input_t * input,
   return 0;
 }
 
-/* *INDENT-OFF* */
 VLIB_CLI_COMMAND (tls_openssl_set_command, static) =
 {
   .path = "tls openssl set",
   .short_help = "tls openssl set [engine <engine name>] [alg [algorithm] [async]",
   .function = tls_openssl_set_command_fn,
 };
-/* *INDENT-ON* */
 #endif
 
-/* *INDENT-OFF* */
 VLIB_PLUGIN_REGISTER () = {
     .version = VPP_BUILD_VER,
     .description = "Transport Layer Security (TLS) Engine, OpenSSL Based",
 };
-/* *INDENT-ON* */
 
 /*
  * fd.io coding-style-patch-verification: ON

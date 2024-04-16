@@ -37,11 +37,16 @@
 
 #include <vppinfra/error.h>
 #include <vppinfra/os.h>
+#include <vppinfra/bitmap.h>
 #include <vppinfra/unix.h>
 #include <vppinfra/format.h>
+#ifdef __linux__
+#include <vppinfra/linux/sysfs.h>
+#endif
 
 #include <sys/stat.h>
 #include <sys/types.h>
+#include <sys/syscall.h>
 #include <sys/uio.h>		/* writev */
 #include <fcntl.h>
 #include <stdio.h>		/* for sprintf */
@@ -258,6 +263,99 @@ __clib_export __clib_weak uword
 os_get_nthreads (void)
 {
   return 1;
+}
+
+__clib_export clib_bitmap_t *
+os_get_online_cpu_core_bitmap ()
+{
+#if __linux__
+  return clib_sysfs_read_bitmap ("/sys/devices/system/cpu/online");
+#else
+  return 0;
+#endif
+}
+
+__clib_export clib_bitmap_t *
+os_get_cpu_affinity_bitmap (int pid)
+{
+#if __linux
+  int index, ret;
+  cpu_set_t cpuset;
+  uword *affinity_cpus;
+
+  clib_bitmap_alloc (affinity_cpus, sizeof (cpu_set_t));
+  clib_bitmap_zero (affinity_cpus);
+
+  __CPU_ZERO_S (sizeof (cpu_set_t), &cpuset);
+
+  ret = syscall (SYS_sched_getaffinity, 0, sizeof (cpu_set_t), &cpuset);
+
+  if (ret < 0)
+    {
+      clib_bitmap_free (affinity_cpus);
+      return 0;
+    }
+
+  for (index = 0; index < sizeof (cpu_set_t); index++)
+    if (__CPU_ISSET_S (index, sizeof (cpu_set_t), &cpuset))
+      clib_bitmap_set (affinity_cpus, index, 1);
+  return affinity_cpus;
+#else
+  return 0;
+#endif
+}
+
+__clib_export clib_bitmap_t *
+os_get_online_cpu_node_bitmap ()
+{
+#if __linux__
+  return clib_sysfs_read_bitmap ("/sys/devices/system/node/online");
+#else
+  return 0;
+#endif
+}
+__clib_export clib_bitmap_t *
+os_get_cpu_on_node_bitmap (int node)
+{
+#if __linux__
+  return clib_sysfs_read_bitmap ("/sys/devices/system/node/node%u/cpulist",
+				 node);
+#else
+  return 0;
+#endif
+}
+
+__clib_export clib_bitmap_t *
+os_get_cpu_with_memory_bitmap ()
+{
+#if __linux__
+  return clib_sysfs_read_bitmap ("/sys/devices/system/node/has_memory");
+#else
+  return 0;
+#endif
+}
+
+__clib_export int
+os_get_cpu_phys_core_id (int cpu_id)
+{
+#if __linux
+  int core_id = -1;
+  clib_error_t *err;
+  u8 *p;
+
+  p =
+    format (0, "/sys/devices/system/cpu/cpu%u/topology/core_id%c", cpu_id, 0);
+  err = clib_sysfs_read ((char *) p, "%d", &core_id);
+  vec_free (p);
+  if (err)
+    {
+      clib_error_free (err);
+      return -1;
+    }
+  return core_id;
+#else
+  return -1;
+#endif
 }
 
 /*

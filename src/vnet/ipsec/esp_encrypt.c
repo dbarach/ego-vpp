@@ -18,6 +18,7 @@
 #include <vnet/vnet.h>
 #include <vnet/api_errno.h>
 #include <vnet/ip/ip.h>
+#include <vnet/interface_output.h>
 
 #include <vnet/crypto/crypto.h>
 
@@ -94,8 +95,7 @@ format_esp_post_encrypt_trace (u8 * s, va_list * args)
 /* pad packet in input buffer */
 static_always_inline u8 *
 esp_add_footer_and_icv (vlib_main_t *vm, vlib_buffer_t **last, u8 esp_align,
-			u8 icv_sz, vlib_node_runtime_t *node,
-			u16 buffer_data_size, uword total_len)
+			u8 icv_sz, u16 buffer_data_size, uword total_len)
 {
   static const u8 pad_data[ESP_MAX_BLOCK_SIZE] = {
     0x01, 0x02, 0x03, 0x04, 0x05, 0x06, 0x07, 0x08,
@@ -149,11 +149,9 @@ esp_update_ip4_hdr (ip4_header_t * ip4, u16 len, int is_transport, int is_udp)
   if (is_transport)
     {
       u8 prot = is_udp ? IP_PROTOCOL_UDP : IP_PROTOCOL_IPSEC_ESP;
-
-      sum = ip_csum_update (ip4->checksum, ip4->protocol,
-			    prot, ip4_header_t, protocol);
+      sum = ip_csum_update (ip4->checksum, ip4->protocol, prot, ip4_header_t,
+			    protocol);
       ip4->protocol = prot;
-
       sum = ip_csum_update (sum, old_len, len, ip4_header_t, length);
     }
   else
@@ -664,6 +662,10 @@ esp_encrypt_inline (vlib_main_t *vm, vlib_node_runtime_t *node,
 			 CLIB_CACHE_LINE_BYTES, LOAD);
 	}
 
+      vnet_calc_checksums_inline (vm, b[0], b[0]->flags & VNET_BUFFER_F_IS_IP4,
+				  b[0]->flags & VNET_BUFFER_F_IS_IP6);
+      vnet_calc_outer_checksums_inline (vm, b[0]);
+
       if (is_tun)
 	{
 	  /* we are on a ipsec tunnel's feature arc */
@@ -769,7 +771,7 @@ esp_encrypt_inline (vlib_main_t *vm, vlib_node_runtime_t *node,
 	{
 	  payload = vlib_buffer_get_current (b[0]);
 	  next_hdr_ptr = esp_add_footer_and_icv (
-	    vm, &lb, esp_align, icv_sz, node, buffer_data_size,
+	    vm, &lb, esp_align, icv_sz, buffer_data_size,
 	    vlib_buffer_length_in_chain (vm, b[0]));
 	  if (!next_hdr_ptr)
 	    {
@@ -906,7 +908,7 @@ esp_encrypt_inline (vlib_main_t *vm, vlib_node_runtime_t *node,
 	  vlib_buffer_advance (b[0], ip_len);
 	  payload = vlib_buffer_get_current (b[0]);
 	  next_hdr_ptr = esp_add_footer_and_icv (
-	    vm, &lb, esp_align, icv_sz, node, buffer_data_size,
+	    vm, &lb, esp_align, icv_sz, buffer_data_size,
 	    vlib_buffer_length_in_chain (vm, b[0]));
 	  if (!next_hdr_ptr)
 	    {
@@ -1222,7 +1224,6 @@ VLIB_NODE_FN (esp4_encrypt_node) (vlib_main_t * vm,
 			     esp_encrypt_async_next.esp4_post_next);
 }
 
-/* *INDENT-OFF* */
 VLIB_REGISTER_NODE (esp4_encrypt_node) = {
   .name = "esp4-encrypt",
   .vector_size = sizeof (u32),
@@ -1241,7 +1242,6 @@ VLIB_REGISTER_NODE (esp4_encrypt_node) = {
 		  [ESP_ENCRYPT_NEXT_HANDOFF_MPLS] = "error-drop",
 		  [ESP_ENCRYPT_NEXT_INTERFACE_OUTPUT] = "interface-output" },
 };
-/* *INDENT-ON* */
 
 VLIB_NODE_FN (esp4_encrypt_post_node) (vlib_main_t * vm,
 				       vlib_node_runtime_t * node,
@@ -1250,7 +1250,6 @@ VLIB_NODE_FN (esp4_encrypt_post_node) (vlib_main_t * vm,
   return esp_encrypt_post_inline (vm, node, from_frame);
 }
 
-/* *INDENT-OFF* */
 VLIB_REGISTER_NODE (esp4_encrypt_post_node) = {
   .name = "esp4-encrypt-post",
   .vector_size = sizeof (u32),
@@ -1261,7 +1260,6 @@ VLIB_REGISTER_NODE (esp4_encrypt_post_node) = {
   .n_errors = ESP_ENCRYPT_N_ERROR,
   .error_counters = esp_encrypt_error_counters,
 };
-/* *INDENT-ON* */
 
 VLIB_NODE_FN (esp6_encrypt_node) (vlib_main_t * vm,
 				  vlib_node_runtime_t * node,
@@ -1271,7 +1269,6 @@ VLIB_NODE_FN (esp6_encrypt_node) (vlib_main_t * vm,
 			     esp_encrypt_async_next.esp6_post_next);
 }
 
-/* *INDENT-OFF* */
 VLIB_REGISTER_NODE (esp6_encrypt_node) = {
   .name = "esp6-encrypt",
   .vector_size = sizeof (u32),
@@ -1282,7 +1279,6 @@ VLIB_REGISTER_NODE (esp6_encrypt_node) = {
   .n_errors = ESP_ENCRYPT_N_ERROR,
   .error_counters = esp_encrypt_error_counters,
 };
-/* *INDENT-ON* */
 
 VLIB_NODE_FN (esp6_encrypt_post_node) (vlib_main_t * vm,
 				       vlib_node_runtime_t * node,
@@ -1291,7 +1287,6 @@ VLIB_NODE_FN (esp6_encrypt_post_node) (vlib_main_t * vm,
   return esp_encrypt_post_inline (vm, node, from_frame);
 }
 
-/* *INDENT-OFF* */
 VLIB_REGISTER_NODE (esp6_encrypt_post_node) = {
   .name = "esp6-encrypt-post",
   .vector_size = sizeof (u32),
@@ -1302,7 +1297,6 @@ VLIB_REGISTER_NODE (esp6_encrypt_post_node) = {
   .n_errors = ESP_ENCRYPT_N_ERROR,
   .error_counters = esp_encrypt_error_counters,
 };
-/* *INDENT-ON* */
 
 VLIB_NODE_FN (esp4_encrypt_tun_node) (vlib_main_t * vm,
 				      vlib_node_runtime_t * node,
@@ -1312,7 +1306,6 @@ VLIB_NODE_FN (esp4_encrypt_tun_node) (vlib_main_t * vm,
 			     esp_encrypt_async_next.esp4_tun_post_next);
 }
 
-/* *INDENT-OFF* */
 VLIB_REGISTER_NODE (esp4_encrypt_tun_node) = {
   .name = "esp4-encrypt-tun",
   .vector_size = sizeof (u32),
@@ -1341,7 +1334,6 @@ VLIB_NODE_FN (esp4_encrypt_tun_post_node) (vlib_main_t * vm,
   return esp_encrypt_post_inline (vm, node, from_frame);
 }
 
-/* *INDENT-OFF* */
 VLIB_REGISTER_NODE (esp4_encrypt_tun_post_node) = {
   .name = "esp4-encrypt-tun-post",
   .vector_size = sizeof (u32),
@@ -1352,7 +1344,6 @@ VLIB_REGISTER_NODE (esp4_encrypt_tun_post_node) = {
   .n_errors = ESP_ENCRYPT_N_ERROR,
   .error_counters = esp_encrypt_error_counters,
 };
-/* *INDENT-ON* */
 
 VLIB_NODE_FN (esp6_encrypt_tun_node) (vlib_main_t * vm,
 				      vlib_node_runtime_t * node,
@@ -1362,7 +1353,6 @@ VLIB_NODE_FN (esp6_encrypt_tun_node) (vlib_main_t * vm,
 			     esp_encrypt_async_next.esp6_tun_post_next);
 }
 
-/* *INDENT-OFF* */
 VLIB_REGISTER_NODE (esp6_encrypt_tun_node) = {
   .name = "esp6-encrypt-tun",
   .vector_size = sizeof (u32),
@@ -1384,7 +1374,6 @@ VLIB_REGISTER_NODE (esp6_encrypt_tun_node) = {
   },
 };
 
-/* *INDENT-ON* */
 
 VLIB_NODE_FN (esp6_encrypt_tun_post_node) (vlib_main_t * vm,
 					   vlib_node_runtime_t * node,
@@ -1393,7 +1382,6 @@ VLIB_NODE_FN (esp6_encrypt_tun_post_node) (vlib_main_t * vm,
   return esp_encrypt_post_inline (vm, node, from_frame);
 }
 
-/* *INDENT-OFF* */
 VLIB_REGISTER_NODE (esp6_encrypt_tun_post_node) = {
   .name = "esp6-encrypt-tun-post",
   .vector_size = sizeof (u32),
@@ -1404,7 +1392,6 @@ VLIB_REGISTER_NODE (esp6_encrypt_tun_post_node) = {
   .n_errors = ESP_ENCRYPT_N_ERROR,
   .error_counters = esp_encrypt_error_counters,
 };
-/* *INDENT-ON* */
 
 VLIB_NODE_FN (esp_mpls_encrypt_tun_node)
 (vlib_main_t *vm, vlib_node_runtime_t *node, vlib_frame_t *from_frame)

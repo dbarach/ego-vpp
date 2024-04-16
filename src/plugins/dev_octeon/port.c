@@ -10,8 +10,9 @@
 #include <dev_octeon/common.h>
 #include <vnet/ethernet/ethernet.h>
 
-#define OCT_FLOW_PREALLOC_SIZE 1
-#define OCT_FLOW_MAX_PRIORITY  7
+#define OCT_FLOW_PREALLOC_SIZE	1
+#define OCT_FLOW_MAX_PRIORITY	7
+#define OCT_ETH_LINK_SPEED_100G 100000 /**< 100 Gbps */
 
 VLIB_REGISTER_LOG_CLASS (oct_log, static) = {
   .class_name = "octeon",
@@ -171,9 +172,19 @@ oct_port_poll (vlib_main_t *vm, vnet_dev_port_t *port)
   vnet_dev_port_state_changes_t changes = {};
   int rrv;
 
-  rrv = roc_nix_mac_link_info_get (nix, &link_info);
-  if (rrv)
-    return;
+  if (roc_nix_is_lbk (nix))
+    {
+      link_info.status = 1;
+      link_info.full_duplex = 1;
+      link_info.autoneg = 0;
+      link_info.speed = OCT_ETH_LINK_SPEED_100G;
+    }
+  else
+    {
+      rrv = roc_nix_mac_link_info_get (nix, &link_info);
+      if (rrv)
+	return;
+    }
 
   if (cd->status != link_info.status)
     {
@@ -273,8 +284,11 @@ oct_txq_stop (vlib_main_t *vm, vnet_dev_tx_queue_t *txq)
     for (n = ctq->ba_num_cl, cl = ctq->ba_buffer + ctq->ba_first_cl; n;
 	 cl++, n--)
       {
-	if (cl->status.ccode != 0)
-	  for (u32 i = 0; i < cl->status.count; i++)
+	oct_npa_batch_alloc_status_t st;
+
+	st.as_u64 = __atomic_load_n (cl->iova, __ATOMIC_ACQUIRE);
+	if (st.status.ccode != ALLOC_CCODE_INVAL)
+	  for (u32 i = 0; i < st.status.count; i++)
 	    {
 	      vlib_buffer_t *b = (vlib_buffer_t *) (cl->iova[i] + off);
 	      vlib_buffer_free_one (vm, vlib_get_buffer_index (vm, b));

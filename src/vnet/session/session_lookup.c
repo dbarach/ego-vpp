@@ -37,7 +37,6 @@ static session_lookup_main_t sl_main;
  */
 static u32 *fib_index_to_table_index[2];
 
-/* *INDENT-OFF* */
 /* 16 octets */
 typedef CLIB_PACKED (struct {
   union
@@ -74,7 +73,6 @@ typedef CLIB_PACKED (struct {
       u64 as_u64[6];
     };
 }) v6_connection_key_t;
-/* *INDENT-ON* */
 
 typedef clib_bihash_kv_16_8_t session_kv4_t;
 typedef clib_bihash_kv_48_8_t session_kv6_t;
@@ -163,49 +161,64 @@ session_table_alloc_needs_sync (void)
   return !vlib_thread_is_main_w_barrier () && (vlib_num_workers () > 1);
 }
 
+static_always_inline u8
+session_table_is_alloced (u8 fib_proto, u32 fib_index)
+{
+  return (vec_len (fib_index_to_table_index[fib_proto]) > fib_index &&
+	  fib_index_to_table_index[fib_proto][fib_index] != ~0);
+}
+
 static session_table_t *
 session_table_get_or_alloc (u8 fib_proto, u32 fib_index)
 {
   session_table_t *st;
   u32 table_index;
+
   ASSERT (fib_index != ~0);
-  if (vec_len (fib_index_to_table_index[fib_proto]) > fib_index &&
-      fib_index_to_table_index[fib_proto][fib_index] != ~0)
+
+  if (session_table_is_alloced (fib_proto, fib_index))
     {
       table_index = fib_index_to_table_index[fib_proto][fib_index];
       return session_table_get (table_index);
     }
+
+  u8 needs_sync = session_table_alloc_needs_sync ();
+  session_lookup_main_t *slm = &sl_main;
+
+  /* Stop workers, otherwise consumers might be affected. This is
+   * acceptable because new tables should seldom be allocated */
+  if (needs_sync)
+    {
+      vlib_workers_sync ();
+
+      /* We might have a race, only one worker allowed at once */
+      clib_spinlock_lock (&slm->st_alloc_lock);
+    }
+
+  /* Another worker just allocated this table */
+  if (session_table_is_alloced (fib_proto, fib_index))
+    {
+      table_index = fib_index_to_table_index[fib_proto][fib_index];
+      st = session_table_get (table_index);
+    }
   else
     {
-      u8 needs_sync = session_table_alloc_needs_sync ();
-      session_lookup_main_t *slm = &sl_main;
-
-      /* Stop workers, otherwise consumers might be affected. This is
-       * acceptable because new tables should seldom be allocated */
-      if (needs_sync)
-	{
-	  vlib_workers_sync ();
-
-	  /* We might have a race, only one worker allowed at once */
-	  clib_spinlock_lock (&slm->st_alloc_lock);
-	}
-
       st = session_table_alloc ();
-      table_index = session_table_index (st);
-      vec_validate_init_empty (fib_index_to_table_index[fib_proto], fib_index,
-			       ~0);
-      fib_index_to_table_index[fib_proto][fib_index] = table_index;
       st->active_fib_proto = fib_proto;
       session_table_init (st, fib_proto);
-
-      if (needs_sync)
-	{
-	  clib_spinlock_unlock (&slm->st_alloc_lock);
-	  vlib_workers_continue ();
-	}
-
-      return st;
+      vec_validate_init_empty (fib_index_to_table_index[fib_proto], fib_index,
+			       ~0);
+      table_index = session_table_index (st);
+      fib_index_to_table_index[fib_proto][fib_index] = table_index;
     }
+
+  if (needs_sync)
+    {
+      clib_spinlock_unlock (&slm->st_alloc_lock);
+      vlib_workers_continue ();
+    }
+
+  return st;
 }
 
 static session_table_t *
@@ -1597,7 +1610,6 @@ done:
   return error;
 }
 
-/* *INDENT-OFF* */
 VLIB_CLI_COMMAND (session_rule_command, static) =
 {
   .path = "session rule",
@@ -1605,7 +1617,6 @@ VLIB_CLI_COMMAND (session_rule_command, static) =
       "<lcl-ip/plen> <lcl-port> <rmt-ip/plen> <rmt-port> action <action>",
   .function = session_rule_command_fn,
 };
-/* *INDENT-ON* */
 
 void
 session_lookup_dump_rules_table (u32 fib_index, u8 fib_proto,
@@ -1728,7 +1739,6 @@ show_session_rules_command_fn (vlib_main_t * vm, unformat_input_t * input,
   return 0;
 }
 
-/* *INDENT-OFF* */
 VLIB_CLI_COMMAND (show_session_rules_command, static) =
 {
   .path = "show session rules",
@@ -1736,7 +1746,6 @@ VLIB_CLI_COMMAND (show_session_rules_command, static) =
       "<lcl-port> <rmt-ip/plen> <rmt-port> scope <scope>]",
   .function = show_session_rules_command_fn,
 };
-/* *INDENT-ON* */
 
 u8 *
 format_session_lookup_tables (u8 *s, va_list *args)

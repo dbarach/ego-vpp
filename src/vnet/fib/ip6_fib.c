@@ -862,19 +862,18 @@ ip6_show_fib (vlib_main_t * vm,
  * @cliexend
  * @endparblock
  ?*/
-/* *INDENT-OFF* */
 VLIB_CLI_COMMAND (ip6_show_fib_command, static) = {
     .path = "show ip6 fib",
     .short_help = "show ip6 fib [summary] [table <table-id>] [index <fib-id>] [<ip6-addr>[/<width>]] [detail]",
     .function = ip6_show_fib,
 };
-/* *INDENT-ON* */
 
 static clib_error_t *
 ip6_config (vlib_main_t * vm, unformat_input_t * input)
 {
   uword heapsize = 0;
   u32 nbuckets = 0;
+  char *default_name = 0;
 
   while (unformat_check_input (input) != UNFORMAT_END_OF_INPUT)
     {
@@ -883,6 +882,8 @@ ip6_config (vlib_main_t * vm, unformat_input_t * input)
       else if (unformat (input, "heap-size %U",
 			 unformat_memory_size, &heapsize))
 	;
+      else if (unformat (input, "default-table-name %s", &default_name))
+	;
       else
 	return clib_error_return (0, "unknown input '%U'",
 				  format_unformat_error, input);
@@ -890,6 +891,7 @@ ip6_config (vlib_main_t * vm, unformat_input_t * input)
 
   ip6_fib_table_nbuckets = nbuckets;
   ip6_fib_table_size = heapsize;
+  fib_table_default_names[FIB_PROTOCOL_IP6] = default_name;
 
   return 0;
 }

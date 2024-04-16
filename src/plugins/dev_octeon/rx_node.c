@@ -217,7 +217,8 @@ oct_rxq_refill (vlib_main_t *vm, vnet_dev_rx_queue_t *rxq, u16 n_refill)
 
   while (n_lines >= batch_max_lines)
     {
-      n_alloc = vlib_buffer_alloc (vm, buffer_indices, batch_max_bufs);
+      n_alloc =
+	vlib_buffer_alloc_from_pool (vm, buffer_indices, batch_max_bufs, bpi);
       if (PREDICT_FALSE (n_alloc < batch_max_bufs))
 	goto alloc_fail;
       oct_rxq_refill_batch (vm, lmt_id, addr, lines, buffer_indices, w0,
@@ -313,7 +314,7 @@ oct_rx_node_inline (vlib_main_t *vm, vlib_node_runtime_t *node,
   n_desc = (status.tail - head) & cq_mask;
 
   if (n_desc == 0)
-    return 0;
+    goto refill;
 
   vlib_get_new_next_frame (vm, node, ctx->next_index, ctx->to_next,
 			   ctx->n_left_to_next);
@@ -365,13 +366,14 @@ oct_rx_node_inline (vlib_main_t *vm, vlib_node_runtime_t *node,
 
   vlib_put_next_frame (vm, node, ctx->next_index, ctx->n_left_to_next);
 
-  n_enq = crq->n_enq - ctx->n_segs;
-  n_enq += oct_rxq_refill (vm, rxq, rxq->size - n_enq);
-  crq->n_enq = n_enq;
-
   vlib_increment_combined_counter (
     vnm->interface_main.combined_sw_if_counters + VNET_INTERFACE_COUNTER_RX,
     thr_idx, ctx->hw_if_index, ctx->n_rx_pkts, ctx->n_rx_bytes);
+
+refill:
+  n_enq = crq->n_enq - ctx->n_segs;
+  n_enq += oct_rxq_refill (vm, rxq, rxq->size - n_enq);
+  crq->n_enq = n_enq;
 
   return ctx->n_rx_pkts;
 }

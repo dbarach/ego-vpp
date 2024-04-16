@@ -235,7 +235,6 @@ ip6_icmp_input (vlib_main_t * vm,
   return frame->n_vectors;
 }
 
-/* *INDENT-OFF* */
 VLIB_REGISTER_NODE (ip6_icmp_input_node) = {
   .function = ip6_icmp_input,
   .name = "ip6-icmp-input",
@@ -252,7 +251,6 @@ VLIB_REGISTER_NODE (ip6_icmp_input_node) = {
     [ICMP_INPUT_NEXT_PUNT] = "ip6-punt",
   },
 };
-/* *INDENT-ON* */
 
 typedef enum
 {
@@ -359,14 +357,13 @@ ip6_icmp_error (vlib_main_t * vm,
 
 	  sw_if_index0 = vnet_buffer (p0)->sw_if_index[VLIB_RX];
 
-	  vlib_buffer_copy_trace_flag (vm, p0, pi0);
+	  vlib_buffer_copy_trace_flag (vm, org_p0, pi0);
 
 	  /* Add IP header and ICMPv6 header including a 4 byte data field */
 	  vlib_buffer_advance (p0,
 			       -(sizeof (ip6_header_t) +
 				 sizeof (icmp46_header_t) + 4));
 
-	  vnet_buffer (p0)->sw_if_index[VLIB_TX] = ~0;
 	  p0->flags |= VNET_BUFFER_F_LOCALLY_ORIGINATED;
 	  p0->current_length =
 	    p0->current_length > 1280 ? 1280 : p0->current_length;
@@ -427,7 +424,6 @@ ip6_icmp_error (vlib_main_t * vm,
   return frame->n_vectors;
 }
 
-/* *INDENT-OFF* */
 VLIB_REGISTER_NODE (ip6_icmp_error_node) = {
   .function = ip6_icmp_error,
   .name = "ip6-icmp-error",
@@ -444,7 +440,6 @@ VLIB_REGISTER_NODE (ip6_icmp_error_node) = {
 
   .format_trace = format_icmp6_input_trace,
 };
-/* *INDENT-ON* */
 
 
 static uword

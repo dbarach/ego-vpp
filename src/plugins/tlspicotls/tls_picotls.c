@@ -179,7 +179,6 @@ picotls_stop_listen (tls_ctx_t * lctx)
 static void
 picotls_handle_handshake_failure (tls_ctx_t * ctx)
 {
-  session_free (session_get (ctx->c_s_index, ctx->c_thread_index));
   ctx->flags |= TLS_CONN_F_NO_APP_SESSION;
   ctx->c_s_index = SESSION_INVALID_INDEX;
   tls_disconnect_transport (ctx);
@@ -453,6 +452,7 @@ picotls_ctx_read (tls_ctx_t *ctx, session_t *tcp_session)
 	    }
 	}
 
+      ctx->flags |= TLS_CONN_F_HS_DONE;
       if (!svm_fifo_max_dequeue (tcp_session->rx_fifo))
 	return 0;
     }
@@ -786,18 +786,14 @@ tls_picotls_init (vlib_main_t * vm)
   return error;
 }
 
-/* *INDENT-OFF* */
 VLIB_INIT_FUNCTION (tls_picotls_init) = {
   .runs_after = VLIB_INITS ("tls_init"),
 };
-/* *INDENT-ON* */
 
-/* *INDENT-OFF* */
 VLIB_PLUGIN_REGISTER () = {
   .version = VPP_BUILD_VER,
   .description = "Transport Layer Security (TLS) Engine, Picotls Based",
 };
-/* *INDENT-ON* */
 
 /*
  * fd.io coding-style-patch-verification: ON

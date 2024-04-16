@@ -255,6 +255,8 @@ typedef struct
 
   int use_pthreads;
 
+  int use_main_core_auto;
+
   /* Number of vlib_main / vnet_main clones */
   u32 n_vlib_mains;
 
@@ -281,6 +283,9 @@ typedef struct
 
   /* Bitmap of available CPU sockets (NUMA nodes) */
   uword *cpu_socket_bitmap;
+
+  /* Bitmap of CPU affinity for VPP process */
+  uword *cpu_affinity_bitmap;
 
   /* Worker handoff queues */
   vlib_frame_queue_main_t *frame_queue_mains;
@@ -363,12 +368,10 @@ vlib_worker_thread_barrier_check (void)
       if (PREDICT_FALSE (vlib_worker_threads->barrier_elog_enabled))
 	{
 	  vlib_worker_thread_t *w = vlib_worker_threads + thread_index;
-	  /* *INDENT-OFF* */
 	  ELOG_TYPE_DECLARE (e) = {
 	    .format = "barrier-wait-thread-%d",
 	    .format_args = "i4",
 	  };
-	  /* *INDENT-ON* */
 
 	  struct
 	  {
@@ -412,12 +415,10 @@ vlib_worker_thread_barrier_check (void)
 	    {
 	      t = vlib_time_now (vm) - t;
 	      vlib_worker_thread_t *w = vlib_worker_threads + thread_index;
-              /* *INDENT-OFF* */
               ELOG_TYPE_DECLARE (e) = {
                 .format = "barrier-refork-thread-%d",
                 .format_args = "i4",
               };
-              /* *INDENT-ON* */
 
 	      struct
 	      {
@@ -439,12 +440,10 @@ vlib_worker_thread_barrier_check (void)
 	{
 	  t = vlib_time_now (vm) - t;
 	  vlib_worker_thread_t *w = vlib_worker_threads + thread_index;
-	  /* *INDENT-OFF* */
 	  ELOG_TYPE_DECLARE (e) = {
 	    .format = "barrier-released-thread-%d: %dus",
 	    .format_args = "i4i4",
 	  };
-	  /* *INDENT-ON* */
 
 	  struct
 	  {
