@@ -12,51 +12,44 @@
 # See the License for the specific language governing permissions and
 # limitations under the License.
 
-option(VPP_BUILD_G2_PLUGIN "Build golang g2 plugin" ON)
-option(VPP_USE_DEBUG_GTK "Use locally-installed gtk libs" OFF)
-if(VPP_USE_DEBUG_GTK)
-  list(APPEND GTK_LIBS /usr/local/lib/libgtk-3.so)
-  list(APPEND GTK_LIBS /usr/local/lib/libgdk-3.so)
-  list(APPEND GTK_LIBS /usr/local/lib/libcairo-gobject.so)
-  list(APPEND GTK_LIBS /usr/local/lib/libcairo.so)
+option(VPP_BUILD_G2F_PLUGIN "Build golang g2f plugin" ON)
+option(VPP_USE_DEBUG_FLTK "Use locally-installed fltk libs" ON)
+if(VPP_USE_DEBUG_FLTK)
+  list(APPEND FLTK_LIBS /usr/local/lib/libfltk.so)
+  list(APPEND FLTK_LIBS /usr/local/lib/libfltk_forms.so)
+  list(APPEND FLTK_LIBS /usr/local/lib/libfltk_cairo.so)
+  list(APPEND FLTK_LIBS /usr/local/lib/libfltk_images.so)
 else()
-  list(APPEND GTK_LIBS gtk-3)
-  list(APPEND GTK_LIBS gdk-3)
-  list(APPEND GTK_LIBS cairo-gobject)
-  list(APPEND GTK_LIBS cairo)
 endif()
 
-if(VPP_BUILD_G2_PLUGIN)
+if(VPP_BUILD_G2F_PLUGIN)
   include(../../cmake/ego.cmake)
 
-  add_vpp_plugin(g2
+  add_vpp_plugin(g2f
     SOURCES
     g2.c
-    ego_g2.o
+    ego_g2f.o
     g2.h
 
     INSTALL_HEADERS
     g2.h
 
     LINK_LIBRARIES
-    ${GTK_LIBS}
+    ${FLTK_LIBS}
     pangocairo-1.0
     pango-1.0
     harfbuzz
     atk-1.0
-    gdk_pixbuf-2.0
-    gio-2.0
-    gobject-2.0
-    glib-2.0
+    cairo
     pthread
 
     COMPONENT
-    vpp-plugin-g2
+    vpp-plugin-g2f
     )
 
-  ego_plugin_object(ego_g2
-    PACKAGE tools/g2
-    FLAGS -g;-O2;
+  ego_plugin_object(ego_g2f
+    PACKAGE tools/g2f
+    FLAGS -g;-O0;
     )
 
 endif()

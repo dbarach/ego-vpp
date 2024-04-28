@@ -19,7 +19,7 @@
 #include <vnet/vnet.h>
 #include <vnet/plugin/plugin.h>
 #include <vpp/app/version.h>
-#include <g2/g2.h>
+#include <g2f/g2.h>
 
 g2_main_t g2_main;
 
@@ -39,8 +39,11 @@ ego_g2_thread_fn (void *arg)
   pthread_cond_init(&g2_thread_cv, NULL);
   __os_thread_index = 0;
 
+  // clib_warning ("stack base 0x%lx, size 0x%lx\n",
+  // w->thread_stack, VLIB_THREAD_STACK_SIZE);
+
   /* Bootstrap the ego runtime here... */
-  OsInit();
+  OsInit((long) w->thread_stack, (long) VLIB_THREAD_STACK_SIZE);
 
   while (1) {
     pthread_mutex_lock (&g2_thread_lock);
