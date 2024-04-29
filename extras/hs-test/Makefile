@@ -23,6 +23,14 @@ ifeq ($(CPUS),)
 CPUS=1
 endif
 
+ifeq ($(PARALLEL),)
+PARALLEL=1
+endif
+
+ifeq ($(REPEAT),)
+REPEAT=0
+endif
+
 ifeq ($(VPPSRC),)
 VPPSRC=$(shell pwd)/../..
 endif
@@ -35,8 +43,8 @@ ifeq ($(ARCH),)
 ARCH=$(shell dpkg --print-architecture)
 endif
 
-list_tests = @(grep -r ') Test' *_test.go | cut -d '*' -f2 | cut -d '(' -f1 | \
-		tr -d ' ' | tr ')' '/' | sed 's/Suite//')
+list_tests = @go run github.com/onsi/ginkgo/v2/ginkgo --dry-run -v --no-color --seed=2 | head -n -1 | grep 'Test' | \
+		sed 's/^/* /; s/\(Suite\) /\1\//g'
 
 .PHONY: help
 help:
@@ -60,6 +68,8 @@ help:
 	@echo " TEST=[test-name]         - specific test to run"
 	@echo " CPUS=[n-cpus]            - number of cpus to run with vpp"
 	@echo " VPPSRC=[path-to-vpp-src] - path to vpp source files (for gdb)"
+	@echo " PARALLEL=[n-cpus]        - number of test processes to spawn to run in parallel"
+	@echo " REPEAT=[n]               - repeat tests up to N times or until a failure occurs"
 	@echo
 	@echo "List of all tests:"
 	$(call list_tests)
@@ -68,30 +78,38 @@ help:
 list-tests:
 	$(call list_tests)
 
+.PHONY: build-vpp-release
 build-vpp-release:
 	@make -C ../.. build-release
 
+.PHONY: build-vpp-debug
 build-vpp-debug:
 	@make -C ../.. build
 
+.build.ok: build
+	@touch .build.ok
+
 .PHONY: test
-test: .deps.ok .build.vpp
+test: .deps.ok .build.ok
 	@bash ./test --persist=$(PERSIST) --verbose=$(VERBOSE) \
 		--unconfigure=$(UNCONFIGURE) --debug=$(DEBUG) --test=$(TEST) --cpus=$(CPUS) \
-		--vppsrc=$(VPPSRC)
+		--vppsrc=$(VPPSRC) --parallel=$(PARALLEL) --repeat=$(REPEAT)
 
+.PHONY: build-go
 build-go:
 	go build ./tools/http_server
 
+.PHONY: build
 build: .deps.ok build-vpp-release build-go
-	@rm -f .build.vpp
+	@rm -f .build.ok
 	bash ./script/build_hst.sh release
-	@touch .build.vpp
+	@touch .build.ok
 
+.PHONY: build-debug
 build-debug: .deps.ok build-vpp-debug build-go
-	@rm -f .build.vpp
+	@rm -f .build.ok
 	bash ./script/build_hst.sh debug
-	@touch .build.vpp
+	@touch .build.ok
 
 .deps.ok:
 	@sudo make install-deps
@@ -101,14 +119,13 @@ install-deps:
 	@rm -f .deps.ok
 	@apt-get update \
 		&& apt-get install -y apt-transport-https ca-certificates curl software-properties-common \
-		&& apt-get install -y golang apache2-utils wrk bridge-utils
+		apache2-utils wrk bridge-utils
 	@if [ ! -f /usr/share/keyrings/docker-archive-keyring.gpg ] ; then \
 		curl -fsSL https://download.docker.com/linux/ubuntu/gpg | sudo gpg --dearmor -o /usr/share/keyrings/docker-archive-keyring.gpg; \
 		echo "deb [arch=$(ARCH) signed-by=/usr/share/keyrings/docker-archive-keyring.gpg] https://download.docker.com/linux/ubuntu $(UBUNTU_CODENAME) stable" \
 			| sudo tee /etc/apt/sources.list.d/docker.list > /dev/null ; \
 		apt-get update; \
 	fi
-	@apt-get install -y docker-ce
 	@touch .deps.ok
 
 .PHONY: fixstyle

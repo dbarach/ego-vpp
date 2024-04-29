@@ -80,11 +80,10 @@ Description: VPP Python3 API bindings
  This package contains VPP python api bindings
  .
 
-Package: vpp-plugin-g2
+Package: vpp-plugin-g2f
 Architecture: any
-Depends: vpp (>= 21.01),
-         ${shlibs:Depends}
-Description: VPP G2 Viewer Plugin
+Depends: ${shlibs:Depends}
+Description: VPP G2 FLTK Viewer Plugin
  This package contains the g2 live-data plugin
  .
 

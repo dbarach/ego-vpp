@@ -187,9 +187,11 @@ dpdk_find_startup_config (struct rte_eth_dev_info *di)
 {
   dpdk_main_t *dm = &dpdk_main;
   struct rte_pci_device *pci_dev;
-  struct rte_vmbus_device *vmbus_dev;
   vlib_pci_addr_t pci_addr;
+#ifdef __linux__
+  struct rte_vmbus_device *vmbus_dev;
   vlib_vmbus_addr_t vmbus_addr;
+#endif /* __linux__ */
   uword *p = 0;
 
   if ((pci_dev = dpdk_get_pci_device (di)))
@@ -202,6 +204,7 @@ dpdk_find_startup_config (struct rte_eth_dev_info *di)
 	hash_get (dm->conf->device_config_index_by_pci_addr, pci_addr.as_u32);
     }
 
+#ifdef __linux__
   if ((vmbus_dev = dpdk_get_vmbus_device (di)))
     {
       unformat_input_t input_vmbus;
@@ -216,6 +219,7 @@ dpdk_find_startup_config (struct rte_eth_dev_info *di)
 		       &vmbus_addr);
       unformat_free (&input_vmbus);
     }
+#endif /* __linux__ */
 
   if (p)
     return pool_elt_at_index (dm->conf->dev_confs, p[0]);
@@ -566,8 +570,18 @@ dpdk_bind_devices_to_uio (dpdk_config_main_t * conf)
       continue;
     }
 
+#ifdef __FreeBSD__
+    /*
+     * The defines for the PCI_CLASS_* types are platform specific and differ
+     * on FreeBSD.
+     */
+    if (d->device_class != PCI_CLASS_NETWORK &&
+	d->device_class != PCI_CLASS_PROCESSOR_CO)
+      continue;
+#else
     if (d->device_class != PCI_CLASS_NETWORK_ETHERNET && d->device_class != PCI_CLASS_PROCESSOR_CO)
       continue;
+#endif /* __FreeBSD__ */
 
     if (num_whitelisted)
       {
@@ -1045,14 +1059,10 @@ dpdk_config (vlib_main_t * vm, unformat_input_t * input)
   u8 no_vmbus = 0;
   u8 file_prefix = 0;
   u8 *socket_mem = 0;
-  u8 *huge_dir_path = 0;
   u32 vendor, device, domain, bus, func;
   void *fmt_func;
   void *fmt_addr;
   f64 poll_interval;
-
-  huge_dir_path =
-    format (0, "%s/hugepages%c", vlib_unix_get_runtime_dir (), 0);
 
   conf->device_config_index_by_pci_addr = hash_create (0, sizeof (uword));
   mhash_init (&conf->device_config_index_by_vmbus_addr, sizeof (uword),
@@ -1395,11 +1405,6 @@ dpdk_config (vlib_main_t * vm, unformat_input_t * input)
 					DPDK_MAX_SIMD_BITWIDTH_256 ?
 				      RTE_VECT_SIMD_256 :
 				      RTE_VECT_SIMD_512);
-
-  /* lazy umount hugepages */
-  umount2 ((char *) huge_dir_path, MNT_DETACH);
-  rmdir ((char *) huge_dir_path);
-  vec_free (huge_dir_path);
 
   /* main thread 1st */
   if ((error = dpdk_buffer_pools_create (vm)))

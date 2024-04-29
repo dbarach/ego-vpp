@@ -78,6 +78,7 @@ void ego_start_thread (void)
 
 int ego_gtk_start_check (void)
 {
+#if 0
   extern int getresuid (uid_t *__ruid, uid_t *euid, uid_t *__suid);
   extern int getresgid (uid_t *__ruid, uid_t *euid, uid_t *__suid);
   uid_t ruid, euid, suid; /* Real, effective and saved user ID's */
@@ -98,6 +99,7 @@ int ego_gtk_start_check (void)
     {
       return (1);
     }
+#endif
 
   /* Some chance this might work... */
   (void) setenv ("DISPLAY", ":1", 0 /* don't overwrite */);
