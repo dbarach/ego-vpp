@@ -49,7 +49,7 @@ if(VPP_BUILD_G2F_PLUGIN)
 
   ego_plugin_object(ego_g2f
     PACKAGE tools/g2f
-    FLAGS -g;-O0;
+    FLAGS -g;-O2;
     )
 
 endif()

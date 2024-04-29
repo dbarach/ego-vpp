@@ -47,15 +47,12 @@ ego_g2_thread_fn (void *arg)
 
   while (1) {
     pthread_mutex_lock (&g2_thread_lock);
-    pthread_cond_wait (&g2_thread_cv, &g2_thread_lock);
-    pthread_mutex_unlock (&g2_thread_lock);
-    /* Should never happen... */
     if (ego_g2_fp == 0)
-      continue;
+      pthread_cond_wait (&g2_thread_cv, &g2_thread_lock);
+    pthread_mutex_unlock (&g2_thread_lock);
     fp = ego_g2_fp;
-    (*fp)(0, 0, 0);
-    sleep(1);
     ego_g2_fp = 0;
+    (*fp)(0, 0, 0);
   }
 }
 
