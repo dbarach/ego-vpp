@@ -107,7 +107,6 @@ placeholder_server_rx_callback (session_t * s)
   return -1;
 }
 
-/* *INDENT-OFF* */
 static session_cb_vft_t placeholder_session_cbs = {
   .session_reset_callback = placeholder_session_reset_callback,
   .session_connected_callback = placeholder_session_connected_callback,
@@ -117,7 +116,6 @@ static session_cb_vft_t placeholder_session_cbs = {
   .add_segment_callback = placeholder_add_segment_callback,
   .del_segment_callback = placeholder_del_segment_callback,
 };
-/* *INDENT-ON* */
 
 static int
 session_create_lookpback (u32 table_id, u32 * sw_if_index,
@@ -1625,6 +1623,7 @@ session_test_proxy (vlib_main_t * vm, unformat_input_t * input)
   u16 lcl_port = 1234, rmt_port = 4321;
   app_namespace_t *app_ns;
   int verbose = 0, error = 0;
+  app_listener_t *al;
 
   while (unformat_check_input (input) != UNFORMAT_END_OF_INPUT)
     {
@@ -1699,8 +1698,9 @@ session_test_proxy (vlib_main_t * vm, unformat_input_t * input)
   SESSION_TEST ((tc != 0), "lookup 1.2.3.4 1234 5.6.7.8 4321 should be "
 		"successful");
   s = listen_session_get (tc->s_index);
-  SESSION_TEST ((s->app_index == server_index), "lookup should return"
-		" the server");
+  al = app_listener_get (s->al_index);
+  SESSION_TEST ((al->app_index == server_index), "lookup should return"
+						 " the server");
 
   tc = session_lookup_connection_wt4 (0, &rmt_ip, &rmt_ip, lcl_port, rmt_port,
 				      TRANSPORT_PROTO_TCP, 0, &is_filtered);
@@ -2128,14 +2128,12 @@ done:
   return 0;
 }
 
-/* *INDENT-OFF* */
 VLIB_CLI_COMMAND (tcp_test_command, static) =
 {
   .path = "test session",
   .short_help = "internal session unit tests",
   .function = session_test,
 };
-/* *INDENT-ON* */
 
 /*
  * fd.io coding-style-patch-verification: ON

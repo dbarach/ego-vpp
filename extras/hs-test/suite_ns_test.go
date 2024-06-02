@@ -1,13 +1,32 @@
 package main
 
-const (
-	// These correspond to names used in yaml config
-	clientInterface = "hst_client_vpp"
-	serverInterface = "hst_server_vpp"
+import (
+	"fmt"
+	"reflect"
+	"runtime"
+	"strings"
+
+	. "github.com/onsi/ginkgo/v2"
 )
+
+// These correspond to names used in yaml config
+const (
+	clientInterface = "hclnvpp"
+	serverInterface = "hsrvvpp"
+)
+
+var nsTests = []func(s *NsSuite){}
+var nsSoloTests = []func(s *NsSuite){}
 
 type NsSuite struct {
 	HstSuite
+}
+
+func registerNsTests(tests ...func(s *NsSuite)) {
+	nsTests = append(nsTests, tests...)
+}
+func registerNsSoloTests(tests ...func(s *NsSuite)) {
+	nsSoloTests = append(nsSoloTests, tests...)
 }
 
 func (s *NsSuite) SetupSuite() {
@@ -28,18 +47,71 @@ func (s *NsSuite) SetupTest() {
 		append("evt_qs_memfd_seg").
 		append("event-queue-length 100000").close()
 
-	cpus := s.AllocateCpus()
 	container := s.getContainerByName("vpp")
-	vpp, _ := container.newVppInstance(cpus, sessionConfig)
-	vpp.start()
+	vpp, _ := container.newVppInstance(container.allocatedCpus, sessionConfig)
+	s.assertNil(vpp.start())
 
-	idx, err := vpp.createAfPacket(s.netInterfaces[serverInterface])
-	s.assertNil(err)
+	idx, err := vpp.createAfPacket(s.getInterfaceByName(serverInterface))
+	s.assertNil(err, fmt.Sprint(err))
 	s.assertNotEqual(0, idx)
 
-	idx, err = vpp.createAfPacket(s.netInterfaces[clientInterface])
-	s.assertNil(err)
+	idx, err = vpp.createAfPacket(s.getInterfaceByName(clientInterface))
+	s.assertNil(err, fmt.Sprint(err))
 	s.assertNotEqual(0, idx)
 
 	container.exec("chmod 777 -R %s", container.getContainerWorkDir())
 }
+
+var _ = Describe("NsSuite", Ordered, ContinueOnFailure, func() {
+	var s NsSuite
+	BeforeAll(func() {
+		s.SetupSuite()
+	})
+	BeforeEach(func() {
+		s.SetupTest()
+	})
+	AfterAll(func() {
+		s.TearDownSuite()
+	})
+	AfterEach(func() {
+		s.TearDownTest()
+	})
+
+	for _, test := range nsTests {
+		test := test
+		pc := reflect.ValueOf(test).Pointer()
+		funcValue := runtime.FuncForPC(pc)
+		testName := strings.Split(funcValue.Name(), ".")[2]
+		It(testName, func(ctx SpecContext) {
+			s.log(testName + ": BEGIN")
+			test(&s)
+		}, SpecTimeout(suiteTimeout))
+	}
+})
+
+var _ = Describe("NsSuiteSolo", Ordered, ContinueOnFailure, Serial, func() {
+	var s NsSuite
+	BeforeAll(func() {
+		s.SetupSuite()
+	})
+	BeforeEach(func() {
+		s.SetupTest()
+	})
+	AfterAll(func() {
+		s.TearDownSuite()
+	})
+	AfterEach(func() {
+		s.TearDownTest()
+	})
+
+	for _, test := range nsSoloTests {
+		test := test
+		pc := reflect.ValueOf(test).Pointer()
+		funcValue := runtime.FuncForPC(pc)
+		testName := strings.Split(funcValue.Name(), ".")[2]
+		It(testName, Label("SOLO"), func(ctx SpecContext) {
+			s.log(testName + ": BEGIN")
+			test(&s)
+		}, SpecTimeout(suiteTimeout))
+	}
+})

@@ -1,17 +1,33 @@
 package main
 
 import (
+	"fmt"
+	"reflect"
+	"runtime"
+	"strings"
 	"time"
+
+	. "github.com/onsi/ginkgo/v2"
 )
 
+// These correspond to names used in yaml config
 const (
-	// These correspond to names used in yaml config
-	serverInterfaceName = "vppsrv"
-	clientInterfaceName = "vppcln"
+	serverInterfaceName = "srv"
+	clientInterfaceName = "cln"
 )
+
+var vethTests = []func(s *VethsSuite){}
+var vethSoloTests = []func(s *VethsSuite){}
 
 type VethsSuite struct {
 	HstSuite
+}
+
+func registerVethTests(tests ...func(s *VethsSuite)) {
+	vethTests = append(vethTests, tests...)
+}
+func registerSoloVethTests(tests ...func(s *VethsSuite)) {
+	vethSoloTests = append(vethSoloTests, tests...)
 }
 
 func (s *VethsSuite) SetupSuite() {
@@ -25,7 +41,6 @@ func (s *VethsSuite) SetupTest() {
 	s.HstSuite.SetupTest()
 
 	// Setup test conditions
-
 	var sessionConfig Stanza
 	sessionConfig.
 		newStanza("session").
@@ -35,50 +50,93 @@ func (s *VethsSuite) SetupTest() {
 	// ... For server
 	serverContainer := s.getContainerByName("server-vpp")
 
-	cpus := s.AllocateCpus()
-	serverVpp, _ := serverContainer.newVppInstance(cpus, sessionConfig)
-	s.assertNotNil(serverVpp)
+	serverVpp, err := serverContainer.newVppInstance(serverContainer.allocatedCpus, sessionConfig)
+	s.assertNotNil(serverVpp, fmt.Sprint(err))
 
 	s.setupServerVpp()
 
 	// ... For client
 	clientContainer := s.getContainerByName("client-vpp")
 
-	cpus = s.AllocateCpus()
-	clientVpp, _ := clientContainer.newVppInstance(cpus, sessionConfig)
-	s.assertNotNil(clientVpp)
+	clientVpp, err := clientContainer.newVppInstance(clientContainer.allocatedCpus, sessionConfig)
+	s.assertNotNil(clientVpp, fmt.Sprint(err))
 
 	s.setupClientVpp()
 }
 
 func (s *VethsSuite) setupServerVpp() {
 	serverVpp := s.getContainerByName("server-vpp").vppInstance
+	s.assertNil(serverVpp.start())
 
-	err := serverVpp.start()
-	s.assertNil(err)
-
-	serverVeth := s.netInterfaces[serverInterfaceName]
+	serverVeth := s.getInterfaceByName(serverInterfaceName)
 	idx, err := serverVpp.createAfPacket(serverVeth)
-	s.assertNil(err)
+	s.assertNil(err, fmt.Sprint(err))
 	s.assertNotEqual(0, idx)
-
-	namespaceSecret := "1"
-	err = serverVpp.addAppNamespace(1, idx, namespaceSecret)
-	s.assertNil(err)
 }
 
 func (s *VethsSuite) setupClientVpp() {
 	clientVpp := s.getContainerByName("client-vpp").vppInstance
+	s.assertNil(clientVpp.start())
 
-	err := clientVpp.start()
-	s.assertNil(err)
-
-	clientVeth := s.netInterfaces[clientInterfaceName]
+	clientVeth := s.getInterfaceByName(clientInterfaceName)
 	idx, err := clientVpp.createAfPacket(clientVeth)
-	s.assertNil(err)
+	s.assertNil(err, fmt.Sprint(err))
 	s.assertNotEqual(0, idx)
-
-	clientNamespaceSecret := "2"
-	err = clientVpp.addAppNamespace(2, idx, clientNamespaceSecret)
-	s.assertNil(err)
 }
+
+var _ = Describe("VethsSuite", Ordered, ContinueOnFailure, func() {
+	var s VethsSuite
+	BeforeAll(func() {
+		s.SetupSuite()
+	})
+	BeforeEach(func() {
+		s.SetupTest()
+	})
+	AfterAll(func() {
+		s.TearDownSuite()
+
+	})
+	AfterEach(func() {
+		s.TearDownTest()
+	})
+
+	// https://onsi.github.io/ginkgo/#dynamically-generating-specs
+	for _, test := range vethTests {
+		test := test
+		pc := reflect.ValueOf(test).Pointer()
+		funcValue := runtime.FuncForPC(pc)
+		testName := strings.Split(funcValue.Name(), ".")[2]
+		It(testName, func(ctx SpecContext) {
+			s.log(testName + ": BEGIN")
+			test(&s)
+		}, SpecTimeout(suiteTimeout))
+	}
+})
+
+var _ = Describe("VethsSuiteSolo", Ordered, ContinueOnFailure, Serial, func() {
+	var s VethsSuite
+	BeforeAll(func() {
+		s.SetupSuite()
+	})
+	BeforeEach(func() {
+		s.SetupTest()
+	})
+	AfterAll(func() {
+		s.TearDownSuite()
+	})
+	AfterEach(func() {
+		s.TearDownTest()
+	})
+
+	// https://onsi.github.io/ginkgo/#dynamically-generating-specs
+	for _, test := range vethSoloTests {
+		test := test
+		pc := reflect.ValueOf(test).Pointer()
+		funcValue := runtime.FuncForPC(pc)
+		testName := strings.Split(funcValue.Name(), ".")[2]
+		It(testName, Label("SOLO"), func(ctx SpecContext) {
+			s.log(testName + ": BEGIN")
+			test(&s)
+		}, SpecTimeout(suiteTimeout))
+	}
+})

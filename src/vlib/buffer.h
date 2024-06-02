@@ -47,8 +47,7 @@
 #include <vppinfra/lock.h>
 #include <vlib/error.h>		/* for vlib_error_t */
 
-#include <vlib/config.h>	/* for __PRE_DATA_SIZE */
-#define VLIB_BUFFER_PRE_DATA_SIZE	__PRE_DATA_SIZE
+#include <vlib/config.h> /* for VLIB_BUFFER_PRE_DATA_SIZE */
 
 #define VLIB_BUFFER_DEFAULT_DATA_SIZE (2048)
 
@@ -236,6 +235,7 @@ STATIC_ASSERT (VLIB_BUFFER_PRE_DATA_SIZE % CLIB_CACHE_LINE_BYTES == 0,
 	       "VLIB_BUFFER_PRE_DATA_SIZE must be divisible by cache line size");
 
 #define VLIB_BUFFER_HDR_SIZE  (sizeof(vlib_buffer_t) - VLIB_BUFFER_PRE_DATA_SIZE)
+#define VLIB_BUFFER_INVALID_INDEX 0xffffffff
 
 /** \brief Prefetch buffer metadata.
     The first 64 bytes of buffer contains most header information

@@ -69,6 +69,9 @@ u32 session_table_index (session_table_t * slt);
 void session_table_init (session_table_t * slt, u8 fib_proto);
 void session_table_free (session_table_t *slt, u8 fib_proto);
 
+u32 session_table_memory_size (session_table_t *st);
+u8 *format_session_table (u8 *s, va_list *args);
+
 /* Internal, try not to use it! */
 session_table_t *_get_session_tables ();
 
@@ -76,7 +79,6 @@ session_table_t *_get_session_tables ();
   pool_foreach (VAR, _get_session_tables ()) BODY
 
 #endif /* SRC_VNET_SESSION_SESSION_TABLE_H_ */
-/* *INDENT-ON* */
 /*
  * fd.io coding-style-patch-verification: ON
  *

@@ -838,10 +838,9 @@ tcp_send_fin (tcp_connection_t * tc)
       /* Out of buffers so program fin retransmit ASAP */
       tcp_timer_update (&wrk->timer_wheel, tc, TCP_TIMER_RETRANSMIT,
 			tcp_cfg.alloc_err_timeout);
-      if (fin_snt)
-	tc->snd_nxt += 1;
-      else
-	/* Make sure retransmit retries a fin not data */
+      tc->snd_nxt += 1;
+      /* Make sure retransmit retries a fin not data with right snd_nxt */
+      if (!fin_snt)
 	tc->flags |= TCP_CONN_FINSNT;
       tcp_worker_stats_inc (wrk, no_buffer, 1);
       return;
@@ -1117,7 +1116,7 @@ tcp_prepare_segment (tcp_worker_ctx_t * wrk, tcp_connection_t * tc,
       data = tcp_init_buffer (vm, *b);
       n_bytes = session_tx_fifo_peek_bytes (&tc->connection, data, offset,
 					    max_deq_bytes);
-      ASSERT (n_bytes == max_deq_bytes);
+      ASSERT (n_bytes > 0);
       b[0]->current_length = n_bytes;
       tcp_push_hdr_i (tc, *b, tc->snd_una + offset, /* compute opts */ 0,
 		      /* burst */ 0, /* update_snd_nxt */ 0);
@@ -1279,6 +1278,7 @@ tcp_cc_init_rxt_timeout (tcp_connection_t * tc)
   tc->cwnd_acc_bytes = 0;
   tc->tr_occurences += 1;
   tc->sack_sb.reorder = TCP_DUPACK_THRESHOLD;
+  tc->sack_sb.rescue_rxt = tc->snd_una - 1;
   tcp_recovery_on (tc);
 }
 
@@ -1761,7 +1761,7 @@ tcp_retransmit_sack (tcp_worker_ctx_t * wrk, tcp_connection_t * tc,
       if (!hole)
 	{
 	  /* We are out of lost holes to retransmit so send some new data. */
-	  if (max_deq > tc->snd_mss)
+	  if (max_deq)
 	    {
 	      u32 n_segs_new;
 	      int av_wnd;
@@ -1771,7 +1771,10 @@ tcp_retransmit_sack (tcp_worker_ctx_t * wrk, tcp_connection_t * tc,
 	      av_wnd = (int) tc->snd_wnd - (tc->snd_nxt - tc->snd_una);
 	      av_wnd = clib_max (av_wnd - tc->snd_mss, 0);
 	      snd_space = clib_min (snd_space, av_wnd);
-	      snd_space = clib_min (max_deq, snd_space);
+	      /* Low bound max_deq to mss to be able to send a segment even
+	       * when it is less than mss */
+	      snd_space =
+		clib_min (clib_max (max_deq, tc->snd_mss), snd_space);
 	      burst_size = clib_min (burst_size - n_segs,
 				     snd_space / tc->snd_mss);
 	      burst_size = clib_min (burst_size, TCP_RXT_MAX_BURST);
@@ -1783,8 +1786,7 @@ tcp_retransmit_sack (tcp_worker_ctx_t * wrk, tcp_connection_t * tc,
 	      goto done;
 	    }
 
-	  if (tcp_in_recovery (tc) || !can_rescue
-	      || scoreboard_rescue_rxt_valid (sb, tc))
+	  if (!can_rescue || scoreboard_rescue_rxt_valid (sb, tc))
 	    break;
 
 	  /* If rescue rxt undefined or less than snd_una then one segment of
@@ -1808,7 +1810,11 @@ tcp_retransmit_sack (tcp_worker_ctx_t * wrk, tcp_connection_t * tc,
 	  break;
 	}
 
-      max_bytes = clib_min (hole->end - sb->high_rxt, snd_space);
+      max_bytes = hole->end - sb->high_rxt;
+      /* Avoid retransmitting segment less than mss if possible */
+      if (snd_space < tc->snd_mss && max_bytes > snd_space)
+	break;
+      max_bytes = clib_min (max_bytes, snd_space);
       max_bytes = snd_limited ? clib_min (max_bytes, tc->snd_mss) : max_bytes;
       if (max_bytes == 0)
 	break;
@@ -2293,7 +2299,6 @@ VLIB_NODE_FN (tcp6_output_node) (vlib_main_t * vm, vlib_node_runtime_t * node,
   return tcp46_output_inline (vm, node, from_frame, 0 /* is_ip4 */ );
 }
 
-/* *INDENT-OFF* */
 VLIB_REGISTER_NODE (tcp4_output_node) =
 {
   .name = "tcp4-output",
@@ -2311,9 +2316,7 @@ VLIB_REGISTER_NODE (tcp4_output_node) =
   .format_buffer = format_tcp_header,
   .format_trace = format_tcp_tx_trace,
 };
-/* *INDENT-ON* */
 
-/* *INDENT-OFF* */
 VLIB_REGISTER_NODE (tcp6_output_node) =
 {
   .name = "tcp6-output",
@@ -2331,7 +2334,6 @@ VLIB_REGISTER_NODE (tcp6_output_node) =
   .format_buffer = format_tcp_header,
   .format_trace = format_tcp_tx_trace,
 };
-/* *INDENT-ON* */
 
 typedef enum _tcp_reset_next
 {
@@ -2442,7 +2444,6 @@ VLIB_NODE_FN (tcp6_reset_node) (vlib_main_t * vm, vlib_node_runtime_t * node,
   return tcp46_reset_inline (vm, node, from_frame, 0);
 }
 
-/* *INDENT-OFF* */
 VLIB_REGISTER_NODE (tcp4_reset_node) = {
   .name = "tcp4-reset",
   .vector_size = sizeof (u32),
@@ -2456,9 +2457,7 @@ VLIB_REGISTER_NODE (tcp4_reset_node) = {
   },
   .format_trace = format_tcp_tx_trace,
 };
-/* *INDENT-ON* */
 
-/* *INDENT-OFF* */
 VLIB_REGISTER_NODE (tcp6_reset_node) = {
   .name = "tcp6-reset",
   .vector_size = sizeof (u32),
@@ -2472,7 +2471,6 @@ VLIB_REGISTER_NODE (tcp6_reset_node) = {
   },
   .format_trace = format_tcp_tx_trace,
 };
-/* *INDENT-ON* */
 
 /*
  * fd.io coding-style-patch-verification: ON

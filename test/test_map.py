@@ -494,7 +494,7 @@ class TestMAP(VppTestCase):
         #
         # Send a v4 packet that will be encapped.
         #
-        p_ether = Ether(dst=self.pg0.local_mac, src=self.pg0.remote_mac)
+        p_ether = Ether(dst=self.pg1.local_mac, src=self.pg1.remote_mac)
         p_ip4 = IP(src=self.pg0.remote_ip4, dst="192.168.1.1")
         p_tcp = TCP(sport=20000, dport=30000, flags="S", options=[("MSS", 1455)])
         p4 = p_ether / p_ip4 / p_tcp
@@ -659,7 +659,7 @@ class TestMAP(VppTestCase):
         p4 = p_ether / ip4_ttl_expired / payload
 
         icmp4_reply = (
-            IP(id=0, ttl=254, src=self.pg0.local_ip4, dst=self.pg0.remote_ip4)
+            IP(id=0, ttl=255, src=self.pg0.local_ip4, dst=self.pg0.remote_ip4)
             / ICMP(type="time-exceeded", code="ttl-zero-during-transit")
             / IP(src=self.pg0.remote_ip4, dst="192.168.0.1", ttl=0)
             / payload
@@ -673,7 +673,7 @@ class TestMAP(VppTestCase):
         p4 = p_ether / ip4_ttl_expired / payload
 
         icmp4_reply = (
-            IP(id=0, ttl=254, src=self.pg0.local_ip4, dst=self.pg0.remote_ip4)
+            IP(id=0, ttl=255, src=self.pg0.local_ip4, dst=self.pg0.remote_ip4)
             / ICMP(type="time-exceeded", code="ttl-zero-during-transit")
             / IP(src=self.pg0.remote_ip4, dst="192.168.0.1", ttl=1)
             / payload

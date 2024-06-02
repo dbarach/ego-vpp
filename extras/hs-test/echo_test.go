@@ -1,8 +1,13 @@
 package main
 
-func (s *VethsSuite) TestEchoBuiltin() {
+func init() {
+	registerVethTests(EchoBuiltinTest)
+	registerSoloVethTests(TcpWithLossTest)
+}
+
+func EchoBuiltinTest(s *VethsSuite) {
 	serverVpp := s.getContainerByName("server-vpp").vppInstance
-	serverVeth := s.netInterfaces["vppsrv"]
+	serverVeth := s.getInterfaceByName(serverInterfaceName)
 
 	serverVpp.vppctl("test echo server " +
 		" uri tcp://" + serverVeth.ip4AddressString() + "/1234")
@@ -16,29 +21,31 @@ func (s *VethsSuite) TestEchoBuiltin() {
 	s.assertNotContains(o, "failed:")
 }
 
-func (s *VethsSuite) TestTcpWithLoss() {
+// unstable with multiple workers
+func TcpWithLossTest(s *VethsSuite) {
+	s.SkipIfMultiWorker()
 	serverVpp := s.getContainerByName("server-vpp").vppInstance
 
-	serverVeth := s.netInterfaces[serverInterfaceName]
+	serverVeth := s.getInterfaceByName(serverInterfaceName)
 	serverVpp.vppctl("test echo server uri tcp://%s/20022",
 		serverVeth.ip4AddressString())
 
 	clientVpp := s.getContainerByName("client-vpp").vppInstance
 
 	// Ensure that VPP doesn't abort itself with NSIM enabled
-	// Warning: Removing this ping will make the test fail!
+	// Warning: Removing this ping will make VPP crash!
 	clientVpp.vppctl("ping %s", serverVeth.ip4AddressString())
 
 	// Add loss of packets with Network Delay Simulator
 	clientVpp.vppctl("set nsim poll-main-thread delay 0.01 ms bandwidth 40 gbit" +
 		" packet-size 1400 packets-per-drop 1000")
 
-	clientVpp.vppctl("nsim output-feature enable-disable host-vppcln")
+	clientVpp.vppctl("nsim output-feature enable-disable host-" + s.getInterfaceByName(clientInterfaceName).name)
 
 	// Do echo test from client-vpp container
 	output := clientVpp.vppctl("test echo client uri tcp://%s/20022 verbose echo-bytes mbytes 50",
 		serverVeth.ip4AddressString())
 	s.log(output)
 	s.assertNotEqual(len(output), 0)
-	s.assertNotContains(output, "failed: timeout")
+	s.assertNotContains(output, "failed", output)
 }

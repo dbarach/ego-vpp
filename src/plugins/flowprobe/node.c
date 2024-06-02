@@ -105,6 +105,9 @@ vlib_node_registration_t flowprobe_input_l2_node;
 vlib_node_registration_t flowprobe_output_ip4_node;
 vlib_node_registration_t flowprobe_output_ip6_node;
 vlib_node_registration_t flowprobe_output_l2_node;
+vlib_node_registration_t flowprobe_flush_ip4_node;
+vlib_node_registration_t flowprobe_flush_ip6_node;
+vlib_node_registration_t flowprobe_flush_l2_node;
 
 /* No counters at the moment */
 #define foreach_flowprobe_error			\
@@ -384,12 +387,12 @@ add_to_flow_record_state (vlib_main_t *vm, vlib_node_runtime_t *node,
   flowprobe_record_t flags = fm->context[which].flags;
   bool collect_ip4 = false, collect_ip6 = false;
   ASSERT (b);
-  ethernet_header_t *eth = ethernet_buffer_get_header (b);
+  ethernet_header_t *eth = (direction == FLOW_DIRECTION_TX) ?
+				   vlib_buffer_get_current (b) :
+				   ethernet_buffer_get_header (b);
   u16 ethertype = clib_net_to_host_u16 (eth->type);
-  u16 l2_hdr_sz = sizeof (ethernet_header_t);
-  /* *INDENT-OFF* */
+  i16 l3_hdr_offset = (u8 *) eth - b->data + sizeof (ethernet_header_t);
   flowprobe_key_t k = {};
-  /* *INDENT-ON* */
   ip4_header_t *ip4 = 0;
   ip6_header_t *ip6 = 0;
   udp_header_t *udp = 0;
@@ -423,13 +426,13 @@ add_to_flow_record_state (vlib_main_t *vm, vlib_node_runtime_t *node,
       while (clib_net_to_host_u16 (ethv->type) == ETHERNET_TYPE_VLAN)
 	{
 	  ethv++;
-	  l2_hdr_sz += sizeof (ethernet_vlan_header_tv_t);
+	  l3_hdr_offset += sizeof (ethernet_vlan_header_tv_t);
 	}
       k.ethertype = ethertype = clib_net_to_host_u16 ((ethv)->type);
     }
   if (collect_ip6 && ethertype == ETHERNET_TYPE_IP6)
     {
-      ip6 = (ip6_header_t *) (b->data + l2_hdr_sz);
+      ip6 = (ip6_header_t *) (b->data + l3_hdr_offset);
       if (flags & FLOW_RECORD_L3)
 	{
 	  k.src_address.as_u64[0] = ip6->src_address.as_u64[0];
@@ -448,7 +451,7 @@ add_to_flow_record_state (vlib_main_t *vm, vlib_node_runtime_t *node,
     }
   if (collect_ip4 && ethertype == ETHERNET_TYPE_IP4)
     {
-      ip4 = (ip4_header_t *) (b->data + l2_hdr_sz);
+      ip4 = (ip4_header_t *) (b->data + l3_hdr_offset);
       if (flags & FLOW_RECORD_L3)
 	{
 	  k.src_address.ip4.as_u32 = ip4->src_address.as_u32;
@@ -597,9 +600,8 @@ flowprobe_export_send (vlib_main_t * vm, vlib_buffer_t * b0,
   udp->checksum = 0;
 
   /* FIXUP: message header export_time */
-  h->export_time = (u32)
-    (((f64) frm->unix_time_0) +
-     (vlib_time_now (frm->vlib_main) - frm->vlib_time_0));
+  h->export_time =
+    (u32) (((f64) frm->unix_time_0) + (vlib_time_now (vm) - frm->vlib_time_0));
   h->export_time = clib_host_to_net_u32 (h->export_time);
   h->domain_id = clib_host_to_net_u32 (stream->domain_id);
 
@@ -944,18 +946,57 @@ flush_record (flowprobe_variant_t which)
 void
 flowprobe_flush_callback_ip4 (void)
 {
+  vlib_main_t *worker_vm;
+  u32 i;
+
+  /* Flush for each worker thread */
+  for (i = 1; i < vlib_get_n_threads (); i++)
+    {
+      worker_vm = vlib_get_main_by_index (i);
+      if (worker_vm)
+	vlib_node_set_interrupt_pending (worker_vm,
+					 flowprobe_flush_ip4_node.index);
+    }
+
+  /* Flush for the main thread */
   flush_record (FLOW_VARIANT_IP4);
 }
 
 void
 flowprobe_flush_callback_ip6 (void)
 {
+  vlib_main_t *worker_vm;
+  u32 i;
+
+  /* Flush for each worker thread */
+  for (i = 1; i < vlib_get_n_threads (); i++)
+    {
+      worker_vm = vlib_get_main_by_index (i);
+      if (worker_vm)
+	vlib_node_set_interrupt_pending (worker_vm,
+					 flowprobe_flush_ip6_node.index);
+    }
+
+  /* Flush for the main thread */
   flush_record (FLOW_VARIANT_IP6);
 }
 
 void
 flowprobe_flush_callback_l2 (void)
 {
+  vlib_main_t *worker_vm;
+  u32 i;
+
+  /* Flush for each worker thread */
+  for (i = 1; i < vlib_get_n_threads (); i++)
+    {
+      worker_vm = vlib_get_main_by_index (i);
+      if (worker_vm)
+	vlib_node_set_interrupt_pending (worker_vm,
+					 flowprobe_flush_l2_node.index);
+    }
+
+  /* Flush for the main thread */
   flush_record (FLOW_VARIANT_L2);
   flush_record (FLOW_VARIANT_L2_IP4);
   flush_record (FLOW_VARIANT_L2_IP6);
@@ -1061,7 +1102,32 @@ flowprobe_walker_process (vlib_main_t * vm,
   return 0;
 }
 
-/* *INDENT-OFF* */
+static uword
+flowprobe_flush_ip4 (vlib_main_t *vm, vlib_node_runtime_t *rt, vlib_frame_t *f)
+{
+  flush_record (FLOW_VARIANT_IP4);
+
+  return 0;
+}
+
+static uword
+flowprobe_flush_ip6 (vlib_main_t *vm, vlib_node_runtime_t *rt, vlib_frame_t *f)
+{
+  flush_record (FLOW_VARIANT_IP6);
+
+  return 0;
+}
+
+static uword
+flowprobe_flush_l2 (vlib_main_t *vm, vlib_node_runtime_t *rt, vlib_frame_t *f)
+{
+  flush_record (FLOW_VARIANT_L2);
+  flush_record (FLOW_VARIANT_L2_IP4);
+  flush_record (FLOW_VARIANT_L2_IP6);
+
+  return 0;
+}
+
 VLIB_REGISTER_NODE (flowprobe_input_ip4_node) = {
   .function = flowprobe_input_ip4_node_fn,
   .name = "flowprobe-input-ip4",
@@ -1134,7 +1200,24 @@ VLIB_REGISTER_NODE (flowprobe_walker_node) = {
   .type = VLIB_NODE_TYPE_INPUT,
   .state = VLIB_NODE_STATE_INTERRUPT,
 };
-/* *INDENT-ON* */
+VLIB_REGISTER_NODE (flowprobe_flush_ip4_node) = {
+  .function = flowprobe_flush_ip4,
+  .name = "flowprobe-flush-ip4",
+  .type = VLIB_NODE_TYPE_INPUT,
+  .state = VLIB_NODE_STATE_INTERRUPT,
+};
+VLIB_REGISTER_NODE (flowprobe_flush_ip6_node) = {
+  .function = flowprobe_flush_ip6,
+  .name = "flowprobe-flush-ip6",
+  .type = VLIB_NODE_TYPE_INPUT,
+  .state = VLIB_NODE_STATE_INTERRUPT,
+};
+VLIB_REGISTER_NODE (flowprobe_flush_l2_node) = {
+  .function = flowprobe_flush_l2,
+  .name = "flowprobe-flush-l2",
+  .type = VLIB_NODE_TYPE_INPUT,
+  .state = VLIB_NODE_STATE_INTERRUPT,
+};
 
 /*
  * fd.io coding-style-patch-verification: ON

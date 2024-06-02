@@ -14,6 +14,7 @@
   _ (DEVICE_NO_REPLY, "no reply from device")                                 \
   _ (DMA_MEM_ALLOC_FAIL, "DMA memory allocation error")                       \
   _ (DRIVER_NOT_AVAILABLE, "driver not available")                            \
+  _ (INVALID_ARG, "invalid argument")                                         \
   _ (INVALID_BUS, "invalid bus")                                              \
   _ (INVALID_DATA, "invalid data")                                            \
   _ (INVALID_DEVICE_ID, "invalid device id")                                  \
@@ -34,9 +35,12 @@
   _ (PROCESS_REPLY, "dev process reply error")                                \
   _ (RESOURCE_NOT_AVAILABLE, "resource not available")                        \
   _ (TIMEOUT, "timeout")                                                      \
+  _ (UNKNOWN_DEVICE, "unknown device")                                        \
   _ (UNKNOWN_INTERFACE, "unknown interface")                                  \
   _ (UNSUPPORTED_CONFIG, "unsupported config")                                \
   _ (UNSUPPORTED_DEVICE, "unsupported device")                                \
-  _ (UNSUPPORTED_DEVICE_VER, "unsupported device version")
+  _ (UNSUPPORTED_DEVICE_VER, "unsupported device version")                    \
+  _ (ALREADY_DONE, "already done")                                            \
+  _ (NO_SUCH_INTERFACE, "no such interface")
 
 #endif /* _VNET_DEV_ERRORS_H_ */

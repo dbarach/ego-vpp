@@ -93,6 +93,7 @@ vnet_dev_port_free (vlib_main_t *vm, vnet_dev_port_t *port)
   pool_free (port->secondary_hw_addr);
   pool_free (port->rx_queues);
   pool_free (port->tx_queues);
+  vnet_dev_arg_free (&port->args);
   pool_put_index (dev->ports, port->index);
   clib_mem_free (port);
 }
@@ -246,7 +247,7 @@ vnet_dev_port_add (vlib_main_t *vm, vnet_dev_t *dev, vnet_dev_port_id_t id,
   vnet_dev_rv_t rv = VNET_DEV_OK;
 
   ASSERT (args->port.attr.type != VNET_DEV_PORT_TYPE_UNKNOWN);
-  ASSERT (args->port.attr.max_supported_frame_size);
+  ASSERT (args->port.attr.max_supported_rx_frame_size);
 
   port =
     vnet_dev_alloc_with_data (sizeof (vnet_dev_port_t), args->port.data_size);
@@ -266,9 +267,20 @@ vnet_dev_port_add (vlib_main_t *vm, vnet_dev_t *dev, vnet_dev_port_id_t id,
   port->rx_node = *args->rx_node;
   port->tx_node = *args->tx_node;
 
+  if (args->port.args)
+    for (vnet_dev_arg_t *a = args->port.args; a->type != VNET_DEV_ARG_END; a++)
+      vec_add1 (port->args, *a);
+
   /* defaults out of port attributes */
-  port->max_frame_size = args->port.attr.max_supported_frame_size;
+  port->max_rx_frame_size = args->port.attr.max_supported_rx_frame_size;
   port->primary_hw_addr = args->port.attr.hw_addr;
+
+  if (port->attr.type == VNET_DEV_PORT_TYPE_ETHERNET)
+    {
+      if (port->max_rx_frame_size > 1514 &&
+	  port->attr.caps.change_max_rx_frame_size)
+	port->max_rx_frame_size = 1514;
+    }
 
   if (port->port_ops.alloc)
     rv = port->port_ops.alloc (vm, port);
@@ -292,10 +304,10 @@ vnet_dev_port_cfg_change_req_validate (vlib_main_t *vm, vnet_dev_port_t *port,
 
   switch (req->type)
     {
-    case VNET_DEV_PORT_CFG_MAX_FRAME_SIZE:
-      if (req->max_frame_size > port->attr.max_supported_frame_size)
+    case VNET_DEV_PORT_CFG_MAX_RX_FRAME_SIZE:
+      if (req->max_rx_frame_size > port->attr.max_supported_rx_frame_size)
 	return VNET_DEV_ERR_INVALID_VALUE;
-      if (req->max_frame_size == port->max_frame_size)
+      if (req->max_rx_frame_size == port->max_rx_frame_size)
 	return VNET_DEV_ERR_NO_CHANGE;
       break;
 
@@ -335,6 +347,8 @@ vnet_dev_port_cfg_change_req_validate (vlib_main_t *vm, vnet_dev_port_t *port,
       if (rv != VNET_DEV_OK)
 	return rv;
     }
+  else
+    return VNET_DEV_ERR_NOT_SUPPORTED;
 
   req->validated = 1;
   return VNET_DEV_OK;
@@ -367,14 +381,16 @@ vnet_dev_port_cfg_change (vlib_main_t *vm, vnet_dev_port_t *port,
 
   if (port->port_ops.config_change)
     rv = port->port_ops.config_change (vm, port, req);
+  else
+    return VNET_DEV_ERR_NOT_SUPPORTED;
 
   if (rv != VNET_DEV_OK)
     return rv;
 
   switch (req->type)
     {
-    case VNET_DEV_PORT_CFG_MAX_FRAME_SIZE:
-      port->max_frame_size = req->max_frame_size;
+    case VNET_DEV_PORT_CFG_MAX_RX_FRAME_SIZE:
+      port->max_rx_frame_size = req->max_rx_frame_size;
       break;
 
     case VNET_DEV_PORT_CFG_PROMISC_MODE:
@@ -557,6 +573,7 @@ vnet_dev_port_if_create (vlib_main_t *vm, vnet_dev_port_t *port)
       vnet_dev_driver_t *driver;
       vnet_sw_interface_t *sw;
       vnet_hw_interface_t *hw;
+      vnet_hw_if_caps_t caps = 0;
       u32 rx_node_index;
 
       driver = pool_elt_at_index (dm->drivers, dev->driver_index);
@@ -572,7 +589,7 @@ vnet_dev_port_if_create (vlib_main_t *vm, vnet_dev_port_t *port)
       port->intf.hw_if_index = vnet_eth_register_interface (
 	vnm, &(vnet_eth_interface_registration_t){
 	       .address = port->primary_hw_addr.eth_mac,
-	       .max_frame_size = port->max_frame_size,
+	       .max_frame_size = port->max_rx_frame_size,
 	       .dev_class_index = driver->dev_class_index,
 	       .dev_instance = port->intf.dev_instance,
 	       .cb.set_max_frame_size = vnet_dev_port_set_max_frame_size,
@@ -590,6 +607,14 @@ vnet_dev_port_if_create (vlib_main_t *vm, vnet_dev_port_t *port)
 					  port->speed);
 
       port->intf.tx_node_index = hw->tx_node_index;
+
+      caps |= port->attr.caps.interrupt_mode ? VNET_HW_IF_CAP_INT_MODE : 0;
+      caps |= port->attr.caps.mac_filter ? VNET_HW_IF_CAP_MAC_FILTER : 0;
+      caps |= port->attr.tx_offloads.tcp_gso ? VNET_HW_IF_CAP_TCP_GSO : 0;
+      caps |= port->attr.tx_offloads.ip4_cksum ? VNET_HW_IF_CAP_TX_CKSUM : 0;
+
+      if (caps)
+	vnet_hw_if_set_caps (vnm, port->intf.hw_if_index, caps);
 
       /* create / reuse rx node */
       if (vec_len (dm->free_rx_node_indices))
@@ -699,6 +724,9 @@ vnet_dev_port_if_remove (vlib_main_t *vm, vnet_dev_port_t *port)
     vnet_dev_rx_queue_free (vm, q);
 
   vnet_dev_port_free_counters (vm, port);
+
+  foreach_vnet_dev_port_args (v, port)
+    vnet_dev_arg_clear_value (v);
 
   return VNET_DEV_OK;
 }

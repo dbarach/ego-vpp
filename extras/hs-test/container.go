@@ -6,12 +6,15 @@ import (
 	"os/exec"
 	"strings"
 	"text/template"
+	"time"
 
 	"github.com/edwarnicke/exechelper"
+	. "github.com/onsi/ginkgo/v2"
 )
 
 const (
-	logDir string = "/tmp/hs-test/"
+	logDir    string = "/tmp/hs-test/"
+	volumeDir string = "/volumes"
 )
 
 var (
@@ -34,9 +37,10 @@ type Container struct {
 	volumes          map[string]Volume
 	envVars          map[string]string
 	vppInstance      *VppInstance
+	allocatedCpus    []int
 }
 
-func newContainer(yamlInput ContainerConfig) (*Container, error) {
+func newContainer(suite *HstSuite, yamlInput ContainerConfig) (*Container, error) {
 	containerName := yamlInput["name"].(string)
 	if len(containerName) == 0 {
 		err := fmt.Errorf("container name must not be blank")
@@ -47,6 +51,7 @@ func newContainer(yamlInput ContainerConfig) (*Container, error) {
 	container.volumes = make(map[string]Volume)
 	container.envVars = make(map[string]string)
 	container.name = containerName
+	container.suite = suite
 
 	if image, ok := yamlInput["image"]; ok {
 		container.image = image.(string)
@@ -73,19 +78,20 @@ func newContainer(yamlInput ContainerConfig) (*Container, error) {
 	}
 
 	if _, ok := yamlInput["volumes"]; ok {
-		r := strings.NewReplacer("$HST_DIR", workDir)
+		workingVolumeDir := logDir + CurrentSpecReport().LeafNodeText + volumeDir
+		workDirReplacer := strings.NewReplacer("$HST_DIR", workDir)
+		volDirReplacer := strings.NewReplacer("$HST_VOLUME_DIR", workingVolumeDir)
 		for _, volu := range yamlInput["volumes"].([]interface{}) {
 			volumeMap := volu.(ContainerConfig)
-			hostDir := r.Replace(volumeMap["host-dir"].(string))
+			hostDir := workDirReplacer.Replace(volumeMap["host-dir"].(string))
+			hostDir = volDirReplacer.Replace(hostDir)
 			containerDir := volumeMap["container-dir"].(string)
 			isDefaultWorkDir := false
 
 			if isDefault, ok := volumeMap["is-default-work-dir"]; ok {
 				isDefaultWorkDir = isDefault.(bool)
 			}
-
 			container.addVolume(hostDir, containerDir, isDefaultWorkDir)
-
 		}
 	}
 
@@ -137,16 +143,34 @@ func (c *Container) getContainerArguments() string {
 	return args
 }
 
+func (c *Container) runWithRetry(cmd string) error {
+	nTries := 5
+	for i := 0; i < nTries; i++ {
+		err := exechelper.Run(cmd)
+		if err == nil {
+			return nil
+		}
+		time.Sleep(1 * time.Second)
+	}
+	return fmt.Errorf("failed to run container command")
+}
+
 func (c *Container) create() error {
 	cmd := "docker create " + c.getContainerArguments()
 	c.suite.log(cmd)
 	return exechelper.Run(cmd)
 }
 
+func (c *Container) allocateCpus() {
+	c.suite.startedContainers = append(c.suite.startedContainers, c)
+	c.allocatedCpus = c.suite.AllocateCpus()
+	c.suite.log("Allocated CPUs " + fmt.Sprint(c.allocatedCpus) + " to container " + c.name)
+}
+
 func (c *Container) start() error {
 	cmd := "docker start " + c.name
 	c.suite.log(cmd)
-	return exechelper.Run(cmd)
+	return c.runWithRetry(cmd)
 }
 
 func (c *Container) prepareCommand() (string, error) {
@@ -158,6 +182,9 @@ func (c *Container) prepareCommand() (string, error) {
 	if c.runDetached {
 		cmd += " -d"
 	}
+
+	c.allocateCpus()
+	cmd += fmt.Sprintf(" --cpuset-cpus=\"%d-%d\"", c.allocatedCpus[0], c.allocatedCpus[len(c.allocatedCpus)-1])
 	cmd += " " + c.getContainerArguments()
 
 	c.suite.log(cmd)
@@ -179,8 +206,7 @@ func (c *Container) run() error {
 	if err != nil {
 		return err
 	}
-
-	return exechelper.Run(cmd)
+	return c.runWithRetry(cmd)
 }
 
 func (c *Container) addVolume(hostDir string, containerDir string, isDefaultWorkDir bool) {
@@ -234,7 +260,7 @@ func (c *Container) copy(sourceFileName string, targetFileName string) error {
 }
 
 func (c *Container) createFile(destFileName string, content string) error {
-	f, err := os.CreateTemp("/tmp", "hst-config")
+	f, err := os.CreateTemp("/tmp", "hst-config"+c.suite.pid)
 	if err != nil {
 		return err
 	}
@@ -258,7 +284,7 @@ func (c *Container) execServer(command string, arguments ...any) {
 	serverCommand := fmt.Sprintf(command, arguments...)
 	containerExecCommand := "docker exec -d" + c.getEnvVarsAsCliOption() +
 		" " + c.name + " " + serverCommand
-	c.suite.T().Helper()
+	GinkgoHelper()
 	c.suite.log(containerExecCommand)
 	c.suite.assertNil(exechelper.Run(containerExecCommand))
 }
@@ -267,21 +293,21 @@ func (c *Container) exec(command string, arguments ...any) string {
 	cliCommand := fmt.Sprintf(command, arguments...)
 	containerExecCommand := "docker exec" + c.getEnvVarsAsCliOption() +
 		" " + c.name + " " + cliCommand
-	c.suite.T().Helper()
+	GinkgoHelper()
 	c.suite.log(containerExecCommand)
 	byteOutput, err := exechelper.CombinedOutput(containerExecCommand)
-	c.suite.assertNil(err)
+	c.suite.assertNil(err, fmt.Sprint(err))
 	return string(byteOutput)
 }
 
 func (c *Container) getLogDirPath() string {
 	testId := c.suite.getTestId()
-	testName := c.suite.T().Name()
+	testName := CurrentSpecReport().LeafNodeText
 	logDirPath := logDir + testName + "/" + testId + "/"
 
 	cmd := exec.Command("mkdir", "-p", logDirPath)
 	if err := cmd.Run(); err != nil {
-		c.suite.T().Fatalf("mkdir error: %v", err)
+		Fail("mkdir error: " + fmt.Sprint(err))
 	}
 
 	return logDirPath
@@ -298,27 +324,33 @@ func (c *Container) saveLogs() {
 	cmd = exec.Command("docker", "logs", "--details", "-t", c.name)
 	output, err := cmd.CombinedOutput()
 	if err != nil {
-		c.suite.T().Fatalf("fetching logs error: %v", err)
+		Fail("fetching logs error: " + fmt.Sprint(err))
 	}
 
 	f, err := os.Create(testLogFilePath)
 	if err != nil {
-		c.suite.T().Fatalf("file create error: %v", err)
+		Fail("file create error: " + fmt.Sprint(err))
 	}
 	fmt.Fprint(f, string(output))
 	f.Close()
 }
 
-func (c *Container) log() string {
-	cmd := "docker logs " + c.name
+// Outputs logs from docker containers. Set 'maxLines' to 0 to output the full log.
+func (c *Container) log(maxLines int) (string, error) {
+	var cmd string
+	if maxLines == 0 {
+		cmd = "docker logs " + c.name
+	} else {
+		cmd = fmt.Sprintf("docker logs --tail %d %s", maxLines, c.name)
+	}
+
 	c.suite.log(cmd)
 	o, err := exechelper.CombinedOutput(cmd)
-	c.suite.assertNil(err)
-	return string(o)
+	return string(o), err
 }
 
 func (c *Container) stop() error {
-	if c.vppInstance != nil && c.vppInstance.apiChannel != nil {
+	if c.vppInstance != nil && c.vppInstance.apiStream != nil {
 		c.vppInstance.saveLogs()
 		c.vppInstance.disconnect()
 	}
@@ -330,15 +362,15 @@ func (c *Container) stop() error {
 func (c *Container) createConfig(targetConfigName string, templateName string, values any) {
 	template := template.Must(template.ParseFiles(templateName))
 
-	f, err := os.CreateTemp("/tmp/hs-test/", "hst-config")
-	c.suite.assertNil(err)
+	f, err := os.CreateTemp(logDir, "hst-config")
+	c.suite.assertNil(err, err)
 	defer os.Remove(f.Name())
 
 	err = template.Execute(f, values)
-	c.suite.assertNil(err)
+	c.suite.assertNil(err, err)
 
 	err = f.Close()
-	c.suite.assertNil(err)
+	c.suite.assertNil(err, err)
 
 	c.copy(f.Name(), targetConfigName)
 }

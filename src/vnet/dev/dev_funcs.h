@@ -75,6 +75,16 @@ vnet_dev_get_port_from_hw_if_index (u32 hw_if_index)
 }
 
 static_always_inline vnet_dev_t *
+vnet_dev_by_index (u32 index)
+{
+  vnet_dev_main_t *dm = &vnet_dev_main;
+  if (pool_is_free_index (dm->devices, index))
+    return 0;
+
+  return *pool_elt_at_index (dm->devices, index);
+}
+
+static_always_inline vnet_dev_t *
 vnet_dev_by_id (char *id)
 {
   vnet_dev_main_t *dm = &vnet_dev_main;
@@ -195,6 +205,14 @@ vnet_dev_get_rx_queue_buffer_pool_index (vnet_dev_rx_queue_t *rxq)
   return rxq->buffer_template.buffer_pool_index;
 }
 
+static_always_inline u32
+vnet_dev_get_rx_queue_buffer_data_size (vlib_main_t *vm,
+					vnet_dev_rx_queue_t *rxq)
+{
+  u8 bpi = vnet_dev_get_rx_queue_buffer_pool_index (rxq);
+  return vlib_get_buffer_pool (vm, bpi)->data_size;
+}
+
 static_always_inline void
 vnet_dev_rx_queue_rt_request (vlib_main_t *vm, vnet_dev_rx_queue_t *rxq,
 			      vnet_dev_rx_queue_rt_req_t req)
@@ -279,6 +297,36 @@ vnet_dev_set_hw_addr_eth_mac (vnet_dev_hw_addr_t *addr, const u8 *eth_mac_addr)
   vnet_dev_hw_addr_t ha = {};
   clib_memcpy_fast (&ha.eth_mac, eth_mac_addr, sizeof (ha.eth_mac));
   *addr = ha;
+}
+
+static_always_inline vnet_dev_arg_t *
+vnet_dev_get_port_arg_by_id (vnet_dev_port_t *port, u32 id)
+{
+  foreach_vnet_dev_port_args (a, port)
+    if (a->id == id)
+      return a;
+  return 0;
+}
+
+static_always_inline int
+vnet_dev_arg_get_bool (vnet_dev_arg_t *arg)
+{
+  ASSERT (arg->type == VNET_DEV_ARG_TYPE_BOOL);
+  return arg->val_set ? arg->val.boolean : arg->default_val.boolean;
+}
+
+static_always_inline u32
+vnet_dev_arg_get_uint32 (vnet_dev_arg_t *arg)
+{
+  ASSERT (arg->type == VNET_DEV_ARG_TYPE_UINT32);
+  return arg->val_set ? arg->val.uint32 : arg->default_val.uint32;
+}
+
+static_always_inline u8 *
+vnet_dev_arg_get_string (vnet_dev_arg_t *arg)
+{
+  ASSERT (arg->type == VNET_DEV_ARG_TYPE_STRING);
+  return arg->val_set ? arg->val.string : arg->default_val.string;
 }
 
 #endif /* _VNET_DEV_FUNCS_H_ */

@@ -19,6 +19,8 @@ VLIB_REGISTER_LOG_CLASS (iavf_log, static) = {
   .subclass_name = "init",
 };
 
+#define IAVF_MAX_QPAIRS 32
+
 static const u32 driver_cap_flags =
   /**/ VIRTCHNL_VF_CAP_ADV_LINK_SPEED |
   /**/ VIRTCHNL_VF_LARGE_NUM_QPAIRS |
@@ -119,6 +121,7 @@ iavf_init (vlib_main_t *vm, vnet_dev_t *dev)
   virtchnl_version_info_t ver;
   virtchnl_vf_resource_t res;
   u32 n_threads = vlib_get_n_threads ();
+  u16 max_frame_sz;
   vnet_dev_rv_t rv;
 
   log_debug (dev, "init");
@@ -145,28 +148,53 @@ iavf_init (vlib_main_t *vm, vnet_dev_t *dev)
   if (res.num_vsis != 1 || res.vsi_res[0].vsi_type != VIRTCHNL_VSI_SRIOV)
     return VNET_DEV_ERR_UNSUPPORTED_DEVICE;
 
+  if (res.max_mtu == 0)
+    {
+      log_warn (dev, "PF driver is reporting invalid value of 0 for max_mtu, "
+		     "consider upgrade");
+      max_frame_sz = ETHERNET_MAX_PACKET_BYTES;
+    }
+  else
+    /* reverse of PF driver MTU calculation */
+    max_frame_sz = res.max_mtu + 14 /* ethernet header */ + 4 /* FCS */ +
+		   2 * 4 /* two VLAN tags */;
+
   iavf_port_t iavf_port = {
     .vf_cap_flags = res.vf_cap_flags,
     .rss_key_size = res.rss_key_size,
     .rss_lut_size = res.rss_lut_size,
     .max_vectors = res.max_vectors,
     .vsi_id = res.vsi_res[0].vsi_id,
-    .num_qp = res.vsi_res[0].num_queue_pairs,
+    .num_qp = clib_min (IAVF_MAX_QPAIRS, res.vsi_res[0].num_queue_pairs),
   };
 
   vnet_dev_port_add_args_t port_add_args = {
     .port = {
       .attr = {
         .type = VNET_DEV_PORT_TYPE_ETHERNET,
-        .max_rx_queues = res.num_queue_pairs,
-        .max_tx_queues = res.num_queue_pairs,
-        .max_supported_frame_size = res.max_mtu,
+        .max_rx_queues = clib_min (IAVF_MAX_QPAIRS, res.num_queue_pairs),
+        .max_tx_queues = clib_min (IAVF_MAX_QPAIRS, res.num_queue_pairs),
+        .max_supported_rx_frame_size = max_frame_sz,
+        .caps = {
+          .change_max_rx_frame_size = 1,
+          .interrupt_mode = 1,
+          .rss = 1,
+          .mac_filter = 1,
+        },
+        .rx_offloads = {
+          .ip4_cksum = 1,
+        },
+        .tx_offloads = {
+          .ip4_cksum = 1,
+          .tcp_gso = 1,
+        },
       },
       .ops = {
         .init = iavf_port_init,
         .start = iavf_port_start,
         .stop = iavf_port_stop,
-	.config_change = iavf_port_cfg_change,
+        .config_change = iavf_port_cfg_change,
+        .config_change_validate = iavf_port_cfg_change_validate,
         .format_status = format_iavf_port_status,
       },
       .data_size = sizeof (iavf_port_t),

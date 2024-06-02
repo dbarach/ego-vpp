@@ -1143,8 +1143,73 @@ unformat_c_string_array (unformat_input_t *input, va_list *va)
   return rv;
 }
 
+static uword
+__unformat_quoted_string (unformat_input_t *input, u8 **sp, char quote)
+{
+  u8 *s = 0;
+  uword c, p = 0;
+
+  while ((c = unformat_get_input (input)) != UNFORMAT_END_OF_INPUT)
+    if (!is_white_space (c))
+      break;
+
+  if (c != quote)
+    return 0;
+
+  while ((c = unformat_get_input (input)) != UNFORMAT_END_OF_INPUT)
+    {
+      if (c == quote && p != '\\')
+	{
+	  *sp = s;
+	  return 1;
+	}
+      vec_add1 (s, c);
+      p = c;
+    }
+  vec_free (s);
+
+  return 0;
+}
+
+__clib_export uword
+unformat_single_quoted_string (unformat_input_t *input, va_list *va)
+{
+  return __unformat_quoted_string (input, va_arg (*va, u8 **), '\'');
+}
+
+__clib_export uword
+unformat_double_quoted_string (unformat_input_t *input, va_list *va)
+{
+  return __unformat_quoted_string (input, va_arg (*va, u8 **), '"');
+}
+
 #endif /* CLIB_UNIX */
 
+__clib_export uword
+unformat_u8 (unformat_input_t *input, va_list *args)
+{
+  u8 *d = va_arg (*args, u8 *);
+
+  u32 tmp;
+  if (!unformat (input, "%u", &tmp) || tmp > CLIB_U8_MAX)
+    return 0;
+
+  *d = tmp;
+  return 1;
+}
+
+__clib_export uword
+unformat_u16 (unformat_input_t *input, va_list *args)
+{
+  u16 *d = va_arg (*args, u16 *);
+
+  u32 tmp;
+  if (!unformat (input, "%u", &tmp) || tmp > CLIB_U16_MAX)
+    return 0;
+
+  *d = tmp;
+  return 1;
+}
 
 /*
  * fd.io coding-style-patch-verification: ON

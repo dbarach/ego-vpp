@@ -4,8 +4,15 @@ import (
 	"github.com/edwarnicke/exechelper"
 )
 
-func (s *NginxSuite) TestMirroring() {
-	proxyAddress := s.netInterfaces[mirroringClientInterfaceName].peer.ip4AddressString()
+func init() {
+	// registerNginxTests(MirroringTest)
+}
+
+// broken when CPUS > 1
+func MirroringTest(s *NginxSuite) {
+	s.skip("Broken in the CI")
+	s.SkipIfMultiWorker()
+	proxyAddress := s.getInterfaceByName(mirroringClientInterfaceName).peer.ip4AddressString()
 
 	path := "/64B.json"
 

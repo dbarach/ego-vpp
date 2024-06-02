@@ -123,7 +123,8 @@ compile_commands.json
 /extras/hs-test/vpp-data
 /extras/hs-test/hs-test
 /extras/hs-test/http_server
-/extras/hs-test/.build.vpp
+/extras/hs-test/.build.ok
+/extras/hs-test/summary/
 
 # ./configure
 /CMakeFiles
@@ -131,6 +132,7 @@ compile_commands.json
 /lib
 /.ninja_deps
 /.ninja_log
+/.cmake
 /CMakeCache.txt
 /build.ninja
 /cmake_install.cmake

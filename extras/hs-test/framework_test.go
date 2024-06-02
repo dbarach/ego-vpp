@@ -2,31 +2,21 @@ package main
 
 import (
 	"testing"
+	"time"
 
-	"github.com/stretchr/testify/suite"
+	. "github.com/onsi/ginkgo/v2"
+	. "github.com/onsi/gomega"
 )
 
-func TestTapSuite(t *testing.T) {
-	var m TapSuite
-	suite.Run(t, &m)
-}
+var suiteTimeout time.Duration
 
-func TestNs(t *testing.T) {
-	var m NsSuite
-	suite.Run(t, &m)
-}
-
-func TestVeths(t *testing.T) {
-	var m VethsSuite
-	suite.Run(t, &m)
-}
-
-func TestNoTopo(t *testing.T) {
-	var m NoTopoSuite
-	suite.Run(t, &m)
-}
-
-func TestNginx(t *testing.T) {
-	var m NginxSuite
-	suite.Run(t, &m)
+func TestHst(t *testing.T) {
+	if *isVppDebug {
+		// 30 minute timeout so that the framework won't timeout while debugging
+		suiteTimeout = time.Minute * 30
+	} else {
+		suiteTimeout = time.Minute * 5
+	}
+	RegisterFailHandler(Fail)
+	RunSpecs(t, "HST")
 }

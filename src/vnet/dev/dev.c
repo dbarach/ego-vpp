@@ -92,14 +92,18 @@ vnet_dev_init (vlib_main_t *vm, vnet_dev_t *dev)
   if ((rv = bus->ops.device_open (vm, dev)) != VNET_DEV_OK)
     return rv;
 
-  if ((rv = dev->ops.alloc (vm, dev)) != VNET_DEV_OK)
+  if (dev->ops.alloc)
     {
-      log_err (dev, "device init failed [rv %d]", rv);
-      if (dev->ops.deinit)
-	dev->ops.deinit (vm, dev);
-      if (dev->ops.free)
-	dev->ops.free (vm, dev);
-      return rv;
+      rv = dev->ops.alloc (vm, dev);
+      if (rv != VNET_DEV_OK)
+	{
+	  log_err (dev, "device init failed [rv %d]", rv);
+	  if (dev->ops.deinit)
+	    dev->ops.deinit (vm, dev);
+	  if (dev->ops.free)
+	    dev->ops.free (vm, dev);
+	  return rv;
+	}
     }
 
   if ((rv = dev->ops.init (vm, dev)) != VNET_DEV_OK)
@@ -156,6 +160,7 @@ vnet_dev_free (vlib_main_t *vm, vnet_dev_t *dev)
   pool_free (dev->ports);
   pool_free (dev->periodic_ops);
   hash_unset (dm->device_index_by_id, dev->device_id);
+  vnet_dev_arg_free (&dev->args);
   pool_put_index (dm->devices, dev->index);
 }
 
@@ -394,6 +399,7 @@ vnet_dev_main_init (vlib_main_t *vm)
 	.mac_addr_change_function = vnet_dev_port_mac_change,
 	.mac_addr_add_del_function = vnet_dev_add_del_mac_address,
 	.flow_ops_function = vnet_dev_flow_ops_fn,
+	.format_flow = format_vnet_dev_flow,
 	.set_rss_queues_function = vnet_dev_interface_set_rss_queues,
       };
       driver->dev_class_index = vnet_register_device_class (vm, dev_class);

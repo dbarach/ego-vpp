@@ -43,7 +43,8 @@
  * Allocate/free network buffers.
  */
 
-#include <vppinfra/linux/sysfs.h>
+#include <vppinfra/bitmap.h>
+#include <vppinfra/unix.h>
 #include <vlib/vlib.h>
 #include <vlib/unix/unix.h>
 #include <vlib/stats/stats.h>
@@ -471,11 +472,11 @@ static uword
 vlib_buffer_alloc_size (uword ext_hdr_size, uword data_size)
 {
   uword alloc_size = ext_hdr_size + sizeof (vlib_buffer_t) + data_size;
-  alloc_size = CLIB_CACHE_LINE_ROUND (alloc_size);
+  alloc_size = round_pow2 (alloc_size, VLIB_BUFFER_ALIGN);
 
-  /* in case when we have even number of cachelines, we add one more for
+  /* in case when we have even number of 'cachelines', we add one more for
    * better cache occupancy */
-  alloc_size |= CLIB_CACHE_LINE_BYTES;
+  alloc_size |= VLIB_BUFFER_ALIGN;
 
   return alloc_size;
 }
@@ -598,10 +599,8 @@ format_vlib_buffer_pool (u8 * s, va_list * va)
 		   "Pool Name", "Index", "NUMA", "Size", "Data Size",
 		   "Total", "Avail", "Cached", "Used");
 
-  /* *INDENT-OFF* */
   vec_foreach (bpt, bp->threads)
     cached += bpt->n_cached;
-  /* *INDENT-ON* */
 
   s = format (s, "%-20v%=6d%=6d%=6u%=11u%=6u%=8u%=8u%=8u", bp->name, bp->index,
 	      bp->numa_node,
@@ -636,13 +635,11 @@ show_buffers (vlib_main_t *vm, unformat_input_t *input,
   return 0;
 }
 
-/* *INDENT-OFF* */
 VLIB_CLI_COMMAND (show_buffers_command, static) = {
   .path = "show buffers",
   .short_help = "Show packet buffer allocation",
   .function = show_buffers,
 };
-/* *INDENT-ON* */
 
 clib_error_t *
 vlib_buffer_num_workers_change (vlib_main_t *vm)
@@ -765,10 +762,8 @@ buffer_get_cached (vlib_buffer_pool_t * bp)
 
   clib_spinlock_lock (&bp->lock);
 
-  /* *INDENT-OFF* */
   vec_foreach (bpt, bp->threads)
     cached += bpt->n_cached;
-  /* *INDENT-ON* */
 
   clib_spinlock_unlock (&bp->lock);
 
@@ -840,13 +835,8 @@ vlib_buffer_main_init (struct vlib_main_t * vm)
 
   clib_spinlock_init (&bm->buffer_known_hash_lockp);
 
-  if ((err = clib_sysfs_read ("/sys/devices/system/node/online", "%U",
-			      unformat_bitmap_list, &bmp)))
-    clib_error_free (err);
-
-  if ((err = clib_sysfs_read ("/sys/devices/system/node/has_memory", "%U",
-			      unformat_bitmap_list, &bmp_has_memory)))
-    clib_error_free (err);
+  bmp = os_get_online_cpu_node_bitmap ();
+  bmp_has_memory = os_get_cpu_with_memory_bitmap ();
 
   if (bmp && bmp_has_memory)
     bmp = clib_bitmap_and (bmp, bmp_has_memory);
@@ -859,7 +849,6 @@ vlib_buffer_main_init (struct vlib_main_t * vm)
     clib_panic ("system have more than %u NUMA nodes",
 		VLIB_BUFFER_MAX_NUMA_NODES);
 
-  /* *INDENT-OFF* */
   clib_bitmap_foreach (numa_node, bmp)
     {
       u8 *index = bm->default_buffer_pool_index_for_numa + numa_node;
@@ -874,7 +863,6 @@ vlib_buffer_main_init (struct vlib_main_t * vm)
       if (first_valid_buffer_pool_index == 0xff)
         first_valid_buffer_pool_index = index[0];
     }
-  /* *INDENT-ON* */
 
   if (first_valid_buffer_pool_index == (u8) ~ 0)
     {
@@ -882,14 +870,12 @@ vlib_buffer_main_init (struct vlib_main_t * vm)
       goto done;
     }
 
-  /* *INDENT-OFF* */
   clib_bitmap_foreach (numa_node, bmp)
     {
       if (bm->default_buffer_pool_index_for_numa[numa_node]  == (u8) ~0)
 	bm->default_buffer_pool_index_for_numa[numa_node] =
 	  first_valid_buffer_pool_index;
     }
-  /* *INDENT-ON* */
 
   vec_foreach (bp, bm->buffer_pools)
   {

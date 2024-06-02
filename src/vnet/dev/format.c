@@ -2,9 +2,6 @@
  * Copyright (c) 2023 Cisco Systems, Inc.
  */
 
-#include "vlib/pci/pci.h"
-#include "vnet/dev/counters.h"
-#include "vppinfra/error.h"
 #include <vnet/vnet.h>
 #include <vnet/dev/dev.h>
 #include <vnet/dev/counters.h>
@@ -75,9 +72,14 @@ format_vnet_dev_info (u8 *s, va_list *args)
 
   s = format (s, "\n%UAssigned process node is '%U'", format_white_space,
 	      indent, format_vlib_node_name, vm, dev->process_node_index);
+  if (dev->args)
+    s = format (s, "\n%UDevice Specific Arguments:\n%U%U", format_white_space,
+		indent, format_white_space, indent + 2, format_vnet_dev_args,
+		dev->args);
   if (dev->ops.format_info)
-    s = format (s, "\n%U%U", format_white_space, indent, dev->ops.format_info,
-		a, dev);
+    s =
+      format (s, "\n%UDevice Specific Info:\n%U%U", format_white_space, indent,
+	      format_white_space, indent + 2, dev->ops.format_info, a, dev);
   return s;
 }
 
@@ -99,7 +101,7 @@ format_vnet_dev_port_info (u8 *s, va_list *args)
   u32 indent = format_get_indent (s);
 
   s = format (s, "Hardware Address is %U", format_vnet_dev_hw_addr,
-	      &port->attr.hw_addr);
+	      &port->primary_hw_addr);
   s = format (s, ", %u RX queues (max %u), %u TX queues (max %u)",
 	      pool_elts (port->rx_queues), port->attr.max_rx_queues,
 	      pool_elts (port->tx_queues), port->attr.max_tx_queues);
@@ -117,12 +119,23 @@ format_vnet_dev_port_info (u8 *s, va_list *args)
 	  s = format (s, " %U", format_vnet_dev_hw_addr, a);
 	}
     }
-  s = format (s, "\n%UMax frame size is %u (max supported %u)",
-	      format_white_space, indent, port->max_frame_size,
-	      port->attr.max_supported_frame_size);
+  s = format (s, "\n%UMax RX frame size is %u (max supported %u)",
+	      format_white_space, indent, port->max_rx_frame_size,
+	      port->attr.max_supported_rx_frame_size);
+  s = format (s, "\n%UCaps: %U", format_white_space, indent,
+	      format_vnet_dev_port_caps, &port->attr.caps);
+  s = format (s, "\n%URX Offloads: %U", format_white_space, indent,
+	      format_vnet_dev_port_rx_offloads, &port->attr.rx_offloads);
+  s = format (s, "\n%UTX Offloads: %U", format_white_space, indent,
+	      format_vnet_dev_port_tx_offloads, &port->attr.tx_offloads);
   if (port->port_ops.format_status)
-    s = format (s, "\n%U%U", format_white_space, indent,
+    s = format (s, "\n%UDevice Specific Port Status:\n%U%U",
+		format_white_space, indent, format_white_space, indent + 2,
 		port->port_ops.format_status, a, port);
+  if (port->args)
+    s = format (s, "\n%UDevice Specific Port Arguments:\n%U%U",
+		format_white_space, indent, format_white_space, indent + 2,
+		format_vnet_dev_args, port->args);
 
   s = format (s, "\n%UInterface ", format_white_space, indent);
   if (port->interface_created)
@@ -150,6 +163,9 @@ format_vnet_dev_rx_queue_info (u8 *s, va_list *args)
 	      format_white_space, indent, rxq->rx_thread_index,
 	      rxq->enabled ? "en" : "dis", rxq->started ? "" : "not-",
 	      rxq->interrupt_mode ? "interrupt" : "polling");
+  if (rxq->port->rx_queue_ops.format_info)
+    s = format (s, "\n%U%U", format_white_space, indent,
+		rxq->port->rx_queue_ops.format_info, a, rxq);
 
   return s;
 }
@@ -171,6 +187,9 @@ format_vnet_dev_tx_queue_info (u8 *s, va_list *args)
   else
     s = format (s, "Used by thread%s %U", n > 1 ? "s" : "", format_bitmap_list,
 		txq->assigned_threads);
+  if (txq->port->tx_queue_ops.format_info)
+    s = format (s, "\n%U%U", format_white_space, indent,
+		txq->port->tx_queue_ops.format_info, a, txq);
 
   return s;
 }
@@ -398,5 +417,91 @@ format_vnet_dev_log (u8 *s, va_list *args)
     s = format (s, "%s", func);
   vec_add1 (s, ':');
   vec_add1 (s, ' ');
+  return s;
+}
+
+u8 *
+format_vnet_dev_port_caps (u8 *s, va_list *args)
+{
+  vnet_dev_port_caps_t *c = va_arg (*args, vnet_dev_port_caps_t *);
+  u32 line = 0;
+
+  if (c->as_number == 0)
+    return s;
+
+#define _(n)                                                                  \
+  if (c->n)                                                                   \
+    {                                                                         \
+      if (line++)                                                             \
+	vec_add1 (s, ' ');                                                    \
+      for (char *str = #n; *str; str++)                                       \
+	vec_add1 (s, *str == '_' ? '-' : *str);                               \
+    }
+  foreach_vnet_dev_port_caps;
+#undef _
+
+  return s;
+}
+
+u8 *
+format_vnet_dev_port_rx_offloads (u8 *s, va_list *args)
+{
+  vnet_dev_port_rx_offloads_t *c =
+    va_arg (*args, vnet_dev_port_rx_offloads_t *);
+  u32 line = 0;
+
+  if (c->as_number == 0)
+    return s;
+
+#define _(n)                                                                  \
+  if (c->n)                                                                   \
+    {                                                                         \
+      if (line++)                                                             \
+	vec_add1 (s, ' ');                                                    \
+      for (char *str = #n; *str; str++)                                       \
+	vec_add1 (s, *str == '_' ? '-' : *str);                               \
+    }
+  foreach_vnet_dev_port_rx_offloads;
+#undef _
+
+  return s;
+}
+
+u8 *
+format_vnet_dev_port_tx_offloads (u8 *s, va_list *args)
+{
+  vnet_dev_port_tx_offloads_t *c =
+    va_arg (*args, vnet_dev_port_tx_offloads_t *);
+  u32 line = 0;
+
+  if (c->as_number == 0)
+    return s;
+
+#define _(n)                                                                  \
+  if (c->n)                                                                   \
+    {                                                                         \
+      if (line++)                                                             \
+	vec_add1 (s, ' ');                                                    \
+      for (char *str = #n; *str; str++)                                       \
+	vec_add1 (s, *str == '_' ? '-' : *str);                               \
+    }
+  foreach_vnet_dev_port_tx_offloads;
+#undef _
+
+  return s;
+}
+
+u8 *
+format_vnet_dev_flow (u8 *s, va_list *args)
+{
+  u32 dev_instance = va_arg (*args, u32);
+  u32 flow_index = va_arg (*args, u32);
+  uword private_data = va_arg (*args, uword);
+  vnet_dev_port_t *port = vnet_dev_get_port_from_dev_instance (dev_instance);
+
+  if (port->port_ops.format_flow)
+    s = format (s, "%U", port->port_ops.format_flow, port, flow_index,
+		private_data);
+
   return s;
 }

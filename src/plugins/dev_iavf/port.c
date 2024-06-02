@@ -42,29 +42,35 @@ iavf_port_vlan_strip_disable (vlib_main_t *vm, vnet_dev_port_t *port)
   vnet_dev_t *dev = port->dev;
   iavf_port_t *ap = vnet_dev_get_port_data (port);
   virtchnl_vlan_caps_t vc;
-  vnet_dev_rv_t rv;
+  vnet_dev_rv_t rv = VNET_DEV_ERR_NOT_SUPPORTED;
   u32 outer, inner;
   const u32 mask = VIRTCHNL_VLAN_ETHERTYPE_8100;
 
-  if ((ap->vf_cap_flags & VIRTCHNL_VF_OFFLOAD_VLAN_V2) == 0)
+  if (ap->vf_cap_flags & VIRTCHNL_VF_OFFLOAD_VLAN_V2)
+    {
+      if ((rv = iavf_vc_op_get_offload_vlan_v2_caps (vm, dev, &vc)))
+	return rv;
+
+      outer = vc.offloads.stripping_support.outer;
+      inner = vc.offloads.stripping_support.inner;
+
+      outer = outer & VIRTCHNL_VLAN_TOGGLE ? outer & mask : 0;
+      inner = inner & VIRTCHNL_VLAN_TOGGLE ? inner & mask : 0;
+
+      virtchnl_vlan_setting_t vs = {
+	.vport_id = ap->vsi_id,
+	.outer_ethertype_setting = outer,
+	.inner_ethertype_setting = inner,
+      };
+
+      if ((rv = iavf_vc_op_disable_vlan_stripping_v2 (vm, dev, &vs)))
+	return rv;
+    }
+
+  if (ap->vf_cap_flags & VIRTCHNL_VF_OFFLOAD_VLAN)
     return iavf_vc_op_disable_vlan_stripping (vm, dev);
 
-  if ((rv = iavf_vc_op_get_offload_vlan_v2_caps (vm, dev, &vc)))
-    return rv;
-
-  outer = vc.offloads.stripping_support.outer;
-  inner = vc.offloads.stripping_support.inner;
-
-  outer = outer & VIRTCHNL_VLAN_TOGGLE ? outer & mask : 0;
-  inner = inner & VIRTCHNL_VLAN_TOGGLE ? inner & mask : 0;
-
-  virtchnl_vlan_setting_t vs = {
-    .vport_id = ap->vsi_id,
-    .outer_ethertype_setting = outer,
-    .inner_ethertype_setting = inner,
-  };
-
-  return iavf_vc_op_disable_vlan_stripping_v2 (vm, dev, &vs);
+  return rv;
 }
 
 vnet_dev_rv_t
@@ -132,7 +138,7 @@ iavf_port_init_vsi_queues (vlib_main_t *vm, vnet_dev_port_t *port)
   virtchnl_queue_pair_info_t *qpi;
   u16 vsi_id = ap->vsi_id;
   u16 data_size = vlib_buffer_get_default_data_size (vm);
-  u16 max_frame_size = port->max_frame_size;
+  u16 max_frame_size = port->max_rx_frame_size;
   u8 buffer[VIRTCHNL_MSG_SZ (virtchnl_vsi_queue_config_info_t, qpair,
 			     ap->num_qp)];
   virtchnl_vsi_queue_config_info_t *ci =
@@ -145,7 +151,9 @@ iavf_port_init_vsi_queues (vlib_main_t *vm, vnet_dev_port_t *port)
 
   for (u16 i = 0; i < ap->num_qp; i++)
     ci->qpair[i] = (virtchnl_queue_pair_info_t){
-      .rxq = { .vsi_id = vsi_id, .queue_id = i },
+      .rxq = { .vsi_id = vsi_id,
+	       .queue_id = i,
+	       .max_pkt_size = ETHERNET_MIN_PACKET_BYTES },
       .txq = { .vsi_id = vsi_id, .queue_id = i },
     };
 
@@ -273,7 +281,12 @@ iavf_port_init (vlib_main_t *vm, vnet_dev_port_t *port)
       u64_bit_set (&ap->intr_mode_per_rxq_bitmap, q->queue_id, 1);
 
   if ((rv = iavf_port_vlan_strip_disable (vm, port)))
-    return rv;
+    {
+      if (rv == VNET_DEV_ERR_NOT_SUPPORTED)
+	log_warn (port->dev, "device doesn't support vlan stripping");
+      else
+	return rv;
+    }
 
   if ((rv = iavf_port_init_rss (vm, port)))
     return rv;
@@ -388,7 +401,7 @@ iavf_port_cfg_change_validate (vlib_main_t *vm, vnet_dev_port_t *port,
 
   switch (req->type)
     {
-    case VNET_DEV_PORT_CFG_MAX_FRAME_SIZE:
+    case VNET_DEV_PORT_CFG_MAX_RX_FRAME_SIZE:
       if (port->started)
 	rv = VNET_DEV_ERR_PORT_STARTED;
       break;
@@ -520,7 +533,7 @@ iavf_port_cfg_change (vlib_main_t *vm, vnet_dev_port_t *port,
 				       /* is_primary */ 0);
       break;
 
-    case VNET_DEV_PORT_CFG_MAX_FRAME_SIZE:
+    case VNET_DEV_PORT_CFG_MAX_RX_FRAME_SIZE:
       break;
 
     case VNET_DEV_PORT_CFG_RXQ_INTR_MODE_ENABLE:

@@ -64,13 +64,13 @@ function(vpp_generate_api_json_header file dir component)
   add_custom_command (OUTPUT ${output_name}
     COMMAND mkdir -p ${output_dir}
     COMMAND ${PYENV} ${VPP_APIGEN}
-    ARGS ${includedir} --includedir ${CMAKE_SOURCE_DIR} --input ${CMAKE_CURRENT_SOURCE_DIR}/${file} JSON --output ${output_name}
+    ARGS ${includedir} --includedir ${CMAKE_SOURCE_DIR} --input ${CMAKE_CURRENT_SOURCE_DIR}/${file} JSON --outputdir ${output_dir} --output ${output_name}
     DEPENDS ${VPP_APIGEN} ${CMAKE_CURRENT_SOURCE_DIR}/${file}
     COMMENT "Generating API header ${output_name}"
   )
   install(
     FILES ${output_name}
-    DESTINATION share/vpp/api/${dir}/
+    DESTINATION ${CMAKE_INSTALL_DATADIR}/vpp/api/${dir}/
     COMPONENT ${component}
   )
 endfunction()
@@ -101,7 +101,7 @@ function(vpp_generate_vapi_c_header f)
   )
   install(
     FILES ${output_name}
-    DESTINATION include/vapi
+    DESTINATION ${CMAKE_INSTALL_INCLUDEDIR}/vapi
     COMPONENT vpp-dev
   )
 endfunction ()
@@ -128,7 +128,7 @@ function (vpp_generate_vapi_cpp_header f)
   )
   install(
     FILES ${output_name}
-    DESTINATION include/vapi
+    DESTINATION ${CMAKE_INSTALL_INCLUDEDIR}/vapi
     COMPONENT vpp-dev
   )
 endfunction ()

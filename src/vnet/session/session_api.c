@@ -212,7 +212,6 @@ mq_send_session_connected_cb (u32 app_wrk_index, u32 api_context,
 			      session_t * s, session_error_t err)
 {
   session_connected_msg_t m = { 0 };
-  transport_connection_t *tc;
   fifo_segment_t *eq_seg;
   app_worker_t *app_wrk;
   application_t *app;
@@ -230,14 +229,6 @@ mq_send_session_connected_cb (u32 app_wrk_index, u32 api_context,
 
   if (session_has_transport (s))
     {
-      tc = session_get_transport (s);
-      if (!tc)
-	{
-	  clib_warning ("failed to retrieve transport!");
-	  m.retval = SESSION_E_REFUSED;
-	  goto snd_msg;
-	}
-
       m.handle = session_handle (s);
       m.vpp_event_queue_address =
 	fifo_segment_msg_q_offset (eq_seg, s->thread_index);
@@ -252,7 +243,6 @@ mq_send_session_connected_cb (u32 app_wrk_index, u32 api_context,
   else
     {
       ct_connection_t *cct;
-      session_t *ss;
 
       cct = (ct_connection_t *) session_get_transport (s);
       m.handle = session_handle (s);
@@ -263,11 +253,10 @@ mq_send_session_connected_cb (u32 app_wrk_index, u32 api_context,
       m.server_rx_fifo = fifo_segment_fifo_offset (s->rx_fifo);
       m.server_tx_fifo = fifo_segment_fifo_offset (s->tx_fifo);
       m.segment_handle = session_segment_handle (s);
-      ss = ct_session_get_peer (s);
-      m.ct_rx_fifo = fifo_segment_fifo_offset (ss->tx_fifo);
-      m.ct_tx_fifo = fifo_segment_fifo_offset (ss->rx_fifo);
-      m.ct_segment_handle = session_segment_handle (ss);
       m.mq_index = s->thread_index;
+      m.ct_rx_fifo = fifo_segment_fifo_offset (cct->client_rx_fifo);
+      m.ct_tx_fifo = fifo_segment_fifo_offset (cct->client_tx_fifo);
+      m.ct_segment_handle = cct->segment_handle;
     }
 
   /* Setup client session index in advance, in case data arrives
@@ -282,12 +271,12 @@ snd_msg:
   return 0;
 }
 
-int
+static int
 mq_send_session_bound_cb (u32 app_wrk_index, u32 api_context,
 			  session_handle_t handle, int rv)
 {
   session_bound_msg_t m = { 0 };
-  transport_endpoint_t tep;
+  transport_connection_t *ltc;
   fifo_segment_t *eq_seg;
   app_worker_t *app_wrk;
   application_t *app;
@@ -309,23 +298,24 @@ mq_send_session_bound_cb (u32 app_wrk_index, u32 api_context,
   else
     ls = app_listener_get_local_session (al);
 
-  session_get_endpoint (ls, &tep, 1 /* is_lcl */);
-  m.lcl_port = tep.port;
-  m.lcl_is_ip4 = tep.is_ip4;
-  clib_memcpy_fast (m.lcl_ip, &tep.ip, sizeof (tep.ip));
+  ltc = session_get_transport (ls);
+  m.lcl_port = ltc->lcl_port;
+  m.lcl_is_ip4 = ltc->is_ip4;
+  clib_memcpy_fast (m.lcl_ip, &ltc->lcl_ip, sizeof (m.lcl_ip));
   app = application_get (app_wrk->app_index);
   eq_seg = application_get_rx_mqs_segment (app);
   m.vpp_evt_q = fifo_segment_msg_q_offset (eq_seg, ls->thread_index);
   m.mq_index = ls->thread_index;
 
-  if (session_transport_service_type (ls) == TRANSPORT_SERVICE_CL &&
-      ls->rx_fifo)
+  if (transport_connection_is_cless (ltc))
     {
+      session_t *wrk_ls;
       m.mq_index = transport_cl_thread ();
       m.vpp_evt_q = fifo_segment_msg_q_offset (eq_seg, m.mq_index);
-      m.rx_fifo = fifo_segment_fifo_offset (ls->rx_fifo);
-      m.tx_fifo = fifo_segment_fifo_offset (ls->tx_fifo);
-      m.segment_handle = session_segment_handle (ls);
+      wrk_ls = app_listener_get_wrk_cl_session (al, app_wrk->wrk_map_index);
+      m.rx_fifo = fifo_segment_fifo_offset (wrk_ls->rx_fifo);
+      m.tx_fifo = fifo_segment_fifo_offset (wrk_ls->tx_fifo);
+      m.segment_handle = session_segment_handle (wrk_ls);
     }
 
 snd_msg:
@@ -335,11 +325,14 @@ snd_msg:
   return 0;
 }
 
-void
-mq_send_unlisten_reply (app_worker_t * app_wrk, session_handle_t sh,
-			u32 context, int rv)
+static void
+mq_send_unlisten_cb (u32 app_wrk_index, session_handle_t sh, u32 context,
+		     int rv)
 {
   session_unlisten_reply_msg_t m = { 0 };
+  app_worker_t *app_wrk;
+
+  app_wrk = app_worker_get (app_wrk_index);
 
   m.context = context;
   m.handle = sh;
@@ -513,6 +506,8 @@ static session_cb_vft_t session_mq_cb_vft = {
   .session_reset_callback = mq_send_session_reset_cb,
   .session_migrate_callback = mq_send_session_migrate_cb,
   .session_cleanup_callback = mq_send_session_cleanup_cb,
+  .session_listened_callback = mq_send_session_bound_cb,
+  .session_unlistened_callback = mq_send_unlisten_cb,
   .add_segment_callback = mq_send_add_segment_cb,
   .del_segment_callback = mq_send_del_segment_cb,
   .builtin_app_rx_callback = mq_send_io_rx_event,
@@ -625,7 +620,6 @@ vl_api_app_attach_t_handler (vl_api_app_attach_t * mp)
     }
 
 done:
-  /* *INDENT-OFF* */
   REPLY_MACRO3 (
     VL_API_APP_ATTACH_REPLY,
     ((!rv) ? vec_len (((fifo_segment_t *) a->segment)->ssvm.name) : 0), ({
@@ -648,7 +642,6 @@ done:
 	  rmp->segment_handle = clib_host_to_net_u64 (a->segment_handle);
 	}
     }));
-  /* *INDENT-ON* */
 
   if (n_fds)
     session_send_fds (reg, fds, n_fds);
@@ -713,16 +706,16 @@ vl_api_app_worker_add_del_t_handler (vl_api_app_worker_add_del_t * mp)
       n_fds += 1;
     }
 
-  /* *INDENT-OFF* */
 done:
   REPLY_MACRO3 (
     VL_API_APP_WORKER_ADD_DEL_REPLY,
     ((!rv && mp->is_add) ? vec_len (args.segment->name) : 0), ({
       rmp->is_add = mp->is_add;
-      rmp->wrk_index = clib_host_to_net_u32 (args.wrk_map_index);
-      rmp->segment_handle = clib_host_to_net_u64 (args.segment_handle);
+      rmp->wrk_index = mp->wrk_index;
       if (!rv && mp->is_add)
 	{
+	  rmp->wrk_index = clib_host_to_net_u32 (args.wrk_map_index);
+	  rmp->segment_handle = clib_host_to_net_u64 (args.segment_handle);
 	  rmp->app_event_queue_address =
 	    fifo_segment_msg_q_offset ((fifo_segment_t *) args.segment, 0);
 	  rmp->n_fds = n_fds;
@@ -734,7 +727,6 @@ done:
 	    }
 	}
     }));
-  /* *INDENT-ON* */
 
   if (n_fds)
     session_send_fds (reg, fds, n_fds);
@@ -808,13 +800,11 @@ vl_api_app_namespace_add_del_t_handler (vl_api_app_namespace_add_del_t * mp)
     }
   vec_free (ns_id);
 
-  /* *INDENT-OFF* */
 done:
   REPLY_MACRO2 (VL_API_APP_NAMESPACE_ADD_DEL_REPLY, ({
     if (!rv)
       rmp->appns_index = clib_host_to_net_u32 (appns_index);
   }));
-  /* *INDENT-ON* */
 }
 
 static void
@@ -1097,7 +1087,6 @@ send_session_rules_table_details (session_rules_table_t * srt, u8 fib_proto,
   if (is_local || fib_proto == FIB_PROTOCOL_IP4)
     {
       u8 *tag = 0;
-      /* *INDENT-OFF* */
       srt16 = &srt->session_rules_tables_16;
       pool_foreach (rule16, srt16->rules)  {
 	ri = mma_rules_table_rule_index_16 (srt16, rule16);
@@ -1105,12 +1094,10 @@ send_session_rules_table_details (session_rules_table_t * srt, u8 fib_proto,
         send_session_rule_details4 (rule16, is_local, tp, appns_index, tag,
                                     reg, context);
       }
-      /* *INDENT-ON* */
     }
   if (is_local || fib_proto == FIB_PROTOCOL_IP6)
     {
       u8 *tag = 0;
-      /* *INDENT-OFF* */
       srt40 = &srt->session_rules_tables_40;
       pool_foreach (rule40, srt40->rules)  {
 	ri = mma_rules_table_rule_index_40 (srt40, rule40);
@@ -1118,7 +1105,6 @@ send_session_rules_table_details (session_rules_table_t * srt, u8 fib_proto,
         send_session_rule_details6 (rule40, is_local, tp, appns_index, tag,
                                     reg, context);
       }
-      /* *INDENT-ON* */
     }
 }
 
@@ -1133,7 +1119,6 @@ vl_api_session_rules_dump_t_handler (vl_api_session_rules_dump_t * mp)
   if (!reg)
     return;
 
-  /* *INDENT-OFF* */
   session_table_foreach (st, ({
     for (tp = 0; tp < TRANSPORT_N_PROTOS; tp++)
       {
@@ -1143,7 +1128,6 @@ vl_api_session_rules_dump_t_handler (vl_api_session_rules_dump_t * mp)
                                           mp->context);
       }
   }));
-  /* *INDENT-ON* */
 }
 
 static void
@@ -1188,12 +1172,10 @@ vl_api_app_add_cert_key_pair_t_handler (vl_api_app_add_cert_key_pair_t * mp)
   rv = vnet_app_add_cert_key_pair (a);
 
 done:
-  /* *INDENT-OFF* */
   REPLY_MACRO2 (VL_API_APP_ADD_CERT_KEY_PAIR_REPLY, ({
     if (!rv)
       rmp->index = clib_host_to_net_u32 (a->index);
   }));
-  /* *INDENT-ON* */
 }
 
 static void
@@ -1292,6 +1274,8 @@ static session_cb_vft_t session_mq_sapi_cb_vft = {
   .session_reset_callback = mq_send_session_reset_cb,
   .session_migrate_callback = mq_send_session_migrate_cb,
   .session_cleanup_callback = mq_send_session_cleanup_cb,
+  .session_listened_callback = mq_send_session_bound_cb,
+  .session_unlistened_callback = mq_send_unlisten_cb,
   .add_segment_callback = mq_send_add_segment_sapi_cb,
   .del_segment_callback = mq_send_del_segment_sapi_cb,
   .builtin_app_rx_callback = mq_send_io_rx_event,
@@ -1474,15 +1458,20 @@ sapi_add_del_worker_handler (app_namespace_t * app_ns,
 
 done:
 
+  /* With app sock api socket expected to be closed, no reply */
+  if (!mp->is_add && appns_sapi_enabled ())
+    return;
+
   msg.type = APP_SAPI_MSG_TYPE_ADD_DEL_WORKER_REPLY;
   rmp = &msg.worker_add_del_reply;
   rmp->retval = rv;
   rmp->is_add = mp->is_add;
+  rmp->wrk_index = mp->wrk_index;
   rmp->api_client_handle = sapi_handle;
-  rmp->wrk_index = args.wrk_map_index;
-  rmp->segment_handle = args.segment_handle;
   if (!rv && mp->is_add)
     {
+      rmp->wrk_index = args.wrk_map_index;
+      rmp->segment_handle = args.segment_handle;
       /* No segment name and size. This supports only memfds */
       rmp->app_event_queue_address =
 	fifo_segment_msg_q_offset ((fifo_segment_t *) args.segment, 0);

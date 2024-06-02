@@ -1,16 +1,34 @@
 package main
 
+import (
+	"reflect"
+	"runtime"
+	"strings"
+
+	. "github.com/onsi/ginkgo/v2"
+)
+
+// These correspond to names used in yaml config
 const (
-	// These correspond to names used in yaml config
-	mirroringClientInterfaceName = "hst_client"
-	mirroringServerInterfaceName = "hst_server"
 	vppProxyContainerName        = "vpp-proxy"
 	nginxProxyContainerName      = "nginx-proxy"
 	nginxServerContainerName     = "nginx-server"
+	mirroringClientInterfaceName = "hstcln"
+	mirroringServerInterfaceName = "hstsrv"
 )
+
+var nginxTests = []func(s *NginxSuite){}
+var nginxSoloTests = []func(s *NginxSuite){}
 
 type NginxSuite struct {
 	HstSuite
+}
+
+func registerNginxTests(tests ...func(s *NginxSuite)) {
+	nginxTests = append(nginxTests, tests...)
+}
+func registerNginxSoloTests(tests ...func(s *NginxSuite)) {
+	nginxSoloTests = append(nginxSoloTests, tests...)
 }
 
 func (s *NginxSuite) SetupSuite() {
@@ -29,17 +47,16 @@ func (s *NginxSuite) SetupTest() {
 		append("enable").
 		append("use-app-socket-api").close()
 
-	cpus := s.AllocateCpus()
 	// ... for proxy
 	vppProxyContainer := s.getContainerByName(vppProxyContainerName)
-	proxyVpp, _ := vppProxyContainer.newVppInstance(cpus, sessionConfig)
-	proxyVpp.start()
+	proxyVpp, _ := vppProxyContainer.newVppInstance(vppProxyContainer.allocatedCpus, sessionConfig)
+	s.assertNil(proxyVpp.start())
 
-	clientInterface := s.netInterfaces[mirroringClientInterfaceName]
-	proxyVpp.createTap(clientInterface, 1)
+	clientInterface := s.getInterfaceByName(mirroringClientInterfaceName)
+	s.assertNil(proxyVpp.createTap(clientInterface, 1))
 
-	serverInterface := s.netInterfaces[mirroringServerInterfaceName]
-	proxyVpp.createTap(serverInterface, 2)
+	serverInterface := s.getInterfaceByName(mirroringServerInterfaceName)
+	s.assertNil(proxyVpp.createTap(serverInterface, 2))
 
 	nginxContainer := s.getTransientContainerByName(nginxProxyContainerName)
 	nginxContainer.create()
@@ -56,7 +73,60 @@ func (s *NginxSuite) SetupTest() {
 		"./resources/nginx/nginx_proxy_mirroring.conf",
 		values,
 	)
-	nginxContainer.start()
+	s.assertNil(nginxContainer.start())
 
 	proxyVpp.waitForApp("nginx-", 5)
 }
+
+var _ = Describe("NginxSuite", Ordered, ContinueOnFailure, func() {
+	var s NginxSuite
+	BeforeAll(func() {
+		s.SetupSuite()
+	})
+	BeforeEach(func() {
+		s.SetupTest()
+	})
+	AfterAll(func() {
+		s.TearDownSuite()
+	})
+	AfterEach(func() {
+		s.TearDownTest()
+	})
+	for _, test := range nginxTests {
+		test := test
+		pc := reflect.ValueOf(test).Pointer()
+		funcValue := runtime.FuncForPC(pc)
+		testName := strings.Split(funcValue.Name(), ".")[2]
+		It(testName, func(ctx SpecContext) {
+			s.log(testName + ": BEGIN")
+			test(&s)
+		}, SpecTimeout(suiteTimeout))
+	}
+})
+
+var _ = Describe("NginxSuiteSolo", Ordered, ContinueOnFailure, Serial, func() {
+	var s NginxSuite
+	BeforeAll(func() {
+		s.SetupSuite()
+	})
+	BeforeEach(func() {
+		s.SetupTest()
+	})
+	AfterAll(func() {
+		s.TearDownSuite()
+	})
+	AfterEach(func() {
+		s.TearDownTest()
+	})
+
+	for _, test := range nginxSoloTests {
+		test := test
+		pc := reflect.ValueOf(test).Pointer()
+		funcValue := runtime.FuncForPC(pc)
+		testName := strings.Split(funcValue.Name(), ".")[2]
+		It(testName, Label("SOLO"), func(ctx SpecContext) {
+			s.log(testName + ": BEGIN")
+			test(&s)
+		}, SpecTimeout(suiteTimeout))
+	}
+})

@@ -10,14 +10,13 @@
 #include <vppinfra/format.h>
 #include <vnet/vnet.h>
 #include <vnet/dev/types.h>
+#include <vnet/dev/args.h>
 
 #define VNET_DEV_DEVICE_ID_PREFIX_DELIMITER "/"
 
 #define foreach_vnet_dev_port_type                                            \
   _ (0, UNKNOWN)                                                              \
   _ (1, ETHERNET)
-
-typedef char vnet_dev_device_id_t[32];
 
 typedef enum
 {
@@ -28,7 +27,16 @@ typedef enum
 
 #define foreach_vnet_dev_port_caps                                            \
   _ (interrupt_mode)                                                          \
-  _ (rss)
+  _ (rss)                                                                     \
+  _ (change_max_rx_frame_size)                                                \
+  _ (mac_filter)
+
+#define foreach_vnet_dev_port_rx_offloads _ (ip4_cksum)
+
+#define foreach_vnet_dev_port_tx_offloads                                     \
+  _ (ip4_cksum)                                                               \
+  _ (tcp_gso)                                                                 \
+  _ (udp_gso)
 
 typedef union
 {
@@ -40,6 +48,28 @@ typedef union
   };
   u8 as_number;
 } vnet_dev_port_caps_t;
+
+typedef union
+{
+  struct
+  {
+#define _(n) u8 n : 1;
+    foreach_vnet_dev_port_rx_offloads
+#undef _
+  };
+  u8 as_number;
+} vnet_dev_port_rx_offloads_t;
+
+typedef union
+{
+  struct
+  {
+#define _(n) u8 n : 1;
+    foreach_vnet_dev_port_tx_offloads
+#undef _
+  };
+  u8 as_number;
+} vnet_dev_port_tx_offloads_t;
 
 typedef union
 {
@@ -85,6 +115,7 @@ typedef struct
   vnet_dev_rx_queue_op_t *start;
   vnet_dev_rx_queue_op_no_rv_t *stop;
   vnet_dev_rx_queue_op_no_rv_t *free;
+  format_function_t *format_info;
 } vnet_dev_rx_queue_ops_t;
 
 typedef struct
@@ -93,6 +124,7 @@ typedef struct
   vnet_dev_tx_queue_op_t *start;
   vnet_dev_tx_queue_op_no_rv_t *stop;
   vnet_dev_tx_queue_op_no_rv_t *free;
+  format_function_t *format_info;
 } vnet_dev_tx_queue_ops_t;
 
 typedef struct
@@ -107,12 +139,16 @@ typedef struct
 
 #define foreach_vnet_dev_port_cfg_type                                        \
   _ (PROMISC_MODE)                                                            \
-  _ (MAX_FRAME_SIZE)                                                          \
+  _ (MAX_RX_FRAME_SIZE)                                                       \
   _ (CHANGE_PRIMARY_HW_ADDR)                                                  \
   _ (ADD_SECONDARY_HW_ADDR)                                                   \
   _ (REMOVE_SECONDARY_HW_ADDR)                                                \
   _ (RXQ_INTR_MODE_ENABLE)                                                    \
-  _ (RXQ_INTR_MODE_DISABLE)
+  _ (RXQ_INTR_MODE_DISABLE)                                                   \
+  _ (ADD_RX_FLOW)                                                             \
+  _ (DEL_RX_FLOW)                                                             \
+  _ (GET_RX_FLOW_COUNTER)                                                     \
+  _ (RESET_RX_FLOW_COUNTER)
 
 typedef enum
 {
@@ -132,8 +168,13 @@ typedef struct vnet_dev_port_cfg_change_req
   {
     u8 promisc : 1;
     vnet_dev_hw_addr_t addr;
-    u16 max_frame_size;
+    u16 max_rx_frame_size;
     vnet_dev_queue_id_t queue_id;
+    struct
+    {
+      u32 flow_index;
+      uword *private_data;
+    };
   };
 
 } vnet_dev_port_cfg_change_req_t;
@@ -143,9 +184,11 @@ typedef struct
   vnet_dev_hw_addr_t hw_addr;
   u16 max_rx_queues;
   u16 max_tx_queues;
-  u16 max_supported_frame_size;
+  u16 max_supported_rx_frame_size;
   vnet_dev_port_type_t type;
   vnet_dev_port_caps_t caps;
+  vnet_dev_port_rx_offloads_t rx_offloads;
+  vnet_dev_port_tx_offloads_t tx_offloads;
 } vnet_dev_port_attr_t;
 
 typedef enum
@@ -203,6 +246,7 @@ typedef struct
   vnet_dev_port_op_no_rv_t *deinit;
   vnet_dev_port_op_no_rv_t *free;
   format_function_t *format_status;
+  format_function_t *format_flow;
 } vnet_dev_port_ops_t;
 
 typedef union
@@ -278,7 +322,7 @@ typedef struct vnet_dev_port
   vnet_dev_queue_config_t rx_queue_config;
   vnet_dev_queue_config_t tx_queue_config;
   vnet_dev_port_attr_t attr;
-  u32 max_frame_size;
+  u32 max_rx_frame_size;
   vnet_dev_hw_addr_t primary_hw_addr;
   vnet_dev_hw_addr_t *secondary_hw_addr;
   u32 index;
@@ -286,6 +330,7 @@ typedef struct vnet_dev_port
   vnet_dev_rx_queue_t **rx_queues;
   vnet_dev_tx_queue_t **tx_queues;
   vnet_dev_port_ops_t port_ops;
+  vnet_dev_arg_t *args;
   vnet_dev_rx_queue_ops_t rx_queue_ops;
   vnet_dev_tx_queue_ops_t tx_queue_ops;
   vnet_dev_node_t rx_node;
@@ -337,6 +382,7 @@ typedef struct vnet_dev
   vnet_dev_port_t **ports;
   vnet_dev_periodic_op_t *periodic_ops;
   u8 *description;
+  vnet_dev_arg_t *args;
   u8 __clib_aligned (16)
   data[];
 } vnet_dev_t;
@@ -385,6 +431,7 @@ struct vnet_dev_driver_registration
   vnet_dev_match_t *match;
   int priority;
   vnet_dev_ops_t ops;
+  vnet_dev_arg_t *args;
 };
 
 typedef struct
@@ -431,6 +478,7 @@ typedef struct
   {
     vnet_dev_port_attr_t attr;
     vnet_dev_port_ops_t ops;
+    vnet_dev_arg_t *args;
     u16 data_size;
     void *initial_data;
   } port;
@@ -468,6 +516,15 @@ typedef struct
   u32 link_speed;
 } vnet_dev_port_state_changes_t;
 
+/* args.c */
+vnet_dev_rv_t vnet_dev_arg_parse (vlib_main_t *, vnet_dev_t *,
+				  vnet_dev_arg_t *, u8 *);
+void vnet_dev_arg_free (vnet_dev_arg_t **);
+void vnet_dev_arg_clear_value (vnet_dev_arg_t *);
+format_function_t format_vnet_dev_arg_type;
+format_function_t format_vnet_dev_arg_value;
+format_function_t format_vnet_dev_args;
+
 /* dev.c */
 vnet_dev_t *vnet_dev_alloc (vlib_main_t *, vnet_dev_device_id_t,
 			    vnet_dev_driver_t *);
@@ -488,6 +545,7 @@ void *vnet_dev_get_device_info (vlib_main_t *, vnet_dev_device_id_t);
 /* error.c */
 clib_error_t *vnet_dev_port_err (vlib_main_t *, vnet_dev_port_t *,
 				 vnet_dev_rv_t, char *, ...);
+int vnet_dev_flow_err (vlib_main_t *, vnet_dev_rv_t);
 
 /* handlers.c */
 clib_error_t *vnet_dev_port_set_max_frame_size (vnet_main_t *,
@@ -593,17 +651,21 @@ typedef struct
 } vnet_dev_format_args_t;
 
 format_function_t format_vnet_dev_addr;
+format_function_t format_vnet_dev_flags;
 format_function_t format_vnet_dev_hw_addr;
 format_function_t format_vnet_dev_info;
 format_function_t format_vnet_dev_interface_info;
 format_function_t format_vnet_dev_interface_name;
+format_function_t format_vnet_dev_log;
+format_function_t format_vnet_dev_port_caps;
+format_function_t format_vnet_dev_port_flags;
 format_function_t format_vnet_dev_port_info;
+format_function_t format_vnet_dev_port_rx_offloads;
+format_function_t format_vnet_dev_port_tx_offloads;
 format_function_t format_vnet_dev_rv;
 format_function_t format_vnet_dev_rx_queue_info;
 format_function_t format_vnet_dev_tx_queue_info;
-format_function_t format_vnet_dev_flags;
-format_function_t format_vnet_dev_port_flags;
-format_function_t format_vnet_dev_log;
+format_function_t format_vnet_dev_flow;
 unformat_function_t unformat_vnet_dev_flags;
 unformat_function_t unformat_vnet_dev_port_flags;
 

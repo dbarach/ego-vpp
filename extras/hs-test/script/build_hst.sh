@@ -21,6 +21,8 @@ export VPP_WS=../..
 
 if [ "$1" == "debug" ]; then
 	VPP_BUILD_ROOT=${VPP_WS}/build-root/build-vpp_debug-native/vpp
+elif [ "$1" == "gcov" ]; then
+  VPP_BUILD_ROOT=${VPP_WS}/build-root/build-vpp_gcov-native/vpp
 else
 	VPP_BUILD_ROOT=${VPP_WS}/build-root/build-vpp-native/vpp
 fi
@@ -55,8 +57,12 @@ fi
 docker_build () {
     tag=$1
     dockername=$2
-    docker build --build-arg UBUNTU_VERSION --build-arg http_proxy=$HTTP_PROXY \
-            -t $tag  -f docker/Dockerfile.$dockername .
+    docker build --build-arg UBUNTU_VERSION             \
+                 --build-arg http_proxy=$HTTP_PROXY     \
+                 --build-arg https_proxy=$HTTP_PROXY    \
+                 --build-arg HTTP_PROXY=$HTTP_PROXY     \
+                 --build-arg HTTPS_PROXY=$HTTP_PROXY    \
+                 -t $tag -f docker/Dockerfile.$dockername .
 }
 
 docker_build hs-test/vpp vpp

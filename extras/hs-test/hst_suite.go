@@ -1,18 +1,20 @@
 package main
 
 import (
+	"bufio"
 	"errors"
 	"flag"
 	"fmt"
-	"io/ioutil"
+	"io"
+	"log"
 	"os"
 	"os/exec"
 	"strings"
 	"time"
 
 	"github.com/edwarnicke/exechelper"
-	"github.com/stretchr/testify/assert"
-	"github.com/stretchr/testify/suite"
+	. "github.com/onsi/ginkgo/v2"
+	. "github.com/onsi/gomega"
 	"gopkg.in/yaml.v3"
 )
 
@@ -28,29 +30,39 @@ var nConfiguredCpus = flag.Int("cpus", 1, "number of CPUs assigned to vpp")
 var vppSourceFileDir = flag.String("vppsrc", "", "vpp source file directory")
 
 type HstSuite struct {
-	suite.Suite
-	containers       map[string]*Container
-	volumes          []string
-	netConfigs       []NetConfig
-	netInterfaces    map[string]*NetInterface
-	ip4AddrAllocator *Ip4AddressAllocator
-	testIds          map[string]string
-	cpuAllocator     *CpuAllocatorT
-	cpuContexts      []*CpuContext
-	cpuPerVpp        int
+	containers        map[string]*Container
+	startedContainers []*Container
+	volumes           []string
+	netConfigs        []NetConfig
+	netInterfaces     map[string]*NetInterface
+	ip4AddrAllocator  *Ip4AddressAllocator
+	testIds           map[string]string
+	cpuAllocator      *CpuAllocatorT
+	cpuContexts       []*CpuContext
+	cpuPerVpp         int
+	pid               string
+	logger            *log.Logger
+	logFile           *os.File
 }
 
 func (s *HstSuite) SetupSuite() {
+	s.createLogger()
+	s.log("Suite Setup")
+	RegisterFailHandler(func(message string, callerSkip ...int) {
+		s.hstFail()
+		Fail(message, callerSkip...)
+	})
 	var err error
+	s.pid = fmt.Sprint(os.Getpid())
 	s.cpuAllocator, err = CpuAllocator()
 	if err != nil {
-		s.FailNow("failed to init cpu allocator: %v", err)
+		Fail("failed to init cpu allocator: " + fmt.Sprint(err))
 	}
 	s.cpuPerVpp = *nConfiguredCpus
 }
 
 func (s *HstSuite) AllocateCpus() []int {
-	cpuCtx, err := s.cpuAllocator.Allocate(s.cpuPerVpp)
+	cpuCtx, err := s.cpuAllocator.Allocate(len(s.startedContainers), s.cpuPerVpp)
 	s.assertNil(err)
 	s.AddCpuContext(cpuCtx)
 	return cpuCtx.cpus
@@ -61,18 +73,19 @@ func (s *HstSuite) AddCpuContext(cpuCtx *CpuContext) {
 }
 
 func (s *HstSuite) TearDownSuite() {
+	defer s.logFile.Close()
+	s.log("Suite Teardown")
 	s.unconfigureNetworkTopology()
 }
 
 func (s *HstSuite) TearDownTest() {
+	s.log("Test Teardown")
 	if *isPersistent {
 		return
 	}
-	for _, c := range s.cpuContexts {
-		c.Release()
-	}
 	s.resetContainers()
 	s.removeVolumes()
+	s.ip4AddrAllocator.deleteIpAddresses()
 }
 
 func (s *HstSuite) skipIfUnconfiguring() {
@@ -82,6 +95,8 @@ func (s *HstSuite) skipIfUnconfiguring() {
 }
 
 func (s *HstSuite) SetupTest() {
+	s.log("Test Setup")
+	s.startedContainers = s.startedContainers[:0]
 	s.skipIfUnconfiguring()
 	s.setupVolumes()
 	s.setupContainers()
@@ -103,62 +118,107 @@ func (s *HstSuite) setupContainers() {
 	}
 }
 
+func (s *HstSuite) logVppInstance(container *Container, maxLines int) {
+	if container.vppInstance == nil {
+		return
+	}
+
+	logSource := container.getHostWorkDir() + defaultLogFilePath
+	file, err := os.Open(logSource)
+
+	if err != nil {
+		return
+	}
+	defer file.Close()
+
+	scanner := bufio.NewScanner(file)
+	var lines []string
+	var counter int
+
+	for scanner.Scan() {
+		lines = append(lines, scanner.Text())
+		counter++
+		if counter > maxLines {
+			lines = lines[1:]
+			counter--
+		}
+	}
+
+	s.log("vvvvvvvvvvvvvvv " + container.name + " [VPP instance]:")
+	for _, line := range lines {
+		s.log(line)
+	}
+	s.log("^^^^^^^^^^^^^^^\n\n")
+}
+
 func (s *HstSuite) hstFail() {
-	s.T().FailNow()
+	for _, container := range s.startedContainers {
+		out, err := container.log(20)
+		if err != nil {
+			s.log("An error occured while obtaining '" + container.name + "' container logs: " + fmt.Sprint(err))
+			s.log("The container might not be running - check logs in " + container.getLogDirPath())
+			continue
+		}
+		s.log("\nvvvvvvvvvvvvvvv " +
+			container.name + ":\n" +
+			out +
+			"^^^^^^^^^^^^^^^\n\n")
+		s.logVppInstance(container, 20)
+	}
 }
 
 func (s *HstSuite) assertNil(object interface{}, msgAndArgs ...interface{}) {
-	if !assert.Nil(s.T(), object, msgAndArgs...) {
-		s.hstFail()
-	}
+	Expect(object).To(BeNil(), msgAndArgs...)
 }
 
 func (s *HstSuite) assertNotNil(object interface{}, msgAndArgs ...interface{}) {
-	if !assert.NotNil(s.T(), object, msgAndArgs...) {
-		s.hstFail()
-	}
+	Expect(object).ToNot(BeNil(), msgAndArgs...)
 }
 
 func (s *HstSuite) assertEqual(expected, actual interface{}, msgAndArgs ...interface{}) {
-	if !assert.Equal(s.T(), expected, actual, msgAndArgs...) {
-		s.hstFail()
-	}
+	Expect(actual).To(Equal(expected), msgAndArgs...)
 }
 
 func (s *HstSuite) assertNotEqual(expected, actual interface{}, msgAndArgs ...interface{}) {
-	if !assert.NotEqual(s.T(), expected, actual, msgAndArgs...) {
-		s.hstFail()
-	}
+	Expect(actual).ToNot(Equal(expected), msgAndArgs...)
 }
 
 func (s *HstSuite) assertContains(testString, contains interface{}, msgAndArgs ...interface{}) {
-	if !assert.Contains(s.T(), testString, contains, msgAndArgs...) {
-		s.hstFail()
-	}
+	Expect(testString).To(ContainSubstring(fmt.Sprint(contains)), msgAndArgs...)
 }
 
 func (s *HstSuite) assertNotContains(testString, contains interface{}, msgAndArgs ...interface{}) {
-	if !assert.NotContains(s.T(), testString, contains, msgAndArgs...) {
-		s.hstFail()
-	}
+	Expect(testString).ToNot(ContainSubstring(fmt.Sprint(contains)), msgAndArgs...)
 }
 
 func (s *HstSuite) assertNotEmpty(object interface{}, msgAndArgs ...interface{}) {
-	if !assert.NotEmpty(s.T(), object, msgAndArgs...) {
-		s.hstFail()
-	}
+	Expect(object).ToNot(BeEmpty(), msgAndArgs...)
 }
 
-func (s *HstSuite) log(args ...any) {
+func (s *HstSuite) createLogger() {
+	suiteName := CurrentSpecReport().ContainerHierarchyTexts[0]
+	var err error
+	s.logFile, err = os.Create("summary/" + suiteName + ".log")
+	if err != nil {
+		Fail("Unable to create log file.")
+	}
+	s.logger = log.New(io.Writer(s.logFile), "", log.LstdFlags)
+}
+
+// Logs to files by default, logs to stdout when VERBOSE=true with GinkgoWriter
+// to keep console tidy
+func (s *HstSuite) log(arg any) {
+	logs := strings.Split(fmt.Sprint(arg), "\n")
+	for _, line := range logs {
+		s.logger.Println(line)
+	}
 	if *isVerbose {
-		s.T().Helper()
-		s.T().Log(args...)
+		GinkgoWriter.Println(arg)
 	}
 }
 
-func (s *HstSuite) skip(args ...any) {
-	s.log(args...)
-	s.T().SkipNow()
+func (s *HstSuite) skip(args string) {
+	Skip(args)
 }
 
 func (s *HstSuite) SkipIfMultiWorker(args ...any) {
@@ -195,8 +255,16 @@ func (s *HstSuite) removeVolumes() {
 	}
 }
 
+func (s *HstSuite) getNetNamespaceByName(name string) string {
+	return name + s.pid
+}
+
+func (s *HstSuite) getInterfaceByName(name string) *NetInterface {
+	return s.netInterfaces[name+s.pid]
+}
+
 func (s *HstSuite) getContainerByName(name string) *Container {
-	return s.containers[name]
+	return s.containers[name+s.pid]
 }
 
 /*
@@ -204,59 +272,88 @@ func (s *HstSuite) getContainerByName(name string) *Container {
  * are not able to modify the original container and affect other tests by doing that
  */
 func (s *HstSuite) getTransientContainerByName(name string) *Container {
-	containerCopy := *s.containers[name]
+	containerCopy := *s.containers[name+s.pid]
 	return &containerCopy
 }
 
 func (s *HstSuite) loadContainerTopology(topologyName string) {
-	data, err := ioutil.ReadFile(containerTopologyDir + topologyName + ".yaml")
+	data, err := os.ReadFile(containerTopologyDir + topologyName + ".yaml")
 	if err != nil {
-		s.T().Fatalf("read error: %v", err)
+		Fail("read error: " + fmt.Sprint(err))
 	}
 	var yamlTopo YamlTopology
 	err = yaml.Unmarshal(data, &yamlTopo)
 	if err != nil {
-		s.T().Fatalf("unmarshal error: %v", err)
+		Fail("unmarshal error: " + fmt.Sprint(err))
 	}
 
 	for _, elem := range yamlTopo.Volumes {
 		volumeMap := elem["volume"].(VolumeConfig)
 		hostDir := volumeMap["host-dir"].(string)
+		workingVolumeDir := logDir + CurrentSpecReport().LeafNodeText + volumeDir
+		volDirReplacer := strings.NewReplacer("$HST_VOLUME_DIR", workingVolumeDir)
+		hostDir = volDirReplacer.Replace(hostDir)
 		s.volumes = append(s.volumes, hostDir)
 	}
 
 	s.containers = make(map[string]*Container)
 	for _, elem := range yamlTopo.Containers {
-		newContainer, err := newContainer(elem)
+		newContainer, err := newContainer(s, elem)
 		newContainer.suite = s
+		newContainer.name += newContainer.suite.pid
 		if err != nil {
-			s.T().Fatalf("container config error: %v", err)
+			Fail("container config error: " + fmt.Sprint(err))
 		}
 		s.containers[newContainer.name] = newContainer
 	}
 }
 
 func (s *HstSuite) loadNetworkTopology(topologyName string) {
-	data, err := ioutil.ReadFile(networkTopologyDir + topologyName + ".yaml")
+	data, err := os.ReadFile(networkTopologyDir + topologyName + ".yaml")
 	if err != nil {
-		s.T().Fatalf("read error: %v", err)
+		Fail("read error: " + fmt.Sprint(err))
 	}
 	var yamlTopo YamlTopology
 	err = yaml.Unmarshal(data, &yamlTopo)
 	if err != nil {
-		s.T().Fatalf("unmarshal error: %v", err)
+		Fail("unmarshal error: " + fmt.Sprint(err))
 	}
 
 	s.ip4AddrAllocator = NewIp4AddressAllocator()
 	s.netInterfaces = make(map[string]*NetInterface)
+
 	for _, elem := range yamlTopo.Devices {
+		if _, ok := elem["name"]; ok {
+			elem["name"] = elem["name"].(string) + s.pid
+		}
+
+		if peer, ok := elem["peer"].(NetDevConfig); ok {
+			if peer["name"].(string) != "" {
+				peer["name"] = peer["name"].(string) + s.pid
+			}
+			if _, ok := peer["netns"]; ok {
+				peer["netns"] = peer["netns"].(string) + s.pid
+			}
+		}
+
+		if _, ok := elem["netns"]; ok {
+			elem["netns"] = elem["netns"].(string) + s.pid
+		}
+
+		if _, ok := elem["interfaces"]; ok {
+			interfaceCount := len(elem["interfaces"].([]interface{}))
+			for i := 0; i < interfaceCount; i++ {
+				elem["interfaces"].([]interface{})[i] = elem["interfaces"].([]interface{})[i].(string) + s.pid
+			}
+		}
+
 		switch elem["type"].(string) {
 		case NetNs:
 			{
 				if namespace, err := newNetNamespace(elem); err == nil {
 					s.netConfigs = append(s.netConfigs, &namespace)
 				} else {
-					s.T().Fatalf("network config error: %v", err)
+					Fail("network config error: " + fmt.Sprint(err))
 				}
 			}
 		case Veth, Tap:
@@ -265,7 +362,7 @@ func (s *HstSuite) loadNetworkTopology(topologyName string) {
 					s.netConfigs = append(s.netConfigs, netIf)
 					s.netInterfaces[netIf.Name()] = netIf
 				} else {
-					s.T().Fatalf("network config error: %v", err)
+					Fail("network config error: " + fmt.Sprint(err))
 				}
 			}
 		case Bridge:
@@ -273,7 +370,7 @@ func (s *HstSuite) loadNetworkTopology(topologyName string) {
 				if bridge, err := newBridge(elem); err == nil {
 					s.netConfigs = append(s.netConfigs, &bridge)
 				} else {
-					s.T().Fatalf("network config error: %v", err)
+					Fail("network config error: " + fmt.Sprint(err))
 				}
 			}
 		}
@@ -289,7 +386,7 @@ func (s *HstSuite) configureNetworkTopology(topologyName string) {
 
 	for _, nc := range s.netConfigs {
 		if err := nc.configure(); err != nil {
-			s.T().Fatalf("network config error: %v", err)
+			Fail("Network config error: " + fmt.Sprint(err))
 		}
 	}
 }
@@ -304,7 +401,7 @@ func (s *HstSuite) unconfigureNetworkTopology() {
 }
 
 func (s *HstSuite) getTestId() string {
-	testName := s.T().Name()
+	testName := CurrentSpecReport().LeafNodeText
 
 	if s.testIds == nil {
 		s.testIds = map[string]string{}
@@ -317,8 +414,17 @@ func (s *HstSuite) getTestId() string {
 	return s.testIds[testName]
 }
 
+// Returns last 4 digits of PID
+func (s *HstSuite) getPortFromPid() string {
+	port := s.pid
+	for len(port) < 4 {
+		port += "0"
+	}
+	return port[len(port)-4:]
+}
+
 func (s *HstSuite) startServerApp(running chan error, done chan struct{}, env []string) {
-	cmd := exec.Command("iperf3", "-4", "-s")
+	cmd := exec.Command("iperf3", "-4", "-s", "-p", s.getPortFromPid())
 	if env != nil {
 		cmd.Env = env
 	}
@@ -342,7 +448,7 @@ func (s *HstSuite) startClientApp(ipAddress string, env []string, clnCh chan err
 	nTries := 0
 
 	for {
-		cmd := exec.Command("iperf3", "-c", ipAddress, "-u", "-l", "1460", "-b", "10g")
+		cmd := exec.Command("iperf3", "-c", ipAddress, "-u", "-l", "1460", "-b", "10g", "-p", s.getPortFromPid())
 		if env != nil {
 			cmd.Env = env
 		}
@@ -364,11 +470,11 @@ func (s *HstSuite) startClientApp(ipAddress string, env []string, clnCh chan err
 }
 
 func (s *HstSuite) startHttpServer(running chan struct{}, done chan struct{}, addressPort, netNs string) {
-	cmd := newCommand([]string{"./http_server", addressPort}, netNs)
+	cmd := newCommand([]string{"./http_server", addressPort, s.pid}, netNs)
 	err := cmd.Start()
 	s.log(cmd)
 	if err != nil {
-		fmt.Println("Failed to start http server")
+		s.log("Failed to start http server: " + fmt.Sprint(err))
 		return
 	}
 	running <- struct{}{}
