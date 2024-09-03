@@ -74,12 +74,13 @@ V=0
 endif
 
 PYTHON_VERSION=$(shell $(PYTHON_INTERP) -c 'import sys; print(sys.version_info.major)')
-PIP_VERSION=24.0
+PIP_VERSION=24.2
 # Keep in sync with requirements.txt
 PIP_TOOLS_VERSION=7.4.1
-PIP_SETUPTOOLS_VERSION=69.2.0
+PIP_SETUPTOOLS_VERSION=71.1.0
 PYTHON_DEPENDS=requirements-$(PYTHON_VERSION).txt
 SCAPY_SOURCE=$(shell find $(VENV_PATH)/lib/python* -name site-packages)
+SCAPY_VERSION=$(shell grep scapy $(TEST_DIR)/requirements.txt | cut -d'=' -f3 | cut -d';' -f1)
 BUILD_COV_DIR=$(BR)/test-coverage
 
 PIP_TOOLS_INSTALL_DONE=$(VENV_RUN_DIR)/pip-tools-install-$(PYTHON_VERSION)-$(PIP_TOOLS_VERSION).done
@@ -118,7 +119,7 @@ $(PIP_INSTALL_DONE): $(PIP_TOOLS_INSTALL_DONE) $(PYTHON_DEPENDS)
 $(PIP_PATCH_DONE): $(PIP_INSTALL_DONE)
 	@echo --- patching ---
 	@sleep 1 # Ensure python recompiles patched *.py files -> *.pyc
-	for f in $(CURDIR)/patches/scapy-2.4.3/*.patch ; do \
+	for f in $(CURDIR)/patches/scapy-$(SCAPY_VERSION)/*.patch ; do \
 		echo Applying patch: $$(basename $$f) ; \
 		patch --forward -p1 -d $(SCAPY_SOURCE) < $$f ; \
 		retCode=$$?; \
@@ -255,8 +256,8 @@ ARG17=--extern-apidir=$(EXTERN_APIDIR)
 endif
 
 ARG18=
-ifneq ($(findstring $(DECODE_PCAPS),1 y yes),)
-ARG18=--decode-pcaps
+ifneq ($(DECODE_PCAPS),)
+ARG18=--decode-pcaps=$(DECODE_PCAPS)
 endif
 
 ifneq ($(findstring $(API_PRELOAD),1 y yes),)
@@ -350,6 +351,46 @@ cov-prep: test-dep
 	@lcov --zerocounters --directory $(VPP_BUILD_DIR)
 	@test -z "$(EXTERN_COV_DIR)" || lcov --zerocounters --directory $(EXTERN_COV_DIR)
 
+COV_REM_NOT_CODE="/usr/include/*" "*/build-root/*" "/opt/*" "/usr/lib/*" \
+				 "*_test.*" "*test_*" "*vat*"  "*/vnet/unix/gdb_funcs.c" \
+				 "*pg.c"
+
+COV_REM_DRIVERS="*rdma*" "*/plugins/af_packet/*" "*/plugins/af_xdp/*" \
+				"*/plugins/avf/*" "*/plugins/dma_intel/*" "*/vlib/pci/*" \
+				"*/vnet/devices/*" "*/vlib/dma/*" "*/plugins/vmxnet3/*" \
+				"*/vnet/devices/virtio/*" "*/plugins/perfmon/arm*" \
+				"*/plugins/perfmon/intel/*" "*/vlib/vmbus/*" \
+				"*/vnet/dev/*" "*/plugins/dev_ena/*" "*/plugins/dev_iavf/*"
+
+COV_REM_UNUSED_FEAT="*/plugins/ioam/analyse/*" "*/plugins/ioam/lib-*/*" \
+				    "*/plugins/ioam/export-common/*" "*/vnet/srp/*" \
+					"*/lawful-intercept/*" "*/lisp/*" "*/vnet/osi/*" \
+					"*/plugins/nsh/*"
+
+COV_REM_TODO_NO_TEST="*/vpp-api/client/*" "*/plugins/prom/*" \
+					 "*/plugins/tlspicotls/*" "*/plugins/tlsmbedtls/*" \
+					 "*/vppinfra/perfmon/*" "*/plugins/ila/*" \
+					 "*/vlib/linux/*" "*/vnet/util/radix.c" "*/vapi/vapi.hpp" \
+					 "*/vpp/api/types.c" "*/vpp/api/json_format.c" \
+					 "*/plugins/ioam/*/*.h" "*/linux/netns.c" "*/vnet/flow/*" \
+					 "*/vppinfra/random.c" "*/vppinfra/ring.h" \
+				 	 "*/vppinfra/bihash_vec8_8.h" "*/vppinfra/maplog.c" \
+					 "*/vppinfra/format_table.c" "*/vppinfra/timing_wheel.c" \
+					 "*/vppinfra/macros.c" "*/vppinfra/valloc.c" \
+					 "*/vppinfra/jsonformat.c" "*/vppinfra/vector/array_mask.h" \
+					 "*/vppinfra/vector/toeplitz.c" "*/plugins/vrrp/vrrp_packet.h" \
+					 "*/vnet/srv6/sr.h" "*/vlibapi/api_format.c" \
+					 "*/vlibapi/node_serialize.c" "*/plugins/quic/error.c" \
+					 "*/vnet/ipfix-export/flow_report_classify.h" \
+					 "*/vnet/ip/ip6_ll_types.c" "*/vnet/ip/ip_psh_cksum.h" \
+					 "*/vnet/ip/ip6_hop_by_hop.h" "*/vnet/ip/ip_format_fns.h" \
+					 "*/vnet/dpo/classify_dpo.h" "*/vnet/dpo/l3_proxy_dpo.h" \
+					 "*/vnet/ipsec/esp_format.c" "*/vnet/ethernet/sfp.c" \
+					 "*/vnet/ethernet/ethernet_format_fns.h" \
+					 "*/plugins/ikev2/ikev2_format.c" "*/vnet/bier/bier_types.c"
+
+COV_REM_ALT_TEST="*/plugins/hs_apps/*" "*/plugins/http/*.h"
+
 .PHONY: cov-post
 cov-post: wipe-cov $(BUILD_COV_DIR)
 	@lcov --capture \
@@ -360,13 +401,11 @@ cov-post: wipe-cov $(BUILD_COV_DIR)
 		--directory $(EXTERN_COV_DIR) \
 		--output-file $(BUILD_COV_DIR)/extern-coverage$(HS_TEST).info
 	@lcov --remove $(BUILD_COV_DIR)/coverage$(HS_TEST).info \
-		"/usr/include/*" "*/build-root/*" "/opt/*" "/usr/lib/*" \
-		"*_test.*" "*vat*" "*rdma*" "*/vpp-api/client/*" "*/plugins/af_packet/*" \
-		"*/plugins/af_xdp/*" "*/plugins/avf/*" "*/plugins/dma_intel/*" \
-		"*/plugins/hs_apps/*" "*/plugins/vmxnet3/*" "*/vnet/devices/virtio/*" \
-		"*/plugins/perfmon/arm*" "*/plugins/perfmon/intel/*" "*/vlib/vmbus/*" \
-		"*/vnet/dev/*" "*/plugins/dev_ena/*" "*/plugins/builtinurl/*" "*/vnet/flow/*" \
-		"*/plugins/http_static/builtinurl/*" "*/plugins/dev_iavf/*" \
+		$(COV_REM_NOT_CODE) \
+		$(COV_REM_DRIVERS)  \
+		$(COV_REM_TODO_NO_TEST) \
+		$(COV_REM_UNUSED_FEAT) \
+		$(COV_REM_ALT_TEST) \
 		-o $(BUILD_COV_DIR)/coverage-filtered$(HS_TEST).info
 	@genhtml $(BUILD_COV_DIR)/coverage-filtered$(HS_TEST).info \
 		--output-directory $(BUILD_COV_DIR)/html
@@ -615,6 +654,10 @@ help:
 	@echo "   RND_SEED=<seed>"
 	@echo "       random seed used by test framework"
 	@echo "       (default: time.time())"
+	@echo ""
+	@echo "   DECODE_PCAPS=[all|failed|none]"
+	@echo "       decode pcap files using tshark - all, only failed or none"
+	@echo "       (default: failed)"
 	@echo ""
 	@echo "Starting VPP in GDB for use with DEBUG=attach:"
 	@echo ""

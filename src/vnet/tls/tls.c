@@ -16,13 +16,10 @@
 #include <vnet/session/application_interface.h>
 #include <vppinfra/lock.h>
 #include <vnet/tls/tls.h>
+#include <vnet/tls/tls_inlines.h>
 
 static tls_main_t tls_main;
-static tls_engine_vft_t *tls_vfts;
-
-#define TLS_INVALID_HANDLE 	~0
-#define TLS_IDX_MASK 		0x00FFFFFF
-#define TLS_ENGINE_TYPE_SHIFT	28
+tls_engine_vft_t *tls_vfts;
 
 void tls_disconnect (u32 ctx_handle, u32 thread_index);
 
@@ -31,7 +28,7 @@ tls_disconnect_transport (tls_ctx_t * ctx)
 {
   vnet_disconnect_args_t a = {
     .handle = ctx->tls_session_handle,
-    .app_index = tls_main.app_index,
+    .app_index = ctx->ts_app_index,
   };
 
   if (vnet_disconnect_session (&a))
@@ -48,6 +45,21 @@ tls_get_available_engine (void)
 	return i;
     }
   return CRYPTO_ENGINE_NONE;
+}
+
+static crypto_engine_type_t
+tls_get_engine_type (crypto_engine_type_t requested,
+		     crypto_engine_type_t preferred)
+{
+  if (requested != CRYPTO_ENGINE_NONE)
+    {
+      if (tls_vfts[requested].ctx_alloc)
+	return requested;
+      return CRYPTO_ENGINE_NONE;
+    }
+  if (!tls_vfts[preferred].ctx_alloc)
+    return tls_get_available_engine ();
+  return preferred;
 }
 
 int
@@ -293,140 +305,6 @@ tls_notify_app_connected (tls_ctx_t * ctx, session_error_t err)
 send_reply:
   return app_worker_connect_notify (app_wrk, 0, err,
 				    ctx->parent_app_api_context);
-}
-
-static inline void
-tls_ctx_parse_handle (u32 ctx_handle, u32 * ctx_index, u32 * engine_type)
-{
-  *ctx_index = ctx_handle & TLS_IDX_MASK;
-  *engine_type = ctx_handle >> TLS_ENGINE_TYPE_SHIFT;
-}
-
-static inline crypto_engine_type_t
-tls_get_engine_type (crypto_engine_type_t requested,
-		     crypto_engine_type_t preferred)
-{
-  if (requested != CRYPTO_ENGINE_NONE)
-    {
-      if (tls_vfts[requested].ctx_alloc)
-	return requested;
-      return CRYPTO_ENGINE_NONE;
-    }
-  if (!tls_vfts[preferred].ctx_alloc)
-    return tls_get_available_engine ();
-  return preferred;
-}
-
-static inline u32
-tls_ctx_alloc (crypto_engine_type_t engine_type)
-{
-  u32 ctx_index;
-  ctx_index = tls_vfts[engine_type].ctx_alloc ();
-  return (((u32) engine_type << TLS_ENGINE_TYPE_SHIFT) | ctx_index);
-}
-
-static inline u32
-tls_ctx_alloc_w_thread (crypto_engine_type_t engine_type, u32 thread_index)
-{
-  u32 ctx_index;
-  ctx_index = tls_vfts[engine_type].ctx_alloc_w_thread (thread_index);
-  return (((u32) engine_type << TLS_ENGINE_TYPE_SHIFT) | ctx_index);
-}
-
-static inline u32
-tls_ctx_attach (crypto_engine_type_t engine_type, u32 thread_index, void *ctx)
-{
-  u32 ctx_index;
-  ctx_index = tls_vfts[engine_type].ctx_attach (thread_index, ctx);
-  return (((u32) engine_type << TLS_ENGINE_TYPE_SHIFT) | ctx_index);
-}
-
-static inline void *
-tls_ctx_detach (tls_ctx_t *ctx)
-{
-  return tls_vfts[ctx->tls_ctx_engine].ctx_detach (ctx);
-}
-
-static inline tls_ctx_t *
-tls_ctx_get (u32 ctx_handle)
-{
-  u32 ctx_index, engine_type;
-  tls_ctx_parse_handle (ctx_handle, &ctx_index, &engine_type);
-  return tls_vfts[engine_type].ctx_get (ctx_index);
-}
-
-static inline tls_ctx_t *
-tls_ctx_get_w_thread (u32 ctx_handle, u8 thread_index)
-{
-  u32 ctx_index, engine_type;
-  tls_ctx_parse_handle (ctx_handle, &ctx_index, &engine_type);
-  return tls_vfts[engine_type].ctx_get_w_thread (ctx_index, thread_index);
-}
-
-static inline int
-tls_ctx_init_server (tls_ctx_t * ctx)
-{
-  return tls_vfts[ctx->tls_ctx_engine].ctx_init_server (ctx);
-}
-
-static inline int
-tls_ctx_init_client (tls_ctx_t * ctx)
-{
-  return tls_vfts[ctx->tls_ctx_engine].ctx_init_client (ctx);
-}
-
-static inline int
-tls_ctx_write (tls_ctx_t * ctx, session_t * app_session,
-	       transport_send_params_t * sp)
-{
-  u32 n_wrote;
-
-  sp->max_burst_size = sp->max_burst_size * TRANSPORT_PACER_MIN_MSS;
-  n_wrote = tls_vfts[ctx->tls_ctx_engine].ctx_write (ctx, app_session, sp);
-  sp->bytes_dequeued = n_wrote;
-  return n_wrote > 0 ? clib_max (n_wrote / TRANSPORT_PACER_MIN_MSS, 1) : 0;
-}
-
-static inline int
-tls_ctx_read (tls_ctx_t * ctx, session_t * tls_session)
-{
-  return tls_vfts[ctx->tls_ctx_engine].ctx_read (ctx, tls_session);
-}
-
-static inline int
-tls_ctx_transport_close (tls_ctx_t * ctx)
-{
-  return tls_vfts[ctx->tls_ctx_engine].ctx_transport_close (ctx);
-}
-
-static inline int
-tls_ctx_transport_reset (tls_ctx_t *ctx)
-{
-  return tls_vfts[ctx->tls_ctx_engine].ctx_transport_reset (ctx);
-}
-
-static inline int
-tls_ctx_app_close (tls_ctx_t * ctx)
-{
-  return tls_vfts[ctx->tls_ctx_engine].ctx_app_close (ctx);
-}
-
-void
-tls_ctx_free (tls_ctx_t * ctx)
-{
-  tls_vfts[ctx->tls_ctx_engine].ctx_free (ctx);
-}
-
-u8
-tls_ctx_handshake_is_over (tls_ctx_t * ctx)
-{
-  return tls_vfts[ctx->tls_ctx_engine].ctx_handshake_is_over (ctx);
-}
-
-int
-tls_reinit_ca_chain (crypto_engine_type_t tls_engine_id)
-{
-  return tls_vfts[tls_engine_id].ctx_reinit_cachain ();
 }
 
 void
@@ -771,6 +649,7 @@ tls_connect (transport_endpoint_cfg_t * tep)
   ctx = tls_ctx_half_open_get (ctx_index);
   ctx->parent_app_wrk_index = sep->app_wrk_index;
   ctx->parent_app_api_context = sep->opaque;
+  ctx->ts_app_index = tm->app_index;
   ctx->tcp_is_ip4 = sep->is_ip4;
   ctx->tls_type = sep->transport_proto;
   ctx->ckpair_index = ccfg->ckpair_index;
@@ -870,6 +749,7 @@ tls_start_listen (u32 app_listener_index, transport_endpoint_cfg_t *tep)
 
   lctx = tls_listener_ctx_get (lctx_index);
   lctx->parent_app_wrk_index = sep->app_wrk_index;
+  lctx->ts_app_index = tm->app_index;
   lctx->tls_session_handle = tls_al_handle;
   lctx->app_session_handle = listen_session_get_handle (app_listener);
   lctx->tcp_is_ip4 = sep->is_ip4;

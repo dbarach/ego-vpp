@@ -4,7 +4,7 @@
 
 #include <vnet/vnet.h>
 #include <vnet/dev/dev.h>
-#include <vnet/dev/pci.h>
+#include <vnet/dev/bus/pci.h>
 #include <vnet/dev/counters.h>
 #include <vnet/ethernet/ethernet.h>
 #include <vnet/plugin/plugin.h>
@@ -131,6 +131,9 @@ oct_init_nix (vlib_main_t *vm, vnet_dev_t *dev)
 	.rx_offloads = {
 	  .ip4_cksum = 1,
 	},
+	.tx_offloads = {
+	  .ip4_cksum = 1,
+	},
       },
       .ops = {
         .init = oct_port_init,
@@ -141,6 +144,7 @@ oct_init_nix (vlib_main_t *vm, vnet_dev_t *dev)
         .config_change_validate = oct_port_cfg_change_validate,
         .format_status = format_oct_port_status,
         .format_flow = format_oct_port_flow,
+        .clear_counters = oct_port_clear_counters,
       },
       .data_size = sizeof (oct_port_t),
       .initial_data = &oct_port,
@@ -159,6 +163,7 @@ oct_init_nix (vlib_main_t *vm, vnet_dev_t *dev)
         .alloc = oct_rx_queue_alloc,
         .free = oct_rx_queue_free,
 	.format_info = format_oct_rxq_info,
+        .clear_counters = oct_rxq_clear_counters,
       },
     },
     .tx_queue = {
@@ -173,6 +178,7 @@ oct_init_nix (vlib_main_t *vm, vnet_dev_t *dev)
         .alloc = oct_tx_queue_alloc,
         .free = oct_tx_queue_free,
 	.format_info = format_oct_txq_info,
+        .clear_counters = oct_txq_clear_counters,
       },
     },
   };

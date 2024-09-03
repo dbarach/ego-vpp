@@ -6,12 +6,12 @@ then
     if [ -n "${WORKSPACE}" ]
     then
         echo -n "Copying docker logs..."
-        dirs=$(jq -r '.[0] | .SpecReports[] | select(.State == "failed") | .LeafNodeText' ${HS_ROOT}/summary/report.json)
+        dirs=$(jq -r '.[0] | .SpecReports[] | select(.State == "failed") | .LeafNodeText | split("/")[1]' ${HS_ROOT}/summary/report.json)
         for dirName in $dirs; do
             logDir=/tmp/hs-test/$dirName
             if [ -d "$logDir" ]; then
                 mkdir -p ${WORKSPACE}/archives/summary
-                cp -r $logDir ${WORKSPACE}/archives/summary/
+                rsync -a --exclude 'volumes' $logDir ${WORKSPACE}/archives/summary/
             fi
         done
         echo "Done."
@@ -29,5 +29,9 @@ then
     else
         echo "Not compressing files in temporary directories from test runs."
     fi
+    echo "*************************** SUMMARY ***************************"
+    cat "${HS_ROOT}/summary/failed-summary.log"
     exit 1
+else
+    exit $1
 fi

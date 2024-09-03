@@ -497,6 +497,9 @@ The buffers Section
       buffers-per-numa 128000
       default data-size 2048
       page-size default-hugepage
+      numa 1 {
+         buffers 64000
+      }
    }
 
 buffers-per-numa number
@@ -531,6 +534,33 @@ Set the page size for buffer allocation
    page-size 1G
    page-size default
    page-size default-hugepage
+
+numa <numa index> { .. }
+^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+
+Settings specific to a single NUMA domain.
+
+.. code-block:: console
+
+   buffers {
+      numa 0 {
+         buffers 32768
+      }
+   }
+
+buffers <n>
+^^^^^^^^^^^^^^^
+
+The number of buffers allocated for this specific NUMA domain.
+If this is set to zero, no buffers are allocated for this domain.
+
+By default, the value configured in **buffers-per-numa** is used.
+
+.. code-block:: console
+
+   numa 0 {
+      buffers 32768
+   }
 
 
 The dpdk Section

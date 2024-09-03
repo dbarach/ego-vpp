@@ -13,8 +13,10 @@ from asfframework import VppTestRunner
 from vpp_ip_route import VppIpRoute, VppRoutePath
 from vpp_pppoe_interface import VppPppoeInterface
 from util import ppp
+from config import config
 
 
+@unittest.skipIf("pppoe" in config.excluded_plugins, "Exclude PPPoE plugin tests")
 class TestPPPoE(VppTestCase):
     """PPPoE Test Case"""
 
@@ -222,7 +224,6 @@ class TestPPPoE(VppTestCase):
         )
         pppoe_if.add_vpp_config()
         pppoe_if.set_unnumbered(self.pg0.sw_if_index)
-
         #
         # Send tunneled packets that match the created tunnel and
         # are decapped and forwarded

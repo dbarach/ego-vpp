@@ -7,7 +7,7 @@ import subprocess
 import signal
 import glob
 from config import config
-from asfframework import VppAsfTestCase, VppTestRunner, Worker
+from asfframework import VppAsfTestCase, VppTestRunner, Worker, tag_fixme_ubuntu2404
 from vpp_ip_route import VppIpTable, VppIpRoute, VppRoutePath
 
 iperf3 = "/usr/bin/iperf3"
@@ -189,6 +189,12 @@ class VCLTestCase(VppAsfTestCase):
         self.logger.debug(self.vapi.cli("show ip fib"))
 
     def thru_host_stack_tear_down(self):
+        self.vapi.app_namespace_add_del_v4(
+            is_add=0, namespace_id="1", secret=1234, sw_if_index=self.loop0.sw_if_index
+        )
+        self.vapi.app_namespace_add_del_v4(
+            is_add=0, namespace_id="2", secret=5678, sw_if_index=self.loop1.sw_if_index
+        )
         for i in self.lo_interfaces:
             i.unconfig_ip4()
             i.set_table_ip4(0)
@@ -240,6 +246,12 @@ class VCLTestCase(VppAsfTestCase):
         self.logger.debug(self.vapi.cli("show ip6 fib"))
 
     def thru_host_stack_ipv6_tear_down(self):
+        self.vapi.app_namespace_add_del_v4(
+            is_add=0, namespace_id="1", secret=1234, sw_if_index=self.loop0.sw_if_index
+        )
+        self.vapi.app_namespace_add_del_v4(
+            is_add=0, namespace_id="2", secret=5678, sw_if_index=self.loop1.sw_if_index
+        )
         for i in self.lo_interfaces:
             i.unconfig_ip6()
             i.set_table_ip6(0)
@@ -299,6 +311,7 @@ class VCLTestCase(VppAsfTestCase):
         self.assert_equal(worker_client.result, 0, "Binary test return code")
 
 
+@tag_fixme_ubuntu2404
 class LDPCutThruTestCase(VCLTestCase):
     """LDP Cut Thru Tests"""
 
@@ -403,6 +416,9 @@ class LDPCutThruTestCase(VCLTestCase):
         )
 
 
+@unittest.skipIf(
+    "hs_apps" in config.excluded_plugins, "Exclude tests requiring hs_apps plugin"
+)
 class VCLCutThruTestCase(VCLTestCase):
     """VCL Cut Thru Tests"""
 
@@ -489,6 +505,9 @@ class VCLCutThruTestCase(VCLTestCase):
         )
 
 
+@unittest.skipIf(
+    "hs_apps" in config.excluded_plugins, "Exclude tests requiring hs_apps plugin"
+)
 class VCLThruHostStackEcho(VCLTestCase):
     """VCL Thru Host Stack Echo"""
 
@@ -543,6 +562,9 @@ class VCLThruHostStackEcho(VCLTestCase):
         self.logger.debug(self.vapi.cli("show app mq"))
 
 
+@unittest.skipIf(
+    "hs_apps" in config.excluded_plugins, "Exclude tests requiring hs_apps plugin"
+)
 class VCLThruHostStackTLS(VCLTestCase):
     """VCL Thru Host Stack TLS"""
 
@@ -594,6 +616,9 @@ class VCLThruHostStackTLS(VCLTestCase):
         self.logger.debug(self.vapi.cli("show app mq"))
 
 
+@unittest.skipIf(
+    "hs_apps" in config.excluded_plugins, "Exclude tests requiring hs_apps plugin"
+)
 class VCLThruHostStackEchoInterruptMode(VCLThruHostStackEcho):
     """VCL Thru Host Stack Echo interrupt mode"""
 
@@ -625,6 +650,9 @@ class VCLThruHostStackTLSInterruptMode(VCLThruHostStackTLS):
         super(VCLThruHostStackTLS, cls).setUpClass()
 
 
+@unittest.skipIf(
+    "hs_apps" in config.excluded_plugins, "Exclude tests requiring hs_apps plugin"
+)
 class VCLThruHostStackDTLS(VCLTestCase):
     """VCL Thru Host Stack DTLS"""
 
@@ -675,6 +703,9 @@ class VCLThruHostStackDTLS(VCLTestCase):
         self.logger.debug(self.vapi.cli("show app mq"))
 
 
+@unittest.skipIf(
+    "hs_apps" in config.excluded_plugins, "Exclude tests requiring hs_apps plugin"
+)
 class VCLThruHostStackQUIC(VCLTestCase):
     """VCL Thru Host Stack QUIC"""
 
@@ -726,6 +757,9 @@ class VCLThruHostStackQUIC(VCLTestCase):
         self.logger.debug(self.vapi.cli("show app mq"))
 
 
+@unittest.skipIf(
+    "hs_apps" in config.excluded_plugins, "Exclude tests requiring hs_apps plugin"
+)
 class VCLThruHostStackBidirNsock(VCLTestCase):
     """VCL Thru Host Stack Bidir Nsock"""
 
@@ -780,6 +814,9 @@ class VCLThruHostStackBidirNsock(VCLTestCase):
         )
 
 
+@unittest.skipIf(
+    "hs_apps" in config.excluded_plugins, "Exclude tests requiring hs_apps plugin"
+)
 class LDPThruHostStackBidirNsock(VCLTestCase):
     """LDP Thru Host Stack Bidir Nsock"""
 
@@ -830,6 +867,9 @@ class LDPThruHostStackBidirNsock(VCLTestCase):
         )
 
 
+@unittest.skipIf(
+    "hs_apps" in config.excluded_plugins, "Exclude tests requiring hs_apps plugin"
+)
 class LDPThruHostStackNsock(VCLTestCase):
     """LDP Thru Host Stack Nsock"""
 
@@ -879,6 +919,9 @@ class LDPThruHostStackNsock(VCLTestCase):
         )
 
 
+@unittest.skipIf(
+    "hs_apps" in config.excluded_plugins, "Exclude tests requiring hs_apps plugin"
+)
 class VCLThruHostStackNsock(VCLTestCase):
     """VCL Thru Host Stack Nsock"""
 
@@ -928,6 +971,7 @@ class VCLThruHostStackNsock(VCLTestCase):
         )
 
 
+@tag_fixme_ubuntu2404
 class LDPThruHostStackIperf(VCLTestCase):
     """LDP Thru Host Stack Iperf"""
 
@@ -975,6 +1019,7 @@ class LDPThruHostStackIperf(VCLTestCase):
         )
 
 
+@tag_fixme_ubuntu2404
 class LDPThruHostStackIperfUdp(VCLTestCase):
     """LDP Thru Host Stack Iperf UDP"""
 
@@ -1020,6 +1065,7 @@ class LDPThruHostStackIperfUdp(VCLTestCase):
         )
 
 
+@tag_fixme_ubuntu2404
 class LDPIpv6CutThruTestCase(VCLTestCase):
     """LDP IPv6 Cut Thru Tests"""
 
@@ -1125,6 +1171,9 @@ class LDPIpv6CutThruTestCase(VCLTestCase):
         )
 
 
+@unittest.skipIf(
+    "hs_apps" in config.excluded_plugins, "Exclude tests requiring hs_apps plugin"
+)
 class VCLIpv6CutThruTestCase(VCLTestCase):
     """VCL IPv6 Cut Thru Tests"""
 
@@ -1220,6 +1269,9 @@ class VCLIpv6CutThruTestCase(VCLTestCase):
         )
 
 
+@unittest.skipIf(
+    "hs_apps" in config.excluded_plugins, "Exclude tests requiring hs_apps plugin"
+)
 class VCLIpv6ThruHostStackEcho(VCLTestCase):
     """VCL IPv6 Thru Host Stack Echo"""
 

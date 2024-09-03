@@ -28,6 +28,7 @@ list(APPEND VNET_SOURCES
   devices/netlink.c
   dev/api.c
   dev/args.c
+  dev/bus/pci.c
   dev/cli.c
   dev/config.c
   dev/counters.c
@@ -36,7 +37,6 @@ list(APPEND VNET_SOURCES
   dev/error.c
   dev/format.c
   dev/handlers.c
-  dev/pci.c
   dev/port.c
   dev/process.c
   dev/queue.c
@@ -74,7 +74,17 @@ list(APPEND VNET_HEADERS
   config.h
   devices/devices.h
   devices/netlink.h
+  dev/api.h
+  dev/args.h
+  dev/bus/pci.h
+  dev/counters.h
   dev/dev.h
+  dev/dev_funcs.h
+  dev/errors.h
+  dev/log.h
+  dev/mgmt.h
+  dev/process.h
+  dev/types.h
   flow/flow.h
   global_funcs.h
   interface/rx_queue_funcs.h
@@ -94,6 +104,7 @@ list(APPEND VNET_HEADERS
   format_fns.h
   ip/ip_format_fns.h
   ip/ip_sas.h
+  ip/vtep.h
   ethernet/ethernet_format_fns.h
   ethernet/ethernet_types_api.h
 )
@@ -596,19 +607,6 @@ list(APPEND VNET_HEADERS
 )
 
 ##############################################################################
-# Layer 3 protocol: osi
-##############################################################################
-list(APPEND VNET_SOURCES
-  osi/node.c
-  osi/osi.c
-  osi/pg.c
-)
-
-list(APPEND VNET_HEADERS
-  osi/osi.h
-)
-
-##############################################################################
 # Layer 4 protocol: tcp
 ##############################################################################
 list(APPEND VNET_SOURCES
@@ -1042,10 +1040,13 @@ list(APPEND VNET_API_FILES session/session.api)
 
 list(APPEND VNET_SOURCES
   tls/tls.c
+  tls/tls_record.c
 )
 
 list(APPEND VNET_HEADERS
   tls/tls.h
+  tls/tls_inlines.h
+  tls/tls_record.h
   tls/tls_test.h
 )
 
@@ -1392,6 +1393,7 @@ list (APPEND VNET_SOURCES
 
 list(APPEND VNET_HEADERS
   arp/arp.h
+  arp/arp_packet.h
 )
 
 list(APPEND VNET_API_FILES arp/arp.api)

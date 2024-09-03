@@ -305,7 +305,8 @@ vnet_dev_port_cfg_change_req_validate (vlib_main_t *vm, vnet_dev_port_t *port,
   switch (req->type)
     {
     case VNET_DEV_PORT_CFG_MAX_RX_FRAME_SIZE:
-      if (req->max_rx_frame_size > port->attr.max_supported_rx_frame_size)
+      if ((req->max_rx_frame_size > port->attr.max_supported_rx_frame_size) ||
+	  (req->max_rx_frame_size < ETHERNET_MIN_PACKET_BYTES))
 	return VNET_DEV_ERR_INVALID_VALUE;
       if (req->max_rx_frame_size == port->max_rx_frame_size)
 	return VNET_DEV_ERR_NO_CHANGE;
@@ -733,16 +734,26 @@ vnet_dev_port_if_remove (vlib_main_t *vm, vnet_dev_port_t *port)
 void
 vnet_dev_port_clear_counters (vlib_main_t *vm, vnet_dev_port_t *port)
 {
-  if (port->counter_main)
+  if (port->port_ops.clear_counters)
+    port->port_ops.clear_counters (vm, port);
+  else if (port->counter_main)
     vnet_dev_counters_clear (vm, port->counter_main);
 
   foreach_vnet_dev_port_rx_queue (q, port)
-    if (q->counter_main)
-      vnet_dev_counters_clear (vm, q->counter_main);
+    {
+      if (port->rx_queue_ops.clear_counters)
+	port->rx_queue_ops.clear_counters (vm, q);
+      else if (q->counter_main)
+	vnet_dev_counters_clear (vm, q->counter_main);
+    }
 
   foreach_vnet_dev_port_tx_queue (q, port)
-    if (q->counter_main)
-      vnet_dev_counters_clear (vm, q->counter_main);
+    {
+      if (port->tx_queue_ops.clear_counters)
+	port->tx_queue_ops.clear_counters (vm, q);
+      else if (q->counter_main)
+	vnet_dev_counters_clear (vm, q->counter_main);
+    }
 
   log_notice (port->dev, "counters cleared on port %u", port->port_id);
 }

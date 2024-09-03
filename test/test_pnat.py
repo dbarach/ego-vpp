@@ -6,8 +6,10 @@ from scapy.layers.inet import Ether, IP, UDP, ICMP
 from framework import VppTestCase
 from asfframework import VppTestRunner
 from vpp_papi import VppEnum
+from config import config
 
 
+@unittest.skipIf("nat" in config.excluded_plugins, "Exclude NAT plugin tests")
 class TestPNAT(VppTestCase):
     """PNAT Test Case"""
 
@@ -38,7 +40,7 @@ class TestPNAT(VppTestCase):
                 i.admin_down()
 
     def validate(self, rx, expected):
-        self.assertEqual(rx, expected.__class__(expected))
+        self.assertTrue(bytes(rx), bytes(expected))
 
     def validate_bytes(self, rx, expected):
         self.assertEqual(rx, expected)

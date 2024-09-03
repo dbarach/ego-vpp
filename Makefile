@@ -89,11 +89,21 @@ DEB_DEPENDS += tshark
 DEB_DEPENDS += jq # for extracting test summary from .json report (hs-test)
 
 LIBFFI=libffi6 # works on all but 20.04 and debian-testing
-
-ifeq ($(OS_VERSION_ID),22.04)
+ifeq ($(OS_VERSION_ID),24.04)
+	DEB_DEPENDS += libssl-dev
+	DEB_DEPENDS += llvm clang clang-format-15
+	# overwrite clang-format version to run `make checkstyle` successfully
+	# TODO: remove once ubuntu 20.04 is deprecated and extras/scripts/checkstyle.sh is upgraded to 15
+	export CLANG_FORMAT_VER=15
+	LIBFFI=libffi8
+	DEB_DEPENDS += enchant-2  # for docs
+else ifeq ($(OS_VERSION_ID),22.04)
 	DEB_DEPENDS += python3-virtualenv
 	DEB_DEPENDS += libssl-dev
-	DEB_DEPENDS += clang clang-format-11
+	DEB_DEPENDS += clang clang-format-15
+	# overwrite clang-format version to run `make checkstyle` successfully
+	# TODO: remove once ubuntu 20.04 is deprecated and extras/scripts/checkstyle.sh is upgraded to 15
+	export CLANG_FORMAT_VER=15
 	LIBFFI=libffi7
 	DEB_DEPENDS += enchant-2  # for docs
 else ifeq ($(OS_VERSION_ID),20.04)
@@ -102,9 +112,6 @@ else ifeq ($(OS_VERSION_ID),20.04)
 	DEB_DEPENDS += clang clang-format-11
 	LIBFFI=libffi7
 	DEB_DEPENDS += enchant-2  # for docs
-else ifeq ($(OS_VERSION_ID),20.10)
-	DEB_DEPENDS += clang clang-format-11
-	LIBFFI=libffi8ubuntu1
 else ifeq ($(OS_ID)-$(OS_VERSION_ID),debian-10)
 	DEB_DEPENDS += virtualenv
 else ifeq ($(OS_ID)-$(OS_VERSION_ID),debian-11)
@@ -113,9 +120,10 @@ else ifeq ($(OS_ID)-$(OS_VERSION_ID),debian-11)
 	LIBFFI=libffi7
 else ifeq ($(OS_ID)-$(OS_VERSION_ID),debian-12)
 	DEB_DEPENDS += virtualenv
-	DEB_DEPENDS += clang-14 clang-format-14
+	DEB_DEPENDS += clang-14 clang-format-15
 	# for extras/scripts/checkstyle.sh
-	export CLANG_FORMAT_VER=14
+	# TODO: remove once ubuntu 20.04 is deprecated and extras/scripts/checkstyle.sh is upgraded to -15
+	export CLANG_FORMAT_VER=15
 	LIBFFI=libffi8
 else
 	DEB_DEPENDS += clang-11 clang-format-11
@@ -271,8 +279,10 @@ help:
 	@echo " checkstyle-commit    - check commit message format"
 	@echo " checkstyle-python    - check python coding style using 'black' formatter"
 	@echo " checkstyle-api       - check api for incompatible changes"
+	@echo " checkstyle-go        - check style of .go source files"
 	@echo " fixstyle             - fix coding style"
 	@echo " fixstyle-python      - fix python coding style using 'black' formatter"
+	@echo " fixstyle-go          - format .go source files"
 	@echo " doxygen              - DEPRECATED - use 'make docs'"
 	@echo " bootstrap-doxygen    - DEPRECATED"
 	@echo " wipe-doxygen         - DEPRECATED"
@@ -281,6 +291,7 @@ help:
 	@echo " json-api-files       - (re)-generate json api files"
 	@echo " json-api-files-debug - (re)-generate json api files for debug target"
 	@echo " go-api-files         - (re)-generate golang api files"
+	@echo " cleanup-hst          - stops and removes all docker contaiers and namespaces"
 	@echo " docs                 - Build the Sphinx documentation"
 	@echo " docs-venv            - Build the virtual environment for the Sphinx docs"
 	@echo " docs-clean           - Remove the generated files from the Sphinx docs"
@@ -464,6 +475,7 @@ define test
 	  VPP_BIN=$(BR)/install-$(1)-native/vpp/bin/vpp \
 	  VPP_INSTALL_PATH=$(BR)/install-$(1)-native/ \
 	  EXTENDED_TESTS=$(EXTENDED_TESTS) \
+	  DECODE_PCAPS=$(DECODE_PCAPS) \
 	  TEST_GCOV=$(TEST_GCOV) \
 	  PYTHON=$(PYTHON) \
 	  OS_ID=$(OS_ID) \
@@ -495,17 +507,17 @@ test-cov:
 
 .PHONY: test-cov-hs
 test-cov-hs:
-	@make -C extras/hs-test build-cov
-	@make -C extras/hs-test test-cov
+	@$(MAKE) -C extras/hs-test build-cov
+	@$(MAKE) -C extras/hs-test test-cov
 
 .PHONY: test-cov-both
 test-cov-both:
 	@echo "Running Python, Golang tests and merging coverage reports."
 	find $(BR) -name '*.gcda' -delete
-	@make test-cov
+	@$(MAKE) test-cov
 	find $(BR) -name '*.gcda' -delete
-	@make test-cov-hs
-	@make cov-merge
+	@$(MAKE) test-cov-hs
+	@$(MAKE) cov-merge
 
 .PHONY: test-cov-build
 test-cov-build:
@@ -580,7 +592,7 @@ test-shell-cov:
 
 .PHONY: test-dep
 test-dep:
-	@make -C test test-dep
+	@$(MAKE) -C test test-dep
 
 .PHONY: test-doc
 test-doc:
@@ -740,6 +752,10 @@ json-api-files-debug:
 go-api-files: json-api-files
 	$(WS_ROOT)/src/tools/vppapigen/generate_go.py $(ARGS)
 
+.PHONY: cleanup-hst
+cleanup-hst:
+	$(MAKE) -C extras/hs-test cleanup-hst
+
 .PHONY: ctags
 ctags: ctags.files
 	@ctags --totals --tag-relative=yes -L $<
@@ -777,8 +793,16 @@ checkstyle-test:
 checkstyle-python:
 	@$(MAKE) -C test checkstyle-python-all
 
+.PHONY: checkstyle-go
+checkstyle-go:
+	@$(MAKE) -C extras/hs-test checkstyle-go
+
+.PHONY: fixstyle-go
+fixstyle-go:
+	@$(MAKE) -C extras/hs-test fixstyle-go
+
 .PHONY: checkstyle-all
-checkstyle-all: checkstyle-commit checkstyle checkstyle-python docs-spell
+checkstyle-all: checkstyle-commit checkstyle checkstyle-python docs-spell checkstyle-go
 
 .PHONY: fixstyle
 fixstyle:

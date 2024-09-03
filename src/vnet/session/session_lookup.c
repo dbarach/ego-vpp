@@ -37,6 +37,8 @@ static session_lookup_main_t sl_main;
  */
 static u32 *fib_index_to_table_index[2];
 
+static u32 *fib_index_to_lock_count[2];
+
 /* 16 octets */
 typedef CLIB_PACKED (struct {
   union
@@ -593,7 +595,7 @@ session_lookup_local_endpoint (u32 table_index, session_endpoint_t * sep)
 
   st = session_table_get (table_index);
   if (!st)
-    return SESSION_INVALID_INDEX;
+    return SESSION_INVALID_HANDLE;
   ASSERT (st->is_local);
 
   if (sep->is_ip4)
@@ -1392,6 +1394,23 @@ vnet_session_rule_add_del (session_rule_add_del_args_t *args)
   return rv;
 }
 
+static void
+session_lookup_fib_table_lock (u32 fib_index, u32 protocol)
+{
+  fib_table_lock (fib_index, protocol, sl_main.fib_src);
+  vec_validate (fib_index_to_lock_count[protocol], fib_index);
+  fib_index_to_lock_count[protocol][fib_index]++;
+  ASSERT (fib_index_to_lock_count[protocol][fib_index] > 0);
+}
+
+static void
+session_lookup_fib_table_unlock (u32 fib_index, u32 protocol)
+{
+  fib_table_unlock (fib_index, protocol, sl_main.fib_src);
+  ASSERT (fib_index_to_lock_count[protocol][fib_index] > 0);
+  fib_index_to_lock_count[protocol][fib_index]--;
+}
+
 /**
  * Mark (global) tables as pertaining to app ns
  */
@@ -1407,7 +1426,10 @@ session_lookup_set_tables_appns (app_namespace_t * app_ns)
       fib_index = app_namespace_get_fib_index (app_ns, fp);
       st = session_table_get_or_alloc (fp, fib_index);
       if (st)
-	st->appns_index = app_namespace_index (app_ns);
+	{
+	  st->appns_index = app_namespace_index (app_ns);
+	  session_lookup_fib_table_lock (fib_index, fp);
+	}
     }
 }
 
@@ -1665,9 +1687,9 @@ show_session_rules_command_fn (vlib_main_t * vm, unformat_input_t * input,
       else if (unformat (input, "appns %_%v%_", &ns_id))
 	;
       else if (unformat (input, "scope global"))
-	scope = 1;
+	scope = SESSION_RULE_SCOPE_GLOBAL;
       else if (unformat (input, "scope local"))
-	scope = 2;
+	scope = SESSION_RULE_SCOPE_LOCAL;
       else if (unformat (input, "%U/%d %d %U/%d %d", unformat_ip4_address,
 			 &lcl_ip.ip4, &lcl_plen, &lcl_port,
 			 unformat_ip4_address, &rmt_ip.ip4, &rmt_plen,
@@ -1685,14 +1707,17 @@ show_session_rules_command_fn (vlib_main_t * vm, unformat_input_t * input,
 	  show_one = 1;
 	}
       else
-	return clib_error_return (0, "unknown input `%U'",
-				  format_unformat_error, input);
+	{
+	  vec_free (ns_id);
+	  return clib_error_return (0, "unknown input `%U'",
+				    format_unformat_error, input);
+	}
     }
 
   if (transport_proto == ~0)
     {
       vlib_cli_output (vm, "transport proto must be set");
-      return 0;
+      goto done;
     }
 
   if (ns_id)
@@ -1701,7 +1726,7 @@ show_session_rules_command_fn (vlib_main_t * vm, unformat_input_t * input,
       if (!app_ns)
 	{
 	  vlib_cli_output (vm, "appns %v doesn't exist", ns_id);
-	  return 0;
+	  goto done;
 	}
     }
   else
@@ -1709,7 +1734,7 @@ show_session_rules_command_fn (vlib_main_t * vm, unformat_input_t * input,
       app_ns = app_namespace_get_default ();
     }
 
-  if (scope == 1 || scope == 0)
+  if (scope == SESSION_RULE_SCOPE_GLOBAL || scope == 0)
     {
       fib_proto = is_ip4 ? FIB_PROTOCOL_IP4 : FIB_PROTOCOL_IP6;
       fib_index = is_ip4 ? app_ns->ip4_fib_index : app_ns->ip6_fib_index;
@@ -1725,15 +1750,42 @@ show_session_rules_command_fn (vlib_main_t * vm, unformat_input_t * input,
       srt = &st->session_rules[transport_proto];
       session_rules_table_show_rule (vm, srt, &lcl_ip, lcl_port, &rmt_ip,
 				     rmt_port, is_ip4);
-      return 0;
+      goto done;
     }
 
   vlib_cli_output (vm, "%U rules table", format_transport_proto,
 		   transport_proto);
-  srt = &st->session_rules[transport_proto];
-  session_rules_table_cli_dump (vm, srt, FIB_PROTOCOL_IP4);
-  session_rules_table_cli_dump (vm, srt, FIB_PROTOCOL_IP6);
+  if (scope == SESSION_RULE_SCOPE_LOCAL)
+    {
+      if (st)
+	{
+	  srt = &st->session_rules[transport_proto];
+	  session_rules_table_cli_dump (vm, srt, FIB_PROTOCOL_IP4);
+	  session_rules_table_cli_dump (vm, srt, FIB_PROTOCOL_IP6);
+	}
+    }
+  else
+    {
+      /*
+       * 2 separate session tables for global entries, 1 for ip4 and 1 for ip6
+       */
+      st = session_table_get_for_fib_index (FIB_PROTOCOL_IP4,
+					    app_ns->ip4_fib_index);
+      if (st)
+	{
+	  srt = &st->session_rules[transport_proto];
+	  session_rules_table_cli_dump (vm, srt, FIB_PROTOCOL_IP4);
+	}
 
+      st = session_table_get_for_fib_index (FIB_PROTOCOL_IP6,
+					    app_ns->ip6_fib_index);
+      if (st)
+	{
+	  srt = &st->session_rules[transport_proto];
+	  session_rules_table_cli_dump (vm, srt, FIB_PROTOCOL_IP6);
+	}
+    }
+done:
   vec_free (ns_id);
   return 0;
 }
@@ -1832,6 +1884,14 @@ session_lookup_init (void)
 
   clib_spinlock_init (&slm->st_alloc_lock);
 
+  /* We are not contributing any route to the fib. But we allocate a fib source
+   * so that when we lock the fib table, we can view that we have a lock on the
+   * particular fib table in case we wonder why the fib table is not free after
+   * "ip table del"
+   */
+  slm->fib_src = fib_source_allocate (
+    "session lookup", FIB_SOURCE_PRIORITY_LOW, FIB_SOURCE_BH_SIMPLE);
+
   /*
    * Allocate default table and map it to fib_index 0
    */
@@ -1845,6 +1905,26 @@ session_lookup_init (void)
   fib_index_to_table_index[FIB_PROTOCOL_IP6][0] = session_table_index (st);
   st->active_fib_proto = FIB_PROTOCOL_IP6;
   session_table_init (st, FIB_PROTOCOL_IP6);
+}
+
+void
+session_lookup_table_cleanup (u32 fib_proto, u32 fib_index)
+{
+  session_table_t *st;
+  u32 table_index;
+
+  session_lookup_fib_table_unlock (fib_index, fib_proto);
+  if (fib_index_to_lock_count[fib_proto][fib_index] == 0)
+    {
+      table_index = session_lookup_get_index_for_fib (fib_proto, fib_index);
+      st = session_table_get (table_index);
+      if (st)
+	{
+	  session_table_free (st, fib_proto);
+	  if (vec_len (fib_index_to_table_index[fib_proto]) > fib_index)
+	    fib_index_to_table_index[fib_proto][fib_index] = ~0;
+	}
+    }
 }
 
 /*

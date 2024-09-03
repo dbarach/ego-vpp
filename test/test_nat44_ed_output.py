@@ -3,12 +3,15 @@
 
 import random
 import unittest
+import struct
+import socket
 from scapy.layers.inet import Ether, IP, TCP
 from scapy.packet import Raw
 from scapy.data import IP_PROTOS
 from framework import VppTestCase
 from asfframework import VppTestRunner
 from vpp_papi import VppEnum
+from config import config
 
 
 def get_nat44_ed_in2out_worker_index(ip, vpp_worker_count):
@@ -21,6 +24,7 @@ def get_nat44_ed_in2out_worker_index(ip, vpp_worker_count):
     return 1 + h % vpp_worker_count
 
 
+@unittest.skipIf("nat" in config.excluded_plugins, "Exclude NAT plugin tests")
 class TestNAT44EDOutput(VppTestCase):
     """NAT44 ED output feature Test Case"""
 

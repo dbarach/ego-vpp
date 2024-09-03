@@ -67,6 +67,8 @@
 __clib_export __thread uword __os_thread_index = 0;
 __clib_export __thread uword __os_numa_index = 0;
 
+__clib_export clib_bitmap_t *os_get_cpu_affinity_bitmap (int pid);
+
 clib_error_t *
 clib_file_n_bytes (char *file, uword * result)
 {
@@ -219,27 +221,20 @@ unix_proc_file_contents (char *file, u8 ** result)
   return 0;
 }
 
-void os_panic (void) __attribute__ ((weak));
-
-__clib_export void
+__clib_export __clib_weak void
 os_panic (void)
 {
   abort ();
 }
 
-void os_exit (int) __attribute__ ((weak));
-
-void
+__clib_export __clib_weak void
 os_exit (int code)
 {
   exit (code);
 }
 
-void os_puts (u8 * string, uword string_length, uword is_error)
-  __attribute__ ((weak));
-
-void
-os_puts (u8 * string, uword string_length, uword is_error)
+__clib_export __clib_weak void
+os_puts (u8 *string, uword string_length, uword is_error)
 {
   int cpu = os_get_thread_index ();
   int nthreads = os_get_nthreads ();
@@ -282,6 +277,8 @@ os_get_online_cpu_core_bitmap ()
 {
 #if __linux__
   return clib_sysfs_read_bitmap ("/sys/devices/system/cpu/online");
+#elif defined(__FreeBSD__)
+  return os_get_cpu_affinity_bitmap (0);
 #else
   return 0;
 #endif
@@ -298,7 +295,7 @@ os_get_cpu_affinity_bitmap (int pid)
   clib_bitmap_alloc (affinity_cpus, sizeof (cpu_set_t));
   clib_bitmap_zero (affinity_cpus);
 
-  __CPU_ZERO_S (sizeof (cpu_set_t), &cpuset);
+  CPU_ZERO_S (sizeof (cpu_set_t), &cpuset);
 
   ret = sched_getaffinity (0, sizeof (cpu_set_t), &cpuset);
 
@@ -309,12 +306,15 @@ os_get_cpu_affinity_bitmap (int pid)
     }
 
   for (index = 0; index < sizeof (cpu_set_t); index++)
-    if (__CPU_ISSET_S (index, sizeof (cpu_set_t), &cpuset))
+    if (CPU_ISSET_S (index, sizeof (cpu_set_t), &cpuset))
       clib_bitmap_set (affinity_cpus, index, 1);
   return affinity_cpus;
 #elif defined(__FreeBSD__)
   cpuset_t mask;
   uword *r = NULL;
+
+  clib_bitmap_alloc (r, sizeof (CPU_SETSIZE));
+  clib_bitmap_zero (r);
 
   if (cpuset_getaffinity (CPU_LEVEL_CPUSET, CPU_WHICH_CPUSET, -1,
 			  sizeof (mask), &mask) != 0)
@@ -337,21 +337,6 @@ os_get_online_cpu_node_bitmap ()
 {
 #if __linux__
   return clib_sysfs_read_bitmap ("/sys/devices/system/node/online");
-#elif defined(__FreeBSD__)
-  domainset_t domain;
-  uword *r = NULL;
-  int policy;
-
-  if (cpuset_getdomain (CPU_LEVEL_CPUSET, CPU_WHICH_CPUSET, -1,
-			sizeof (domain), &domain, &policy) != 0)
-    {
-      clib_bitmap_free (r);
-      return NULL;
-    }
-
-  for (int bit = 0; bit < CPU_SETSIZE; bit++)
-    clib_bitmap_set (r, bit, CPU_ISSET (bit, &domain));
-  return r;
 #else
   return 0;
 #endif

@@ -32,6 +32,7 @@ from vpp_papi import mac_pton, VppEnum
 from vpp_sub_interface import VppDot1QSubint
 from vpp_qos import VppQosEgressMap, VppQosMark
 from vpp_dhcp import VppDHCPClient, VppDHCPProxy
+from config import config
 
 
 DHCP4_CLIENT_PORT = 68
@@ -41,6 +42,7 @@ DHCP6_SERVER_PORT = 546
 
 
 @tag_run_solo
+@unittest.skipIf("dhcp" in config.excluded_plugins, "Exclude DHCP plugin tests")
 class TestDHCP(VppTestCase):
     """DHCP Test Case"""
 
@@ -119,7 +121,7 @@ class TestDHCP(VppTestCase):
 
         for i in dhcp.options:
             if isinstance(i, tuple):
-                if i[0] == "relay_agent_Information":
+                if i[0] == "relay_agent_information":
                     #
                     # There are two sb-options present - each of length 6.
                     #
@@ -530,7 +532,7 @@ class TestDHCP(VppTestCase):
             / DHCP(
                 options=[
                     ("message-type", "offer"),
-                    ("relay_agent_Information", option_82),
+                    ("relay_agent_information", option_82),
                     ("end"),
                 ]
             )
@@ -541,7 +543,7 @@ class TestDHCP(VppTestCase):
         self.pg_enable_capture(self.pg_interfaces)
         self.pg_start()
 
-        rx = self.pg3.get_capture(1)
+        rx = self.pg3.get_capture(1, timeout=5)
         rx = rx[0]
 
         self.verify_dhcp_offer(rx, self.pg3)
@@ -561,7 +563,7 @@ class TestDHCP(VppTestCase):
             / DHCP(
                 options=[
                     ("message-type", "offer"),
-                    ("relay_agent_Information", bad_ip),
+                    ("relay_agent_information", bad_ip),
                     ("end"),
                 ]
             )
@@ -582,7 +584,7 @@ class TestDHCP(VppTestCase):
             / DHCP(
                 options=[
                     ("message-type", "offer"),
-                    ("relay_agent_Information", bad_if_index),
+                    ("relay_agent_information", bad_if_index),
                     ("end"),
                 ]
             )
@@ -746,7 +748,7 @@ class TestDHCP(VppTestCase):
             / DHCP(
                 options=[
                     ("message-type", "offer"),
-                    ("relay_agent_Information", option_82),
+                    ("relay_agent_information", option_82),
                     ("end"),
                 ]
             )
@@ -759,7 +761,7 @@ class TestDHCP(VppTestCase):
             / DHCP(
                 options=[
                     ("message-type", "offer"),
-                    ("relay_agent_Information", option_82),
+                    ("relay_agent_information", option_82),
                     ("end"),
                 ]
             )
@@ -786,7 +788,7 @@ class TestDHCP(VppTestCase):
             / DHCP(
                 options=[
                     ("message-type", "offer"),
-                    ("relay_agent_Information", option_82),
+                    ("relay_agent_information", option_82),
                     ("end"),
                 ]
             )

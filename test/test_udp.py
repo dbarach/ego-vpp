@@ -17,6 +17,7 @@ from vpp_ip_route import (
 )
 from vpp_neighbor import VppNeighbor
 from vpp_papi import VppEnum
+from config import config
 
 from scapy.packet import Raw
 from scapy.layers.l2 import Ether
@@ -632,9 +633,9 @@ class TestUdpEncap(VppTestCase):
         )
 
         rx = self.send_and_expect(self.pg0, p_4 * NUM_PKTS, self.pg0)
-        p_4 = IP(p_4["UDP"].payload)
+        p_4 = IP(bytes(p_4["UDP"].payload))
         for p in rx:
-            p = IP(p["Ether"].payload)
+            p = IP(bytes(p["Ether"].payload))
             self.validate_inner4(p, p_4, ttl=63)
 
         #
@@ -650,10 +651,10 @@ class TestUdpEncap(VppTestCase):
         )
 
         rx = self.send_and_expect(self.pg1, p_6 * NUM_PKTS, self.pg1)
-        p_6 = IPv6(p_6["UDP"].payload)
-        p = IPv6(rx[0]["Ether"].payload)
+        p_6 = IPv6(bytes(p_6["UDP"].payload))
+        p = IPv6(bytes(rx[0]["Ether"].payload))
         for p in rx:
-            p = IPv6(p["Ether"].payload)
+            p = IPv6(bytes(p["Ether"].payload))
             self.validate_inner6(p, p_6, hlim=63)
 
         #
@@ -672,13 +673,16 @@ class TestUdpEncap(VppTestCase):
         self.pg2.enable_mpls()
         rx = self.send_and_expect(self.pg2, p_mo4 * NUM_PKTS, self.pg2)
         self.pg2.disable_mpls()
-        p_mo4 = IP(MPLS(p_mo4["UDP"].payload).payload)
+        p_mo4 = IP(bytes(MPLS(bytes(p_mo4["UDP"].payload)).payload))
         for p in rx:
-            p = IP(p["Ether"].payload)
+            p = IP(bytes(p["Ether"].payload))
             self.validate_inner4(p, p_mo4, ttl=63)
 
 
 @tag_fixme_vpp_workers
+@unittest.skipIf(
+    "hs_apps" in config.excluded_plugins, "Exclude tests requiring hs_apps plugin"
+)
 class TestUDP(VppTestCase):
     """UDP Test Case"""
 
@@ -721,6 +725,14 @@ class TestUDP(VppTestCase):
             i.unconfig_ip4()
             i.set_table_ip4(0)
             i.admin_down()
+        # Unconfigure namespaces - remove our locks to the vrf tables
+        self.vapi.app_namespace_add_del_v4(
+            is_add=0, namespace_id="0", sw_if_index=self.loop0.sw_if_index
+        )
+        self.vapi.app_namespace_add_del_v4(
+            is_add=0, namespace_id="1", sw_if_index=self.loop1.sw_if_index
+        )
+
         self.vapi.session_enable_disable(is_enable=0)
         super(TestUDP, self).tearDown()
 

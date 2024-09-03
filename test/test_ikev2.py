@@ -23,10 +23,7 @@ from scapy.utils import long_converter
 from framework import VppTestCase
 from asfframework import (
     tag_fixme_vpp_workers,
-    tag_fixme_ubuntu2204,
-    tag_fixme_debian11,
-    is_distro_ubuntu2204,
-    is_distro_debian11,
+    tag_fixme_ubuntu2404,
     VppTestRunner,
 )
 from vpp_ikev2 import Profile, IDType, AuthMethod
@@ -677,7 +674,7 @@ class IkePeer(VppTestCase):
         self.assertIsNotNone(self.p.query_vpp_config())
         if self.sa.is_initiator:
             self.sa.generate_dh_data()
-        self.vapi.cli("ikev2 set logging level 4")
+        self.vapi.cli("ikev2 set logging level 5")
         self.vapi.cli("event-lo clear")
 
     def assert_counter(self, count, name, version="ip4"):
@@ -1215,7 +1212,7 @@ class TemplateInitiator(IkePeer):
         if self.no_idr_auth:
             self.assertEqual(idi.next_payload, 39)  # AUTH
         else:
-            idr = ikev2.IKEv2_payload_IDr(idi.payload)
+            idr = ikev2.IKEv2_payload_IDr(bytes(idi.payload))
             self.assertEqual(idr.load, self.sa.r_id)
         prop = idi[ikev2.IKEv2_payload_Proposal]
         c = self.sa.child_sas[0]
@@ -2025,19 +2022,20 @@ class TestApi(VppTestCase):
             self.assertEqual(ap.tun_itf, 0xFFFFFFFF)
 
 
-@tag_fixme_vpp_workers
 class TestResponderBehindNAT(TemplateResponder, Ikev2Params):
     """test responder - responder behind NAT"""
 
     IKE_NODE_SUFFIX = "ip4-natt"
+    vpp_worker_count = 2
 
     def config_tc(self):
         self.config_params({"r_natt": True})
 
 
-@tag_fixme_vpp_workers
 class TestInitiatorNATT(TemplateInitiator, Ikev2Params):
     """test ikev2 initiator - NAT traversal (intitiator behind NAT)"""
+
+    vpp_worker_count = 2
 
     def config_tc(self):
         self.config_params(
@@ -2067,9 +2065,10 @@ class TestInitiatorNATT(TemplateInitiator, Ikev2Params):
         )
 
 
-@tag_fixme_vpp_workers
 class TestInitiatorPsk(TemplateInitiator, Ikev2Params):
     """test ikev2 initiator - pre shared key auth"""
+
+    vpp_worker_count = 2
 
     def config_tc(self):
         self.config_params(
@@ -2098,9 +2097,10 @@ class TestInitiatorPsk(TemplateInitiator, Ikev2Params):
         )
 
 
-@tag_fixme_vpp_workers
 class TestInitiatorRequestWindowSize(TestInitiatorPsk):
     """test initiator - request window size (1)"""
+
+    vpp_worker_count = 2
 
     def rekey_respond(self, req, update_child_sa_data):
         ih = self.get_ike_header(req)
@@ -2147,9 +2147,10 @@ class TestInitiatorRequestWindowSize(TestInitiatorPsk):
         self.verify_ipsec_sas(is_rekey=True)
 
 
-@tag_fixme_vpp_workers
 class TestInitiatorRekey(TestInitiatorPsk):
     """test ikev2 initiator - rekey"""
+
+    vpp_worker_count = 2
 
     def rekey_from_initiator(self):
         ispi = int.from_bytes(self.sa.child_sas[0].ispi, "little")
@@ -2192,9 +2193,10 @@ class TestInitiatorRekey(TestInitiatorPsk):
         self.verify_ipsec_sas(is_rekey=True)
 
 
-@tag_fixme_vpp_workers
 class TestInitiatorDelSAFromResponder(TemplateInitiator, Ikev2Params):
     """test ikev2 initiator - delete IKE SA from responder"""
+
+    vpp_worker_count = 2
 
     def config_tc(self):
         self.config_params(
@@ -2225,29 +2227,31 @@ class TestInitiatorDelSAFromResponder(TemplateInitiator, Ikev2Params):
         )
 
 
-@tag_fixme_vpp_workers
 class TestResponderInitBehindNATT(TemplateResponder, Ikev2Params):
     """test ikev2 responder - initiator behind NAT"""
 
     IKE_NODE_SUFFIX = "ip4-natt"
+    vpp_worker_count = 2
 
     def config_tc(self):
         self.config_params({"i_natt": True})
 
 
-@tag_fixme_vpp_workers
 class TestResponderPsk(TemplateResponder, Ikev2Params):
     """test ikev2 responder - pre shared key auth"""
+
+    vpp_worker_count = 2
 
     def config_tc(self):
         self.config_params()
 
 
-@tag_fixme_vpp_workers
 class TestResponderDpd(TestResponderPsk):
     """
     Dead peer detection test
     """
+
+    vpp_worker_count = 2
 
     def config_tc(self):
         self.config_params({"dpd_disabled": False})
@@ -2276,11 +2280,11 @@ class TestResponderDpd(TestResponderPsk):
         self.assertEqual(len(ipsec_sas), 0)
 
 
-@tag_fixme_vpp_workers
 class TestResponderRekey(TestResponderPsk):
     """test ikev2 responder - rekey"""
 
     WITH_KEX = False
+    vpp_worker_count = 2
 
     def send_rekey_from_initiator(self):
         if self.WITH_KEX:
@@ -2318,9 +2322,11 @@ class TestResponderRekey(TestResponderPsk):
         self.assertEqual(r[0].sa.stats.n_rekey_req, 1)
 
 
-@tag_fixme_vpp_workers
+@tag_fixme_ubuntu2404
 class TestResponderRekeyRepeat(TestResponderRekey):
     """test ikev2 responder - rekey repeat"""
+
+    vpp_worker_count = 2
 
     def test_responder(self):
         super(TestResponderRekeyRepeat, self).test_responder()
@@ -2344,23 +2350,25 @@ class TestResponderRekeyRepeat(TestResponderRekey):
         self.verify_ipsec_sas(sa_count=3)
 
 
-@tag_fixme_vpp_workers
 class TestResponderRekeyKEX(TestResponderRekey):
     """test ikev2 responder - rekey with key exchange"""
 
     WITH_KEX = True
+    vpp_worker_count = 2
 
 
-@tag_fixme_vpp_workers
+@tag_fixme_ubuntu2404
 class TestResponderRekeyRepeatKEX(TestResponderRekeyRepeat):
     """test ikev2 responder - rekey repeat with key exchange"""
 
     WITH_KEX = True
+    vpp_worker_count = 2
 
 
-@tag_fixme_vpp_workers
 class TestResponderRekeySA(TestResponderPsk):
     """test ikev2 responder - rekey IKE SA"""
+
+    vpp_worker_count = 2
 
     def send_rekey_from_initiator(self, newsa):
         packet = self.create_sa_rekey_request(
@@ -2402,8 +2410,6 @@ class TestResponderRekeySA(TestResponderPsk):
         self.verify_ike_sas()
 
 
-@tag_fixme_ubuntu2204
-@tag_fixme_debian11
 class TestResponderVrf(TestResponderPsk, Ikev2Params):
     """test ikev2 responder - non-default table id"""
 
@@ -2413,10 +2419,7 @@ class TestResponderVrf(TestResponderPsk, Ikev2Params):
 
         globals()["ikev2"] = _ikev2
         super(IkePeer, cls).setUpClass()
-        if (is_distro_ubuntu2204 == True or is_distro_debian11 == True) and not hasattr(
-            cls, "vpp"
-        ):
-            return
+
         cls.create_pg_interfaces(range(1))
         cls.vapi.cli("ip table add 1")
         cls.vapi.cli("set interface ip table pg0 1")
@@ -2431,7 +2434,7 @@ class TestResponderVrf(TestResponderPsk, Ikev2Params):
         self.config_params({"dpd_disabled": False})
 
     def test_responder(self):
-        self.vapi.ikev2_profile_set_liveness(period=2, max_retries=1)
+        self.vapi.ikev2_profile_set_liveness(period=2, max_retries=3)
         super(TestResponderVrf, self).test_responder()
         self.pg0.enable_capture()
         self.pg_start()
@@ -2442,9 +2445,10 @@ class TestResponderVrf(TestResponderPsk, Ikev2Params):
         self.assertEqual(plain, b"")
 
 
-@tag_fixme_vpp_workers
 class TestResponderRsaSign(TemplateResponder, Ikev2Params):
     """test ikev2 responder - cert based auth"""
+
+    vpp_worker_count = 2
 
     def config_tc(self):
         self.config_params(
@@ -2459,13 +2463,14 @@ class TestResponderRsaSign(TemplateResponder, Ikev2Params):
         )
 
 
-@tag_fixme_vpp_workers
 class Test_IKE_AES_CBC_128_SHA256_128_MODP2048_ESP_AES_CBC_192_SHA_384_192(
     TemplateResponder, Ikev2Params
 ):
     """
     IKE:AES_CBC_128_SHA256_128,DH=modp2048 ESP:AES_CBC_192_SHA_384_192
     """
+
+    vpp_worker_count = 2
 
     def config_tc(self):
         self.config_params(
@@ -2481,13 +2486,14 @@ class Test_IKE_AES_CBC_128_SHA256_128_MODP2048_ESP_AES_CBC_192_SHA_384_192(
         )
 
 
-@tag_fixme_vpp_workers
 class TestAES_CBC_128_SHA256_128_MODP3072_ESP_AES_GCM_16(
     TemplateResponder, Ikev2Params
 ):
     """
     IKE:AES_CBC_128_SHA256_128,DH=modp3072 ESP:AES_GCM_16
     """
+
+    vpp_worker_count = 2
 
     def config_tc(self):
         self.config_params(
@@ -2501,13 +2507,13 @@ class TestAES_CBC_128_SHA256_128_MODP3072_ESP_AES_GCM_16(
         )
 
 
-@tag_fixme_vpp_workers
 class Test_IKE_AES_GCM_16_256(TemplateResponder, Ikev2Params):
     """
     IKE:AES_GCM_16_256
     """
 
     IKE_NODE_SUFFIX = "ip6"
+    vpp_worker_count = 2
 
     def config_tc(self):
         self.config_params(
@@ -2524,11 +2530,12 @@ class Test_IKE_AES_GCM_16_256(TemplateResponder, Ikev2Params):
         )
 
 
-@tag_fixme_vpp_workers
 class TestInitiatorKeepaliveMsg(TestInitiatorPsk):
     """
     Test for keep alive messages
     """
+
+    vpp_worker_count = 2
 
     def send_empty_req_from_responder(self):
         packet = self.create_empty_request()

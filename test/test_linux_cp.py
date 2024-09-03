@@ -1,6 +1,7 @@
 #!/usr/bin/env python3
 
 import unittest
+import socket
 
 from scapy.layers.inet import IP, UDP
 from scapy.layers.inet6 import IPv6, Raw
@@ -20,6 +21,7 @@ from template_ipsec import (
     IpsecTun4,
 )
 from test_ipsec_tun_if_esp import TemplateIpsecItf4
+from config import config
 
 
 class VppLcpPair(VppObject):
@@ -51,6 +53,7 @@ class VppLcpPair(VppObject):
         return False
 
 
+@unittest.skipIf("linux-cp" in config.excluded_plugins, "Exclude linux-cp plugin tests")
 class TestLinuxCP(VppTestCase):
     """Linux Control Plane"""
 
@@ -239,7 +242,7 @@ class TestLinuxCP(VppTestCase):
             self.assertEqual(rx[Ether].dst, phy.remote_mac)
             self.assertEqual(rx[IP].dst, phy.remote_ip4)
             self.assertEqual(rx[IP].src, phy.local_ip4)
-            inner = IP(rx[IP].payload)
+            inner = IP(bytes(rx[IP].payload))
             self.assertEqual(inner.src, tun4.local_ip4)
             self.assertEqual(inner.dst, "2.2.2.2")
 
@@ -252,7 +255,7 @@ class TestLinuxCP(VppTestCase):
         for rx in rxs:
             self.assertEqual(rx[IPv6].dst, phy.remote_ip6)
             self.assertEqual(rx[IPv6].src, phy.local_ip6)
-            inner = IPv6(rx[IPv6].payload)
+            inner = IPv6(bytes(rx[IPv6].payload))
             self.assertEqual(inner.src, tun6.local_ip6)
             self.assertEqual(inner.dst, "2::2")
 
@@ -267,7 +270,7 @@ class TestLinuxCP(VppTestCase):
 
         rxs = self.send_and_expect(phy, p * N_PKTS, self.pg4)
         for rx in rxs:
-            rx = IP(rx)
+            rx = IP(bytes(rx))
             self.assertEqual(rx[IP].dst, tun4.local_ip4)
             self.assertEqual(rx[IP].src, tun4.remote_ip4)
 
@@ -282,7 +285,7 @@ class TestLinuxCP(VppTestCase):
 
         rxs = self.send_and_expect(phy, p * N_PKTS, self.pg5)
         for rx in rxs:
-            rx = IPv6(rx)
+            rx = IPv6(bytes(rx))
             self.assertEqual(rx[IPv6].dst, tun6.local_ip6)
             self.assertEqual(rx[IPv6].src, tun6.remote_ip6)
 
@@ -294,6 +297,7 @@ class TestLinuxCP(VppTestCase):
         tun6.unconfig_ip6()
 
 
+@unittest.skipIf("linux-cp" in config.excluded_plugins, "Exclude linux-cp plugin tests")
 class TestLinuxCPIpsec(TemplateIpsec, TemplateIpsecItf4, IpsecTun4):
     """IPsec Interface IPv4"""
 
@@ -350,7 +354,7 @@ class TestLinuxCPIpsec(TemplateIpsec, TemplateIpsecItf4, IpsecTun4):
 
     def verify_decrypted(self, p, rxs):
         for rx in rxs:
-            rx = IP(rx)
+            rx = IP(bytes(rx))
             self.assert_equal(rx[IP].src, p.tun_if.remote_ip4)
             self.assert_equal(rx[IP].dst, p.tun_if.local_ip4)
             self.assert_packet_checksums_valid(rx)

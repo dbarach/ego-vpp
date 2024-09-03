@@ -14,8 +14,10 @@ import util
 from vpp_ip_route import VppIpRoute, VppRoutePath
 from vpp_vxlan_tunnel import VppVxlanTunnel
 from vpp_ip import INVALID_INDEX
+from config import config
 
 
+@unittest.skipIf("vxlan" in config.excluded_plugins, "Exclude VXLAN plugin tests")
 class TestVxlan6(BridgeDomain, VppTestCase):
     """VXLAN over IPv6 Test Case"""
 
@@ -256,7 +258,7 @@ class TestVxlan6(BridgeDomain, VppTestCase):
 
         reassembled = util.reassemble4(payload)
 
-        self.assertEqual(Ether(raw(frame))[IP], reassembled[IP])
+        self.assertEqual(Ether(bytes(frame))[IP], reassembled[IP])
 
     """
     Tests with default port (4789)

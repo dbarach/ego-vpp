@@ -23,6 +23,8 @@
 #include <vppinfra/error.h>
 #include <http_static/http_cache.h>
 
+#define HSS_DEFAULT_MAX_AGE 600
+
 /** @file http_static.h
  * Static http server definitions
  */
@@ -50,8 +52,10 @@ typedef struct
   int free_data;
   /** File cache pool index */
   u32 cache_pool_index;
-  /** Content type, e.g. text, text/javascript, etc. */
-  http_content_type_t content_type;
+  /** Response header list */
+  http_header_t *resp_headers;
+  /** Serialized headers to send */
+  u8 *headers_buf;
 } hss_session_t;
 
 typedef struct hss_session_handle_
@@ -79,8 +83,9 @@ typedef struct hss_url_handler_args_
     /* Request args */
     struct
     {
-      u8 *request;
-      http_req_method_t reqtype;
+      u8 *query;
+      u8 *req_data;
+      http_req_method_t req_type;
     };
 
     /* Reply args */
@@ -90,6 +95,7 @@ typedef struct hss_url_handler_args_
       uword data_len;
       u8 free_vec_data;
       http_status_code_t sc;
+      http_content_type_t ct;
     };
   };
 } hss_url_handler_args_t;
@@ -152,6 +158,10 @@ typedef struct
   u8 enable_url_handlers;
   /** Max cache size before LRU occurs */
   u64 cache_size;
+  /** How long a response is considered fresh (in seconds) */
+  u32 max_age;
+  /** Formatted max_age: "max-age=xyz" */
+  u8 *max_age_formatted;
 
   /** hash table of file extensions to mime types string indices */
   uword *mime_type_indices_by_file_extensions;

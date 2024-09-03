@@ -136,12 +136,10 @@ vnet_app_namespace_add_del (vnet_app_namespace_add_del_args_t *a)
 
       app_ns->ns_secret = a->secret;
       app_ns->sw_if_index = a->sw_if_index;
-      app_ns->ip4_fib_index =
-	fib_table_find (FIB_PROTOCOL_IP4, a->ip4_fib_id);
-      app_ns->ip6_fib_index =
-	fib_table_find (FIB_PROTOCOL_IP6, a->ip6_fib_id);
-      session_lookup_set_tables_appns (app_ns);
 
+      app_ns->ip4_fib_index = fib_table_find (FIB_PROTOCOL_IP4, a->ip4_fib_id);
+      app_ns->ip6_fib_index = fib_table_find (FIB_PROTOCOL_IP6, a->ip6_fib_id);
+      session_lookup_set_tables_appns (app_ns);
     }
   else
     {
@@ -163,6 +161,9 @@ vnet_app_namespace_add_del (vnet_app_namespace_add_del_args_t *a)
       session_table_free (st, FIB_PROTOCOL_MAX);
       if (app_ns->sock_name)
 	vec_free (app_ns->sock_name);
+
+      session_lookup_table_cleanup (FIB_PROTOCOL_IP4, app_ns->ip4_fib_index);
+      session_lookup_table_cleanup (FIB_PROTOCOL_IP6, app_ns->ip6_fib_index);
 
       app_namespace_free (app_ns);
     }
