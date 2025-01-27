@@ -53,11 +53,83 @@ oct_roc_err (vnet_dev_t *dev, int rv, char *fmt, ...)
 }
 
 vnet_dev_rv_t
+oct_port_pause_flow_control_init (vlib_main_t *vm, vnet_dev_port_t *port)
+{
+  vnet_dev_t *dev = port->dev;
+  oct_device_t *cd = vnet_dev_get_data (dev);
+  struct roc_nix *nix = cd->nix;
+  struct roc_nix_fc_cfg fc_cfg;
+  struct roc_nix_sq *sq;
+  struct roc_nix_cq *cq;
+  struct roc_nix_rq *rq;
+  int rrv;
+
+  /* pause flow control is not supported on SDP/LBK devices */
+  if (roc_nix_is_sdp (nix) || roc_nix_is_lbk (nix))
+    {
+      log_notice (dev,
+		  "pause flow control is not supported on SDP/LBK devices");
+      return VNET_DEV_OK;
+    }
+
+  fc_cfg.type = ROC_NIX_FC_RXCHAN_CFG;
+  fc_cfg.rxchan_cfg.enable = true;
+  rrv = roc_nix_fc_config_set (nix, &fc_cfg);
+  if (rrv)
+    return oct_roc_err (dev, rrv, "roc_nix_fc_config_set failed");
+
+  memset (&fc_cfg, 0, sizeof (struct roc_nix_fc_cfg));
+  fc_cfg.type = ROC_NIX_FC_RQ_CFG;
+  fc_cfg.rq_cfg.enable = true;
+  fc_cfg.rq_cfg.tc = 0;
+
+  foreach_vnet_dev_port_rx_queue (rxq, port)
+    {
+      oct_rxq_t *crq = vnet_dev_get_rx_queue_data (rxq);
+
+      rq = &crq->rq;
+      cq = &crq->cq;
+
+      fc_cfg.rq_cfg.rq = rq->qid;
+      fc_cfg.rq_cfg.cq_drop = cq->drop_thresh;
+
+      rrv = roc_nix_fc_config_set (nix, &fc_cfg);
+      if (rrv)
+	return oct_roc_err (dev, rrv, "roc_nix_fc_config_set failed");
+    }
+
+  memset (&fc_cfg, 0, sizeof (struct roc_nix_fc_cfg));
+  fc_cfg.type = ROC_NIX_FC_TM_CFG;
+  fc_cfg.tm_cfg.tc = 0;
+  fc_cfg.tm_cfg.enable = true;
+
+  foreach_vnet_dev_port_tx_queue (txq, port)
+    {
+      oct_txq_t *ctq = vnet_dev_get_tx_queue_data (txq);
+
+      sq = &ctq->sq;
+
+      fc_cfg.tm_cfg.sq = sq->qid;
+      rrv = roc_nix_fc_config_set (nix, &fc_cfg);
+      if (rrv)
+	return oct_roc_err (dev, rrv, "roc_nix_fc_config_set failed");
+    }
+
+  /* By default, enable pause flow control */
+  rrv = roc_nix_fc_mode_set (nix, ROC_NIX_FC_FULL);
+  if (rrv)
+    return oct_roc_err (dev, rrv, "roc_nix_fc_mode_set failed");
+
+  return VNET_DEV_OK;
+}
+
+vnet_dev_rv_t
 oct_port_init (vlib_main_t *vm, vnet_dev_port_t *port)
 {
   vnet_dev_t *dev = port->dev;
   oct_device_t *cd = vnet_dev_get_data (dev);
   oct_port_t *cp = vnet_dev_get_port_data (port);
+  vnet_dev_port_interfaces_t *ifs = port->interfaces;
   u8 mac_addr[PLT_ETHER_ADDR_LEN];
   struct roc_nix *nix = cd->nix;
   vnet_dev_rv_t rv;
@@ -65,14 +137,14 @@ oct_port_init (vlib_main_t *vm, vnet_dev_port_t *port)
 
   log_debug (dev, "port init: port %u", port->port_id);
 
-  if ((rrv = roc_nix_lf_alloc (nix, port->intf.num_rx_queues,
-			       port->intf.num_tx_queues, rxq_cfg)))
+  if ((rrv = roc_nix_lf_alloc (nix, ifs->num_rx_queues, ifs->num_tx_queues,
+			       rxq_cfg)))
     {
       oct_port_deinit (vm, port);
       return oct_roc_err (
 	dev, rrv,
 	"roc_nix_lf_alloc(nb_rxq = %u, nb_txq = %d, rxq_cfg=0x%lx) failed",
-	port->intf.num_rx_queues, port->intf.num_tx_queues, rxq_cfg);
+	ifs->num_rx_queues, ifs->num_tx_queues, rxq_cfg);
     }
   cp->lf_allocated = 1;
 
@@ -148,6 +220,13 @@ oct_port_init (vlib_main_t *vm, vnet_dev_port_t *port)
       return rv;
     }
 
+  /* Configure pause frame flow control*/
+  if ((rv = oct_port_pause_flow_control_init (vm, port)))
+    {
+      oct_port_deinit (vm, port);
+      return rv;
+    }
+
   return VNET_DEV_OK;
 }
 
@@ -211,7 +290,7 @@ oct_port_poll (vlib_main_t *vm, vnet_dev_port_t *port)
 	return;
     }
 
-  if (roc_nix_is_lbk (nix))
+  if (roc_nix_is_lbk (nix) || roc_nix_is_sdp (nix))
     {
       link_info.status = 1;
       link_info.full_duplex = 1;
@@ -350,6 +429,7 @@ oct_port_start (vlib_main_t *vm, vnet_dev_port_t *port)
 {
   vnet_dev_t *dev = port->dev;
   oct_device_t *cd = vnet_dev_get_data (dev);
+  oct_port_t *cp = vnet_dev_get_port_data (port);
   struct roc_nix *nix = cd->nix;
   struct roc_nix_eeprom_info eeprom_info = {};
   vnet_dev_rv_t rv;
@@ -373,6 +453,12 @@ oct_port_start (vlib_main_t *vm, vnet_dev_port_t *port)
       goto done;
     }
 
+  if ((rrv = roc_npc_mcam_enable_all_entries (&cp->npc, true)))
+    {
+      rv = oct_roc_err (dev, rrv, "roc_npc_mcam_enable_all_entries() failed");
+      goto done;
+    }
+
   vnet_dev_poll_port_add (vm, port, 0.5, oct_port_poll);
 
   if (roc_nix_eeprom_info_get (nix, &eeprom_info) == 0)
@@ -391,12 +477,21 @@ oct_port_stop (vlib_main_t *vm, vnet_dev_port_t *port)
 {
   vnet_dev_t *dev = port->dev;
   oct_device_t *cd = vnet_dev_get_data (dev);
+  oct_port_t *cp = vnet_dev_get_port_data (port);
   struct roc_nix *nix = cd->nix;
   int rrv;
 
   log_debug (port->dev, "port stop: port %u", port->port_id);
 
   vnet_dev_poll_port_remove (vm, port, oct_port_poll);
+
+  /* Disable all the NPC entries */
+  rrv = roc_npc_mcam_enable_all_entries (&cp->npc, false);
+  if (rrv)
+    {
+      oct_roc_err (dev, rrv, "roc_npc_mcam_enable_all_entries() failed");
+      return;
+    }
 
   rrv = roc_nix_npc_rx_ena_dis (nix, false);
   if (rrv)
@@ -497,6 +592,10 @@ oct_port_add_del_eth_addr (vlib_main_t *vm, vnet_dev_port_t *port,
 		  rv = oct_roc_err (dev, rrv, "roc_nix_mac_addr_set() failed");
 		}
 	    }
+
+	  rrv = roc_nix_rss_default_setup (nix, default_rss_flowkey);
+	  if (rrv)
+	    rv = oct_roc_err (dev, rrv, "roc_nix_rss_default_setup() failed");
 	}
     }
 

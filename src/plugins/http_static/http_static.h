@@ -24,6 +24,8 @@
 #include <http_static/http_cache.h>
 
 #define HSS_DEFAULT_MAX_AGE 600
+#define HSS_DEFAULT_MAX_BODY_SIZE     8192
+#define HSS_DEFAULT_KEEPALIVE_TIMEOUT 60
 
 /** @file http_static.h
  * Static http server definitions
@@ -47,14 +49,14 @@ typedef struct
   /** Data length */
   u64 data_len;
   /** Current data send offset */
-  u32 data_offset;
+  u64 data_offset;
   /** Need to free data in detach_cache_entry */
   int free_data;
   /** File cache pool index */
   u32 cache_pool_index;
-  /** Response header list */
-  http_header_t *resp_headers;
-  /** Serialized headers to send */
+  /** Response header ctx */
+  http_headers_ctx_t resp_headers;
+  /** Response header buffer */
   u8 *headers_buf;
 } hss_session_t;
 
@@ -160,8 +162,12 @@ typedef struct
   u64 cache_size;
   /** How long a response is considered fresh (in seconds) */
   u32 max_age;
+  /** Maximum size of a request body (in bytes) **/
+  u64 max_body_size;
   /** Formatted max_age: "max-age=xyz" */
   u8 *max_age_formatted;
+  /** Timeout during which client connection will stay open */
+  u32 keepalive_timeout;
 
   /** hash table of file extensions to mime types string indices */
   uword *mime_type_indices_by_file_extensions;

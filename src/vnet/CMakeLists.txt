@@ -78,8 +78,8 @@ list(APPEND VNET_HEADERS
   dev/args.h
   dev/bus/pci.h
   dev/counters.h
-  dev/dev.h
   dev/dev_funcs.h
+  dev/dev.h
   dev/errors.h
   dev/log.h
   dev/mgmt.h
@@ -266,21 +266,6 @@ list(APPEND VNET_SOURCES
 list(APPEND VNET_HEADERS
   srp/packet.h
   srp/srp.h
-)
-
-##############################################################################
-# Layer 2 protocol: PPP
-##############################################################################
-list(APPEND VNET_SOURCES
-  ppp/node.c
-  ppp/pg.c
-  ppp/ppp.c
-)
-
-list(APPEND VNET_HEADERS
-  ppp/error.def
-  ppp/ppp.h
-  ppp/packet.h
 )
 
 ##############################################################################
@@ -539,6 +524,7 @@ list(APPEND VNET_SOURCES
   crypto/cli.c
   crypto/crypto.c
   crypto/format.c
+  crypto/main.c
   crypto/node.c
   crypto/crypto_api.c
 )
@@ -567,6 +553,7 @@ list(APPEND VNET_SOURCES
   ipsec/ipsec_spd_policy.c
   ipsec/ipsec_tun.c
   ipsec/ipsec_tun_in.c
+  ipsec/main.c
   ipsec/esp_format.c
   ipsec/esp_encrypt.c
   ipsec/esp_decrypt.c
@@ -640,6 +627,7 @@ list(APPEND VNET_HEADERS
   tcp/tcp_debug.h
   tcp/tcp_inlines.h
   tcp/tcp_sack.h
+  tcp/tcp_sdl.h
   tcp/tcp_types.h
   tcp/tcp.h
   tcp/tcp_error.def
@@ -960,12 +948,14 @@ list(APPEND VNET_API_FILES
 
 if("${CMAKE_SYSTEM_NAME}" STREQUAL "Linux")
 list(APPEND VNET_SOURCES
+  dev/bus/platform.c
   devices/tap/cli.c
   devices/tap/tap.c
   devices/tap/tapv2_api.c
 )
 
 list(APPEND VNET_HEADERS
+  dev/bus/platform.h
   devices/tap/tap.h
 )
 
@@ -1010,6 +1000,7 @@ list(APPEND VNET_SOURCES
   session/application_namespace.c
   session/segment_manager.c
   session/session_api.c
+  session/session_sdl.c
 )
 
 list(APPEND VNET_HEADERS
@@ -1146,6 +1137,7 @@ list(APPEND VNET_HEADERS
   fib/fib_sas.h
   fib/fib_source.h
   fib/fib_urpf_list.h
+  fib/fib_walk.h
 )
 
 list(APPEND VNET_API_FILES

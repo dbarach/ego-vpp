@@ -1,4 +1,4 @@
-ARG UBUNTU_VERSION
+ARG UBUNTU_VERSION=22.04
 
 FROM ubuntu:${UBUNTU_VERSION}
 
@@ -8,11 +8,15 @@ RUN apt-get update \
     vim gdb libunwind-dev redis redis-tools iperf3 \
  && rm -rf /var/lib/apt/lists/*
 
+ARG OS_ARCH
+RUN echo "I'm building for $OS_ARCH"
+
 ENV DIR=vpp-data/lib/vpp_plugins
 COPY \
    $DIR/af_packet_plugin.so \
    $DIR/hs_apps_plugin.so \
    $DIR/http_plugin.so \
+   $DIR/http_unittest_plugin.so \
    $DIR/unittest_plugin.so \
    $DIR/quic_plugin.so \
    $DIR/http_static_plugin.so \
@@ -21,7 +25,7 @@ COPY \
    $DIR/prom_plugin.so \
    $DIR/tlsopenssl_plugin.so \
    $DIR/mactime_plugin.so \
-   /usr/lib/x86_64-linux-gnu/vpp_plugins/
+   /usr/lib/$OS_ARCH-linux-gnu/vpp_plugins/
 
 COPY vpp-data/bin/vpp /usr/bin/
 COPY vpp-data/bin/vppctl /usr/bin/

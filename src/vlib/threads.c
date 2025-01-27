@@ -282,6 +282,11 @@ vlib_thread_init (vlib_main_t * vm)
       tr->first_index = first_index;
       first_index += tr->count;
       n_vlib_mains += (tr->no_data_structure_clone == 0) ? tr->count : 0;
+      if (n_vlib_mains >= FRAME_QUEUE_MAX_NELTS)
+	return clib_error_return (0,
+				  "configured amount of workers %u is"
+				  " greater than VPP_MAX_WORKERS (%u)",
+				  n_vlib_mains, FRAME_QUEUE_MAX_NELTS);
 
       /* construct coremask */
       if (tr->use_pthreads || !tr->count)
@@ -1068,6 +1073,13 @@ vlib_worker_thread_node_refork (void)
       rt->flags = old_rt[j].flags;
       clib_memcpy_fast (rt->runtime_data, old_rt[j].runtime_data,
 			VLIB_NODE_RUNTIME_DATA_SIZE);
+    }
+
+  for (j = vec_len (old_rt);
+       j < vec_len (nm_clone->nodes_by_type[VLIB_NODE_TYPE_INPUT]); j++)
+    {
+      rt = &nm_clone->nodes_by_type[VLIB_NODE_TYPE_INPUT][j];
+      nm_clone->input_node_counts_by_state[rt->state] += 1;
     }
 
   vec_free (old_rt);

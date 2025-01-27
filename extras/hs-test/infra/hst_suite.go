@@ -4,7 +4,6 @@ import (
 	"bufio"
 	"flag"
 	"fmt"
-	"github.com/edwarnicke/exechelper"
 	"io"
 	"log"
 	"net/http"
@@ -13,9 +12,12 @@ import (
 	"os/exec"
 	"path/filepath"
 	"runtime"
+	"slices"
 	"strconv"
 	"strings"
 	"time"
+
+	"github.com/edwarnicke/exechelper"
 
 	containerTypes "github.com/docker/docker/api/types/container"
 	"github.com/docker/docker/client"
@@ -40,11 +42,12 @@ var IsDebugBuild = flag.Bool("debug_build", false, "some paths are different wit
 var UseCpu0 = flag.Bool("cpu0", false, "use cpu0")
 var IsLeakCheck = flag.Bool("leak_check", false, "run leak-check tests")
 var ParallelTotal = flag.Lookup("ginkgo.parallel.total")
+var DryRun = flag.Bool("dryrun", false, "set up containers but don't run tests")
 var NumaAwareCpuAlloc bool
-var SuiteTimeout time.Duration
+var TestTimeout time.Duration
 
 type HstSuite struct {
-	Containers        map[string]*Container
+	AllContainers     map[string]*Container
 	StartedContainers []*Container
 	Volumes           []string
 	NetConfigs        []NetConfig
@@ -61,9 +64,57 @@ type HstSuite struct {
 	Docker            *client.Client
 }
 
+type colors struct {
+	grn string
+	pur string
+	rst string
+}
+
+var Colors = colors{
+	grn: "\033[32m",
+	pur: "\033[35m",
+	rst: "\033[0m",
+}
+
+// ../../src/vnet/udp/udp_local.h:foreach_udp4_dst_port
+var reservedPorts = []string{
+	"53",
+	"67",
+	"68",
+	"500",
+	"2152",
+	"3784",
+	"3785",
+	"4341",
+	"4342",
+	"4500",
+	"4739",
+	"4784",
+	"4789",
+	"4789",
+	"48879",
+	"4790",
+	"6633",
+	"6081",
+	"53053",
+}
+
 // used for colorful ReportEntry
 type StringerStruct struct {
 	Label string
+}
+
+var testCounter uint16
+var startTime time.Time = time.Now()
+
+func testCounterFunc() {
+	if ParallelTotal.Value.String() != "1" {
+		return
+	}
+	testCounter++
+	fmt.Printf("Test counter: %d\n"+
+		"Time elapsed: %.2fs\n",
+		testCounter, time.Since(startTime).Seconds())
 }
 
 // ColorableString for ReportEntry to use
@@ -103,8 +154,8 @@ func (s *HstSuite) newDockerClient() {
 
 func (s *HstSuite) SetupSuite() {
 	s.CreateLogger()
+	s.Log("[* SUITE SETUP]")
 	s.newDockerClient()
-	s.Log("Suite Setup")
 	RegisterFailHandler(func(message string, callerSkip ...int) {
 		s.HstFail()
 		Fail(message, callerSkip...)
@@ -121,12 +172,38 @@ func (s *HstSuite) SetupSuite() {
 	s.CpuCount = *NConfiguredCpus
 }
 
-func (s *HstSuite) AllocateCpus() []int {
-	cpuCtx, err := s.CpuAllocator.Allocate(len(s.StartedContainers), s.CpuCount)
-	// using Fail instead of AssertNil to make error message more readable
-	if err != nil {
-		Fail(fmt.Sprint(err))
+func (s *HstSuite) AllocateCpus(containerName string) []int {
+	var cpuCtx *CpuContext
+	var err error
+	currentTestName := CurrentSpecReport().LeafNodeText
+
+	if strings.Contains(currentTestName, "MTTest") {
+		prevContainerCount := s.CpuAllocator.maxContainerCount
+		if strings.Contains(containerName, "vpp") {
+			// CPU range is assigned based on the Ginkgo process index (or build number if
+			// running in the CI), *NConfiguredCpus and a maxContainerCount.
+			// maxContainerCount is set to 4 when CpuAllocator is initialized.
+			// 4 is not a random number - all of our suites use a maximum of 4 containers simultaneously,
+			// and it's also the maximum number of containers we can run with *NConfiguredCpus=2 (with CPU0=true)
+			// on processors with 8 threads. Currently, the CpuAllocator puts all cores into a slice,
+			// makes the length of the slice divisible by 4x*NConfiguredCpus, and then the minCpu and
+			// maxCpu (range) for each container is calculated. Then we just offset based on minCpu,
+			// the number of started containers and *NConfiguredCpus. This way, every container
+			// uses the correct CPUs, even if multiple NUMA nodes are available.
+			// However, because of this, if we want to assign different number of cores to different containers,
+			// we have to change maxContainerCount to manipulate the CPU range. Hopefully a temporary workaround.
+			s.CpuAllocator.maxContainerCount = 1
+			cpuCtx, err = s.CpuAllocator.Allocate(1, 3, 0)
+		} else {
+			s.CpuAllocator.maxContainerCount = 3
+			cpuCtx, err = s.CpuAllocator.Allocate(len(s.StartedContainers), s.CpuCount, 2)
+		}
+		s.CpuAllocator.maxContainerCount = prevContainerCount
+	} else {
+		cpuCtx, err = s.CpuAllocator.Allocate(len(s.StartedContainers), s.CpuCount, 0)
 	}
+
+	s.AssertNil(err)
 	s.AddCpuContext(cpuCtx)
 	return cpuCtx.cpus
 }
@@ -138,20 +215,27 @@ func (s *HstSuite) AddCpuContext(cpuCtx *CpuContext) {
 func (s *HstSuite) TearDownSuite() {
 	defer s.LogFile.Close()
 	defer s.Docker.Close()
-	s.Log("Suite Teardown")
+	if *IsPersistent || *DryRun {
+		return
+	}
+	s.Log("[* SUITE TEARDOWN]")
 	s.UnconfigureNetworkTopology()
 }
 
 func (s *HstSuite) TearDownTest() {
-	s.Log("Test Teardown")
-	if *IsPersistent {
+	s.Log("[* TEST TEARDOWN]")
+	if *IsPersistent || *DryRun {
 		return
 	}
-	s.WaitForCoreDump()
+	coreDump := s.WaitForCoreDump()
 	s.ResetContainers()
 
 	if s.Ip4AddrAllocator != nil {
 		s.Ip4AddrAllocator.DeleteIpAddresses()
+	}
+
+	if coreDump {
+		Fail("VPP crashed")
 	}
 }
 
@@ -162,14 +246,15 @@ func (s *HstSuite) SkipIfUnconfiguring() {
 }
 
 func (s *HstSuite) SetupTest() {
-	s.Log("Test Setup")
+	testCounterFunc()
+	s.Log("[* TEST SETUP]")
 	s.StartedContainers = s.StartedContainers[:0]
 	s.SkipIfUnconfiguring()
 	s.SetupContainers()
 }
 
 func (s *HstSuite) SetupContainers() {
-	for _, container := range s.Containers {
+	for _, container := range s.AllContainers {
 		if !container.IsOptional {
 			container.Run()
 		}
@@ -289,6 +374,19 @@ func (s *HstSuite) AssertHttpBody(resp *http.Response, expectedBody string, msgA
 	ExpectWithOffset(2, resp).To(HaveHTTPBody(expectedBody), msgAndArgs...)
 }
 
+func (s *HstSuite) AssertChannelClosed(timeout time.Duration, channel chan error) {
+	EventuallyWithOffset(2, channel).WithTimeout(timeout).Should(BeClosed())
+}
+
+// Pass the parsed result struct and the minimum amount of data transferred in MB
+func (s *HstSuite) AssertIperfMinTransfer(result IPerfResult, minTransferred int) {
+	if result.Start.Details.Protocol == "TCP" {
+		s.AssertGreaterThan(result.End.TcpReceived.MBytes, minTransferred)
+	} else {
+		s.AssertGreaterThan(result.End.Udp.MBytes, minTransferred)
+	}
+}
+
 func (s *HstSuite) CreateLogger() {
 	suiteName := s.GetCurrentSuiteName()
 	var err error
@@ -301,13 +399,20 @@ func (s *HstSuite) CreateLogger() {
 
 // Logs to files by default, logs to stdout when VERBOSE=true with GinkgoWriter
 // to keep console tidy
-func (s *HstSuite) Log(arg any) {
-	logs := strings.Split(fmt.Sprint(arg), "\n")
+func (s *HstSuite) Log(log any, arg ...any) {
+	var logStr string
+	if len(arg) == 0 {
+		logStr = fmt.Sprint(log)
+	} else {
+		logStr = fmt.Sprintf(fmt.Sprint(log), arg...)
+	}
+	logs := strings.Split(logStr, "\n")
+
 	for _, line := range logs {
 		s.Logger.Println(line)
 	}
 	if *IsVerbose {
-		GinkgoWriter.Println(arg)
+		GinkgoWriter.Println(logStr)
 	}
 }
 
@@ -321,33 +426,24 @@ func (s *HstSuite) SkipIfMultiWorker(args ...any) {
 	}
 }
 
-func (s *HstSuite) SkipIfNotEnoughAvailableCpus() bool {
-	var MaxRequestedCpu int
+func (s *HstSuite) SkipIfNotEnoughAvailableCpus() {
+	var maxRequestedCpu int
+	availableCpus := len(s.CpuAllocator.cpus) - 1
+
+	if *UseCpu0 {
+		availableCpus++
+	}
 
 	if s.CpuAllocator.runningInCi {
-		MaxRequestedCpu = ((s.CpuAllocator.buildNumber + 1) * s.CpuAllocator.maxContainerCount * s.CpuCount)
+		maxRequestedCpu = ((s.CpuAllocator.buildNumber + 1) * s.CpuAllocator.maxContainerCount * s.CpuCount)
 	} else {
-		MaxRequestedCpu = (GinkgoParallelProcess() * s.CpuAllocator.maxContainerCount * s.CpuCount)
+		maxRequestedCpu = (GinkgoParallelProcess() * s.CpuAllocator.maxContainerCount * s.CpuCount)
 	}
 
-	if len(s.CpuAllocator.cpus)-1 < MaxRequestedCpu {
-		s.Skip(fmt.Sprintf("test case cannot allocate requested cpus (%d cpus * %d containers)", s.CpuCount, s.CpuAllocator.maxContainerCount))
-	}
-
-	return true
-}
-
-func (s *HstSuite) SkipUnlessExtendedTestsBuilt() {
-	imageName := "hs-test/nginx-http3"
-
-	cmd := exec.Command("docker", "images", imageName)
-	byteOutput, err := cmd.CombinedOutput()
-	if err != nil {
-		s.Log("error while searching for docker image")
-		return
-	}
-	if !strings.Contains(string(byteOutput), imageName) {
-		s.Skip("extended tests not built")
+	if availableCpus < maxRequestedCpu {
+		s.Skip(fmt.Sprintf("Test case cannot allocate requested cpus "+
+			"(%d containers * %d cpus, %d available). Try using 'CPU0=true'",
+			s.CpuAllocator.maxContainerCount, s.CpuCount, availableCpus))
 	}
 }
 
@@ -357,19 +453,25 @@ func (s *HstSuite) SkipUnlessLeakCheck() {
 	}
 }
 
-func (s *HstSuite) WaitForCoreDump() {
+func (s *HstSuite) SkipIfArm() {
+	if runtime.GOARCH == "arm64" {
+		s.Skip("test case not supported on arm")
+	}
+}
+
+func (s *HstSuite) WaitForCoreDump() bool {
 	var filename string
 	dir, err := os.Open(s.getLogDirPath())
 	if err != nil {
 		s.Log(err)
-		return
+		return false
 	}
 	defer dir.Close()
 
 	files, err := dir.Readdirnames(0)
 	if err != nil {
 		s.Log(err)
-		return
+		return false
 	}
 	for _, file := range files {
 		if strings.Contains(file, "core") {
@@ -386,7 +488,7 @@ func (s *HstSuite) WaitForCoreDump() {
 			fileInfo, err := os.Stat(corePath)
 			if err != nil {
 				s.Log("Error while reading file info: " + fmt.Sprint(err))
-				return
+				return true
 			}
 			currSize := fileInfo.Size()
 			s.Log(fmt.Sprintf("Waiting %ds/%ds...", i, timeout))
@@ -413,17 +515,18 @@ func (s *HstSuite) WaitForCoreDump() {
 						s.Log(err)
 					}
 				}
-				return
+				return true
 			}
 		}
 	}
+	return false
 }
 
 func (s *HstSuite) ResetContainers() {
 	for _, container := range s.StartedContainers {
 		container.stop()
 		s.Log("Removing container " + container.Name)
-		if err := s.Docker.ContainerRemove(container.ctx, container.ID, containerTypes.RemoveOptions{RemoveVolumes: true}); err != nil {
+		if err := s.Docker.ContainerRemove(container.ctx, container.ID, containerTypes.RemoveOptions{RemoveVolumes: true, Force: true}); err != nil {
 			s.Log(err)
 		}
 	}
@@ -438,7 +541,7 @@ func (s *HstSuite) GetInterfaceByName(name string) *NetInterface {
 }
 
 func (s *HstSuite) GetContainerByName(name string) *Container {
-	return s.Containers[s.ProcessIndex+name+s.Ppid]
+	return s.AllContainers[s.ProcessIndex+name+s.Ppid]
 }
 
 /*
@@ -446,7 +549,7 @@ func (s *HstSuite) GetContainerByName(name string) *Container {
  * are not able to modify the original container and affect other tests by doing that
  */
 func (s *HstSuite) GetTransientContainerByName(name string) *Container {
-	containerCopy := *s.Containers[s.ProcessIndex+name+s.Ppid]
+	containerCopy := *s.AllContainers[s.ProcessIndex+name+s.Ppid]
 	return &containerCopy
 }
 
@@ -470,7 +573,7 @@ func (s *HstSuite) LoadContainerTopology(topologyName string) {
 		s.Volumes = append(s.Volumes, hostDir)
 	}
 
-	s.Containers = make(map[string]*Container)
+	s.AllContainers = make(map[string]*Container)
 	for _, elem := range yamlTopo.Containers {
 		newContainer, err := newContainer(s, elem)
 		newContainer.Suite = s
@@ -478,7 +581,14 @@ func (s *HstSuite) LoadContainerTopology(topologyName string) {
 		if err != nil {
 			Fail("container config error: " + fmt.Sprint(err))
 		}
-		s.Containers[newContainer.Name] = newContainer
+		s.AllContainers[newContainer.Name] = newContainer
+	}
+
+	if *DryRun {
+		s.Log(Colors.pur + "* Containers used by this suite (some might already be running):" + Colors.rst)
+		for name := range s.AllContainers {
+			s.Log("%sdocker start %s && docker exec -it %s bash%s", Colors.pur, name, name, Colors.rst)
+		}
 	}
 }
 
@@ -567,11 +677,15 @@ func (s *HstSuite) ConfigureNetworkTopology(topologyName string) {
 }
 
 func (s *HstSuite) UnconfigureNetworkTopology() {
-	if *IsPersistent {
-		return
-	}
 	for _, nc := range s.NetConfigs {
 		nc.unconfigure()
+	}
+}
+
+func (s *HstSuite) LogStartedContainers() {
+	s.Log("%s* Started containers:%s", Colors.grn, Colors.rst)
+	for _, container := range s.StartedContainers {
+		s.Log(Colors.grn + container.Name + Colors.rst)
 	}
 }
 
@@ -597,13 +711,23 @@ func (s *HstSuite) GetCurrentSuiteName() string {
 	return CurrentSpecReport().ContainerHierarchyTexts[0]
 }
 
-// Returns last 3 digits of PID + Ginkgo process index as the 4th digit
+// Returns last 3 digits of PID + Ginkgo process index as the 4th digit. If the port is in the 'reservedPorts' slice,
+// increment port number by ten and check again.
 func (s *HstSuite) GetPortFromPpid() string {
 	port := s.Ppid
+	var err error
+	var portInt int
 	for len(port) < 3 {
 		port += "0"
 	}
-	return port[len(port)-3:] + s.ProcessIndex
+	port = port[len(port)-3:] + s.ProcessIndex
+	for slices.Contains(reservedPorts, port) {
+		portInt, err = strconv.Atoi(port)
+		s.AssertNil(err)
+		portInt += 10
+		port = fmt.Sprintf("%d", portInt)
+	}
+	return port
 }
 
 /*

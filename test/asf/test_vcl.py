@@ -7,7 +7,7 @@ import subprocess
 import signal
 import glob
 from config import config
-from asfframework import VppAsfTestCase, VppTestRunner, Worker, tag_fixme_ubuntu2404
+from asfframework import VppAsfTestCase, VppTestRunner, Worker
 from vpp_ip_route import VppIpTable, VppIpRoute, VppRoutePath
 
 iperf3 = "/usr/bin/iperf3"
@@ -311,7 +311,6 @@ class VCLTestCase(VppAsfTestCase):
         self.assert_equal(worker_client.result, 0, "Binary test return code")
 
 
-@tag_fixme_ubuntu2404
 class LDPCutThruTestCase(VCLTestCase):
     """LDP Cut Thru Tests"""
 
@@ -760,6 +759,59 @@ class VCLThruHostStackQUIC(VCLTestCase):
 @unittest.skipIf(
     "hs_apps" in config.excluded_plugins, "Exclude tests requiring hs_apps plugin"
 )
+class VCLThruHostStackHTTPPost(VCLTestCase):
+    """VCL Thru Host Stack HTTP Post"""
+
+    @classmethod
+    def setUpClass(cls):
+        cls.extra_vpp_plugin_config.append("plugin http_plugin.so { enable }")
+        super(VCLThruHostStackHTTPPost, cls).setUpClass()
+
+    @classmethod
+    def tearDownClass(cls):
+        super(VCLThruHostStackHTTPPost, cls).tearDownClass()
+
+    def setUp(self):
+        super(VCLThruHostStackHTTPPost, self).setUp()
+
+        self.thru_host_stack_setup()
+        self.client_uni_dir_http_post_timeout = 20
+        self.server_http_post_args = ["-p", "http", self.server_port]
+        self.client_uni_dir_http_post_test_args = [
+            "-N",
+            "10000",
+            "-U",
+            "-X",
+            "-p",
+            "http",
+            self.loop0.local_ip4,
+            self.server_port,
+        ]
+
+    def test_vcl_thru_host_stack_http_post_uni_dir(self):
+        """run VCL thru host stack uni-directional HTTP POST test"""
+
+        self.timeout = self.client_uni_dir_http_post_timeout
+        self.thru_host_stack_test(
+            "vcl_test_server",
+            self.server_http_post_args,
+            "vcl_test_client",
+            self.client_uni_dir_http_post_test_args,
+        )
+
+    def tearDown(self):
+        self.thru_host_stack_tear_down()
+        super(VCLThruHostStackHTTPPost, self).tearDown()
+
+    def show_commands_at_teardown(self):
+        self.logger.debug(self.vapi.cli("show app server"))
+        self.logger.debug(self.vapi.cli("show session verbose 2"))
+        self.logger.debug(self.vapi.cli("show app mq"))
+
+
+@unittest.skipIf(
+    "hs_apps" in config.excluded_plugins, "Exclude tests requiring hs_apps plugin"
+)
 class VCLThruHostStackBidirNsock(VCLTestCase):
     """VCL Thru Host Stack Bidir Nsock"""
 
@@ -971,7 +1023,6 @@ class VCLThruHostStackNsock(VCLTestCase):
         )
 
 
-@tag_fixme_ubuntu2404
 class LDPThruHostStackIperf(VCLTestCase):
     """LDP Thru Host Stack Iperf"""
 
@@ -1019,7 +1070,6 @@ class LDPThruHostStackIperf(VCLTestCase):
         )
 
 
-@tag_fixme_ubuntu2404
 class LDPThruHostStackIperfUdp(VCLTestCase):
     """LDP Thru Host Stack Iperf UDP"""
 
@@ -1065,7 +1115,6 @@ class LDPThruHostStackIperfUdp(VCLTestCase):
         )
 
 
-@tag_fixme_ubuntu2404
 class LDPIpv6CutThruTestCase(VCLTestCase):
     """LDP IPv6 Cut Thru Tests"""
 

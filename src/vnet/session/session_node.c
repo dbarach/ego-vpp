@@ -136,7 +136,14 @@ session_mq_listen_handler (session_worker_t *wrk, session_evt_elt_t *elt)
   a->sep_ext.transport_flags = mp->flags;
 
   if (mp->ext_config)
-    a->sep_ext.ext_cfg = session_mq_get_ext_config (app, mp->ext_config);
+    {
+      transport_endpt_ext_cfg_t *ext_cfg =
+	session_mq_get_ext_config (app, mp->ext_config);
+      a->sep_ext.ext_cfgs.data = (u8 *) ext_cfg;
+      a->sep_ext.ext_cfgs.len =
+	ext_cfg->len + TRANSPORT_ENDPT_EXT_CFG_HEADER_SIZE;
+      a->sep_ext.ext_cfgs.tail_offset = a->sep_ext.ext_cfgs.len;
+    }
 
   if ((rv = vnet_listen (a)))
     session_worker_stat_error_inc (wrk, rv, 1);
@@ -213,7 +220,14 @@ session_mq_connect_one (session_connect_msg_t *mp)
   a->wrk_map_index = mp->wrk_index;
 
   if (mp->ext_config)
-    a->sep_ext.ext_cfg = session_mq_get_ext_config (app, mp->ext_config);
+    {
+      transport_endpt_ext_cfg_t *ext_cfg =
+	session_mq_get_ext_config (app, mp->ext_config);
+      a->sep_ext.ext_cfgs.data = (u8 *) ext_cfg;
+      a->sep_ext.ext_cfgs.len =
+	ext_cfg->len + TRANSPORT_ENDPT_EXT_CFG_HEADER_SIZE;
+      a->sep_ext.ext_cfgs.tail_offset = a->sep_ext.ext_cfgs.len;
+    }
 
   if ((rv = vnet_connect (a)))
     {
@@ -460,6 +474,10 @@ session_mq_accepted_reply_handler (session_worker_t *wrk,
       return;
     }
 
+  /* TODO(fcoras) This needs to be part of the reply message */
+  s->rx_fifo->app_session_index = s->rx_fifo->shr->client_session_index;
+  s->tx_fifo->app_session_index = s->tx_fifo->shr->client_session_index;
+
   /* Special handling for cut-through sessions */
   if (!session_has_transport (s))
     {
@@ -670,7 +688,7 @@ session_mq_worker_update_handler (void *data)
    * Retransmit messages that may have been lost
    */
   if (s->tx_fifo && !svm_fifo_is_empty (s->tx_fifo))
-    session_send_io_evt_to_thread (s->tx_fifo, SESSION_IO_EVT_TX);
+    session_program_tx_io_evt (s->handle, SESSION_IO_EVT_TX);
 
   if (s->rx_fifo && !svm_fifo_is_empty (s->rx_fifo))
     app_worker_rx_notify (app_wrk, s);
@@ -1249,6 +1267,7 @@ session_tx_set_dequeue_params (vlib_main_t * vm, session_tx_context_t * ctx,
 	    }
 	  ASSERT (ctx->hdr.data_length > ctx->hdr.data_offset);
 	  len = ctx->hdr.data_length - ctx->hdr.data_offset;
+	  ctx->sp.snd_mss = clib_min (ctx->sp.snd_mss, len);
 
 	  if (ctx->hdr.gso_size)
 	    {

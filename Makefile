@@ -57,12 +57,27 @@ GDB_ARGS= -ex "handle SIGUSR1 noprint nostop"
 ifneq ($(shell uname),Darwin)
 OS_ID        = $(shell grep '^ID=' /etc/os-release | cut -f2- -d= | sed -e 's/\"//g')
 OS_VERSION_ID= $(shell grep '^VERSION_ID=' /etc/os-release | cut -f2- -d= | sed -e 's/\"//g')
+OS_CODENAME  = $(shell grep '^VERSION_CODENAME=' /etc/os-release | cut -f2- -d= | sed -e 's/\"//g')
+endif
+
+# Fill in OS_VERSION_ID based on codename if its absent
+ifeq ($(OS_VERSION_ID),)
+# Debian testing doesn't define version_id and therefore need to be referenced by name
+ifeq ($(OS_CODENAME),trixie)
+OS_VERSION_ID = 13
+endif
 endif
 
 ifeq ($(filter ubuntu debian linuxmint,$(OS_ID)),$(OS_ID))
 PKG=deb
-else ifeq ($(filter rhel centos fedora opensuse-leap rocky almalinux,$(OS_ID)),$(OS_ID))
+else ifeq ($(filter rhel centos fedora opensuse-leap rocky almalinux anolis,$(OS_ID)),$(OS_ID))
 PKG=rpm
+else ifeq ($(filter freebsd,$(OS_ID)),$(OS_ID))
+PKG=pkg
+endif
+
+ifeq ($(filter anolis,$(OS_ID)),$(OS_ID))
+OS_VERSION_ID= $(shell grep '^VERSION_ID=' /etc/os-release | cut -f2 -d= | sed -e 's/\"//g' | cut -d. -f1)
 endif
 
 # +libganglia1-dev if building the gmond plugin
@@ -125,6 +140,13 @@ else ifeq ($(OS_ID)-$(OS_VERSION_ID),debian-12)
 	# TODO: remove once ubuntu 20.04 is deprecated and extras/scripts/checkstyle.sh is upgraded to -15
 	export CLANG_FORMAT_VER=15
 	LIBFFI=libffi8
+else ifeq ($(OS_ID)-$(OS_VERSION_ID),debian-13)
+	DEB_DEPENDS += virtualenv
+	DEB_DEPENDS += clang-19 clang-format-19
+	# for extras/scripts/checkstyle.sh
+	# TODO: remove once ubuntu 20.04 is deprecated and extras/scripts/checkstyle.sh is upgraded to -15
+	export CLANG_FORMAT_VER=15
+	LIBFFI=libffi8
 else
 	DEB_DEPENDS += clang-11 clang-format-11
 	LIBFFI=libffi7
@@ -181,6 +203,15 @@ else ifeq ($(OS_ID)-$(OS_VERSION_ID),centos-8)
 	RPM_DEPENDS += infiniband-diags libibumad
 	RPM_DEPENDS += libpcap-devel llvm-toolset
 	RPM_DEPENDS_GROUPS = 'Development Tools'
+else ifeq ($(OS_ID)-$(OS_VERSION_ID),anolis-8)
+	RPM_DEPENDS += yum-utils
+	RPM_DEPENDS += compat-openssl10 openssl-devel
+	RPM_DEPENDS += python2-devel python36-devel python3-ply
+	RPM_DEPENDS += python3-virtualenv python3-jsonschema
+	RPM_DEPENDS += libarchive cmake
+	RPM_DEPENDS += libpcap-devel llvm-toolset git-clang-format python3-pyyaml
+	RPM_DEPENDS_GROUPS = 'Development Tools'
+	export CLANG_FORMAT_VER=15
 else
 	RPM_DEPENDS += yum-utils
 	RPM_DEPENDS += openssl-devel
@@ -220,6 +251,18 @@ ifeq ($(OS_ID),opensuse-leap)
 endif
 
 RPM_SUSE_DEPENDS += $(RPM_SUSE_BUILDTOOLS_DEPS) $(RPM_SUSE_DEVEL_DEPS) $(RPM_SUSE_PYTHON_DEPS) $(RPM_SUSE_PLATFORM_DEPS)
+
+# FreeBSD build and test dependancies
+
+FBSD_PY_PRE=py311
+
+FBSD_TEST_DEPS = setsid rust $(FBSD_PY_PRE)-pyshark
+FBSD_PYTHON_DEPS = python3 $(FBSD_PY_PRE)-pyelftools $(FBSD_PY_PRE)-ply
+FBSD_DEVEL_DEPS = cscope gdb
+FBSD_BUILD_DEPS = bash gmake sudo
+FBSD_BUILD_DEPS += git sudo autoconf automake curl gsed
+FBSD_BUILD_DEPS += pkgconf ninja cmake libepoll-shim jansson
+FBSD_DEPS = $(FBSD_BUILD_DEPS) $(FBSD_PYTHON_DEPS) $(FBSD_TEST_DEPS) $(FBSD_DEVEL_DEPS)
 
 ifneq ($(wildcard $(STARTUP_DIR)/startup.conf),)
         STARTUP_CONF ?= $(STARTUP_DIR)/startup.conf
@@ -271,6 +314,7 @@ help:
 	@echo " snap-clean           - clean up snap build environment"
 	@echo " pkg-rpm              - build RPM packages"
 	@echo " install-ext-dep[s]   - install external development dependencies"
+	@echo " install-opt-deps     - install optional dependencies"
 	@echo " ctags                - (re)generate ctags database"
 	@echo " gtags                - (re)generate gtags database"
 	@echo " cscope               - (re)generate cscope database"
@@ -387,11 +431,19 @@ else ifeq ($(OS_ID),fedora)
 	@sudo -E dnf install $(CONFIRM) $(RPM_DEPENDS)
 	@sudo -E debuginfo-install $(CONFIRM) glibc openssl-libs zlib
 endif
+else ifeq ($(OS_ID)-$(OS_VERSION_ID),anolis-8)
+	@sudo -E dnf install $(CONFIRM) dnf-plugins-core epel-release
+	@sudo -E dnf config-manager --set-enabled \
+          $(shell dnf repolist all 2>/dev/null|grep -i powertools|cut -d' ' -f1|grep -v source)
+	@sudo -E dnf groupinstall $(CONFIRM) $(RPM_DEPENDS_GROUPS)
+	@sudo -E dnf install --skip-broken $(CONFIRM) $(RPM_DEPENDS)
 else ifeq ($(filter opensuse-leap-15.3 opensuse-leap-15.4 ,$(OS_ID)-$(OS_VERSION_ID)),$(OS_ID)-$(OS_VERSION_ID))
 	@sudo -E zypper refresh
 	@sudo -E zypper install  -y $(RPM_SUSE_DEPENDS)
+else ifeq ($(OS_ID), freebsd)
+	@sudo pkg install -y $(FBSD_DEPS)
 else
-	$(error "This option currently works only on Ubuntu, Debian, RHEL, CentOS or openSUSE-leap systems")
+	$(error "This option currently works only on Ubuntu, Debian, RHEL, CentOS, openSUSE-leap or FreeBSD systems")
 endif
 	git config commit.template .git_commit_template.txt
 
@@ -614,10 +666,13 @@ test-wipe-all:
 	@$(MAKE) -C test wipe-all
 
 # Note: All python venv consolidated in test/Makefile, test/requirements*.txt
+#       Also, this target is used by ci-management/jjb/scripts/vpp/checkstyle-test.sh,
+#       thus inclusion of checkstyle-go here to include checkstyle for hs-test
+#       in the vpp-checkstyle-verify-*-*-* jobs
 .PHONY: test-checkstyle
 test-checkstyle:
-	$(warning test-checkstyle is deprecated. Running checkstyle-python.")
 	@$(MAKE) -C test checkstyle-python-all
+	@$(MAKE) -C extras/hs-test checkstyle-go
 
 # Note: All python venv consolidated in test/Makefile, test/requirements*.txt
 .PHONY: test-checkstyle-diff
@@ -739,6 +794,10 @@ install-ext-deps:
 
 .PHONY: install-ext-dep
 install-ext-dep: install-ext-deps
+
+.PHONY: install-opt-deps
+install-opt-deps:
+	$(MAKE) -C build/optional install-$(PKG)
 
 .PHONY: json-api-files
 json-api-files:

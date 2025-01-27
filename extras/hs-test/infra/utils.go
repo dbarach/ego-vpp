@@ -1,6 +1,8 @@
 package hst
 
 import (
+	"crypto/tls"
+	"encoding/json"
 	"errors"
 	"fmt"
 	"io"
@@ -15,6 +17,7 @@ import (
 
 const networkTopologyDir string = "topo-network/"
 const containerTopologyDir string = "topo-containers/"
+const HttpCapsuleTypeDatagram = uint64(0)
 
 type Stanza struct {
 	content string
@@ -33,6 +36,43 @@ type JsonResult struct {
 	Desc      string
 	ErrOutput string
 	StdOutput string
+}
+
+type IPerfResult struct {
+	Start struct {
+		Timestamp struct {
+			Time string `json:"time"`
+		} `json:"timestamp"`
+		Connected []struct {
+			Socket     int    `json:"socket"`
+			LocalHost  string `json:"local_host"`
+			LocalPort  int    `json:"local_port"`
+			RemoteHost string `json:"remote_host"`
+			RemotePort int    `json:"remote_port"`
+		} `json:"connected"`
+		Version string `json:"version"`
+		Details struct {
+			Protocol string `json:"protocol"`
+		} `json:"test_start"`
+	} `json:"start"`
+	End struct {
+		TcpSent *struct {
+			MbitsPerSecond float64 `json:"bits_per_second"`
+			MBytes         float64 `json:"bytes"`
+		} `json:"sum_sent,omitempty"`
+		TcpReceived *struct {
+			MbitsPerSecond float64 `json:"bits_per_second"`
+			MBytes         float64 `json:"bytes"`
+		} `json:"sum_received,omitempty"`
+		Udp *struct {
+			MbitsPerSecond float64 `json:"bits_per_second"`
+			JitterMs       float64 `json:"jitter_ms,omitempty"`
+			LostPackets    int     `json:"lost_packets,omitempty"`
+			Packets        int     `json:"packets,omitempty"`
+			LostPercent    float64 `json:"lost_percent,omitempty"`
+			MBytes         float64 `json:"bytes"`
+		} `json:"sum,omitempty"`
+	} `json:"end"`
 }
 
 func AssertFileSize(f1, f2 string) error {
@@ -86,13 +126,14 @@ func (s *Stanza) SaveToFile(fileName string) error {
 }
 
 // NewHttpClient creates [http.Client] with disabled proxy and redirects, it also sets timeout to 30seconds.
-func NewHttpClient() *http.Client {
+func NewHttpClient(timeout time.Duration) *http.Client {
 	transport := http.DefaultTransport
 	transport.(*http.Transport).Proxy = nil
 	transport.(*http.Transport).DisableKeepAlives = true
+	transport.(*http.Transport).TLSClientConfig = &tls.Config{InsecureSkipVerify: true}
 	client := &http.Client{
 		Transport: transport,
-		Timeout:   time.Second * 30,
+		Timeout:   timeout,
 		CheckRedirect: func(req *http.Request, via []*http.Request) error {
 			return http.ErrUseLastResponse
 		}}
@@ -134,8 +175,7 @@ RunCurlContainer execute curl command with given args.
 Container with name "curl" must be available.
 Curl runs in verbose mode and progress meter switch off by default.
 */
-func (s *HstSuite) RunCurlContainer(args string) (string, string) {
-	curlCont := s.GetContainerByName("curl")
+func (s *HstSuite) RunCurlContainer(curlCont *Container, args string) (string, string) {
 	cmd := fmt.Sprintf("curl -v -s %s", args)
 	s.Log(cmd)
 	curlCont.ExtraRunningArgs = cmd
@@ -155,8 +195,7 @@ Nginx logging need to be set following way:
 
 where LogPrefix is set to nginxContainer.Name
 */
-func (s *HstSuite) CollectNginxLogs(containerName string) {
-	nginxContainer := s.GetContainerByName(containerName)
+func (s *HstSuite) CollectNginxLogs(nginxContainer *Container) {
 	targetDir := nginxContainer.Suite.getLogDirPath()
 	source := nginxContainer.GetHostWorkDir() + "/" + nginxContainer.Name + "-"
 	cmd := exec.Command("cp", "-t", targetDir, source+"error.log", source+"access.log")
@@ -173,8 +212,7 @@ Envoy access log path need to be set following way:
 <default-work-dir>/{{.LogPrefix}}-access.log
 where LogPrefix is set to envoyContainer.Name
 */
-func (s *HstSuite) CollectEnvoyLogs(containerName string) {
-	envoyContainer := s.GetContainerByName(containerName)
+func (s *HstSuite) CollectEnvoyLogs(envoyContainer *Container) {
 	targetDir := envoyContainer.Suite.getLogDirPath()
 	source := envoyContainer.GetHostWorkDir() + "/" + envoyContainer.Name + "-"
 	cmd := exec.Command("cp", "-t", targetDir, source+"access.log")
@@ -254,6 +292,7 @@ func (s *HstSuite) StartWget(finished chan error, server_ip, port, query, netNs 
 		netNs)
 	s.Log(cmd)
 	o, err := cmd.CombinedOutput()
+	s.Log(string(o))
 	if err != nil {
 		finished <- fmt.Errorf("wget error: '%v\n\n%s'", err, o)
 		return
@@ -269,7 +308,7 @@ func (s *HstSuite) StartServerApp(c *Container, processName string, cmd string,
 	running chan error, done chan struct{}) {
 
 	s.Log("starting server")
-	c.ExecServer(cmd)
+	c.ExecServer(true, cmd)
 	cmd2 := exec.Command("docker", "exec", c.Name, "pidof", processName)
 	err := cmd2.Run()
 	if err != nil {
@@ -283,34 +322,86 @@ func (s *HstSuite) StartServerApp(c *Container, processName string, cmd string,
 }
 
 func (s *HstSuite) StartClientApp(c *Container, cmd string,
-	clnCh chan error, clnRes chan string) {
+	clnCh chan error, clnRes chan []byte) {
 	defer func() {
 		close(clnCh)
 		close(clnRes)
 	}()
 
 	s.Log("starting client app, please wait")
+	cmd2 := exec.Command("/bin/sh", "-c", "docker exec "+c.getEnvVarsAsCliOption()+" "+
+		c.Name+" "+cmd)
+	s.Log(cmd2)
+	o, err := cmd2.CombinedOutput()
 
-	nTries := 0
-	for {
-		// exec.Cmd can only be used once, which is why it's in the loop
-		cmd2 := exec.Command("/bin/sh", "-c", "docker exec "+c.getEnvVarsAsCliOption()+" "+
-			c.Name+" "+cmd)
-		s.Log(cmd2)
-		o, err := cmd2.CombinedOutput()
-		if err != nil {
-			s.Log(err)
-			if nTries > 5 {
-				clnRes <- ""
-				clnCh <- fmt.Errorf("failed to start client app '%s'", err)
-				s.AssertNil(err, fmt.Sprint(err))
-				break
-			}
-			time.Sleep(1 * time.Second)
-			nTries++
-		} else {
-			clnRes <- fmt.Sprintf("Client output: %s", o)
-			break
-		}
+	if err != nil {
+		s.Log(err)
+		s.Log(string(o))
+		clnRes <- nil
+		clnCh <- fmt.Errorf("failed to start client app '%s'", err)
+		s.AssertNil(err, fmt.Sprint(err))
+	} else {
+		clnRes <- o
 	}
+}
+
+func (s *HstSuite) ParseJsonIperfOutput(jsonResult []byte) IPerfResult {
+	var result IPerfResult
+	// remove iperf warning line if present
+	if strings.Contains(string(jsonResult), "warning") {
+		index := strings.Index(string(jsonResult), "\n")
+		jsonResult = jsonResult[index+1:]
+	}
+
+	err := json.Unmarshal(jsonResult, &result)
+	s.AssertNil(err)
+
+	if result.Start.Details.Protocol == "TCP" {
+		result.End.TcpSent.MbitsPerSecond = result.End.TcpSent.MbitsPerSecond / 1000000
+		result.End.TcpSent.MBytes = result.End.TcpSent.MBytes / 1000000
+		result.End.TcpReceived.MbitsPerSecond = result.End.TcpReceived.MbitsPerSecond / 1000000
+		result.End.TcpReceived.MBytes = result.End.TcpReceived.MBytes / 1000000
+	} else {
+		result.End.Udp.MBytes = result.End.Udp.MBytes / 1000000
+		result.End.Udp.MbitsPerSecond = result.End.Udp.MbitsPerSecond / 1000000
+	}
+
+	return result
+}
+
+func (s *HstSuite) LogJsonIperfOutput(result IPerfResult) {
+	s.Log("\n*******************************************\n"+
+		"%s\n"+
+		"[%s] %s:%d connected to %s:%d\n"+
+		"Started:  %s\n",
+		result.Start.Version,
+		result.Start.Details.Protocol,
+		result.Start.Connected[0].LocalHost, result.Start.Connected[0].LocalPort,
+		result.Start.Connected[0].RemoteHost, result.Start.Connected[0].RemotePort,
+		result.Start.Timestamp.Time)
+
+	if result.Start.Details.Protocol == "TCP" {
+		s.Log("Transfer (sent):     %.2f MBytes\n"+
+			"Bitrate  (sent):     %.2f Mbits/sec\n"+
+			"Transfer (received): %.2f MBytes\n"+
+			"Bitrate  (received): %.2f Mbits/sec",
+			result.End.TcpSent.MBytes,
+			result.End.TcpSent.MbitsPerSecond,
+			result.End.TcpReceived.MBytes,
+			result.End.TcpReceived.MbitsPerSecond)
+	} else {
+		s.Log("Transfer:     %.2f MBytes\n"+
+			"Bitrate:      %.2f Mbits/sec\n"+
+			"Jitter:       %.3f ms\n"+
+			"Packets:      %d\n"+
+			"Packets lost: %d\n"+
+			"Percent lost: %.2f%%",
+			result.End.Udp.MBytes,
+			result.End.Udp.MbitsPerSecond,
+			result.End.Udp.JitterMs,
+			result.End.Udp.Packets,
+			result.End.Udp.LostPackets,
+			result.End.Udp.LostPercent)
+	}
+	s.Log("*******************************************\n")
 }

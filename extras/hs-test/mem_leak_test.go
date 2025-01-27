@@ -1,8 +1,9 @@
 package main
 
 import (
-	. "fd.io/hs-test/infra"
 	"fmt"
+
+	. "fd.io/hs-test/infra"
 )
 
 func init() {
@@ -11,7 +12,7 @@ func init() {
 
 func MemLeakTest(s *NoTopoSuite) {
 	s.SkipUnlessLeakCheck()
-	vpp := s.GetContainerByName("vpp").VppInstance
+	vpp := s.Containers.Vpp.VppInstance
 	/* no goVPP less noise */
 	vpp.Disconnect()
 	vpp.EnableMemoryTrace()
