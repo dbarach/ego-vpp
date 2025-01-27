@@ -295,6 +295,9 @@ static void vl_api_mactime_add_del_range_t_handler
   if (clib_bihash_search_8_8 (lut, &kv, &kv) < 0)
     found = 0;
 
+  /* Null Terminate the device name, for sure... */
+  mp->device_name[ARRAY_LEN (mp->device_name) - 1] = 0;
+
   /* Add an entry? */
   if (mp->is_add)
     {
@@ -309,7 +312,6 @@ static void vl_api_mactime_add_del_range_t_handler
 	  vlib_validate_combined_counter (&mm->drop_counters,
 					  dp - mm->devices);
 	  vlib_zero_combined_counter (&mm->drop_counters, dp - mm->devices);
-	  mp->device_name[ARRAY_LEN (mp->device_name) - 1] = 0;
 	  dp->device_name = format (0, "%s%c", mp->device_name, 0);
 	  memcpy (dp->mac_address, mp->mac_address, sizeof (mp->mac_address));
 	  for (i = 0; i < clib_net_to_host_u32 (mp->count); i++)
@@ -347,9 +349,14 @@ static void vl_api_mactime_add_del_range_t_handler
 	  kv.value = dp - mm->devices;
 	  clib_bihash_add_del_8_8 (lut, &kv, 1 /* is_add */ );
 	}
-      else			/* add more ranges, flags, etc. */
+      else
 	{
 	  dp = pool_elt_at_index (mm->devices, kv.value);
+          /* Reset the range vector */
+          vec_reset_length(dp->ranges);
+          /* And the device name */
+          vec_free(dp->device_name);
+	  dp->device_name = format (0, "%s%c", mp->device_name, 0);
 
 	  for (i = 0; i < clib_net_to_host_u32 (mp->count); i++)
 	    {
@@ -397,6 +404,7 @@ static void vl_api_mactime_add_del_range_t_handler
       /* Remove it from the lookup table */
       clib_bihash_add_del_8_8 (lut, &kv, 0 /* is_add */ );
       vec_free (dp->ranges);
+      vec_free(dp->device_name);
       pool_put (mm->devices, dp);
     }
 
