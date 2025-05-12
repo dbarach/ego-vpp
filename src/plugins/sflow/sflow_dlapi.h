@@ -1,5 +1,5 @@
 /*
- * Copyright (c) 2020 Cisco and/or its affiliates.
+ * Copyright (c) 2025 InMon Corp.
  * Licensed under the Apache License, Version 2.0 (the "License");
  * you may not use this file except in compliance with the License.
  * You may obtain a copy of the License at:
@@ -12,29 +12,18 @@
  * See the License for the specific language governing permissions and
  * limitations under the License.
  */
-/**
- * @brief Common NAT inline functions
+#ifndef __included_sflow_dlapi_h__
+#define __included_sflow_dlapi_h__
+/* Dynamic-link API
+ * If present, linux-cp plugin will be queried to learn the
+ * Linux if_index for each VPP if_index. If that plugin is not
+ * compiled and loaded, or if the function symbol is not found,
+ * then the interfaces will be reported to NETLINK_USERSOCK
+ * without this extra mapping.
  */
-#ifndef included_nat_inlines_h__
-#define included_nat_inlines_h__
-
-#include <vnet/ip/icmp46_packet.h>
-
-static_always_inline u64
-icmp_type_is_error_message (u8 icmp_type)
-{
-  int bmp = 0;
-  bmp |= 1 << ICMP4_destination_unreachable;
-  bmp |= 1 << ICMP4_time_exceeded;
-  bmp |= 1 << ICMP4_parameter_problem;
-  bmp |= 1 << ICMP4_source_quench;
-  bmp |= 1 << ICMP4_redirect;
-  bmp |= 1 << ICMP4_alternate_host_address;
-
-  return (1ULL << icmp_type) & bmp;
-}
-
-#endif /* included_nat_inlines_h__ */
+#define SFLOW_LCP_LIB		     "linux_cp_plugin.so"
+#define SFLOW_LCP_SYM_GET_VIF_BY_PHY "lcp_itf_pair_get_vif_index_by_phy"
+#endif /* __included_sflow_dyn_api_h__ */
 /*
  * fd.io coding-style-patch-verification: ON
  *

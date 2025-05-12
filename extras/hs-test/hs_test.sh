@@ -6,13 +6,17 @@ args=
 focused_test=0
 persist_set=0
 dryrun_set=0
+coverage_set=0
 unconfigure_set=0
 debug_set=0
 leak_check_set=0
 debug_build=
 ginkgo_args=
 tc_names=()
+skip_names=()
 dryrun=
+no_color=
+perf=
 
 for i in "$@"
 do
@@ -22,6 +26,13 @@ case "${i}" in
         if [ "$persist" = "true" ]; then
             args="$args -persist"
             persist_set=1
+        fi
+        ;;
+    --coverage=*)
+        coverage="${i#*=}"
+        if [ "$coverage" = "true" ]; then
+            args="$args -coverage"
+            coverage_set=1
         fi
         ;;
     --debug=*)
@@ -65,6 +76,10 @@ case "${i}" in
             args="$args -verbose"
         fi
         ;;
+    --skip=*)
+        skip_list="${i#*=}"
+        IFS=',' read -r -a skip_names <<< "$skip_list"
+        ;;
     --parallel=*)
         ginkgo_args="$ginkgo_args -procs=${i#*=}"
         ;;
@@ -91,8 +106,23 @@ case "${i}" in
             leak_check_set=1
         fi
         ;;
+    --no_color=*)
+        no_color="${i#*=}"
+        if [ "$no_color" = "true" ]; then
+            ginkgo_args="$ginkgo_args --no-color"
+        fi
+        ;;
+    --perf=*)
+        perf="${i#*=}"
+        ;;
 esac
 done
+
+if [ "$perf" = "true" ]; then
+    ginkgo_args="$ginkgo_args --label-filter=Perf"
+else
+    ginkgo_args="$ginkgo_args --label-filter=!Perf"
+fi
 
 if [ ${#tc_names[@]} -gt 1 ]
 then
@@ -101,6 +131,10 @@ fi
 
 for name in "${tc_names[@]}"; do
     ginkgo_args="$ginkgo_args --focus $name"
+done
+
+for skip in "${skip_names[@]}"; do
+    ginkgo_args="$ginkgo_args --skip $skip"
 done
 
 if [ $focused_test -eq 0 ] && { [ $persist_set -eq 1 ] || [ $dryrun_set -eq 1 ]; }; then
@@ -123,6 +157,9 @@ if [ $focused_test -eq 0 ] && [ $debug_set -eq 1 ]; then
     exit 2
 fi
 
+sudo_user="${SUDO_USER:-root}"
+args="$args -sudo_user $sudo_user"
+
 if [ $leak_check_set -eq 1 ]; then
   if [ $focused_test -eq 0 ]; then
     echo -e "\e[1;31ma single test has to be specified when leak_check is set\e[1;0m"
@@ -140,25 +177,40 @@ fi
 mkdir -p summary
 # shellcheck disable=SC2086
 sudo -E go run github.com/onsi/ginkgo/v2/ginkgo --json-report=summary/report.json $ginkgo_args -- $args
+exit_status=$?
 
-if [ $? != 0 ]; then
+if [ -e "summary/failed-summary.log" ]; then
+        rm summary/failed-summary.log
+fi
+
+if [ $exit_status != 0 ]; then
     jq -r '.[0] | .SpecReports[] | select((.State == "failed") or (.State == "timedout") or (.State == "panicked")) | select(.Failure != null) |
 "TestName:
     \(.LeafNodeText)
 Suite:
     \(.Failure.FailureNodeLocation.FileName)
 Message:\n"
-+(if .ReportEntries? then .ReportEntries[] | select(.Name == "VPP Backtrace") |
-"\tVPP crashed
++ (
+    if .ReportEntries? then
+        (.ReportEntries[] | select(.Name == "VPP Backtrace") |
+        "\tVPP crashed
 Full Back Trace:
-\(.Value.Representation | ltrimstr("{{red}}") | rtrimstr("{{/}}"))" else
-    "\(.Failure.Message)"
-     + (if .Failure.Message == "A spec timeout occurred" then "\n" else
-"\nFull Stack Trace:
-\(.Failure.Location.FullStackTrace)\n" end) end)' summary/report.json > summary/failed-summary.log \
-	&& echo "Summary generated -> summary/failed-summary.log"
+\(.Value.Representation | ltrimstr("{{red}}") | rtrimstr("{{/}}"))"
+        ) // "\(.Failure.Message)"
+    else
+        "parse error"
+    end
+)
++ (
+    if .Failure.Message == "A spec timeout occurred" then
+        "\n"
+    else
+        "\nFull Stack Trace:
+\(.Failure.Location.FullStackTrace)\n"
+    end
+)' summary/report.json > summary/failed-summary.log \
+&& echo "Summary generated -> summary/failed-summary.log"
+    exit $exit_status
 else
-    if [ -e "summary/failed-summary.log" ]; then
-        rm summary/failed-summary.log
-    fi
+    exit $exit_status
 fi

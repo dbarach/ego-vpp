@@ -140,6 +140,7 @@ mrvl_pp2_rx_inline (vlib_main_t *vm, vlib_node_runtime_t *node,
 				 n_desc);
 	  n_sel = vlib_frame_bitmap_count_set_bits (selected_bmp);
 	  n_avail -= n_sel;
+	  vlib_frame_bitmap_xor (avail_bmp, selected_bmp);
 
 	  if (uword_bitmap_is_bit_set (mp->valid_dsa_src_bitmap, index))
 	    {
@@ -207,7 +208,7 @@ mrvl_pp2_rx_refill (vlib_main_t *vm, vlib_node_runtime_t *node,
   vnet_dev_port_t *port = rxq->port;
   vnet_dev_t *dev = port->dev;
   mvpp2_device_t *md = vnet_dev_get_data (dev);
-  u32 thread_index = vm->thread_index;
+  clib_thread_index_t thread_index = vm->thread_index;
   struct pp2_hif *hif = md->hif[thread_index];
   struct pp2_bpool *bpool = md->thread[thread_index].bpool;
   struct buff_release_entry *bre = md->thread[thread_index].bre;

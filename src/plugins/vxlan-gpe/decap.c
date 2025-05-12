@@ -22,7 +22,7 @@
 
 #include <vlib/vlib.h>
 #include <vnet/udp/udp_local.h>
-#include <vnet/vxlan-gpe/vxlan_gpe.h>
+#include <vxlan-gpe/vxlan_gpe.h>
 
 /**
  * @brief Struct for VXLAN GPE decap packet tracing
@@ -210,7 +210,7 @@ vxlan_gpe_input (vlib_main_t * vm,
   vxlan4_gpe_tunnel_cache_t last4;
   vxlan6_gpe_tunnel_cache_t last6;
   u32 pkts_decapsulated = 0;
-  u32 thread_index = vm->thread_index;
+  clib_thread_index_t thread_index = vm->thread_index;
   u32 stats_sw_if_index, stats_n_packets, stats_n_bytes;
 
   if (is_ip4)
@@ -617,7 +617,7 @@ VLIB_NODE_FN (vxlan6_gpe_input_node) (vlib_main_t * vm,
  */
 static char *vxlan_gpe_error_strings[] = {
 #define vxlan_gpe_error(n,s) s,
-#include <vnet/vxlan-gpe/vxlan_gpe_error.def>
+#include <vxlan-gpe/vxlan_gpe_error.def>
 #undef vxlan_gpe_error
 #undef _
 };

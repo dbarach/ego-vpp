@@ -166,7 +166,10 @@ u32 vlib_frame_queue_main_init (u32 node_index, u32 frame_queue_nelts);
 #define BARRIER_SYNC_TIMEOUT (1.0)
 #endif
 
-#define vlib_worker_thread_barrier_sync(X) {vlib_worker_thread_barrier_sync_int(X, __FUNCTION__);}
+#define vlib_worker_thread_barrier_sync(X)                                    \
+  {                                                                           \
+    vlib_worker_thread_barrier_sync_int (X, __func__);                        \
+  }
 
 void vlib_worker_thread_barrier_sync_int (vlib_main_t * vm,
 					  const char *func_name);
@@ -183,7 +186,7 @@ void vlib_worker_wait_one_loop (void);
  */
 void vlib_worker_flush_pending_rpc_requests (vlib_main_t *vm);
 
-static_always_inline uword
+static_always_inline clib_thread_index_t
 vlib_get_thread_index (void)
 {
   return __os_thread_index;
@@ -195,7 +198,7 @@ vlib_smp_unsafe_warning (void)
   if (CLIB_DEBUG > 0)
     {
       if (vlib_get_thread_index ())
-	fformat (stderr, "%s: SMP unsafe warning...\n", __FUNCTION__);
+	fformat (stderr, "%s: SMP unsafe warning...\n", __func__);
     }
 }
 
@@ -256,6 +259,9 @@ typedef struct
   vlib_worker_thread_t *worker_threads;
 
   int use_pthreads;
+
+  /* Translate requested cpu configuration to vpp affinity mask */
+  int cpu_translate;
 
   /* Number of vlib_main / vnet_main clones */
   u32 n_vlib_mains;
@@ -337,7 +343,7 @@ vlib_get_worker_thread_index (u32 worker_index)
 }
 
 always_inline u32
-vlib_get_worker_index (u32 thread_index)
+vlib_get_worker_index (clib_thread_index_t thread_index)
 {
   return thread_index - 1;
 }
@@ -355,7 +361,7 @@ vlib_worker_thread_barrier_check (void)
     {
       vlib_global_main_t *vgm = vlib_get_global_main ();
       vlib_main_t *vm = vlib_get_main ();
-      u32 thread_index = vm->thread_index;
+      clib_thread_index_t thread_index = vm->thread_index;
       f64 t = vlib_time_now (vm);
 
       if (PREDICT_FALSE (vec_len (vm->barrier_perf_callbacks) != 0))
@@ -372,7 +378,7 @@ vlib_worker_thread_barrier_check (void)
 
 	  struct
 	  {
-	    u32 thread_index;
+	    clib_thread_index_t thread_index;
 	  } __clib_packed *ed;
 
 	  ed = ELOG_TRACK_DATA (&vlib_global_main.elog_main, e, w->elog_track);
@@ -419,7 +425,7 @@ vlib_worker_thread_barrier_check (void)
 
 	      struct
 	      {
-		u32 thread_index;
+		clib_thread_index_t thread_index;
 	      } __clib_packed *ed;
 
 	      ed = ELOG_TRACK_DATA (&vlib_global_main.elog_main, e,
@@ -444,7 +450,7 @@ vlib_worker_thread_barrier_check (void)
 
 	  struct
 	  {
-	    u32 thread_index;
+	    clib_thread_index_t thread_index;
 	    u32 duration;
 	  } __clib_packed *ed;
 
@@ -498,13 +504,16 @@ void vlib_workers_sync (void);
  * Release barrier after workers sync
  */
 void vlib_workers_continue (void);
+static_always_inline void
+vlib_thread_wakeup (clib_thread_index_t thread_index)
+{
+  vlib_main_t *vm = vlib_get_main_by_index (thread_index);
+  ssize_t __clib_unused rv;
+  u64 val = 1;
+
+  if (__atomic_load_n (&vm->thread_sleeps, __ATOMIC_RELAXED))
+    if (__atomic_exchange_n (&vm->wakeup_pending, 1, __ATOMIC_RELAXED) == 0)
+      rv = write (vm->wakeup_fd, &val, sizeof (u64));
+}
 
 #endif /* included_vlib_threads_h */
-
-/*
- * fd.io coding-style-patch-verification: ON
- *
- * Local Variables:
- * eval: (c-set-style "gnu")
- * End:
- */

@@ -2223,7 +2223,7 @@ ikev2_create_tunnel_interface (vlib_main_t *vm, ikev2_sa_t *sa,
 			       ikev2_child_sa_t *child, u32 sa_index,
 			       u32 child_index, u8 is_rekey, u8 kex)
 {
-  u32 thread_index = vlib_get_thread_index ();
+  clib_thread_index_t thread_index = vlib_get_thread_index ();
   ikev2_main_t *km = &ikev2_main;
   ipsec_crypto_alg_t encr_type;
   ipsec_integ_alg_t integ_type;
@@ -3190,7 +3190,7 @@ ikev2_node_internal (vlib_main_t *vm, vlib_node_runtime_t *node,
   vlib_buffer_t *bufs[VLIB_FRAME_SIZE], **b;
   u16 nexts[VLIB_FRAME_SIZE], *next = nexts;
   ikev2_main_per_thread_data_t *ptd = ikev2_get_per_thread_data ();
-  u32 thread_index = vm->thread_index;
+  clib_thread_index_t thread_index = vm->thread_index;
   ikev2_stats_t _stats, *stats = &_stats;
   int res;
 
@@ -5551,6 +5551,7 @@ static uword
 ikev2_mngr_process_fn (vlib_main_t * vm, vlib_node_runtime_t * rt,
 		       vlib_frame_t * f)
 {
+  ipsec_main_t *im = &ipsec_main;
   ikev2_main_t *km = &ikev2_main;
   ikev2_profile_t *p;
   ikev2_child_sa_t *c;
@@ -5631,10 +5632,10 @@ ikev2_mngr_process_fn (vlib_main_t * vm, vlib_node_runtime_t * rt,
 
       /* process ipsec sas */
       ipsec_sa_t *sa;
-      pool_foreach (sa, ipsec_sa_pool)
-	{
-	  ikev2_mngr_process_ipsec_sa (sa);
-	}
+      pool_foreach (sa, im->sa_pool)
+      {
+	ikev2_mngr_process_ipsec_sa (sa);
+      }
 
       ikev2_process_pending_sa_init (vm, km);
     }

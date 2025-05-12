@@ -172,6 +172,9 @@ func (c *Container) Create() error {
 	c.Suite.AssertNil(err)
 
 	for _, image := range images {
+		if len(image.RepoTags) == 0 {
+			continue
+		}
 		sliceOfImageNames = append(sliceOfImageNames, strings.Split(image.RepoTags[0], ":")[0])
 	}
 	if !slices.Contains(sliceOfImageNames, c.Image) {
@@ -460,7 +463,7 @@ func (c *Container) ExecServer(useEnvVars bool, command string, arguments ...any
 	c.Suite.AssertNil(exechelper.Run(containerExecCommand))
 }
 
-func (c *Container) Exec(useEnvVars bool, command string, arguments ...any) string {
+func (c *Container) Exec(useEnvVars bool, command string, arguments ...any) (string, error) {
 	var envVars string
 	serverCommand := fmt.Sprintf(command, arguments...)
 	if useEnvVars {
@@ -472,8 +475,7 @@ func (c *Container) Exec(useEnvVars bool, command string, arguments ...any) stri
 	GinkgoHelper()
 	c.Suite.Log(containerExecCommand)
 	byteOutput, err := exechelper.CombinedOutput(containerExecCommand)
-	c.Suite.AssertNil(err, fmt.Sprint(err))
-	return string(byteOutput)
+	return string(byteOutput), err
 }
 
 func (c *Container) saveLogs() {
@@ -533,12 +535,15 @@ func (c *Container) stop() error {
 	if c.VppInstance != nil && c.VppInstance.ApiStream != nil {
 		c.VppInstance.saveLogs()
 		c.VppInstance.Disconnect()
+		c.VppInstance.Stop()
 	}
+	timeout := 0
 	c.VppInstance = nil
 	c.saveLogs()
-
 	c.Suite.Log("Stopping container " + c.Name)
-	timeout := 0
+	if c.Suite.CoverageRun {
+		timeout = 3
+	}
 	if err := c.Suite.Docker.ContainerStop(c.ctx, c.ID, containerTypes.StopOptions{Timeout: &timeout}); err != nil {
 		return err
 	}

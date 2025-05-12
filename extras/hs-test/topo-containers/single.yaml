@@ -28,6 +28,14 @@ containers:
     image: "hs-test/nginx-http3"
     is-optional: true
 
+  - name: "nginx-server"
+    volumes:
+      - <<: *shared-vol
+        container-dir: "/tmp/nginx"
+        is-default-work-dir: true
+    image: "hs-test/nginx-server"
+    is-optional: true
+
   - name: "ab"
     image: "hs-test/ab"
     is-optional: true
@@ -43,5 +51,14 @@ containers:
     - name: LD_LIBRARY_PATH
       value: "/usr/local/lib"
     image: "hs-test/curl"
+    is-optional: true
+    run-detached: false
+
+  - name: "h2load"
+    image: "hs-test/h2load"
+    volumes:
+      - <<: *shared-vol
+        container-dir: "/tmp/h2load"
+        is-default-work-dir: true
     is-optional: true
     run-detached: false

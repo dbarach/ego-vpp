@@ -57,6 +57,10 @@ ifeq ($(ARCH),)
 ARCH=$(shell dpkg --print-architecture)
 endif
 
+ifeq ($(NO_COLOR),)
+VERBOSE=false
+endif
+
 FORCE_BUILD?=true
 
 .PHONY: help
@@ -65,10 +69,12 @@ help:
 	@echo " test                     - run tests"
 	@echo " test-debug               - run tests (vpp debug image)"
 	@echo " test-leak                - run memory leak tests (vpp debug image)"
+	@echo " test-perf                - run performance tests (requires a running cluster)"
 	@echo " build                    - build test infra"
 	@echo " build-cov                - coverage build of VPP and Docker images"
 	@echo " build-debug              - build test infra (vpp debug image)"
 	@echo " build-go                 - just build golang files"
+	@echo " setup-cluster            - setup KinD cluster for performance testing"
 	@echo " checkstyle-go            - check style of .go source files"
 	@echo " fixstyle-go              - format .go source files"
 	@echo " cleanup-hst              - stops and removes all docker contaiers and namespaces"
@@ -84,12 +90,14 @@ help:
 	@echo " UNCONFIGURE=[true|false] - unconfigure selected test"
 	@echo " DEBUG=[true|false]       - attach VPP to GDB"
 	@echo " TEST=[name1,name2...]    - specific test(s) to run"
+	@echo " SKIP=[name1,name2...]    - specific test(s) to skip"
 	@echo " CPUS=[n-cpus]            - number of cpus to allocate to VPP and containers"
 	@echo " VPPSRC=[path-to-vpp-src] - path to vpp source files (for gdb)"
 	@echo " PARALLEL=[n-cpus]        - number of test processes to spawn to run in parallel"
 	@echo " REPEAT=[n]               - repeat tests up to N times or until a failure occurs"
 	@echo " CPU0=[true|false]        - use cpu0"
 	@echo " DRYRUN=[true|false]      - set up containers but don't run tests"
+	@echo " NO_COLOR=[true|false]    - disables colorful Docker and Ginkgo output"
 
 .PHONY: list-tests
 list-tests:
@@ -106,13 +114,13 @@ build-vpp-debug:
 
 .PHONY: build-vpp-gcov
 build-vpp-gcov:
-	@$(MAKE) -C ../.. build-vpp-gcov
+	@$(MAKE) -C ../.. build-gcov
 
 .build.ok: build
 	@touch .build.ok
 
-.build.cov.ok: build-vpp-gcov
-	@touch .build.cov.ok
+.build.cov.ok: build-cov
+	@touch .build.ok
 
 .build_debug.ok: build-debug
 	@touch .build.ok
@@ -123,7 +131,7 @@ test: .deps.ok .build.ok
 	@bash ./hs_test.sh --persist=$(PERSIST) --verbose=$(VERBOSE) \
 		--unconfigure=$(UNCONFIGURE) --debug=$(DEBUG) --test=$(TEST) --cpus=$(CPUS) \
 		--vppsrc=$(VPPSRC) --parallel=$(PARALLEL) --repeat=$(REPEAT) --cpu0=$(CPU0) \
-		--dryrun=$(DRYRUN); \
+		--dryrun=$(DRYRUN) --skip=$(SKIP) --no_color=$(NO_COLOR); \
 		./script/compress.sh $$?
 
 .PHONY: test-debug
@@ -132,20 +140,37 @@ test-debug: .deps.ok .build_debug.ok
 	@bash ./hs_test.sh --persist=$(PERSIST) --verbose=$(VERBOSE) \
 		--unconfigure=$(UNCONFIGURE) --debug=$(DEBUG) --test=$(TEST) --cpus=$(CPUS) \
 		--vppsrc=$(VPPSRC) --parallel=$(PARALLEL) --repeat=$(REPEAT) --debug_build=true \
-		--cpu0=$(CPU0) --dryrun=$(DRYRUN); \
+		--cpu0=$(CPU0) --dryrun=$(DRYRUN) --skip=$(SKIP) --no_color=$(NO_COLOR); \
 		./script/compress.sh $$?
 
+.PHONY: wipe-lcov
+wipe-lcov:
+	@lcov --zerocounters --directory $(WS_ROOT)/build-root/build-vpp_gcov-native/vpp
+
 .PHONY: test-cov
-test-leak: FORCE_BUILD=false
-test-cov: .deps.ok .build.cov.ok
-	@bash ./hs_test.sh --persist=$(PERSIST) --verbose=$(VERBOSE) \
+test-cov: FORCE_BUILD=false
+test-cov: .deps.ok .build.cov.ok wipe-lcov
+	@bash ./hs_test.sh --coverage=true --persist=$(PERSIST) --verbose=$(VERBOSE) \
 		--unconfigure=$(UNCONFIGURE) --debug=$(DEBUG) --test=$(TEST-HS) --cpus=$(CPUS) \
-		--vppsrc=$(VPPSRC) --cpu0=$(CPU0) --dryrun=$(DRYRUN); \
+		--vppsrc=$(VPPSRC) --cpu0=$(CPU0) --dryrun=$(DRYRUN) --skip=$(SKIP) --no_color=$(NO_COLOR); \
 		./script/compress.sh $$?
+	$(MAKE) -C ../.. test-cov-post-standalone HS_TEST=1
 
 .PHONY: test-leak
 test-leak: .deps.ok .build_debug.ok
 	@bash ./hs_test.sh --test=$(TEST) --debug_build=true --leak_check=true --vppsrc=$(VPPSRC)
+
+.PHONY: test-perf
+test-perf: FORCE_BUILD=false
+test-perf: .deps.ok .build.ok
+	@bash ./hs_test.sh --persist=$(PERSIST) --verbose=$(VERBOSE) \
+		--test=$(TEST) --vppsrc=$(VPPSRC) --repeat=$(REPEAT) \
+		--skip=$(SKIP) --no_color=$(NO_COLOR) --perf=true; \
+		./script/compress.sh $$?
+
+.PHONY: setup-cluster
+setup-cluster:
+	@bash ./kubernetes/setupCluster.sh
 
 .PHONY: build-go
 build-go:
@@ -170,13 +195,13 @@ build-debug: .deps.ok build-vpp-debug build-go
 	@touch .build.ok
 
 .deps.ok:
-	@sudo $(MAKE) install-deps
+	@$(MAKE) install-deps
 
 .PHONY: install-deps
 install-deps:
 	@rm -f .deps.ok
-	@apt-get update \
-		&& apt-get install -y apt-transport-https ca-certificates curl software-properties-common \
+	@sudo -E apt-get update
+	@sudo -E apt-get install -y apt-transport-https ca-certificates curl software-properties-common \
 		bridge-utils gpg
 	@if [ ! -f /usr/share/keyrings/docker-archive-keyring.gpg ] ; then \
 		curl -fsSL https://download.docker.com/linux/ubuntu/gpg | sudo gpg --dearmor -o /usr/share/keyrings/docker-archive-keyring.gpg; \
@@ -184,7 +209,7 @@ install-deps:
 			| sudo tee /etc/apt/sources.list.d/docker.list > /dev/null ; \
 		apt-get update; \
 	fi
-	@apt-get install -y docker-ce docker-ce-cli containerd.io docker-buildx-plugin docker-compose-plugin
+	@sudo -E apt-get install -y docker-ce docker-ce-cli containerd.io docker-buildx-plugin docker-compose-plugin
 	@touch .deps.ok
 
 .goimports.ok:
@@ -234,6 +259,7 @@ cleanup-hst:
 	@echo "****************************"
 	@echo "Removing IP address files:"
 	@find . -type f -regextype egrep -regex '.*[0-9]+\.[0-9]+\.[0-9]+\.[0-9]+' -exec sudo rm -v {} \;
+	@find . -type f -name "fd00:0*" -exec sudo rm -v {} \;
 	@echo "****************************"
 	@echo "Removing network namespaces:"
 	@for ns in $$(ip netns list | grep $$(cat .last_hst_ppid) | awk '{print $$1}'); do \

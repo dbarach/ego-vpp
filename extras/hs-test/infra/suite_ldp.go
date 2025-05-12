@@ -97,6 +97,11 @@ func (s *LdpSuite) SetupTest() {
 }
 
 func (s *LdpSuite) TearDownTest() {
+	if CurrentSpecReport().Failed() {
+		s.CollectIperfLogs(s.Containers.ServerVpp)
+		s.CollectRedisServerLogs(s.Containers.ServerVpp)
+	}
+
 	for _, container := range s.StartedContainers {
 		delete(container.EnvVars, "LD_PRELOAD")
 		delete(container.EnvVars, "VCL_CONFIG")
@@ -127,7 +132,7 @@ func (s *LdpSuite) SetupServerVpp(serverContainer *Container) {
 	serverVpp := serverContainer.VppInstance
 	s.AssertNil(serverVpp.Start())
 
-	idx, err := serverVpp.createAfPacket(s.Interfaces.Server)
+	idx, err := serverVpp.createAfPacket(s.Interfaces.Server, false)
 	s.AssertNil(err, fmt.Sprint(err))
 	s.AssertNotEqual(0, idx)
 }
@@ -136,7 +141,7 @@ func (s *LdpSuite) setupClientVpp(clientContainer *Container) {
 	clientVpp := clientContainer.VppInstance
 	s.AssertNil(clientVpp.Start())
 
-	idx, err := clientVpp.createAfPacket(s.Interfaces.Client)
+	idx, err := clientVpp.createAfPacket(s.Interfaces.Client, false)
 	s.AssertNil(err, fmt.Sprint(err))
 	s.AssertNotEqual(0, idx)
 }

@@ -23,6 +23,11 @@ MACHINE=$(shell uname -m)
 SUDO?=sudo -E
 DPDK_CONFIG?=no-pci
 
+# we prefer clang by default
+ifeq ($(CC),cc)
+  CC=clang
+endif
+
 ifeq ($(strip $(SHELL)),)
 $(error "bash not found, VPP requires bash to build")
 endif
@@ -82,12 +87,12 @@ endif
 
 # +libganglia1-dev if building the gmond plugin
 
-DEB_DEPENDS  = curl build-essential autoconf automake ccache
-DEB_DEPENDS += debhelper dkms git libtool libapr1-dev dh-python
-DEB_DEPENDS += libconfuse-dev git-review exuberant-ctags cscope pkg-config
-DEB_DEPENDS += gcovr lcov chrpath autoconf libnuma-dev
+DEB_DEPENDS  = curl build-essential ccache
+DEB_DEPENDS += debhelper git dh-python
+DEB_DEPENDS += git-review exuberant-ctags cscope
+DEB_DEPENDS += clang gcovr lcov chrpath
 DEB_DEPENDS += python3-all python3-setuptools check
-DEB_DEPENDS += libffi-dev python3-ply libunwind-dev
+DEB_DEPENDS += python3-ply libunwind-dev
 DEB_DEPENDS += cmake ninja-build python3-jsonschema python3-yaml
 DEB_DEPENDS += python3-venv  # ensurepip
 DEB_DEPENDS += python3-dev python3-pip
@@ -97,11 +102,12 @@ DEB_DEPENDS += python3-virtualenv
 DEB_DEPENDS += libssl-dev
 DEB_DEPENDS += libelf-dev libpcap-dev # for libxdp (af_xdp)
 DEB_DEPENDS += iperf3 # for 'make test TEST=vcl'
-DEB_DEPENDS += nasm
 DEB_DEPENDS += iperf ethtool  # for 'make test TEST=vm_vpp_interfaces'
 DEB_DEPENDS += libpcap-dev
 DEB_DEPENDS += tshark
 DEB_DEPENDS += jq # for extracting test summary from .json report (hs-test)
+DEB_DEPENDS += libiberty-dev
+DEB_DEPENDS += nasm libnuma-dev # for make-ext-deps
 
 LIBFFI=libffi6 # works on all but 20.04 and debian-testing
 ifeq ($(OS_VERSION_ID),24.04)
@@ -119,41 +125,33 @@ else ifeq ($(OS_VERSION_ID),22.04)
 	# overwrite clang-format version to run `make checkstyle` successfully
 	# TODO: remove once ubuntu 20.04 is deprecated and extras/scripts/checkstyle.sh is upgraded to 15
 	export CLANG_FORMAT_VER=15
-	LIBFFI=libffi7
 	DEB_DEPENDS += enchant-2  # for docs
 else ifeq ($(OS_VERSION_ID),20.04)
 	DEB_DEPENDS += python3-virtualenv
 	DEB_DEPENDS += libssl-dev
 	DEB_DEPENDS += clang clang-format-11
-	LIBFFI=libffi7
 	DEB_DEPENDS += enchant-2  # for docs
 else ifeq ($(OS_ID)-$(OS_VERSION_ID),debian-10)
 	DEB_DEPENDS += virtualenv
 else ifeq ($(OS_ID)-$(OS_VERSION_ID),debian-11)
 	DEB_DEPENDS += virtualenv
 	DEB_DEPENDS += clang clang-format-11
-	LIBFFI=libffi7
 else ifeq ($(OS_ID)-$(OS_VERSION_ID),debian-12)
 	DEB_DEPENDS += virtualenv
 	DEB_DEPENDS += clang-14 clang-format-15
 	# for extras/scripts/checkstyle.sh
 	# TODO: remove once ubuntu 20.04 is deprecated and extras/scripts/checkstyle.sh is upgraded to -15
 	export CLANG_FORMAT_VER=15
-	LIBFFI=libffi8
 else ifeq ($(OS_ID)-$(OS_VERSION_ID),debian-13)
 	DEB_DEPENDS += virtualenv
 	DEB_DEPENDS += clang-19 clang-format-19
 	# for extras/scripts/checkstyle.sh
 	# TODO: remove once ubuntu 20.04 is deprecated and extras/scripts/checkstyle.sh is upgraded to -15
 	export CLANG_FORMAT_VER=15
-	LIBFFI=libffi8
 else
 	DEB_DEPENDS += clang-11 clang-format-11
-	LIBFFI=libffi7
 	DEB_DEPENDS += enchant-2  # for docs
 endif
-
-DEB_DEPENDS += $(LIBFFI)
 
 RPM_DEPENDS  = glibc-static
 RPM_DEPENDS += apr-devel
@@ -166,6 +164,7 @@ RPM_DEPENDS += xmlto
 RPM_DEPENDS += elfutils-libelf-devel libpcap-devel
 RPM_DEPENDS += libnl3-devel libmnl-devel
 RPM_DEPENDS += nasm
+RPM_DEPENDS += socat
 
 ifeq ($(OS_ID),fedora)
 	RPM_DEPENDS += dnf-utils
@@ -296,7 +295,7 @@ help:
 	@echo " build                - build debug binaries"
 	@echo " build-release        - build release binaries"
 	@echo " build-coverity       - build coverity artifacts"
-	@echo " build-vpp-gcov 		 - build gcov vpp only"
+	@echo " build-gcov 		 - build gcov vpp only"
 	@echo " rebuild              - wipe and build debug binaries"
 	@echo " rebuild-release      - wipe and build release binaries"
 	@echo " run                  - run debug binary"
@@ -316,6 +315,7 @@ help:
 	@echo " install-ext-dep[s]   - install external development dependencies"
 	@echo " install-opt-deps     - install optional dependencies"
 	@echo " ctags                - (re)generate ctags database"
+	@echo " etags                - (re)generate etags database"
 	@echo " gtags                - (re)generate gtags database"
 	@echo " cscope               - (re)generate cscope database"
 	@echo " compdb               - (re)generate compile_commands.json"
@@ -451,7 +451,7 @@ endif
 install-deps: install-dep
 
 define make
-	@$(MAKE) -C $(BR) PLATFORM=$(PLATFORM) TAG=$(1) $(2)
+	@$(MAKE) -C $(BR) CC=$(CC) PLATFORM=$(PLATFORM) TAG=$(1) $(2)
 endef
 
 $(BR)/scripts/.version:
@@ -506,9 +506,10 @@ rebuild: wipe build
 build-release: $(BR)/.deps.ok
 	$(call make,$(PLATFORM),$(addsuffix -install,$(TARGETS)))
 
-.PHONY: build-vpp-gcov
-build-vpp-gcov:
-	$(call test,vpp_gcov)
+.PHONY: build-gcov
+build-gcov: $(BR)/.deps.ok
+	$(eval CC=gcc)
+	$(call make,vpp_gcov,$(addsuffix -install,$(TARGETS)))
 
 .PHONY: wipe-release
 wipe-release: test-wipe $(BR)/.deps.ok
@@ -539,16 +540,10 @@ endef
 
 .PHONY: test
 test:
-ifeq ($(CC),cc)
-	$(eval CC=clang)
-endif
 	$(call test,vpp,test)
 
 .PHONY: test-debug
 test-debug:
-ifeq ($(CC),cc)
-	$(eval CC=clang)
-endif
 	$(call test,vpp_debug,test)
 
 .PHONY: test-cov
@@ -558,9 +553,13 @@ test-cov:
 	$(call test,vpp_gcov,cov)
 
 .PHONY: test-cov-hs
-test-cov-hs:
-	@$(MAKE) -C extras/hs-test build-cov
-	@$(MAKE) -C extras/hs-test test-cov
+test-cov-hs: build-gcov
+	@$(MAKE) CC=$(CC) -C extras/hs-test test-cov \
+	VPP_BUILD_DIR=$(BR)/build-vpp_gcov-native/vpp
+
+.PHONY: test-cov-post-standalone
+test-cov-post-standalone:
+	$(MAKE) CC=$(CC) -C test cov-post HS_TEST=$(HS_TEST) VPP_BUILD_DIR=$(BR)/build-vpp_gcov-native/vpp
 
 .PHONY: test-cov-both
 test-cov-both:
@@ -790,14 +789,14 @@ pkg-srpm: dist
 
 .PHONY: install-ext-deps
 install-ext-deps:
-	$(MAKE) -C build/external install-$(PKG)
+	$(MAKE) CC=$(CC) -C build/external install-$(PKG)
 
 .PHONY: install-ext-dep
 install-ext-dep: install-ext-deps
 
 .PHONY: install-opt-deps
 install-opt-deps:
-	$(MAKE) -C build/optional install-$(PKG)
+	$(MAKE) CC=$(CC) -C build/optional install-$(PKG)
 
 .PHONY: json-api-files
 json-api-files:
@@ -818,6 +817,11 @@ cleanup-hst:
 .PHONY: ctags
 ctags: ctags.files
 	@ctags --totals --tag-relative=yes -L $<
+	@rm $<
+
+.PHONY: etags
+etags: ctags.files
+	@ctags -e --totals -L $<
 	@rm $<
 
 .PHONY: gtags
@@ -921,15 +925,15 @@ docs:
 	@$(MAKE) -C $(WS_ROOT)/docs docs
 
 .PHONY: pkg-verify
-pkg-verify: install-dep $(BR)/.deps.ok install-ext-deps
+pkg-verify: $(BR)/.deps.ok install-ext-deps
 	$(call banner,"Building for PLATFORM=vpp")
-	@$(MAKE) -C build-root PLATFORM=vpp TAG=vpp wipe-all install-packages
+	@$(MAKE) CC=$(CC) -C build-root PLATFORM=vpp TAG=vpp wipe-all install-packages
 	$(call banner,"Building sample-plugin")
-	@$(MAKE) -C build-root PLATFORM=vpp TAG=vpp sample-plugin-install
+	@$(MAKE) CC=$(CC) -C build-root PLATFORM=vpp TAG=vpp sample-plugin-install
 	$(call banner,"Building libmemif")
-	@$(MAKE) -C build-root PLATFORM=vpp TAG=vpp libmemif-install
+	@$(MAKE) CC=gcc -C build-root PLATFORM=vpp TAG=vpp libmemif-install
 	$(call banner,"Building $(PKG) packages")
-	@$(MAKE) pkg-$(PKG)
+	@$(MAKE) CC=$(CC) pkg-$(PKG)
 
 # Note: 'make verify' target is not used by ci-management scripts
 MAKE_VERIFY_GATE_OS ?= ubuntu-22.04
@@ -939,7 +943,7 @@ ifeq ($(OS_ID)-$(OS_VERSION_ID),$(MAKE_VERIFY_GATE_OS))
 	$(call banner,"Testing vppapigen")
 	@src/tools/vppapigen/test_vppapigen.py
 	$(call banner,"Running tests")
-	@$(MAKE) COMPRESS_FAILED_TEST_LOGS=yes RETRIES=3 test
+	@$(MAKE) CC=$(CC) COMPRESS_FAILED_TEST_LOGS=yes RETRIES=3 test
 else
 	$(call banner,"Skipping tests. Tests under 'make verify' supported on $(MAKE_VERIFY_GATE_OS)")
 endif

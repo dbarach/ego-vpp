@@ -25,6 +25,12 @@
 
 typedef enum
 {
+  OCT_DEV_ARG_CRYPTO_N_DESC = 1,
+  OCT_DEV_ARG_END,
+} oct_dev_args_t;
+
+typedef enum
+{
   OCT_DEVICE_TYPE_UNKNOWN = 0,
   OCT_DEVICE_TYPE_RVU_PF,
   OCT_DEVICE_TYPE_RVU_VF,
@@ -43,6 +49,7 @@ typedef struct
   u32 speed;
   struct plt_pci_device plt_pci_dev;
   struct roc_nix *nix;
+  oct_msix_handler_info_t *msix_handler;
 } oct_device_t;
 
 typedef struct
@@ -60,6 +67,7 @@ typedef struct
   u8 lf_allocated : 1;
   u8 tm_initialized : 1;
   u8 npc_initialized : 1;
+  u8 q_intr_enabled : 1;
   struct roc_npc npc;
   oct_flow_entry_t *flow_entries;
 } oct_port_t;
@@ -133,6 +141,7 @@ void oct_tx_queue_free (vlib_main_t *, vnet_dev_tx_queue_t *);
 vnet_dev_rv_t oct_rxq_init (vlib_main_t *, vnet_dev_rx_queue_t *);
 vnet_dev_rv_t oct_txq_init (vlib_main_t *, vnet_dev_tx_queue_t *);
 void oct_rxq_deinit (vlib_main_t *, vnet_dev_rx_queue_t *);
+int oct_drain_queue (vlib_main_t *vm, vnet_dev_rx_queue_t *rxq);
 void oct_txq_deinit (vlib_main_t *, vnet_dev_tx_queue_t *);
 format_function_t format_oct_rxq_info;
 format_function_t format_oct_txq_info;

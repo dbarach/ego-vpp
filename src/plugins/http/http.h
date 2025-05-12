@@ -17,15 +17,9 @@
 #define SRC_PLUGINS_HTTP_HTTP_H_
 
 #include <ctype.h>
-
 #include <vnet/plugin/plugin.h>
-#include <vpp/app/version.h>
-
-#include <vppinfra/time_range.h>
-
-#include <vnet/session/application_interface.h>
-#include <vnet/session/application.h>
-#include <http/http_buffer.h>
+#include <vnet/ip/format.h>
+#include <vnet/ip/ip46_address.h>
 
 #define HTTP_DEBUG 0
 
@@ -49,20 +43,6 @@ typedef struct transport_endpt_cfg_http
   http_udp_tunnel_mode_t udp_tunnel_mode; /**< connect-udp mode */
 } transport_endpt_cfg_http_t;
 
-typedef struct http_conn_id_
-{
-  union
-  {
-    session_handle_t app_session_handle;
-    u32 parent_app_api_ctx;
-  };
-  session_handle_t tc_session_handle;
-  u32 parent_app_wrk_index;
-} http_conn_id_t;
-
-STATIC_ASSERT (sizeof (http_conn_id_t) <= TRANSPORT_CONN_ID_LEN,
-	       "ctx id must be less than TRANSPORT_CONN_ID_LEN");
-
 typedef struct
 {
   char *base;
@@ -71,45 +51,12 @@ typedef struct
 
 #define http_token_lit(s) (s), sizeof (s) - 1
 
-#define foreach_http_conn_state                                               \
-  _ (LISTEN, "listen")                                                        \
-  _ (CONNECTING, "connecting")                                                \
-  _ (ESTABLISHED, "established")                                              \
-  _ (TRANSPORT_CLOSED, "transport-closed")                                    \
-  _ (APP_CLOSED, "app-closed")                                                \
-  _ (CLOSED, "closed")
-
-typedef enum http_conn_state_
-{
-#define _(s, str) HTTP_CONN_STATE_##s,
-  foreach_http_conn_state
-#undef _
-} http_conn_state_t;
-
-#define foreach_http_req_state                                                \
-  _ (0, IDLE, "idle")                                                         \
-  _ (1, WAIT_APP_METHOD, "wait app method")                                   \
-  _ (2, WAIT_TRANSPORT_REPLY, "wait transport reply")                         \
-  _ (3, TRANSPORT_IO_MORE_DATA, "transport io more data")                     \
-  _ (4, WAIT_TRANSPORT_METHOD, "wait transport method")                       \
-  _ (5, WAIT_APP_REPLY, "wait app reply")                                     \
-  _ (6, APP_IO_MORE_DATA, "app io more data")                                 \
-  _ (7, TUNNEL, "tunnel")                                                     \
-  _ (8, UDP_TUNNEL, "udp tunnel")
-
-typedef enum http_req_state_
-{
-#define _(n, s, str) HTTP_REQ_STATE_##s = n,
-  foreach_http_req_state
-#undef _
-    HTTP_REQ_N_STATES
-} http_req_state_t;
-
 typedef enum http_req_method_
 {
   HTTP_REQ_GET = 0,
   HTTP_REQ_POST,
   HTTP_REQ_CONNECT,
+  HTTP_REQ_UNKNOWN, /* for internal use */
 } http_req_method_t;
 
 typedef enum http_msg_type_
@@ -117,14 +64,6 @@ typedef enum http_msg_type_
   HTTP_MSG_REQUEST,
   HTTP_MSG_REPLY
 } http_msg_type_t;
-
-typedef enum http_target_form_
-{
-  HTTP_TARGET_ORIGIN_FORM,
-  HTTP_TARGET_ABSOLUTE_FORM,
-  HTTP_TARGET_AUTHORITY_FORM,
-  HTTP_TARGET_ASTERISK_FORM
-} http_target_form_t;
 
 #define foreach_http_content_type                                             \
   _ (APP_7Z, ".7z", "application/x-7z-compressed")                            \
@@ -271,96 +210,108 @@ typedef enum http_status_code_
 } http_status_code_t;
 
 #define foreach_http_header_name                                              \
-  _ (ACCEPT, "Accept")                                                        \
-  _ (ACCEPT_CHARSET, "Accept-Charset")                                        \
-  _ (ACCEPT_ENCODING, "Accept-Encoding")                                      \
-  _ (ACCEPT_LANGUAGE, "Accept-Language")                                      \
-  _ (ACCEPT_RANGES, "Accept-Ranges")                                          \
-  _ (ACCESS_CONTROL_ALLOW_CREDENTIALS, "Access-Control-Allow-Credentials")    \
-  _ (ACCESS_CONTROL_ALLOW_HEADERS, "Access-Control-Allow-Headers")            \
-  _ (ACCESS_CONTROL_ALLOW_METHODS, "Access-Control-Allow-Methods")            \
-  _ (ACCESS_CONTROL_ALLOW_ORIGIN, "Access-Control-Allow-Origin")              \
-  _ (ACCESS_CONTROL_EXPOSE_HEADERS, "Access-Control-Expose-Headers")          \
-  _ (ACCESS_CONTROL_MAX_AGE, "Access-Control-Max-Age")                        \
-  _ (ACCESS_CONTROL_REQUEST_HEADERS, "Access-Control-Request-Headers")        \
-  _ (ACCESS_CONTROL_REQUEST_METHOD, "Access-Control-Request-Method")          \
-  _ (AGE, "Age")                                                              \
-  _ (ALLOW, "Allow")                                                          \
-  _ (ALPN, "ALPN")                                                            \
-  _ (ALT_SVC, "Alt-Svc")                                                      \
-  _ (ALT_USED, "Alt-Used")                                                    \
-  _ (ALTERNATES, "Alternates")                                                \
-  _ (AUTHENTICATION_CONTROL, "Authentication-Control")                        \
-  _ (AUTHENTICATION_INFO, "Authentication-Info")                              \
-  _ (AUTHORIZATION, "Authorization")                                          \
-  _ (CACHE_CONTROL, "Cache-Control")                                          \
-  _ (CACHE_STATUS, "Cache-Status")                                            \
-  _ (CAPSULE_PROTOCOL, "Capsule-Protocol")                                    \
-  _ (CDN_CACHE_CONTROL, "CDN-Cache-Control")                                  \
-  _ (CDN_LOOP, "CDN-Loop")                                                    \
-  _ (CLIENT_CERT, "Client-Cert")                                              \
-  _ (CLIENT_CERT_CHAIN, "Client-Cert-Chain")                                  \
-  _ (CLOSE, "Close")                                                          \
-  _ (CONNECTION, "Connection")                                                \
-  _ (CONTENT_DIGEST, "Content-Digest")                                        \
-  _ (CONTENT_DISPOSITION, "Content-Disposition")                              \
-  _ (CONTENT_ENCODING, "Content-Encoding")                                    \
-  _ (CONTENT_LANGUAGE, "Content-Language")                                    \
-  _ (CONTENT_LENGTH, "Content-Length")                                        \
-  _ (CONTENT_LOCATION, "Content-Location")                                    \
-  _ (CONTENT_RANGE, "Content-Range")                                          \
-  _ (CONTENT_TYPE, "Content-Type")                                            \
-  _ (COOKIE, "Cookie")                                                        \
-  _ (DATE, "Date")                                                            \
-  _ (DIGEST, "Digest")                                                        \
-  _ (DPOP, "DPoP")                                                            \
-  _ (DPOP_NONCE, "DPoP-Nonce")                                                \
-  _ (EARLY_DATA, "Early-Data")                                                \
-  _ (ETAG, "ETag")                                                            \
-  _ (EXPECT, "Expect")                                                        \
-  _ (EXPIRES, "Expires")                                                      \
-  _ (FORWARDED, "Forwarded")                                                  \
-  _ (FROM, "From")                                                            \
-  _ (HOST, "Host")                                                            \
-  _ (IF_MATCH, "If-Match")                                                    \
-  _ (IF_MODIFIED_SINCE, "If-Modified-Since")                                  \
-  _ (IF_NONE_MATCH, "If-None-Match")                                          \
-  _ (IF_RANGE, "If-Range")                                                    \
-  _ (IF_UNMODIFIED_SINCE, "If-Unmodified-Since")                              \
-  _ (KEEP_ALIVE, "Keep-Alive")                                                \
-  _ (LAST_MODIFIED, "Last-Modified")                                          \
-  _ (LINK, "Link")                                                            \
-  _ (LOCATION, "Location")                                                    \
-  _ (MAX_FORWARDS, "Max-Forwards")                                            \
-  _ (ORIGIN, "Origin")                                                        \
-  _ (PRIORITY, "Priority")                                                    \
-  _ (PROXY_AUTHENTICATE, "Proxy-Authenticate")                                \
-  _ (PROXY_AUTHENTICATION_INFO, "Proxy-Authentication-Info")                  \
-  _ (PROXY_AUTHORIZATION, "Proxy-Authorization")                              \
-  _ (PROXY_STATUS, "Proxy-Status")                                            \
-  _ (RANGE, "Range")                                                          \
-  _ (REFERER, "Referer")                                                      \
-  _ (REPR_DIGEST, "Repr-Digest")                                              \
-  _ (SET_COOKIE, "Set-Cookie")                                                \
-  _ (SIGNATURE, "Signature")                                                  \
-  _ (SIGNATURE_INPUT, "Signature-Input")                                      \
-  _ (STRICT_TRANSPORT_SECURITY, "Strict-Transport-Security")                  \
-  _ (RETRY_AFTER, "Retry-After")                                              \
-  _ (SERVER, "Server")                                                        \
-  _ (TE, "TE")                                                                \
-  _ (TRAILER, "Trailer")                                                      \
-  _ (TRANSFER_ENCODING, "Transfer-Encoding")                                  \
-  _ (UPGRADE, "Upgrade")                                                      \
-  _ (USER_AGENT, "User-Agent")                                                \
-  _ (VARY, "Vary")                                                            \
-  _ (VIA, "Via")                                                              \
-  _ (WANT_CONTENT_DIGEST, "Want-Content-Digest")                              \
-  _ (WANT_REPR_DIGEST, "Want-Repr-Digest")                                    \
-  _ (WWW_AUTHENTICATE, "WWW-Authenticate")
+  _ (ACCEPT_CHARSET, "Accept-Charset", "accept-charset", 15)                  \
+  _ (ACCEPT_ENCODING, "Accept-Encoding", "accept-encoding", 16)               \
+  _ (ACCEPT_LANGUAGE, "Accept-Language", "accept-language", 17)               \
+  _ (ACCEPT_RANGES, "Accept-Ranges", "accept-ranges", 18)                     \
+  _ (ACCEPT, "Accept", "accept", 19)                                          \
+  _ (ACCESS_CONTROL_ALLOW_CREDENTIALS, "Access-Control-Allow-Credentials",    \
+     "access-control-allow-credentials", 0)                                   \
+  _ (ACCESS_CONTROL_ALLOW_HEADERS, "Access-Control-Allow-Headers",            \
+     "access-control-allow-headers", 0)                                       \
+  _ (ACCESS_CONTROL_ALLOW_METHODS, "Access-Control-Allow-Methods",            \
+     "access-control-allow-methods", 0)                                       \
+  _ (ACCESS_CONTROL_ALLOW_ORIGIN, "Access-Control-Allow-Origin",              \
+     "access-control-allow-origin", 20)                                       \
+  _ (ACCESS_CONTROL_EXPOSE_HEADERS, "Access-Control-Expose-Headers",          \
+     "access-control-expose-headers", 0)                                      \
+  _ (ACCESS_CONTROL_MAX_AGE, "Access-Control-Max-Age",                        \
+     "access-control-max-age", 0)                                             \
+  _ (ACCESS_CONTROL_REQUEST_HEADERS, "Access-Control-Request-Headers",        \
+     "access-control-request-headers", 0)                                     \
+  _ (ACCESS_CONTROL_REQUEST_METHOD, "Access-Control-Request-Method",          \
+     "access-control-request-method", 0)                                      \
+  _ (AGE, "Age", "age", 21)                                                   \
+  _ (ALLOW, "Allow", "allow", 22)                                             \
+  _ (ALPN, "ALPN", "alpn", 0)                                                 \
+  _ (ALT_SVC, "Alt-Svc", "alt-svc", 0)                                        \
+  _ (ALT_USED, "Alt-Used", "alt-used", 0)                                     \
+  _ (ALTERNATES, "Alternates", "alternates", 0)                               \
+  _ (AUTHENTICATION_CONTROL, "Authentication-Control",                        \
+     "authentication-control", 0)                                             \
+  _ (AUTHENTICATION_INFO, "Authentication-Info", "authentication-info", 0)    \
+  _ (AUTHORIZATION, "Authorization", "authorization", 23)                     \
+  _ (CACHE_CONTROL, "Cache-Control", "cache-control", 24)                     \
+  _ (CACHE_STATUS, "Cache-Status", "cache-status", 0)                         \
+  _ (CAPSULE_PROTOCOL, "Capsule-Protocol", "capsule-protocol", 0)             \
+  _ (CDN_CACHE_CONTROL, "CDN-Cache-Control", "cdn-cache-control", 0)          \
+  _ (CDN_LOOP, "CDN-Loop", "cdn-loop", 0)                                     \
+  _ (CLIENT_CERT, "Client-Cert", "client-cert", 0)                            \
+  _ (CLIENT_CERT_CHAIN, "Client-Cert-Chain", "client-cert-chain", 0)          \
+  _ (CLOSE, "Close", "close", 0)                                              \
+  _ (CONNECTION, "Connection", "connection", 0)                               \
+  _ (CONTENT_DIGEST, "Content-Digest", "content-digest", 0)                   \
+  _ (CONTENT_DISPOSITION, "Content-Disposition", "content-disposition", 25)   \
+  _ (CONTENT_ENCODING, "Content-Encoding", "content-encoding", 26)            \
+  _ (CONTENT_LANGUAGE, "Content-Language", "content-language", 27)            \
+  _ (CONTENT_LENGTH, "Content-Length", "content-length", 28)                  \
+  _ (CONTENT_LOCATION, "Content-Location", "content-location", 29)            \
+  _ (CONTENT_RANGE, "Content-Range", "content-range", 30)                     \
+  _ (CONTENT_TYPE, "Content-Type", "content-type", 31)                        \
+  _ (COOKIE, "Cookie", "cookie", 32)                                          \
+  _ (DATE, "Date", "date", 33)                                                \
+  _ (DIGEST, "Digest", "digest", 0)                                           \
+  _ (DPOP, "DPoP", "dpop", 0)                                                 \
+  _ (DPOP_NONCE, "DPoP-Nonce", "dpop-nonce", 0)                               \
+  _ (EARLY_DATA, "Early-Data", "early-data", 0)                               \
+  _ (ETAG, "ETag", "etag", 34)                                                \
+  _ (EXPECT, "Expect", "expect", 35)                                          \
+  _ (EXPIRES, "Expires", "expires", 36)                                       \
+  _ (FORWARDED, "Forwarded", "forwarded", 0)                                  \
+  _ (FROM, "From", "from", 37)                                                \
+  _ (HOST, "Host", "host", 38)                                                \
+  _ (IF_MATCH, "If-Match", "if-match", 39)                                    \
+  _ (IF_MODIFIED_SINCE, "If-Modified-Since", "if-modified-since", 40)         \
+  _ (IF_NONE_MATCH, "If-None-Match", "if-none-match", 41)                     \
+  _ (IF_RANGE, "If-Range", "if-range", 42)                                    \
+  _ (IF_UNMODIFIED_SINCE, "If-Unmodified-Since", "if-unmodified-since", 43)   \
+  _ (KEEP_ALIVE, "Keep-Alive", "keep-alive", 0)                               \
+  _ (LAST_MODIFIED, "Last-Modified", "last-modified", 44)                     \
+  _ (LINK, "Link", "link", 45)                                                \
+  _ (LOCATION, "Location", "location", 46)                                    \
+  _ (MAX_FORWARDS, "Max-Forwards", "max-forwards", 47)                        \
+  _ (ORIGIN, "Origin", "origin", 0)                                           \
+  _ (PRIORITY, "Priority", "priority", 0)                                     \
+  _ (PROXY_AUTHENTICATE, "Proxy-Authenticate", "proxy-authenticate", 48)      \
+  _ (PROXY_AUTHENTICATION_INFO, "Proxy-Authentication-Info",                  \
+     "proxy-authentication-info", 0)                                          \
+  _ (PROXY_AUTHORIZATION, "Proxy-Authorization", "proxy-authorization", 49)   \
+  _ (PROXY_STATUS, "Proxy-Status", "proxy-status", 0)                         \
+  _ (RANGE, "Range", "range", 50)                                             \
+  _ (REFERER, "Referer", "referer", 51)                                       \
+  _ (REFRESH, "Refresh", "refresh", 52)                                       \
+  _ (REPR_DIGEST, "Repr-Digest", "repr-digest", 0)                            \
+  _ (RETRY_AFTER, "Retry-After", "retry-after", 53)                           \
+  _ (SERVER, "Server", "server", 54)                                          \
+  _ (SET_COOKIE, "Set-Cookie", "set-cookie", 55)                              \
+  _ (SIGNATURE, "Signature", "signature", 0)                                  \
+  _ (SIGNATURE_INPUT, "Signature-Input", "signature-input", 0)                \
+  _ (STRICT_TRANSPORT_SECURITY, "Strict-Transport-Security",                  \
+     "strict-transport-security", 56)                                         \
+  _ (TE, "TE", "te", 0)                                                       \
+  _ (TRAILER, "Trailer", "trailer", 0)                                        \
+  _ (TRANSFER_ENCODING, "Transfer-Encoding", "transfer-encoding", 57)         \
+  _ (UPGRADE, "Upgrade", "upgrade", 0)                                        \
+  _ (USER_AGENT, "User-Agent", "user-agent", 58)                              \
+  _ (VARY, "Vary", "vary", 59)                                                \
+  _ (VIA, "Via", "via", 60)                                                   \
+  _ (WANT_CONTENT_DIGEST, "Want-Content-Digest", "want-content-digest", 0)    \
+  _ (WANT_REPR_DIGEST, "Want-Repr-Digest", "want-repr-digest", 0)             \
+  _ (WWW_AUTHENTICATE, "WWW-Authenticate", "www-authenticate", 61)
 
 typedef enum http_header_name_
 {
-#define _(sym, str) HTTP_HEADER_##sym,
+#define _(sym, str_canonical, str_lower, hpack_index) HTTP_HEADER_##sym,
   foreach_http_header_name
 #undef _
 } http_header_name_t;
@@ -399,6 +350,7 @@ typedef enum http_url_scheme_
 {
   HTTP_URL_SCHEME_HTTP,
   HTTP_URL_SCHEME_HTTPS,
+  HTTP_URL_SCHEME_UNKNOWN, /* for internal use */
 } http_url_scheme_t;
 
 typedef struct http_msg_data_
@@ -431,118 +383,6 @@ typedef struct http_msg_
   };
   http_msg_data_t data;
 } http_msg_t;
-
-typedef struct http_req_
-{
-  http_req_state_t state; /* state-machine state */
-
-  http_buffer_t tx_buf; /* message body from app to be sent */
-
-  /*
-   * for parsing of incoming message from transport
-   */
-  u8 *rx_buf;		/* this should hold at least control data */
-  u32 rx_buf_offset;	/* current offset during parsing */
-  u32 control_data_len; /* start line + headers + empty line */
-
-  union
-  {
-    u64 to_recv; /* remaining bytes of body to receive from transport */
-    u64 to_skip; /* remaining bytes of capsule to skip */
-  };
-
-  u8 is_tunnel;
-
-  /*
-   * parsed metadata for app
-   */
-  union
-  {
-    http_status_code_t status_code;
-    http_req_method_t method;
-  };
-
-  http_target_form_t target_form;
-  http_url_scheme_t scheme;
-  u32 target_authority_offset;
-  u32 target_authority_len;
-  u32 target_path_offset;
-  u32 target_path_len;
-  u32 target_query_offset;
-  u32 target_query_len;
-
-  u32 headers_offset;
-  u32 headers_len;
-
-  u32 body_offset;
-  u64 body_len;
-
-  http_field_line_t *headers;
-  uword content_len_header_index;
-  uword connection_header_index;
-  uword upgrade_header_index;
-  uword host_header_index;
-
-  http_upgrade_proto_t upgrade_proto;
-} http_req_t;
-
-typedef struct http_tc_
-{
-  union
-  {
-    transport_connection_t connection;
-    http_conn_id_t c_http_conn_id;
-  };
-#define h_tc_session_handle c_http_conn_id.tc_session_handle
-#define h_pa_wrk_index	    c_http_conn_id.parent_app_wrk_index
-#define h_pa_session_handle c_http_conn_id.app_session_handle
-#define h_pa_app_api_ctx    c_http_conn_id.parent_app_api_ctx
-#define h_hc_index	    connection.c_index
-
-  http_conn_state_t state;
-  u32 timer_handle;
-  u32 timeout;
-  u8 pending_timer;
-  u8 *app_name;
-  u8 *host;
-  u8 is_server;
-  http_udp_tunnel_mode_t udp_tunnel_mode;
-
-  http_req_t req;
-} http_conn_t;
-
-typedef struct http_worker_
-{
-  http_conn_t *conn_pool;
-} http_worker_t;
-
-typedef struct http_main_
-{
-  http_worker_t *wrk;
-  http_conn_t *listener_pool;
-  http_conn_t *ho_conn_pool;
-  u32 app_index;
-
-  u8 **rx_bufs;
-  u8 **tx_bufs;
-  u8 **app_header_lists;
-
-  clib_timebase_t timebase;
-
-  u16 *sc_by_u16;
-  /*
-   * Runtime config
-   */
-  u8 debug_level;
-  u8 is_init;
-
-  /*
-   * Config
-   */
-  u64 first_seg_size;
-  u64 add_seg_size;
-  u32 fifo_size;
-} http_main_t;
 
 always_inline u8 *
 format_http_bytes (u8 *s, va_list *va)
@@ -669,7 +509,8 @@ http_percent_decode (u8 *src, u32 len)
 }
 
 /**
- * Remove dot segments from path (RFC3986 section 5.2.4)
+ * Sanitize HTTP path by squashing repeating slashes and removing
+ * dot segments from path (RFC3986 section 5.2.4)
  *
  * @param path Path to sanitize.
  *
@@ -678,18 +519,18 @@ http_percent_decode (u8 *src, u32 len)
  * The caller is always responsible to free the returned vector.
  */
 always_inline u8 *
-http_path_remove_dot_segments (u8 *path)
+http_path_sanitize (u8 *path)
 {
   u32 *segments = 0, *segments_len = 0, segment_len;
   u8 *new_path = 0;
   int i, ii;
 
-  if (!path)
+  if (!path || vec_len (path) == 0)
     return vec_new (u8, 0);
 
   segments = vec_new (u32, 1);
   /* first segment */
-  segments[0] = 0;
+  segments[0] = (path[0] == '/' ? 1 : 0);
   /* find all segments */
   for (i = 1; i < (vec_len (path) - 1); i++)
     {
@@ -704,7 +545,8 @@ http_path_remove_dot_segments (u8 *path)
   for (i = 0; i < vec_len (segments_len); i++)
     {
       segment_len = segments[i + 1] - segments[i];
-      if (segment_len == 2 && path[segments[i]] == '.')
+      /* aside from dots, skip empty segments (double slashes) */
+      if ((segment_len == 2 && path[segments[i]] == '.') || segment_len == 1)
 	segment_len = 0;
       else if (segment_len == 3 && path[segments[i]] == '.' &&
 	       path[segments[i] + 1] == '.')
@@ -736,124 +578,6 @@ http_path_remove_dot_segments (u8 *path)
   return new_path;
 }
 
-always_inline int
-_parse_field_name (u8 **pos, u8 *end, u8 **field_name_start,
-		   u32 *field_name_len)
-{
-  u32 name_len = 0;
-  u8 *p;
-
-  static uword tchar[4] = {
-    /* !#$%'*+-.0123456789 */
-    0x03ff6cba00000000,
-    /* ABCDEFGHIJKLMNOPQRSTUVWXYZ^_`abcdefghijklmnopqrstuvwxyz|~ */
-    0x57ffffffc7fffffe,
-    0x0000000000000000,
-    0x0000000000000000,
-  };
-
-  p = *pos;
-
-  *field_name_start = p;
-  while (p != end)
-    {
-      if (clib_bitmap_get_no_check (tchar, *p))
-	{
-	  name_len++;
-	  p++;
-	}
-      else if (*p == ':')
-	{
-	  if (name_len == 0)
-	    {
-	      clib_warning ("empty field name");
-	      return -1;
-	    }
-	  *field_name_len = name_len;
-	  p++;
-	  *pos = p;
-	  return 0;
-	}
-      else
-	{
-	  clib_warning ("invalid character %d", *p);
-	  return -1;
-	}
-    }
-  clib_warning ("field name end not found");
-  return -1;
-}
-
-always_inline int
-_parse_field_value (u8 **pos, u8 *end, u8 **field_value_start,
-		    u32 *field_value_len)
-{
-  u32 value_len = 0;
-  u8 *p;
-
-  p = *pos;
-
-  /* skip leading whitespace */
-  while (1)
-    {
-      if (p == end)
-	{
-	  clib_warning ("field value not found");
-	  return -1;
-	}
-      else if (*p != ' ' && *p != '\t')
-	{
-	  break;
-	}
-      p++;
-    }
-
-  *field_value_start = p;
-  while (p != end)
-    {
-      if (*p == '\r')
-	{
-	  if ((end - p) < 1)
-	    {
-	      clib_warning ("incorrect field line end");
-	      return -1;
-	    }
-	  p++;
-	  if (*p == '\n')
-	    {
-	      if (value_len == 0)
-		{
-		  clib_warning ("empty field value");
-		  return -1;
-		}
-	      p++;
-	      *pos = p;
-	      /* skip trailing whitespace */
-	      p = *field_value_start + value_len - 1;
-	      while (*p == ' ' || *p == '\t')
-		{
-		  p--;
-		  value_len--;
-		}
-	      *field_value_len = value_len;
-	      return 0;
-	    }
-	  clib_warning ("CR without LF");
-	  return -1;
-	}
-      if (*p < ' ' && *p != '\t')
-	{
-	  clib_warning ("invalid character %d", *p);
-	  return -1;
-	}
-      p++;
-      value_len++;
-    }
-
-  clib_warning ("field value end not found");
-  return -1;
-}
-
 typedef struct
 {
   http_token_t name;
@@ -873,6 +597,16 @@ typedef struct
     .values = 0, .value_by_name = 0, .buf = 0, .concatenated_values = 0,      \
   }
 
+/**
+ * Case-sensitive comparison of two tokens.
+ *
+ * @param actual       Pointer to the first token.
+ * @param actual_len   Length of the first token.
+ * @param expected     Pointer to the second token.
+ * @param expected_len Length of the second token.
+ *
+ * @return @c 1 if tokens are same, @c 0 otherwise.
+ */
 always_inline u8
 http_token_is (const char *actual, uword actual_len, const char *expected,
 	       uword expected_len)
@@ -903,6 +637,16 @@ http_tolower_word (uword x)
   return (x | y);
 }
 
+/**
+ * Case-insensitive comparison of two tokens.
+ *
+ * @param actual       Pointer to the first token.
+ * @param actual_len   Length of the first token.
+ * @param expected     Pointer to the second token.
+ * @param expected_len Length of the second token.
+ *
+ * @return @c 1 if tokens are same, @c 0 otherwise.
+ */
 always_inline u8
 http_token_is_case (const char *actual, uword actual_len, const char *expected,
 		    uword expected_len)
@@ -934,6 +678,16 @@ http_token_is_case (const char *actual, uword actual_len, const char *expected,
   return 1;
 }
 
+/**
+ * Check if there is occurrence of token in another token.
+ *
+ * @param haystack     Pointer to the token being searched.
+ * @param haystack_len Length of the token being searched.
+ * @param needle       The token to search for.
+ * @param needle_len   Length of the token to search for.
+ *
+ * @return @c 1 if in case of success, @c 0 otherwise.
+ */
 always_inline u8
 http_token_contains (const char *haystack, uword haystack_len,
 		     const char *needle, uword needle_len)
@@ -1158,6 +912,13 @@ typedef struct
 /* Use high bit of header name length as custom header name bit. */
 #define HTTP_CUSTOM_HEADER_NAME_BIT (1 << 31)
 
+/**
+ * Initialize headers list context.
+ *
+ * @param ctx Headers list context.
+ * @param buf Buffer, which store headers list, provided by app.
+ * @param len Length of headers list buffer.
+ */
 always_inline void
 http_init_headers_ctx (http_headers_ctx_t *ctx, u8 *buf, u32 len)
 {
@@ -1166,30 +927,53 @@ http_init_headers_ctx (http_headers_ctx_t *ctx, u8 *buf, u32 len)
   ctx->buf = buf;
 }
 
-always_inline void
+/**
+ * Add header with predefined name to the headers list.
+ *
+ * @param ctx       Headers list context.
+ * @param name      Header name ID (see @ref http_header_name_t).
+ * @param value     Header value pointer.
+ * @param value_len Header value length.
+ *
+ * @return @c 0 if in case of success, @c -1 otherwise.
+ */
+always_inline int
 http_add_header (http_headers_ctx_t *ctx, http_header_name_t name,
 		 const char *value, uword value_len)
 {
   http_app_header_t *header;
 
-  ASSERT ((ctx->tail_offset + sizeof (http_app_header_t) + value_len) <
-	  ctx->len);
+  if ((ctx->tail_offset + sizeof (http_app_header_t) + value_len) > ctx->len)
+    return -1;
 
   header = (http_app_header_t *) (ctx->buf + ctx->tail_offset);
   header->name = (u32) name;
   header->value.len = (u32) value_len;
   clib_memcpy (header->value.token, (u8 *) value, value_len);
   ctx->tail_offset += sizeof (http_app_header_t) + value_len;
+  return 0;
 }
 
-always_inline void
+/**
+ * Add header with custom name to the headers list.
+ *
+ * @param ctx       Headers list context.
+ * @param name      Header name pointer.
+ * @param name_len  Header name length.
+ * @param value     Header value pointer.
+ * @param value_len Header value length.
+ *
+ * @return @c 0 if in case of success, @c -1 otherwise.
+ */
+always_inline int
 http_add_custom_header (http_headers_ctx_t *ctx, const char *name,
 			uword name_len, const char *value, uword value_len)
 {
   http_custom_token_t *token;
 
-  ASSERT ((ctx->tail_offset + 2 * sizeof (http_custom_token_t) + name_len +
-	   value_len) < ctx->len);
+  if ((ctx->tail_offset + 2 * sizeof (http_custom_token_t) + name_len +
+       value_len) > ctx->len)
+    return -1;
 
   /* name */
   token = (http_custom_token_t *) (ctx->buf + ctx->tail_offset);
@@ -1202,6 +986,18 @@ http_add_custom_header (http_headers_ctx_t *ctx, const char *name,
   token->len = (u32) value_len;
   clib_memcpy (token->token, (u8 *) value, token->len);
   ctx->tail_offset += sizeof (http_custom_token_t) + value_len;
+  return 0;
+}
+
+/**
+ * Truncate the header list
+ *
+ * @param ctx Headers list context.
+ */
+always_inline void
+http_truncate_headers_list (http_headers_ctx_t *ctx)
+{
+  ctx->tail_offset = 0;
 }
 
 typedef enum http_uri_host_type_
@@ -1491,6 +1287,15 @@ http_parse_authority (u8 *authority, u32 authority_len,
   return token_start == end ? 0 : -1;
 }
 
+/**
+ * Format given authority (RFC3986 section 3.2)
+ *
+ * @param authority Authority to format.
+ *
+ * @return New vector with formated authority.
+ *
+ * The caller is always responsible to free the returned vector.
+ */
 always_inline u8 *
 http_serialize_authority (http_uri_authority_t *authority)
 {

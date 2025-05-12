@@ -522,6 +522,7 @@ list(APPEND VNET_API_FILES bfd/bfd.api)
 
 list(APPEND VNET_SOURCES
   crypto/cli.c
+  crypto/config.c
   crypto/crypto.c
   crypto/format.c
   crypto/main.c
@@ -589,6 +590,7 @@ list(APPEND VNET_HEADERS
   ipsec/ipsec_tun.h
   ipsec/ipsec_types_api.h
   ipsec/ipsec_punt.h
+  ipsec/ipsec_funcs.h
   ipsec/esp.h
   ipsec/ah.h
 )
@@ -747,29 +749,6 @@ list(APPEND VNET_HEADERS
 )
 
 list(APPEND VNET_API_FILES mpls/mpls.api)
-
-##############################################################################
-# Tunnel protocol: vxlan-gpe
-##############################################################################
-
-list(APPEND VNET_SOURCES
-  vxlan-gpe/vxlan_gpe.c
-  vxlan-gpe/encap.c
-  vxlan-gpe/decap.c
-  vxlan-gpe/vxlan_gpe_api.c
-)
-
-list (APPEND VNET_MULTIARCH_SOURCES
-  vxlan-gpe/decap.c
-)
-
-list(APPEND VNET_HEADERS
-  vxlan-gpe/vxlan_gpe.h
-  vxlan-gpe/vxlan_gpe_packet.h
-  vxlan-gpe/vxlan_gpe_error.def
-)
-
-list(APPEND VNET_API_FILES vxlan-gpe/vxlan_gpe.api)
 
 ##############################################################################
 # ipv6 segment routing
@@ -995,6 +974,7 @@ list(APPEND VNET_SOURCES
   session/application.c
   session/application_worker.c
   session/session_cli.c
+  session/application_eventing.c
   session/application_interface.c
   session/application_local.c
   session/application_namespace.c
@@ -1013,6 +993,7 @@ list(APPEND VNET_HEADERS
   session/transport.h
   session/transport_types.h
   session/application_interface.h
+  session/application_eventing.h
   session/application_local.h
   session/application_namespace.h
   session/session_debug.h

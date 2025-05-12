@@ -220,7 +220,7 @@ typedef struct tcp_configuration_
 typedef struct _tcp_main
 {
   /** per-worker context */
-  tcp_worker_ctx_t *wrk_ctx;
+  tcp_worker_ctx_t *wrk;
 
   /* Pool of listeners. */
   tcp_connection_t *listener_pool;
@@ -299,10 +299,10 @@ vnet_get_tcp_main ()
 }
 
 always_inline tcp_worker_ctx_t *
-tcp_get_worker (u32 thread_index)
+tcp_get_worker (clib_thread_index_t thread_index)
 {
-  ASSERT (thread_index < vec_len (tcp_main.wrk_ctx));
-  return &tcp_main.wrk_ctx[thread_index];
+  ASSERT (thread_index < vec_len (tcp_main.wrk));
+  return &tcp_main.wrk[thread_index];
 }
 
 tcp_connection_t *tcp_connection_alloc (u8 thread_index);
@@ -311,11 +311,11 @@ tcp_connection_t *tcp_connection_alloc_w_base (u8 thread_index,
 void tcp_connection_free (tcp_connection_t * tc);
 void tcp_connection_close (tcp_connection_t * tc);
 void tcp_connection_cleanup (tcp_connection_t * tc);
-void tcp_connection_del (tcp_connection_t * tc);
+void tcp_connection_cleanup_and_notify (tcp_connection_t *tc);
 int tcp_half_open_connection_cleanup (tcp_connection_t * tc);
 
-void tcp_send_reset_w_pkt (tcp_connection_t * tc, vlib_buffer_t * pkt,
-			   u32 thread_index, u8 is_ip4);
+void tcp_send_reset_w_pkt (tcp_connection_t *tc, vlib_buffer_t *pkt,
+			   clib_thread_index_t thread_index, u8 is_ip4);
 void tcp_send_reset (tcp_connection_t * tc);
 void tcp_send_syn (tcp_connection_t * tc);
 void tcp_send_synack (tcp_connection_t * tc);

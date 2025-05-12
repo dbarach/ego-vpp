@@ -112,7 +112,8 @@ proxy_do_connect (vnet_connect_args_t *a)
 static void
 proxy_handle_connects_rpc (void *args)
 {
-  u32 thread_index = pointer_to_uword (args), n_connects = 0, n_pending;
+  clib_thread_index_t thread_index = pointer_to_uword (args), n_connects = 0,
+		      n_pending;
   proxy_worker_t *wrk;
   u32 max_connects;
 
@@ -1137,7 +1138,8 @@ active_open_tx_callback (session_t * ao_s)
   if (sc->pair.is_http)
     {
       /* notify HTTP transport */
-      session_program_rx_io_evt (sc->pair.session_handle);
+      session_program_transport_io_evt (sc->pair.session_handle,
+					SESSION_IO_EVT_RX);
     }
   else
     {

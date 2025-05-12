@@ -15,7 +15,7 @@ Usage
 -----
 
 The plugin exposes following inline functions: ``http_validate_abs_path_syntax``, ``http_validate_query_syntax``,
-``http_percent_decode``, ``http_path_remove_dot_segments``, ``http_build_header_table``, ``http_get_header``,
+``http_percent_decode``, ``http_path_sanitize``, ``http_build_header_table``, ``http_get_header``,
 ``http_reset_header_table``, ``http_free_header_table``, ``http_init_headers_ctx``, ``http_add_header``,
 ``http_add_custom_header``, ``http_validate_target_syntax``, ``http_parse_authority``, ``http_serialize_authority``,
 ``http_parse_masque_host_port``, ``http_decap_udp_payload_datagram``, ``http_encap_udp_payload_datagram``,
@@ -231,6 +231,12 @@ Now we can start reading body content, following block of code could be executed
   u64 curr = vec_len (ctx->resp_body);
   rv = svm_fifo_dequeue (ts->rx_fifo, n_deq, ctx->resp_body + curr);
   ASSERT (rv == n_deq);
+  /* notify http transport that we read data if requested */
+  if (svm_fifo_needs_deq_ntf (ts->rx_fifo, n_deq))
+    {
+      svm_fifo_clear_deq_ntf (ts->rx_fifo);
+      session_program_transport_io_evt (ts->handle, SESSION_IO_EVT_RX);
+    }
   /* update length of the vector */
   vec_set_len (ctx->resp_body, curr + n_deq);
   /* update number of remaining bytes to receive */
@@ -241,6 +247,9 @@ Now we can start reading body content, following block of code could be executed
       /* we are done */
       /* send 200 OK response */
     }
+
+.. note::
+    When body content is read from the ``rx_fifo`` app need to send notification to HTTP layer if requested, it is required for HTTP/2 flow control.
 
 Sending data
 """"""""""""""

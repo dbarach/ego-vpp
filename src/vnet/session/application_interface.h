@@ -84,6 +84,8 @@ typedef struct session_cb_vft_
   /** Custom fifo allocation for proxy */
   int (*proxy_alloc_session_fifos) (session_t *s);
 
+  /** Collect and export session logs */
+  int (*app_evt_callback) (session_t *s);
 } session_cb_vft_t;
 
 #define foreach_app_init_args			\
@@ -243,7 +245,8 @@ typedef enum
   _ (EVT_MQ_USE_EVENTFD, "Use eventfds for signaling")                        \
   _ (MEMFD_FOR_BUILTIN, "Use memfd for builtin app segs")                     \
   _ (USE_HUGE_PAGE, "Use huge page for FIFO")                                 \
-  _ (GET_ORIGINAL_DST, "Get original dst enabled")
+  _ (GET_ORIGINAL_DST, "Get original dst enabled")                            \
+  _ (LOG_COLLECTOR, "App requests log collector")
 
 typedef enum _app_options
 {
@@ -281,6 +284,7 @@ typedef enum session_fd_flag_
 } session_fd_flag_t;
 
 session_error_t parse_uri (char *uri, session_endpoint_cfg_t *sep);
+session_error_t parse_target (char **uri, char **target);
 session_error_t vnet_bind_uri (vnet_listen_args_t *);
 session_error_t vnet_unbind_uri (vnet_unlisten_args_t *a);
 session_error_t vnet_connect_uri (vnet_connect_args_t *a);

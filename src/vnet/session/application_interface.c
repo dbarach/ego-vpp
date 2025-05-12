@@ -23,9 +23,11 @@
 /**
  * unformat a vnet URI
  *
- * transport-proto://[hostname]ip46-addr:port
- * eg. 	tcp://ip46-addr:port
- * 	tls://[testtsl.fd.io]ip46-addr:port
+ * transport-proto://[hostname]ip4-addr:port
+ * eg. 	tcp://ip4-addr:port
+ *      https://[ip6]:port
+ *      http://ip4:port
+ * 	    tls://[testtsl.fd.io]ip4-addr:port
  *
  * u8 ip46_address[16];
  * u16  port_in_host_byte_order;
@@ -38,35 +40,75 @@
  *
  */
 uword
-unformat_vnet_uri (unformat_input_t * input, va_list * args)
+unformat_vnet_uri (unformat_input_t *input, va_list *args)
 {
   session_endpoint_cfg_t *sep = va_arg (*args, session_endpoint_cfg_t *);
   u32 transport_proto = 0, port;
 
-  if (unformat (input, "%U://%U/%d", unformat_transport_proto,
-		&transport_proto, unformat_ip4_address, &sep->ip.ip4, &port))
+  if (unformat (input, "%U:", unformat_transport_proto, &transport_proto))
     {
       sep->transport_proto = transport_proto;
-      sep->port = clib_host_to_net_u16 (port);
+    }
+  else if (unformat (input, "%Us:", unformat_transport_proto,
+		     &transport_proto))
+    {
+      sep->flags |= SESSION_ENDPT_CFG_F_SECURE;
+      sep->transport_proto = transport_proto;
+    }
+
+  if (unformat (input, "//%U:", unformat_ip4_address, &sep->ip.ip4))
+    {
       sep->is_ip4 = 1;
-      return 1;
     }
-  else if (unformat (input, "%U://%U/%d", unformat_transport_proto,
-		     &transport_proto, unformat_ip6_address, &sep->ip.ip6,
-		     &port))
+  /* deprecated */
+  else if (unformat (input, "//%U/", unformat_ip4_address, &sep->ip.ip4))
     {
-      sep->transport_proto = transport_proto;
-      sep->port = clib_host_to_net_u16 (port);
+      sep->is_ip4 = 1;
+    }
+  else if (unformat (input, "//%U", unformat_ip4_address, &sep->ip.ip4))
+    {
+      sep->is_ip4 = 1;
+    }
+  /* deprecated */
+  else if (unformat (input, "//%U/", unformat_ip6_address, &sep->ip.ip6))
+    {
       sep->is_ip4 = 0;
-      return 1;
     }
-  else if (unformat (input, "%U://session/%lu", unformat_transport_proto,
-		     &transport_proto, &sep->parent_handle))
+  else if (unformat (input, "//[%U]:", unformat_ip6_address, &sep->ip.ip6))
     {
-      sep->transport_proto = transport_proto;
-      sep->ip.ip4.as_u32 = 1;	/* ip need to be non zero in vnet */
+      sep->is_ip4 = 0;
+    }
+  /* deprecated */
+  else if (unformat (input, "//[%U]/", unformat_ip6_address, &sep->ip.ip6))
+    {
+      sep->is_ip4 = 0;
+    }
+  else if (unformat (input, "//[%U]", unformat_ip6_address, &sep->ip.ip6))
+    {
+      sep->is_ip4 = 0;
+    }
+  else if (unformat (input, "//session/%lu", &sep->parent_handle))
+    {
+      sep->ip.ip4.as_u32 = 1; /* ip need to be non zero in vnet */
       return 1;
     }
+
+  if (unformat (input, "%d", &port))
+    {
+      sep->port = clib_host_to_net_u16 (port);
+      return 1;
+    }
+  else if (sep->transport_proto == TRANSPORT_PROTO_HTTP)
+    {
+      sep->port = clib_host_to_net_u16 (80);
+      return 1;
+    }
+  else if (sep->transport_proto == TRANSPORT_PROTO_TLS)
+    {
+      sep->port = clib_host_to_net_u16 (443);
+      return 1;
+    }
+
   return 0;
 }
 
@@ -102,6 +144,45 @@ parse_uri (char *uri, session_endpoint_cfg_t *sep)
     clib_mem_free (cache_sep);
   cache_sep = clib_mem_alloc (sizeof (*sep));
   *cache_sep = *sep;
+
+  return 0;
+}
+
+/* Use before 'parse_uri()'. Removes target from URI and copies it to 'char
+ * **target'. char **target is resized automatically.
+ */
+session_error_t
+parse_target (char **uri, char **target)
+{
+  u8 counter = 0;
+
+  for (u32 i = 0; i < (u32) strlen (*uri); i++)
+    {
+      if ((*uri)[i] == '/')
+	counter++;
+
+      if (counter == 3)
+	{
+	  /* resize and make space for NULL terminator */
+	  if (vec_len (*target) < strlen (*uri) - i + 2)
+	    vec_resize (*target, strlen (*uri) - i + 2);
+
+	  strncpy (*target, *uri + i, strlen (*uri) - i);
+	  (*uri)[i + 1] = '\0';
+	  break;
+	}
+    }
+
+  if (!*target)
+    {
+      vec_resize (*target, 2);
+      **target = '/';
+    }
+
+  vec_terminate_c_string (*target);
+
+  if (!*target)
+    return SESSION_E_INVALID;
 
   return 0;
 }

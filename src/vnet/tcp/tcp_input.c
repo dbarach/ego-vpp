@@ -117,9 +117,9 @@ tcp_handle_rst (tcp_connection_t * tc)
   switch (tc->rst_state)
     {
     case TCP_STATE_SYN_RCVD:
-      /* Cleanup everything. App wasn't notified yet */
-      session_transport_delete_notify (&tc->connection);
-      tcp_connection_cleanup (tc);
+      /* Cleanup everything. App wasn't notified yet, but session layer must be
+       * notified that the session needs to be cleaned up. */
+      tcp_connection_cleanup_and_notify (tc);
       break;
     case TCP_STATE_SYN_SENT:
       session_stream_connect_notify (&tc->connection, SESSION_E_REFUSED);
@@ -217,20 +217,6 @@ static int
 tcp_segment_validate (tcp_worker_ctx_t * wrk, tcp_connection_t * tc0,
 		      vlib_buffer_t * b0, tcp_header_t * th0, u32 * error0)
 {
-  /* We could get a burst of RSTs interleaved with acks */
-  if (PREDICT_FALSE (tc0->state == TCP_STATE_CLOSED))
-    {
-      tcp_send_reset (tc0);
-      *error0 = TCP_ERROR_CONNECTION_CLOSED;
-      goto error;
-    }
-
-  if (PREDICT_FALSE (!tcp_ack (th0) && !tcp_rst (th0) && !tcp_syn (th0)))
-    {
-      *error0 = TCP_ERROR_SEGMENT_INVALID;
-      goto error;
-    }
-
   if (PREDICT_FALSE (tcp_options_parse (th0, &tc0->rcv_opts, 0)))
     {
       *error0 = TCP_ERROR_OPTIONS;
@@ -512,7 +498,7 @@ tcp_estimate_initial_rtt (tcp_connection_t * tc)
 static void
 tcp_handle_postponed_dequeues (tcp_worker_ctx_t * wrk)
 {
-  u32 thread_index = wrk->vm->thread_index;
+  clib_thread_index_t thread_index = wrk->vm->thread_index;
   u32 *pending_deq_acked;
   tcp_connection_t *tc;
   int i;
@@ -1025,7 +1011,8 @@ tcp_program_disconnect (tcp_worker_ctx_t * wrk, tcp_connection_t * tc)
 static void
 tcp_handle_disconnects (tcp_worker_ctx_t * wrk)
 {
-  u32 thread_index, *pending_disconnects, *pending_resets;
+  clib_thread_index_t thread_index;
+  u32 *pending_disconnects, *pending_resets;
   tcp_connection_t *tc;
   int i;
 
@@ -1192,18 +1179,21 @@ tcp_buffer_discard_bytes (vlib_buffer_t * b, u32 n_bytes_to_drop)
   /* Handle multi-buffer segments */
   if (n_bytes_to_drop > b->current_length)
     {
-      if (!(b->flags & VLIB_BUFFER_NEXT_PRESENT))
+      if (!(b->flags & VLIB_BUFFER_NEXT_PRESENT) ||
+	  (first + b->total_length_not_including_first_buffer <
+	   n_bytes_to_drop))
 	return -1;
+      b->total_length_not_including_first_buffer -= n_bytes_to_drop - first;
       do
 	{
 	  discard = clib_min (n_bytes_to_drop, b->current_length);
 	  vlib_buffer_advance (b, discard);
 	  b = vlib_get_buffer (vm, b->next_buffer);
 	  n_bytes_to_drop -= discard;
+	  if (!b && n_bytes_to_drop)
+	    return -1;
 	}
       while (n_bytes_to_drop);
-      if (n_bytes_to_drop > first)
-	b->total_length_not_including_first_buffer -= n_bytes_to_drop - first;
     }
   else
     vlib_buffer_advance (b, n_bytes_to_drop);
@@ -1372,11 +1362,47 @@ tcp_established_trace_frame (vlib_main_t * vm, vlib_node_runtime_t * node,
     }
 }
 
+always_inline int
+tcp_segment_is_exception (tcp_connection_t *tc, tcp_header_t *th)
+{
+  /* tcp-input allows through segments without ack, e.g., fin without ack,
+   * which have to be handled as exception in nodes like established. So
+   * flags must be checked */
+  return !tc || tc->state == TCP_STATE_CLOSED ||
+	 !(th->flags & (TCP_FLAG_ACK | TCP_FLAG_RST | TCP_FLAG_SYN));
+}
+
+always_inline void
+tcp_segment_handle_exception (tcp_connection_t *tc, tcp_header_t *th,
+			      u32 *error)
+{
+  if (!tc)
+    {
+      *error = TCP_ERROR_INVALID_CONNECTION;
+      return;
+    }
+
+  /* We could get a burst of RSTs interleaved with acks */
+  if (tc->state == TCP_STATE_CLOSED)
+    {
+      tcp_send_reset (tc);
+      *error = TCP_ERROR_CONNECTION_CLOSED;
+      return;
+    }
+
+  if (!(th->flags & (TCP_FLAG_ACK | TCP_FLAG_RST | TCP_FLAG_SYN)))
+    {
+      *error = TCP_ERROR_SEGMENT_INVALID;
+      return;
+    }
+}
+
 always_inline uword
 tcp46_established_inline (vlib_main_t * vm, vlib_node_runtime_t * node,
 			  vlib_frame_t * frame, int is_ip4)
 {
-  u32 thread_index = vm->thread_index, n_left_from, *from;
+  clib_thread_index_t thread_index = vm->thread_index;
+  u32 n_left_from, *from;
   tcp_worker_ctx_t *wrk = tcp_get_worker (thread_index);
   vlib_buffer_t *bufs[VLIB_FRAME_SIZE], **b;
   u16 err_counters[TCP_N_ERROR] = { 0 };
@@ -1404,14 +1430,13 @@ tcp46_established_inline (vlib_main_t * vm, vlib_node_runtime_t * node,
 
       tc = tcp_connection_get (vnet_buffer (b[0])->tcp.connection_index,
 			       thread_index);
+      th = tcp_buffer_hdr (b[0]);
 
-      if (PREDICT_FALSE (tc == 0))
+      if (PREDICT_FALSE (tcp_segment_is_exception (tc, th)))
 	{
-	  error = TCP_ERROR_INVALID_CONNECTION;
+	  tcp_segment_handle_exception (tc, th, &error);
 	  goto done;
 	}
-
-      th = tcp_buffer_hdr (b[0]);
 
       /* TODO header prediction fast path */
 
@@ -1862,8 +1887,8 @@ tcp46_syn_sent_inline (vlib_main_t *vm, vlib_node_runtime_t *node,
       else
 	new_tc->rcv_wscale = 0;
 
-      new_tc->snd_wnd = clib_net_to_host_u16 (tcp->window)
-			<< new_tc->snd_wscale;
+      /* RFC7323 sec 2.2: Window field in a syn segment must not be scaled */
+      new_tc->snd_wnd = clib_net_to_host_u16 (tcp->window);
       new_tc->snd_wl1 = seq;
       new_tc->snd_wl2 = ack;
 
@@ -2005,7 +2030,7 @@ static void
 tcp46_rcv_process_trace_frame (vlib_main_t *vm, vlib_node_runtime_t *node,
 			       u32 *from, u32 n_bufs)
 {
-  u32 thread_index = vm->thread_index;
+  clib_thread_index_t thread_index = vm->thread_index;
   tcp_connection_t *tc = 0;
   tcp_rx_trace_t *t;
   vlib_buffer_t *b;
@@ -2031,7 +2056,8 @@ always_inline uword
 tcp46_rcv_process_inline (vlib_main_t *vm, vlib_node_runtime_t *node,
 			  vlib_frame_t *frame, int is_ip4)
 {
-  u32 thread_index = vm->thread_index, n_left_from, *from, max_deq;
+  clib_thread_index_t thread_index = vm->thread_index;
+  u32 n_left_from, *from, max_deq;
   tcp_worker_ctx_t *wrk = tcp_get_worker (thread_index);
   vlib_buffer_t *bufs[VLIB_FRAME_SIZE], **b;
 
@@ -2140,8 +2166,7 @@ tcp46_rcv_process_inline (vlib_main_t *vm, vlib_node_runtime_t *node,
 	    {
 	      error = TCP_ERROR_MSG_QUEUE_FULL;
 	      tcp_send_reset (tc);
-	      session_transport_delete_notify (&tc->connection);
-	      tcp_connection_cleanup (tc);
+	      tcp_connection_cleanup_and_notify (tc);
 	      goto drop;
 	    }
 	  error = TCP_ERROR_CONN_ACCEPTED;
@@ -2524,7 +2549,7 @@ tcp46_listen_inline (vlib_main_t *vm, vlib_node_runtime_t *node,
 {
   u32 n_left_from, *from, n_syns = 0;
   vlib_buffer_t *bufs[VLIB_FRAME_SIZE], **b;
-  u32 thread_index = vm->thread_index;
+  clib_thread_index_t thread_index = vm->thread_index;
   u32 tw_iss = 0;
 
   from = vlib_frame_vector_args (frame);
@@ -2566,7 +2591,7 @@ tcp46_listen_inline (vlib_main_t *vm, vlib_node_runtime_t *node,
 
 	  lc = tcp_lookup_listener (b[0], tc->c_fib_index, is_ip4);
 	  /* clean up the old session */
-	  tcp_connection_del (tc);
+	  tcp_connection_cleanup_and_notify (tc);
 	  /* listener was cleaned up */
 	  if (!lc)
 	    {
@@ -2819,8 +2844,6 @@ tcp46_input_inline (vlib_main_t * vm, vlib_node_runtime_t * node,
 	CLIB_PREFETCH (b[3]->data, 2 * CLIB_CACHE_LINE_BYTES, LOAD);
       }
 
-      next[0] = next[1] = TCP_INPUT_NEXT_DROP;
-
       tc0 = tcp_input_lookup_buffer (b[0], thread_index, &error0, is_ip4,
 				     is_nolookup);
       tc1 = tcp_input_lookup_buffer (b[1], thread_index, &error1, is_ip4,
@@ -2881,7 +2904,6 @@ tcp46_input_inline (vlib_main_t * vm, vlib_node_runtime_t * node,
 	  CLIB_PREFETCH (b[1]->data, 2 * CLIB_CACHE_LINE_BYTES, LOAD);
 	}
 
-      next[0] = TCP_INPUT_NEXT_DROP;
       tc0 = tcp_input_lookup_buffer (b[0], thread_index, &error0, is_ip4,
 				     is_nolookup);
       if (PREDICT_TRUE (tc0 != 0))

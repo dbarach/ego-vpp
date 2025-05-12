@@ -3,6 +3,7 @@ package hst
 import (
 	"context"
 	"encoding/json"
+	"errors"
 	"fmt"
 	"io"
 	"net"
@@ -95,7 +96,9 @@ type VppInstance struct {
 
 type VppCpuConfig struct {
 	PinMainCpu         bool
+	UseWorkers         bool
 	PinWorkersCorelist bool
+	RelativeCores      bool
 	SkipCores          int
 }
 
@@ -177,7 +180,7 @@ func (vpp *VppInstance) Start() error {
 		return nil
 	}
 
-	maxReconnectAttempts := 3
+	maxReconnectAttempts := 6
 	// Replace default logger in govpp with our own
 	govppLogger := logrus.New()
 	govppLogger.SetOutput(io.MultiWriter(vpp.getSuite().Logger.Writer(), GinkgoWriter))
@@ -185,7 +188,7 @@ func (vpp *VppInstance) Start() error {
 
 	vpp.getSuite().Log("starting vpp")
 	if *IsVppDebug {
-		// default = 3; VPP will timeout while debugging if there are not enough attempts
+		// default = 6; VPP will timeout while debugging if there are not enough attempts
 		maxReconnectAttempts = 5000
 		sig := make(chan os.Signal, 1)
 		signal.Notify(sig, syscall.SIGQUIT)
@@ -240,6 +243,16 @@ func (vpp *VppInstance) Start() error {
 	AddReportEntry("VPP version", vpp.Vppctl("show version verbose"), ReportEntryVisibilityNever)
 
 	return nil
+}
+
+func (vpp *VppInstance) Stop() {
+	pid, err := vpp.Container.Exec(false, "pidof vpp")
+	pid = strings.TrimSpace(pid)
+	// Stop VPP only if it's still running
+	if err == nil {
+		vpp.getSuite().Log("Stopping VPP")
+		vpp.Container.Exec(false, "bash -c \"kill -15 "+pid+"\"")
+	}
 }
 
 func (vpp *VppInstance) Vppctl(command string, arguments ...any) string {
@@ -298,26 +311,36 @@ func (vpp *VppInstance) WaitForApp(appName string, timeout int) {
 	vpp.getSuite().AssertNil(1, "Timeout while waiting for app '%s'", appName)
 }
 
-func (vpp *VppInstance) createAfPacket(
-	veth *NetInterface,
-) (interface_types.InterfaceIndex, error) {
+func (vpp *VppInstance) createAfPacket(veth *NetInterface, IPv6 bool) (interface_types.InterfaceIndex, error) {
+	var ipAddress string
+	var err error
+
 	if *DryRun {
-		if ip4Address, err := veth.Ip4AddrAllocator.NewIp4InterfaceAddress(veth.Peer.NetworkNumber); err == nil {
-			veth.Ip4Address = ip4Address
+		if IPv6 {
+			if ipAddress, err = veth.Ip6AddrAllocator.NewIp6InterfaceAddress(veth.Peer.NetworkNumber); err == nil {
+				veth.Ip6Address = ipAddress
+			}
 		} else {
+			if ipAddress, err = veth.Ip4AddrAllocator.NewIp4InterfaceAddress(veth.Peer.NetworkNumber); err == nil {
+				veth.Ip4Address = ipAddress
+			}
+		}
+		if err != nil {
 			return 0, err
 		}
+
 		vppCliConfig := fmt.Sprintf(
 			"create host-interface name %s\n"+
 				"set int state host-%s up\n"+
 				"set int ip addr host-%s %s\n",
 			veth.Name(),
 			veth.Name(),
-			veth.Name(), veth.Ip4Address)
+			veth.Name(), ipAddress)
 		vpp.AppendToCliConfig(vppCliConfig)
 		vpp.getSuite().Log("%s* Interface added:\n%s%s", Colors.grn, vppCliConfig, Colors.rst)
 		return 1, nil
 	}
+
 	createReq := &af_packet.AfPacketCreateV3{
 		Mode:            1,
 		UseRandomHwAddr: true,
@@ -366,22 +389,27 @@ func (vpp *VppInstance) createAfPacket(
 	}
 
 	// Add address
-	if veth.AddressWithPrefix() == (AddressWithPrefix{}) {
-		var err error
-		var ip4Address string
-		if ip4Address, err = veth.Ip4AddrAllocator.NewIp4InterfaceAddress(veth.Peer.NetworkNumber); err == nil {
-			veth.Ip4Address = ip4Address
+	if veth.AddressWithPrefix(IPv6) == (AddressWithPrefix{}) {
+		if IPv6 {
+			if ipAddress, err = veth.Ip6AddrAllocator.NewIp6InterfaceAddress(veth.Peer.NetworkNumber); err == nil {
+				veth.Ip6Address = ipAddress
+			}
 		} else {
+			if ipAddress, err = veth.Ip4AddrAllocator.NewIp4InterfaceAddress(veth.Peer.NetworkNumber); err == nil {
+				veth.Ip4Address = ipAddress
+			}
+		}
+		if err != nil {
 			return 0, err
 		}
 	}
 	addressReq := &interfaces.SwInterfaceAddDelAddress{
 		IsAdd:     true,
 		SwIfIndex: veth.Index,
-		Prefix:    veth.AddressWithPrefix(),
+		Prefix:    veth.AddressWithPrefix(IPv6),
 	}
 
-	vpp.getSuite().Log("af-packet interface " + veth.Name() + " add address " + veth.Ip4Address)
+	vpp.getSuite().Log("af-packet interface " + veth.Name() + " add address " + ipAddress)
 	if err := vpp.ApiStream.SendMsg(addressReq); err != nil {
 		return 0, err
 	}
@@ -444,27 +472,40 @@ func (vpp *VppInstance) addAppNamespace(
 	return nil
 }
 
-func (vpp *VppInstance) CreateTap(tap *NetInterface, numRxQueues uint16, tapId uint32, flags ...uint32) error {
+func (vpp *VppInstance) CreateTap(tap *NetInterface, IPv6 bool, numRxQueues uint16, tapId uint32, flags ...uint32) error {
 	var tapFlags uint32 = 0
+
 	if len(flags) > 0 {
 		tapFlags = flags[0]
 	}
 
 	if *DryRun {
 		flagsCli := ""
+		ipAddress := ""
+		ipAddressPeer := ""
+
 		if tapFlags == Consistent_qp {
 			flagsCli = "consistent-qp"
 		}
-		vppCliConfig := fmt.Sprintf("create tap id %d host-if-name %s host-ip4-addr %s num-rx-queues %d %s\n"+
+
+		if IPv6 {
+			ipAddress = "host-ip6-addr " + tap.Ip6Address
+			ipAddressPeer = tap.Peer.Ip6Address
+		} else {
+			ipAddress = "host-ip4-addr " + tap.Ip4Address
+			ipAddressPeer = tap.Peer.Ip4Address
+		}
+
+		vppCliConfig := fmt.Sprintf("create tap id %d host-if-name %s %s num-rx-queues %d %s\n"+
 			"set int ip addr tap%d %s\n"+
 			"set int state tap%d up\n",
 			tapId,
 			tap.name,
-			tap.Ip4Address,
+			ipAddress,
 			numRxQueues,
 			flagsCli,
 			tapId,
-			tap.Peer.Ip4Address,
+			ipAddressPeer,
 			tapId,
 		)
 		vpp.AppendToCliConfig(vppCliConfig)
@@ -478,6 +519,8 @@ func (vpp *VppInstance) CreateTap(tap *NetInterface, numRxQueues uint16, tapId u
 		HostIfName:       tap.Name(),
 		HostIP4PrefixSet: true,
 		HostIP4Prefix:    tap.Ip4AddressWithPrefix(),
+		HostIP6PrefixSet: true,
+		HostIP6Prefix:    tap.Ip6AddressWithPrefix(),
 		NumRxQueues:      numRxQueues,
 		TapFlags:         tapv2.TapFlags(tapFlags),
 	}
@@ -515,7 +558,7 @@ func (vpp *VppInstance) CreateTap(tap *NetInterface, numRxQueues uint16, tapId u
 	addAddressReq := &interfaces.SwInterfaceAddDelAddress{
 		IsAdd:     true,
 		SwIfIndex: reply.SwIfIndex,
-		Prefix:    tap.Peer.AddressWithPrefix(),
+		Prefix:    tap.Peer.AddressWithPrefix(IPv6),
 	}
 
 	vpp.getSuite().Log("tap interface " + tap.Name() + " add address " + tap.Peer.Ip4Address)
@@ -556,6 +599,27 @@ func (vpp *VppInstance) CreateTap(tap *NetInterface, numRxQueues uint16, tapId u
 		tap.HwAddress, _ = ethernet_types.ParseMacAddress(netIntf.HardwareAddr.String())
 	}
 
+	if IPv6 {
+		timeoutCounter := 1.0
+		for {
+			if timeoutCounter <= 5 {
+				vpp.getSuite().Log("Waiting for 'tentative' flag to disappear [%vs/5s]", timeoutCounter)
+				out, err := vpp.Container.Exec(false, "ip -6 addr show dev %s", tap.Name())
+				if err != nil {
+					vpp.getSuite().Log(out)
+					return err
+				}
+				if !strings.Contains(out, "tentative") {
+					break
+				}
+				time.Sleep(time.Millisecond * 500)
+				timeoutCounter += 0.5
+			} else {
+				return errors.New("tentative flag did not disappear in time")
+			}
+		}
+	}
+
 	return nil
 }
 
@@ -593,7 +657,9 @@ func (vpp *VppInstance) Disconnect() {
 
 func (vpp *VppInstance) setDefaultCpuConfig() {
 	vpp.CpuConfig.PinMainCpu = true
+	vpp.CpuConfig.UseWorkers = true
 	vpp.CpuConfig.PinWorkersCorelist = true
+	vpp.CpuConfig.RelativeCores = false
 	vpp.CpuConfig.SkipCores = 0
 }
 
@@ -607,6 +673,11 @@ func (vpp *VppInstance) generateVPPCpuConfig() string {
 
 	c.NewStanza("cpu")
 
+	if vpp.CpuConfig.RelativeCores {
+		c.Append("relative")
+		vpp.getSuite().Log("relative")
+	}
+
 	// If skip-cores is valid, use as start value to assign main/workers CPUs
 	if vpp.CpuConfig.SkipCores != 0 {
 		c.Append(fmt.Sprintf("skip-cores %d", vpp.CpuConfig.SkipCores))
@@ -618,19 +689,32 @@ func (vpp *VppInstance) generateVPPCpuConfig() string {
 	}
 
 	if vpp.CpuConfig.PinMainCpu {
-		c.Append(fmt.Sprintf("main-core %d", vpp.Cpus[startCpu]))
-		vpp.getSuite().Log(fmt.Sprintf("main-core %d", vpp.Cpus[startCpu]))
+		if vpp.CpuConfig.RelativeCores {
+			c.Append(fmt.Sprintf("main-core %d", startCpu))
+			vpp.getSuite().Log(fmt.Sprintf("main-core %d", startCpu))
+		} else {
+			c.Append(fmt.Sprintf("main-core %d", vpp.Cpus[startCpu]))
+			vpp.getSuite().Log(fmt.Sprintf("main-core %d", vpp.Cpus[startCpu]))
+		}
 	}
 
 	workers := vpp.Cpus[startCpu+1:]
+	workersRelativeCpu := startCpu + 1
 
-	if len(workers) > 0 {
+	if len(workers) > 0 && vpp.CpuConfig.UseWorkers {
 		if vpp.CpuConfig.PinWorkersCorelist {
 			for i := 0; i < len(workers); i++ {
 				if i != 0 {
 					s = s + ", "
 				}
-				s = s + fmt.Sprintf("%d", workers[i])
+
+				if vpp.CpuConfig.RelativeCores {
+					s = s + fmt.Sprintf("%d", workersRelativeCpu)
+					workersRelativeCpu++
+				} else {
+					s = s + fmt.Sprintf("%d", workers[i])
+				}
+
 			}
 			c.Append(fmt.Sprintf("corelist-workers %s", s))
 			vpp.getSuite().Log("corelist-workers " + s)

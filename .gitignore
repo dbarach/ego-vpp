@@ -17,7 +17,7 @@
 /build-root/*.changes
 /build-root/*.buildinfo
 /build-root/rpmbuild/
-/build-root/test-coverage/
+/build-root/test-coverage*/
 /build-root/test/
 /build-config.mk
 /build/external/*.tar.gz
@@ -160,5 +160,7 @@ compile_commands.json
 /cmake_install.cmake
 /startup.conf
 /startup.vpp
+/install_manifest.txt
+
 # log file archives
 /archives

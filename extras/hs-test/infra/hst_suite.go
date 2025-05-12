@@ -34,6 +34,7 @@ const (
 
 var IsPersistent = flag.Bool("persist", false, "persists topology config")
 var IsVerbose = flag.Bool("verbose", false, "verbose test output")
+var IsCoverage = flag.Bool("coverage", false, "use coverage run config")
 var IsUnconfiguring = flag.Bool("unconfigure", false, "remove topology")
 var IsVppDebug = flag.Bool("debug", false, "attach gdb to vpp")
 var NConfiguredCpus = flag.Int("cpus", 1, "number of CPUs assigned to vpp")
@@ -43,8 +44,10 @@ var UseCpu0 = flag.Bool("cpu0", false, "use cpu0")
 var IsLeakCheck = flag.Bool("leak_check", false, "run leak-check tests")
 var ParallelTotal = flag.Lookup("ginkgo.parallel.total")
 var DryRun = flag.Bool("dryrun", false, "set up containers but don't run tests")
+var SudoUser = flag.String("sudo_user", "root", "what user ran hs-test with sudo")
 var NumaAwareCpuAlloc bool
 var TestTimeout time.Duration
+var RunningInCi bool
 
 type HstSuite struct {
 	AllContainers     map[string]*Container
@@ -53,6 +56,7 @@ type HstSuite struct {
 	NetConfigs        []NetConfig
 	NetInterfaces     map[string]*NetInterface
 	Ip4AddrAllocator  *Ip4AddressAllocator
+	Ip6AddrAllocator  *Ip6AddressAllocator
 	TestIds           map[string]string
 	CpuAllocator      *CpuAllocatorT
 	CpuContexts       []*CpuContext
@@ -62,6 +66,7 @@ type HstSuite struct {
 	Logger            *log.Logger
 	LogFile           *os.File
 	Docker            *client.Client
+	CoverageRun       bool
 }
 
 type colors struct {
@@ -152,6 +157,20 @@ func (s *HstSuite) newDockerClient() {
 	s.Log("docker client created")
 }
 
+func (s *HstSuite) SetupKindSuite() {
+	s.CreateLogger()
+	s.Log("[* SUITE SETUP]")
+	s.newDockerClient()
+	RegisterFailHandler(func(message string, callerSkip ...int) {
+		s.HstFail()
+		Fail(message, callerSkip...)
+	})
+	s.Ppid = fmt.Sprint(os.Getppid())
+	// remove last number so we have space to prepend a process index (interfaces have a char limit)
+	s.Ppid = s.Ppid[:len(s.Ppid)-1]
+	s.ProcessIndex = fmt.Sprint(GinkgoParallelProcess())
+}
+
 func (s *HstSuite) SetupSuite() {
 	s.CreateLogger()
 	s.Log("[* SUITE SETUP]")
@@ -170,6 +189,7 @@ func (s *HstSuite) SetupSuite() {
 		Fail("failed to init cpu allocator: " + fmt.Sprint(err))
 	}
 	s.CpuCount = *NConfiguredCpus
+	s.CoverageRun = *IsCoverage
 }
 
 func (s *HstSuite) AllocateCpus(containerName string) []int {
@@ -234,6 +254,10 @@ func (s *HstSuite) TearDownTest() {
 		s.Ip4AddrAllocator.DeleteIpAddresses()
 	}
 
+	if s.Ip6AddrAllocator != nil {
+		s.Ip6AddrAllocator.DeleteIpAddresses()
+	}
+
 	if coreDump {
 		Fail("VPP crashed")
 	}
@@ -242,6 +266,12 @@ func (s *HstSuite) TearDownTest() {
 func (s *HstSuite) SkipIfUnconfiguring() {
 	if *IsUnconfiguring {
 		s.Skip("skipping to unconfigure")
+	}
+}
+
+func (s *HstSuite) SkipIfNotCoverage() {
+	if !s.CoverageRun {
+		s.Skip("skipping, not a coverage run")
 	}
 }
 
@@ -327,11 +357,11 @@ func (s *HstSuite) AssertNotEqual(expected, actual interface{}, msgAndArgs ...in
 }
 
 func (s *HstSuite) AssertContains(testString, contains interface{}, msgAndArgs ...interface{}) {
-	ExpectWithOffset(2, testString).To(ContainSubstring(fmt.Sprint(contains)), msgAndArgs...)
+	ExpectWithOffset(2, strings.ToLower(fmt.Sprint(testString))).To(ContainSubstring(strings.ToLower(fmt.Sprint(contains))), msgAndArgs...)
 }
 
 func (s *HstSuite) AssertNotContains(testString, contains interface{}, msgAndArgs ...interface{}) {
-	ExpectWithOffset(2, testString).ToNot(ContainSubstring(fmt.Sprint(contains)), msgAndArgs...)
+	ExpectWithOffset(2, strings.ToLower(fmt.Sprint(testString))).ToNot(ContainSubstring(strings.ToLower(fmt.Sprint(contains))), msgAndArgs...)
 }
 
 func (s *HstSuite) AssertEmpty(object interface{}, msgAndArgs ...interface{}) {
@@ -348,6 +378,10 @@ func (s *HstSuite) AssertMatchError(actual, expected error, msgAndArgs ...interf
 
 func (s *HstSuite) AssertGreaterThan(actual, expected interface{}, msgAndArgs ...interface{}) {
 	ExpectWithOffset(2, actual).Should(BeNumerically(">=", expected), msgAndArgs...)
+}
+
+func (s *HstSuite) AssertEqualWithinThreshold(actual, expected, threshold interface{}, msgAndArgs ...interface{}) {
+	ExpectWithOffset(2, actual).Should(BeNumerically("~", expected, threshold), msgAndArgs...)
 }
 
 func (s *HstSuite) AssertTimeEqualWithinThreshold(actual, expected time.Time, threshold time.Duration, msgAndArgs ...interface{}) {
@@ -378,8 +412,13 @@ func (s *HstSuite) AssertChannelClosed(timeout time.Duration, channel chan error
 	EventuallyWithOffset(2, channel).WithTimeout(timeout).Should(BeClosed())
 }
 
-// Pass the parsed result struct and the minimum amount of data transferred in MB
+// Pass the parsed result struct and the minimum amount of data transferred in MB.
+// Won't do anything when testing a coverage build.
 func (s *HstSuite) AssertIperfMinTransfer(result IPerfResult, minTransferred int) {
+	if *IsCoverage {
+		s.Log("Coverage build; not asserting")
+		return
+	}
 	if result.Start.Details.Protocol == "TCP" {
 		s.AssertGreaterThan(result.End.TcpReceived.MBytes, minTransferred)
 	} else {
@@ -434,11 +473,7 @@ func (s *HstSuite) SkipIfNotEnoughAvailableCpus() {
 		availableCpus++
 	}
 
-	if s.CpuAllocator.runningInCi {
-		maxRequestedCpu = ((s.CpuAllocator.buildNumber + 1) * s.CpuAllocator.maxContainerCount * s.CpuCount)
-	} else {
-		maxRequestedCpu = (GinkgoParallelProcess() * s.CpuAllocator.maxContainerCount * s.CpuCount)
-	}
+	maxRequestedCpu = (GinkgoParallelProcess() * s.CpuAllocator.maxContainerCount * s.CpuCount)
 
 	if availableCpus < maxRequestedCpu {
 		s.Skip(fmt.Sprintf("Test case cannot allocate requested cpus "+
@@ -507,7 +542,7 @@ func (s *HstSuite) WaitForCoreDump() bool {
 				output, _ := exechelper.Output(cmd)
 				AddReportEntry("VPP Backtrace", StringerStruct{Label: string(output)})
 				os.WriteFile(s.getLogDirPath()+"backtrace.log", output, os.FileMode(0644))
-				if s.CpuAllocator.runningInCi {
+				if RunningInCi {
 					err = os.Remove(corePath)
 					if err == nil {
 						s.Log("removed " + corePath)
@@ -603,10 +638,16 @@ func (s *HstSuite) LoadNetworkTopology(topologyName string) {
 		Fail("unmarshal error: " + fmt.Sprint(err))
 	}
 
+	s.Ip6AddrAllocator = NewIp6AddressAllocator()
 	s.Ip4AddrAllocator = NewIp4AddressAllocator()
 	s.NetInterfaces = make(map[string]*NetInterface)
 
 	for _, elem := range yamlTopo.Devices {
+		if _, ok := elem["ipv6"]; ok {
+			elem["ipv6"] = elem["ipv6"].(bool)
+		} else {
+			elem["ipv6"] = false
+		}
 		if _, ok := elem["name"]; ok {
 			elem["name"] = s.ProcessIndex + elem["name"].(string) + s.Ppid
 		}
@@ -642,12 +683,22 @@ func (s *HstSuite) LoadNetworkTopology(topologyName string) {
 			}
 		case Veth, Tap:
 			{
-				if netIf, err := newNetworkInterface(elem, s.Ip4AddrAllocator); err == nil {
-					s.NetConfigs = append(s.NetConfigs, netIf)
-					s.NetInterfaces[netIf.Name()] = netIf
+				if elem["ipv6"].(bool) {
+					if netIf, err := newNetworkInterface6(elem, s.Ip6AddrAllocator); err == nil {
+						s.NetConfigs = append(s.NetConfigs, netIf)
+						s.NetInterfaces[netIf.Name()] = netIf
+					} else {
+						Fail("network config error: " + fmt.Sprint(err))
+					}
 				} else {
-					Fail("network config error: " + fmt.Sprint(err))
+					if netIf, err := newNetworkInterface(elem, s.Ip4AddrAllocator); err == nil {
+						s.NetConfigs = append(s.NetConfigs, netIf)
+						s.NetInterfaces[netIf.Name()] = netIf
+					} else {
+						Fail("network config error: " + fmt.Sprint(err))
+					}
 				}
+
 			}
 		case Bridge:
 			{

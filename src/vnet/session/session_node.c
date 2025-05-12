@@ -64,7 +64,8 @@ session_wrk_timerfd_update (session_worker_t *wrk, u64 time_ns)
 }
 
 always_inline u64
-session_wrk_tfd_timeout (session_wrk_state_t state, u32 thread_index)
+session_wrk_tfd_timeout (session_wrk_state_t state,
+			 clib_thread_index_t thread_index)
 {
   if (state == SESSION_WRK_INTERRUPT)
     return thread_index ? 1e6 : vlib_num_workers () ? 5e8 : 1e6;
@@ -282,7 +283,7 @@ session_mq_handle_connects_rpc (void *arg)
 static void
 session_mq_connect_handler (session_worker_t *wrk, session_evt_elt_t *elt)
 {
-  u32 thread_index = wrk - session_main.wrk;
+  clib_thread_index_t thread_index = wrk - session_main.wrk;
   session_evt_elt_t *he;
 
   if (PREDICT_FALSE (thread_index > transport_cl_thread ()))
@@ -644,6 +645,8 @@ session_mq_worker_update_handler (void *data)
     }
   owner_app_wrk_map = app_wrk->wrk_map_index;
   app_wrk = application_get_worker (app, mp->wrk_index);
+  if (!app_wrk)
+    return;
 
   /* This needs to come from the new owner */
   if (mp->req_wrk_index == owner_app_wrk_map)
@@ -776,7 +779,7 @@ session_wrk_handle_evts_main_rpc (void *args)
   clib_llist_index_t ei, next_ei;
   session_evt_elt_t *he, *elt;
   session_worker_t *fwrk;
-  u32 thread_index;
+  clib_thread_index_t thread_index;
 
   vlib_worker_thread_barrier_sync (vm);
 
@@ -834,8 +837,7 @@ vlib_node_registration_t session_queue_node;
 
 typedef struct
 {
-  u32 session_index;
-  u32 server_thread_index;
+  clib_thread_index_t thread_index;
 } session_queue_trace_t;
 
 /* packet trace format function */
@@ -846,8 +848,7 @@ format_session_queue_trace (u8 * s, va_list * args)
   CLIB_UNUSED (vlib_node_t * node) = va_arg (*args, vlib_node_t *);
   session_queue_trace_t *t = va_arg (*args, session_queue_trace_t *);
 
-  s = format (s, "session index %d thread index %d",
-	      t->session_index, t->server_thread_index);
+  s = format (s, "thread index %d", t->thread_index);
   return s;
 }
 
@@ -878,25 +879,25 @@ enum
 };
 
 static void
-session_tx_trace_frame (vlib_main_t *vm, vlib_node_runtime_t *node,
-			u32 next_index, vlib_buffer_t **bufs, u16 n_segs,
-			session_t *s, u32 n_trace)
+session_tx_trace_frame (vlib_main_t *vm, vlib_node_runtime_t *node, u32 *bis,
+			u16 *nexts, u16 n_bufs)
 {
-  vlib_buffer_t **b = bufs;
+  u32 n_trace = vlib_get_trace_count (vm, node), *bi = bis;
+  u16 *next = nexts;
+  vlib_buffer_t *b;
 
-  while (n_trace && n_segs)
+  while (n_trace && n_bufs)
     {
-      if (PREDICT_TRUE (vlib_trace_buffer (vm, node, next_index, b[0],
-					   1 /* follow_chain */)))
+      b = vlib_get_buffer (vm, bi[0]);
+      if (PREDICT_TRUE (
+	    vlib_trace_buffer (vm, node, next[0], b, 1 /* follow_chain */)))
 	{
-	  session_queue_trace_t *t =
-	    vlib_add_trace (vm, node, b[0], sizeof (*t));
-	  t->session_index = s->session_index;
-	  t->server_thread_index = s->thread_index;
+	  session_queue_trace_t *t = vlib_add_trace (vm, node, b, sizeof (*t));
+	  t->thread_index = vm->thread_index;
 	  n_trace--;
 	}
-      b++;
-      n_segs--;
+      bi++;
+      n_bufs--;
     }
   vlib_set_trace_count (vm, node, n_trace);
 }
@@ -1192,7 +1193,7 @@ session_tx_not_ready (session_t * s, u8 peek_data)
     }
   else
     {
-      if (s->session_state == SESSION_STATE_TRANSPORT_DELETED)
+      if (s->session_state == SESSION_STATE_TRANSPORT_DELETED || !s->tx_fifo)
 	return 2;
     }
   return 0;
@@ -1400,7 +1401,7 @@ session_tx_fifo_read_and_snd_i (session_worker_t * wrk,
 				session_evt_elt_t * elt,
 				int *n_tx_packets, u8 peek_data)
 {
-  u32 n_trace, n_left, pbi, next_index, max_burst;
+  u32 n_left, pbi, next_index, max_burst;
   session_tx_context_t *ctx = &wrk->ctx;
   session_main_t *smm = &session_main;
   session_event_t *e = &elt->evt;
@@ -1573,10 +1574,6 @@ session_tx_fifo_read_and_snd_i (session_worker_t * wrk,
   /* Ask transport to push headers */
   ctx->transport_vft->push_header (ctx->tc, ctx->transport_pending_bufs,
 				   ctx->n_segs_per_evt);
-
-  if (PREDICT_FALSE ((n_trace = vlib_get_trace_count (vm, node)) > 0))
-    session_tx_trace_frame (vm, node, next_index, ctx->transport_pending_bufs,
-			    ctx->n_segs_per_evt, ctx->s, n_trace);
 
   if (PREDICT_FALSE (n_bufs))
     vlib_buffer_free (vm, ctx->tx_buffers, n_bufs);
@@ -1849,7 +1846,7 @@ static const u32 session_evt_msg_sizes[] = {
 
 always_inline void
 session_update_time_subscribers (session_main_t *smm, clib_time_type_t now,
-				 u32 thread_index)
+				 clib_thread_index_t thread_index)
 {
   session_update_time_fn *fn;
 
@@ -1957,7 +1954,7 @@ static uword
 session_queue_node_fn (vlib_main_t * vm, vlib_node_runtime_t * node,
 		       vlib_frame_t * frame)
 {
-  u32 thread_index = vm->thread_index, __clib_unused n_evts;
+  clib_thread_index_t thread_index = vm->thread_index, __clib_unused n_evts;
   session_evt_elt_t *elt, *ctrl_he, *new_he, *old_he;
   session_main_t *smm = vnet_get_session_main ();
   session_worker_t *wrk = &smm->wrk[thread_index];
@@ -2070,7 +2067,13 @@ session_queue_node_fn (vlib_main_t * vm, vlib_node_runtime_t * node,
   SESSION_EVT (SESSION_EVT_DSP_CNTRS, OLD_IO_EVTS, wrk);
 
   if (vec_len (wrk->pending_tx_buffers))
-    session_flush_pending_tx_buffers (wrk, node);
+    {
+      if (PREDICT_FALSE (vlib_get_trace_count (vm, node) > 0))
+	session_tx_trace_frame (vm, node, wrk->pending_tx_buffers,
+				wrk->pending_tx_nexts,
+				vec_len (wrk->pending_tx_nexts));
+      session_flush_pending_tx_buffers (wrk, node);
+    }
 
   vlib_node_increment_counter (vm, session_queue_node.index,
 			       SESSION_QUEUE_ERROR_TX, n_tx_packets);
@@ -2117,7 +2120,7 @@ session_wrk_tfd_write_ready (clib_file_t *cf)
 void
 session_wrk_enable_adaptive_mode (session_worker_t *wrk)
 {
-  u32 thread_index = wrk->vm->thread_index;
+  clib_thread_index_t thread_index = wrk->vm->thread_index;
   clib_file_t template = { 0 };
 
   if ((wrk->timerfd = timerfd_create (CLOCK_MONOTONIC, TFD_NONBLOCK)) < 0)

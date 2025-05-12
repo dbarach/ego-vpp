@@ -78,8 +78,8 @@ func (s *VppProxySuite) SetupTest() {
 	s.AssertNotNil(vpp, fmt.Sprint(err))
 
 	s.AssertNil(vpp.Start())
-	s.AssertNil(vpp.CreateTap(s.Interfaces.Client, 1, 1))
-	s.AssertNil(vpp.CreateTap(s.Interfaces.Server, 1, 2))
+	s.AssertNil(vpp.CreateTap(s.Interfaces.Client, false, 1, 1))
+	s.AssertNil(vpp.CreateTap(s.Interfaces.Server, false, 1, 2))
 
 	if *DryRun {
 		s.LogStartedContainers()
@@ -93,6 +93,7 @@ func (s *VppProxySuite) TearDownTest() {
 		s.Log(vpp.Vppctl("show session verbose 2"))
 		s.Log(vpp.Vppctl("show error"))
 		s.CollectNginxLogs(s.Containers.NginxServerTransient)
+		s.CollectIperfLogs(s.Containers.IperfS)
 	}
 	s.HstSuite.TearDownTest()
 }

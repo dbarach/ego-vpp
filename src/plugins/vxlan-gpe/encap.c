@@ -23,7 +23,7 @@
 #include <vnet/ip/ip.h>
 #include <vnet/ethernet/ethernet.h>
 #include <vnet/udp/udp_inlines.h>
-#include <vnet/vxlan-gpe/vxlan_gpe.h>
+#include <vxlan-gpe/vxlan_gpe.h>
 
 /** Statistics (not really errors) */
 #define foreach_vxlan_gpe_encap_error    \
@@ -156,7 +156,7 @@ vxlan_gpe_encap (vlib_main_t * vm,
   vnet_main_t *vnm = ngm->vnet_main;
   vnet_interface_main_t *im = &vnm->interface_main;
   u32 pkts_encapsulated = 0;
-  u32 thread_index = vm->thread_index;
+  clib_thread_index_t thread_index = vm->thread_index;
   u32 stats_sw_if_index, stats_n_packets, stats_n_bytes;
   vlib_buffer_t *bufs[VLIB_FRAME_SIZE], **b = bufs;
 
