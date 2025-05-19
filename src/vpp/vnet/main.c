@@ -563,7 +563,20 @@ mysystem (char *cmd)
   if (fork())
     wait (&rv);
   else
-    execl("/bin/sh", "sh", "-c", cmd);
+    {
+      /*
+       * Due to recent change(s) elsewhere, if you don't close
+       * all open FD's, atexit() handlers posted elsewhere will
+       * screw up the parent process. I can just about understand why
+       * the exec* family of library calls does this, but it's not helpful
+       * here.
+       */
+      int i;
+      for (i = 0; i < 256; i++)
+        (void) close(i);
+      if (execl("/bin/bash", "bash", "-c", cmd, 0))
+        abort();
+    }
 
   if (rv != 0)
     clib_unix_warning ("('%s') child process returned %d", cmd, rv);
