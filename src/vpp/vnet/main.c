@@ -651,6 +651,24 @@ VLIB_CLI_COMMAND (restart_vpp_service_command, static) =
 };
 /* *INDENT-ON* */
 
+static clib_error_t *
+restart_dns_service_command_fn (vlib_main_t * vm,
+                                unformat_input_t * input,
+                                vlib_cli_command_t * cmd)
+{
+  (void) mysystem ("/usr/bin/resolvectl dns lstack 8.8.8.8");
+  return 0;
+}
+
+/* *INDENT-OFF* */
+VLIB_CLI_COMMAND (restart_dns_service_command, static) =
+{
+  .path = "service restart dns",
+  .short_help = "restarts the host DNS service",
+  .function = restart_dns_service_command_fn,
+};
+/* *INDENT-ON* */
+
 /*
  * fd.io coding-style-patch-verification: ON
  *
