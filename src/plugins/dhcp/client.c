@@ -30,6 +30,9 @@ static vlib_node_registration_t dhcp_client_process_node;
 #define DHCP_INFO(...)                          \
     vlib_log_notice (dhcp_logger, __VA_ARGS__)
 
+#define DHCP_WARN(...)                          \
+    vlib_log_warn (dhcp_logger, __VA_ARGS__)
+
 #define foreach_dhcp_sent_packet_stat           \
 _(DISCOVER, "DHCP discover packets sent")       \
 _(OFFER, "DHCP offer packets sent")             \
@@ -228,8 +231,12 @@ dhcp_client_addr_callback (u32 * cindex)
   /* add the address to the interface if they've changed since the last time */
   if (0 != clib_memcmp (&c->installed, &c->learned, sizeof (c->learned)))
     {
+      DHCP_WARN("Replace old DHCP address %U/%d", format_ip4_address,
+                &c->installed.leased_address, c->installed.subnet_mask_width);
       dhcp_client_release_address (dcm, c);
       dhcp_client_acquire_address (dcm, c);
+      DHCP_WARN("With new DHCP address %U/%d", format_ip4_address,
+                &c->installed.leased_address, c->installed.subnet_mask_width);
     }
 
   /*
