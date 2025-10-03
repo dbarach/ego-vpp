@@ -18,6 +18,7 @@
 #include <vnet/session/application_namespace.h>
 #include <vnet/session/application_local.h>
 #include <vnet/session/application_eventing.h>
+#include <vnet/session/application_crypto.h>
 #include <vnet/session/session.h>
 #include <vnet/session/segment_manager.h>
 
@@ -220,6 +221,7 @@ app_listener_alloc_and_init (application_t * app,
       if ((rv = session_listen (ls, sep)))
 	{
 	  ls = listen_session_get_from_handle (lh);
+	  app_listener = app_listener_get (al_index);
 	  session_free (ls);
 	  app_listener_free (app, app_listener);
 	  return rv;
@@ -854,9 +856,16 @@ application_alloc_and_init (app_init_args_t *a)
     props->low_watermark = opts[APP_OPTIONS_LOW_WATERMARK];
   if (opts[APP_OPTIONS_PCT_FIRST_ALLOC])
     props->pct_first_alloc = opts[APP_OPTIONS_PCT_FIRST_ALLOC];
+  if (opts[APP_OPTIONS_MAX_FIFO_MEMORY])
+    {
+      /* Round upwards to nearest segment_size */
+      props->max_segments =
+	(opts[APP_OPTIONS_MAX_FIFO_MEMORY] + props->segment_size - 1) /
+	props->segment_size;
+    }
   props->segment_type = seg_type;
 
-  if (opts[APP_OPTIONS_FLAGS] & APP_OPTIONS_FLAGS_LOG_COLLECTOR)
+  if (opts[APP_OPTIONS_FLAGS] & APP_OPTIONS_FLAGS_EVT_COLLECTOR)
     app->cb_fns.app_evt_callback = app_evt_collector_get_cb_fn ();
 
   /* Add app to lookup by api_client_index table */
@@ -864,6 +873,8 @@ application_alloc_and_init (app_init_args_t *a)
     application_api_table_add (app->app_index, a->api_client_index);
   else
     application_name_table_add (app);
+
+  app_crypto_ctx_init (&app->crypto_ctx);
 
   a->app_index = app->app_index;
 
@@ -917,6 +928,9 @@ application_free (application_t * app)
    */
   if (application_is_builtin (app))
     application_name_table_del (app);
+
+  app_crypto_ctx_free (&app->crypto_ctx);
+
   vec_free (app->name);
   pool_put (app_main.app_pool, app);
 }
@@ -1055,7 +1069,7 @@ app_listener_select_wrk_cl_session (session_t *ls, session_dgram_hdr_t *hdr)
   if (al->workers[0] != 1)
     {
       u32 hash = app_listener_cl_flow_hash (hdr);
-      hash %= vec_len (al->workers) * sizeof (uword);
+      hash %= vec_len (al->workers);
       wrk_map_index = clib_bitmap_next_set (al->workers, hash);
       if (wrk_map_index == ~0)
 	wrk_map_index = clib_bitmap_first_set (al->workers);
@@ -1782,66 +1796,12 @@ application_format_connects (application_t * app, int verbose)
 }
 
 u8 *
-format_cert_key_pair (u8 * s, va_list * args)
-{
-  app_cert_key_pair_t *ckpair = va_arg (*args, app_cert_key_pair_t *);
-  int key_len = 0, cert_len = 0;
-  cert_len = vec_len (ckpair->cert);
-  key_len = vec_len (ckpair->key);
-  if (ckpair->cert_key_index == 0)
-    s = format (s, "DEFAULT (cert:%d, key:%d)", cert_len, key_len);
-  else
-    s = format (s, "%d (cert:%d, key:%d)", ckpair->cert_key_index,
-		cert_len, key_len);
-  return s;
-}
-
-u8 *
-format_crypto_engine (u8 * s, va_list * args)
-{
-  u32 engine = va_arg (*args, u32);
-  switch (engine)
-    {
-    case CRYPTO_ENGINE_NONE:
-      return format (s, "none");
-    case CRYPTO_ENGINE_MBEDTLS:
-      return format (s, "mbedtls");
-    case CRYPTO_ENGINE_OPENSSL:
-      return format (s, "openssl");
-    case CRYPTO_ENGINE_PICOTLS:
-      return format (s, "picotls");
-    case CRYPTO_ENGINE_VPP:
-      return format (s, "vpp");
-    default:
-      return format (s, "unknown engine");
-    }
-  return s;
-}
-
-uword
-unformat_crypto_engine (unformat_input_t * input, va_list * args)
-{
-  u8 *a = va_arg (*args, u8 *);
-  if (unformat (input, "mbedtls"))
-    *a = CRYPTO_ENGINE_MBEDTLS;
-  else if (unformat (input, "openssl"))
-    *a = CRYPTO_ENGINE_OPENSSL;
-  else if (unformat (input, "picotls"))
-    *a = CRYPTO_ENGINE_PICOTLS;
-  else if (unformat (input, "vpp"))
-    *a = CRYPTO_ENGINE_VPP;
-  else
-    return 0;
-  return 1;
-}
-
-u8 *
 format_crypto_context (u8 * s, va_list * args)
 {
   crypto_context_t *crctx = va_arg (*args, crypto_context_t *);
   s = format (s, "[0x%x][sub%d,ckpair%x]", crctx->ctx_index,
 	      crctx->n_subscribers, crctx->ckpair_index);
-  s = format (s, "[%U]", format_crypto_engine, crctx->crypto_engine);
+  s = format (s, "[engine:%U]", format_crypto_engine, crctx->crypto_engine);
   return s;
 }
 
@@ -1878,9 +1838,11 @@ format_application (u8 * s, va_list * args)
   s = format (s, "app-name %v app-index %u ns-index %u seg-size %U\n",
 	      app_name, app->app_index, app->ns_index,
 	      format_memory_size, props->add_segment_size);
-  s = format (s, "rx-fifo-size %U tx-fifo-size %U workers:\n",
-	      format_memory_size, props->rx_fifo_size,
-	      format_memory_size, props->tx_fifo_size);
+  s =
+    format (s, "rx-fifo-size %U tx-fifo-size %U max-fifo-memory %U workers:\n",
+	    format_memory_size, props->rx_fifo_size, format_memory_size,
+	    props->tx_fifo_size, format_memory_size,
+	    props->max_segments * props->segment_size);
 
   pool_foreach (wrk_map, app->worker_maps)  {
       app_wrk = app_worker_get (wrk_map->wrk_index);
@@ -1935,19 +1897,6 @@ application_format_all_clients (vlib_main_t * vm, int verbose)
   pool_foreach (app, app_main.app_pool)  {
     application_format_connects (app, verbose);
   }
-}
-
-static clib_error_t *
-show_certificate_command_fn (vlib_main_t * vm, unformat_input_t * input,
-			     vlib_cli_command_t * cmd)
-{
-  app_cert_key_pair_t *ckpair;
-  session_cli_return_if_not_enabled ();
-
-  pool_foreach (ckpair, app_main.cert_key_pair_store)  {
-    vlib_cli_output (vm, "%U", format_cert_key_pair, ckpair);
-  }
-  return 0;
 }
 
 static inline void
@@ -2072,85 +2021,6 @@ show_app_command_fn (vlib_main_t * vm, unformat_input_t * input,
   return 0;
 }
 
-/* Certificate store */
-
-static app_cert_key_pair_t *
-app_cert_key_pair_alloc ()
-{
-  app_cert_key_pair_t *ckpair;
-  pool_get (app_main.cert_key_pair_store, ckpair);
-  clib_memset (ckpair, 0, sizeof (*ckpair));
-  ckpair->cert_key_index = ckpair - app_main.cert_key_pair_store;
-  return ckpair;
-}
-
-app_cert_key_pair_t *
-app_cert_key_pair_get_if_valid (u32 index)
-{
-  if (pool_is_free_index (app_main.cert_key_pair_store, index))
-    return 0;
-  return app_cert_key_pair_get (index);
-}
-
-app_cert_key_pair_t *
-app_cert_key_pair_get (u32 index)
-{
-  return pool_elt_at_index (app_main.cert_key_pair_store, index);
-}
-
-app_cert_key_pair_t *
-app_cert_key_pair_get_default ()
-{
-  /* To maintain legacy bapi */
-  return app_cert_key_pair_get (0);
-}
-
-int
-vnet_app_add_cert_key_pair (vnet_app_add_cert_key_pair_args_t * a)
-{
-  app_cert_key_pair_t *ckpair = app_cert_key_pair_alloc ();
-  vec_validate (ckpair->cert, a->cert_len - 1);
-  clib_memcpy_fast (ckpair->cert, a->cert, a->cert_len);
-  vec_validate (ckpair->key, a->key_len - 1);
-  clib_memcpy_fast (ckpair->key, a->key, a->key_len);
-  a->index = ckpair->cert_key_index;
-  return 0;
-}
-
-int
-vnet_app_add_cert_key_interest (u32 index, u32 app_index)
-{
-  app_cert_key_pair_t *ckpair;
-  if (!(ckpair = app_cert_key_pair_get_if_valid (index)))
-    return -1;
-  if (vec_search (ckpair->app_interests, app_index) != ~0)
-    vec_add1 (ckpair->app_interests, app_index);
-  return 0;
-}
-
-int
-vnet_app_del_cert_key_pair (u32 index)
-{
-  app_cert_key_pair_t *ckpair;
-  application_t *app;
-  u32 *app_index;
-
-  if (!(ckpair = app_cert_key_pair_get_if_valid (index)))
-    return SESSION_E_INVALID;
-
-  vec_foreach (app_index, ckpair->app_interests)
-  {
-    if ((app = application_get_if_valid (*app_index))
-	&& app->cb_fns.app_cert_key_pair_delete_callback)
-      app->cb_fns.app_cert_key_pair_delete_callback (ckpair);
-  }
-
-  vec_free (ckpair->cert);
-  vec_free (ckpair->key);
-  pool_put (app_main.cert_key_pair_store, ckpair);
-  return 0;
-}
-
 clib_error_t *
 application_init (vlib_main_t * vm)
 {
@@ -2158,13 +2028,10 @@ application_init (vlib_main_t * vm)
   u32 n_workers;
 
   n_workers = vlib_num_workers ();
-
-  /* Index 0 was originally used by legacy apis, maintain as invalid */
-  (void) app_cert_key_pair_alloc ();
-  am->last_crypto_engine = CRYPTO_ENGINE_LAST;
+  vec_validate (am->wrk, n_workers);
   am->app_by_name = hash_create_vec (0, sizeof (u8), sizeof (uword));
 
-  vec_validate (am->wrk, n_workers);
+  application_crypto_init ();
 
   return 0;
 }
@@ -2177,24 +2044,6 @@ VLIB_CLI_COMMAND (show_app_command, static) = {
 		"[transports]",
   .function = show_app_command_fn,
 };
-
-VLIB_CLI_COMMAND (show_certificate_command, static) = {
-  .path = "show app certificate",
-  .short_help = "list app certs and keys present in store",
-  .function = show_certificate_command_fn,
-};
-
-crypto_engine_type_t
-app_crypto_engine_type_add (void)
-{
-  return (++app_main.last_crypto_engine);
-}
-
-u8
-app_crypto_engine_n_types (void)
-{
-  return (app_main.last_crypto_engine + 1);
-}
 
 /*
  * fd.io coding-style-patch-verification: ON

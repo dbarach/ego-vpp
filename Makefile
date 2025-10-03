@@ -23,6 +23,10 @@ MACHINE=$(shell uname -m)
 SUDO?=sudo -E
 DPDK_CONFIG?=no-pci
 
+ifeq ($(shell test -d /opt/vpp/optional/${MACHINE}/lib64 && echo yes),yes)
+VPP_OPT_DEPS_LIBRARY_PATH?=/opt/vpp/optional/${MACHINE}/lib64
+endif
+
 # we prefer clang by default
 ifeq ($(CC),cc)
   CC=clang
@@ -61,7 +65,11 @@ GDB_ARGS= -ex "handle SIGUSR1 noprint nostop"
 # We allow Darwin (MacOS) for docs generation; VPP build will still fail.
 ifneq ($(shell uname),Darwin)
 OS_ID        = $(shell grep '^ID=' /etc/os-release | cut -f2- -d= | sed -e 's/\"//g')
+ifeq ($(OS_ID),rhel)
+OS_VERSION_ID= $(shell grep '^VERSION_ID=' /etc/os-release | cut -f2- -d= | sed -e 's/\"//g' | sed -e 's/\..*//')
+else
 OS_VERSION_ID= $(shell grep '^VERSION_ID=' /etc/os-release | cut -f2- -d= | sed -e 's/\"//g')
+endif
 OS_CODENAME  = $(shell grep '^VERSION_CODENAME=' /etc/os-release | cut -f2- -d= | sed -e 's/\"//g')
 endif
 
@@ -202,6 +210,20 @@ else ifeq ($(OS_ID)-$(OS_VERSION_ID),centos-8)
 	RPM_DEPENDS += infiniband-diags libibumad
 	RPM_DEPENDS += libpcap-devel llvm-toolset
 	RPM_DEPENDS_GROUPS = 'Development Tools'
+else ifeq ($(OS_ID)-$(OS_VERSION_ID),rhel-8)
+	RPM_DEPENDS += yum-utils
+	RPM_DEPENDS += openssl-devel
+	RPM_DEPENDS += python3-ply # for vppapigen
+	RPM_DEPENDS += python36-devel
+	RPM_DEPENDS += python3-pip
+	RPM_DEPENDS += python3-virtualenv
+	RPM_DEPENDS += python3-jsonschema
+	RPM_DEPENDS += gcc-toolset-9
+	RPM_DEPENDS += gcc-toolset-9-libasan-devel
+	RPM_DEPENDS += cmake
+	RPM_DEPENDS += llvm-toolset
+	RPM_DEPENDS += infiniband-diags
+	RPM_DEPENDS += autoconf automake bison byacc libtool
 else ifeq ($(OS_ID)-$(OS_VERSION_ID),anolis-8)
 	RPM_DEPENDS += yum-utils
 	RPM_DEPENDS += compat-openssl10 openssl-devel
@@ -382,7 +404,7 @@ ifeq ($(filter ubuntu debian linuxmint,$(OS_ID)),$(OS_ID))
 	exit 0
 else ifneq ("$(wildcard /etc/redhat-release)","")
 	@for i in $(RPM_DEPENDS) ; do \
-	    RPM=$$(basename -s .rpm "$${i##*/}" | cut -d- -f1,2,3,4)  ;	\
+	    RPM=$$(basename -s .rpm "$${i##*/}")  ;	\
 	    MISSING+=$$(rpm -q $$RPM | grep "^package")	   ;    \
 	done							   ;	\
 	if [ -n "$$MISSING" ] ; then \
@@ -404,7 +426,11 @@ ifeq ($(filter ubuntu debian linuxmint,$(OS_ID)),$(OS_ID))
 	@sudo -E apt-get update
 	@sudo -E apt-get $(APT_ARGS) $(CONFIRM) $(FORCE) install $(DEB_DEPENDS)
 else ifneq ("$(wildcard /etc/redhat-release)","")
-ifeq ($(OS_ID),rhel)
+ifeq ($(OS_ID)-$(OS_VERSION_ID),rhel-8)
+	@sudo -E dnf install $(CONFIRM) https://dl.fedoraproject.org/pub/epel/epel-release-latest-8.noarch.rpm
+	@sudo -E dnf install $(CONFIRM) $(RPM_DEPENDS)
+	@sudo -E debuginfo-install $(CONFIRM) glibc openssl-libs zlib
+else ifeq ($(OS_ID)-$(OS_VERSION_ID),rhel-7)
 	@sudo -E yum-config-manager --enable rhel-server-rhscl-7-rpms
 	@sudo -E yum groupinstall $(CONFIRM) $(RPM_DEPENDS_GROUPS)
 	@sudo -E yum install $(CONFIRM) $(RPM_DEPENDS)
@@ -554,7 +580,7 @@ test-cov:
 
 .PHONY: test-cov-hs
 test-cov-hs: build-gcov
-	@$(MAKE) CC=$(CC) -C extras/hs-test test-cov \
+	@$(MAKE) CC=$(CC) -C test-c/hs-test test-cov \
 	VPP_BUILD_DIR=$(BR)/build-vpp_gcov-native/vpp
 
 .PHONY: test-cov-post-standalone
@@ -565,9 +591,9 @@ test-cov-post-standalone:
 test-cov-both:
 	@echo "Running Python, Golang tests and merging coverage reports."
 	find $(BR) -name '*.gcda' -delete
-	@$(MAKE) test-cov
+	-@$(MAKE) test-cov
 	find $(BR) -name '*.gcda' -delete
-	@$(MAKE) test-cov-hs
+	-@$(MAKE) test-cov-hs
 	@$(MAKE) cov-merge
 
 .PHONY: test-cov-build
@@ -592,6 +618,7 @@ cov-merge:
 		-a $(BR)/test-coverage-merged/coverage-filtered1.info -o $(BR)/test-coverage-merged/coverage-merged.info
 	@genhtml $(BR)/test-coverage-merged/coverage-merged.info \
 		--output-directory $(BR)/test-coverage-merged/html
+	-@rm -f $(BR)/test-coverage-merged/html/cmd_line
 	@echo "Code coverage report is in $(BR)/test-coverage-merged/html/index.html"
 
 .PHONY: test-all
@@ -671,7 +698,7 @@ test-wipe-all:
 .PHONY: test-checkstyle
 test-checkstyle:
 	@$(MAKE) -C test checkstyle-python-all
-	@$(MAKE) -C extras/hs-test checkstyle-go
+	@$(MAKE) -C test-c/hs-test checkstyle-go
 
 # Note: All python venv consolidated in test/Makefile, test/requirements*.txt
 .PHONY: test-checkstyle-diff
@@ -714,12 +741,12 @@ define run
 	@echo "WARNING: STARTUP_CONF not defined or file doesn't exist."
 	@echo "         Running with minimal startup config: $(MINIMAL_STARTUP_CONF)\n"
 	@cd $(STARTUP_DIR) && \
-	  $(SUDO) $(2) $(1)/vpp/bin/vpp $(MINIMAL_STARTUP_CONF)
+	  $(SUDO) LD_LIBRARY_PATH=$(VPP_OPT_DEPS_LIBRARY_PATH) $(2) $(1)/vpp/bin/vpp $(MINIMAL_STARTUP_CONF)
 endef
 else
 define run
 	@cd $(STARTUP_DIR) && \
-	  $(SUDO) $(2) $(1)/vpp/bin/vpp $(shell cat $(STARTUP_CONF) | sed -e 's/#.*//')
+	  $(SUDO) LD_LIBRARY_PATH=$(VPP_OPT_DEPS_LIBRARY_PATH) $(2) $(1)/vpp/bin/vpp $(shell cat $(STARTUP_CONF) | sed -e 's/#.*//')
 endef
 endif
 
@@ -812,7 +839,11 @@ go-api-files: json-api-files
 
 .PHONY: cleanup-hst
 cleanup-hst:
-	$(MAKE) -C extras/hs-test cleanup-hst
+	$(MAKE) -C test-c/hs-test cleanup-hst
+
+.PHONY: cleanup-perf
+cleanup-perf:
+	$(MAKE) -C test-c/kube-test cleanup-perf
 
 .PHONY: ctags
 ctags: ctags.files
@@ -858,11 +889,13 @@ checkstyle-python:
 
 .PHONY: checkstyle-go
 checkstyle-go:
-	@$(MAKE) -C extras/hs-test checkstyle-go
+	@$(MAKE) -C test-c/hs-test checkstyle-go
+	@$(MAKE) -C test-c/kube-test checkstyle-go
 
 .PHONY: fixstyle-go
 fixstyle-go:
-	@$(MAKE) -C extras/hs-test fixstyle-go
+	@$(MAKE) -C test-c/hs-test fixstyle-go
+	@$(MAKE) -C test-c/kube-test fixstyle-go
 
 .PHONY: checkstyle-all
 checkstyle-all: checkstyle-commit checkstyle checkstyle-python docs-spell checkstyle-go

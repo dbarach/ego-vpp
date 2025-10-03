@@ -199,6 +199,15 @@ vnet_dev_api_create_port_if (vlib_main_t *vm,
       return VNET_DEV_ERR_NOT_SUPPORTED;
     }
 
+  if (args->flags.e & VNET_DEV_PORT_F_QUEUE_PER_THREAD)
+    {
+      if (args->num_rx_queues)
+	return VNET_DEV_ERR_INVALID_NUM_RX_QUEUES;
+      if (args->num_tx_queues)
+	return VNET_DEV_ERR_INVALID_NUM_TX_QUEUES;
+      args->num_rx_queues = args->num_tx_queues = n_threads;
+    }
+
   if (args->num_rx_queues)
     {
       if (args->num_rx_queues > port->attr.max_rx_queues)
@@ -206,7 +215,7 @@ vnet_dev_api_create_port_if (vlib_main_t *vm,
       a.num_rx_queues = args->num_rx_queues;
     }
   else
-    a.num_rx_queues = clib_min (port->attr.max_tx_queues, 1);
+    a.num_rx_queues = 1;
 
   if (args->num_tx_queues)
     {
@@ -240,6 +249,7 @@ vnet_dev_api_create_port_if (vlib_main_t *vm,
   clib_memcpy (a.name, args->intf_name, sizeof (a.name));
   a.default_is_intr_mode = default_is_intr_mode;
   a.consistent_qp = (args->flags.n & VNET_DEV_PORT_F_CONSISTENT_QP) != 0;
+  a.queue_per_thread = (args->flags.n & VNET_DEV_PORT_F_QUEUE_PER_THREAD) != 0;
 
   rv = vnet_dev_process_call_port_op_with_ptr (vm, port,
 					       vnet_dev_port_if_create, &a);
@@ -333,4 +343,44 @@ vnet_dev_api_port_del_sec_if (vlib_main_t *vm,
   return vnet_dev_process_call_port_op_with_ptr (
     vm, port, vnet_dev_port_del_sec_if,
     &(vnet_dev_port_del_sec_if_args_t){ .sw_if_index = args->sw_if_index });
+}
+
+vnet_dev_rv_t
+vnet_dev_api_port_set_rss_key (vlib_main_t *vm,
+			       vnet_dev_api_port_set_rss_key_args_t *args)
+{
+  vnet_dev_port_t *port = 0;
+  vnet_dev_t *dev = vnet_dev_by_index (args->dev_index);
+  vnet_dev_rv_t rv = VNET_DEV_OK;
+  vnet_dev_port_cfg_change_req_t req = {
+    .type = VNET_DEV_PORT_CFG_SET_RSS_KEY,
+    .rss_key = args->rss_key,
+  };
+
+  if (!dev)
+    return VNET_DEV_ERR_UNKNOWN_DEVICE;
+
+  log_debug (dev, "port %u rss_key %U", args->port_id,
+	     format_hex_bytes_no_wrap, args->rss_key.key,
+	     args->rss_key.length);
+
+  port = vnet_dev_get_port_by_id (dev, args->port_id);
+  if (!port)
+    return VNET_DEV_ERR_UNKNOWN_DEVICE;
+
+  rv = vnet_dev_port_cfg_change_req_validate (vm, port, &req);
+  if (rv != VNET_DEV_OK)
+    {
+      log_err (dev, "RSS key cannot be set");
+      return rv;
+    }
+
+  rv = vnet_dev_process_port_cfg_change_req (vm, port, &req);
+  if (rv != VNET_DEV_OK)
+    {
+      log_err (dev, "device failed to set RSS key");
+      return rv;
+    }
+
+  return rv;
 }

@@ -73,7 +73,8 @@ http2_frame_read_settings (http2_conn_settings_t *settings, u8 *payload,
       entry = (http2_settings_entry_t *) payload;
       switch (clib_net_to_host_u16 (entry->identifier))
 	{
-#define _(v, label, member, min, max, default_value, err_code)                \
+#define _(v, label, member, min, max, default_value, err_code, server,        \
+	  client)                                                             \
   case HTTP2_SETTINGS_##label:                                                \
     value = clib_net_to_host_u32 (entry->value);                              \
     if (!(value >= min && value <= max))                                      \
@@ -130,14 +131,12 @@ http2_frame_write_settings (http2_settings_entry_t *settings, u8 **dst)
     }
 }
 
-#define WINDOW_UPDATE_LENGTH 4
-
 __clib_export http2_error_t
 http2_frame_read_window_update (u32 *increment, u8 *payload, u32 payload_len)
 {
   u32 *value;
 
-  if (payload_len != WINDOW_UPDATE_LENGTH)
+  if (payload_len != HTTP2_WINDOW_UPDATE_LENGTH)
     return HTTP2_ERROR_FRAME_SIZE_ERROR;
 
   value = (u32 *) payload;
@@ -158,24 +157,22 @@ http2_frame_write_window_update (u32 increment, u32 stream_id, u8 **dst)
   ASSERT (increment > 0 && increment <= 0x7FFFFFFF);
 
   http2_frame_header_t fh = { .type = HTTP2_FRAME_TYPE_WINDOW_UPDATE,
-			      .length = WINDOW_UPDATE_LENGTH,
+			      .length = HTTP2_WINDOW_UPDATE_LENGTH,
 			      .stream_id = stream_id };
   p = http2_frame_header_alloc (dst);
   http2_frame_header_write (&fh, p);
 
-  vec_add2 (*dst, p, WINDOW_UPDATE_LENGTH);
+  vec_add2 (*dst, p, HTTP2_WINDOW_UPDATE_LENGTH);
   value = clib_host_to_net_u32 (increment);
-  clib_memcpy_fast (p, &value, WINDOW_UPDATE_LENGTH);
+  clib_memcpy_fast (p, &value, HTTP2_WINDOW_UPDATE_LENGTH);
 }
-
-#define RST_STREAM_LENGTH 4
 
 __clib_export http2_error_t
 http2_frame_read_rst_stream (u32 *error_code, u8 *payload, u32 payload_len)
 {
   u32 *value;
 
-  if (payload_len != RST_STREAM_LENGTH)
+  if (payload_len != HTTP2_RST_STREAM_LENGTH)
     return HTTP2_ERROR_FRAME_SIZE_ERROR;
 
   value = (u32 *) payload;
@@ -194,17 +191,15 @@ http2_frame_write_rst_stream (http2_error_t error_code, u32 stream_id,
   ASSERT (stream_id > 0 && stream_id <= 0x7FFFFFFF);
 
   http2_frame_header_t fh = { .type = HTTP2_FRAME_TYPE_RST_STREAM,
-			      .length = RST_STREAM_LENGTH,
+			      .length = HTTP2_RST_STREAM_LENGTH,
 			      .stream_id = stream_id };
   p = http2_frame_header_alloc (dst);
   http2_frame_header_write (&fh, p);
 
-  vec_add2 (*dst, p, RST_STREAM_LENGTH);
+  vec_add2 (*dst, p, HTTP2_RST_STREAM_LENGTH);
   value = clib_host_to_net_u32 ((u32) error_code);
-  clib_memcpy_fast (p, &value, RST_STREAM_LENGTH);
+  clib_memcpy_fast (p, &value, HTTP2_RST_STREAM_LENGTH);
 }
-
-#define GOAWAY_MIN_SIZE 8
 
 __clib_export http2_error_t
 http2_frame_read_goaway (u32 *error_code, u32 *last_stream_id, u8 *payload,
@@ -212,7 +207,7 @@ http2_frame_read_goaway (u32 *error_code, u32 *last_stream_id, u8 *payload,
 {
   u32 *value;
 
-  if (payload_len < GOAWAY_MIN_SIZE)
+  if (payload_len < HTTP2_GOAWAY_MIN_SIZE)
     return HTTP2_ERROR_FRAME_SIZE_ERROR;
 
   value = (u32 *) payload;
@@ -222,7 +217,6 @@ http2_frame_read_goaway (u32 *error_code, u32 *last_stream_id, u8 *payload,
   value = (u32 *) payload;
   *error_code = clib_net_to_host_u32 (*value);
 
-  /* TODO: Additional Debug Data */
   return HTTP2_ERROR_NO_ERROR;
 }
 
@@ -236,11 +230,11 @@ http2_frame_write_goaway (http2_error_t error_code, u32 last_stream_id,
   ASSERT (last_stream_id <= 0x7FFFFFFF);
 
   http2_frame_header_t fh = { .type = HTTP2_FRAME_TYPE_GOAWAY,
-			      .length = GOAWAY_MIN_SIZE };
+			      .length = HTTP2_GOAWAY_MIN_SIZE };
   p = http2_frame_header_alloc (dst);
   http2_frame_header_write (&fh, p);
 
-  vec_add2 (*dst, p, GOAWAY_MIN_SIZE);
+  vec_add2 (*dst, p, HTTP2_GOAWAY_MIN_SIZE);
   value = clib_host_to_net_u32 (last_stream_id);
   clib_memcpy_fast (p, &value, 4);
   p += 4;
@@ -302,6 +296,19 @@ http2_frame_write_headers_header (u32 headers_len, u32 stream_id, u8 flags,
   ASSERT (stream_id > 0 && stream_id <= 0x7FFFFFFF);
 
   http2_frame_header_t fh = { .type = HTTP2_FRAME_TYPE_HEADERS,
+			      .length = headers_len,
+			      .flags = flags,
+			      .stream_id = stream_id };
+  http2_frame_header_write (&fh, dst);
+}
+
+void
+http2_frame_write_continuation_header (u32 headers_len, u32 stream_id,
+				       u8 flags, u8 *dst)
+{
+  ASSERT (stream_id > 0 && stream_id <= 0x7FFFFFFF);
+
+  http2_frame_header_t fh = { .type = HTTP2_FRAME_TYPE_CONTINUATION,
 			      .length = headers_len,
 			      .flags = flags,
 			      .stream_id = stream_id };

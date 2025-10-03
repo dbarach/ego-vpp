@@ -22,6 +22,16 @@
 #include <vnet/session/session.h>
 #include <vnet/session/application_interface.h>
 
+typedef struct ec_rttstat_
+{
+  f64 min_rtt;
+  f64 max_rtt;
+  f64 sum_rtt;
+  f64 last_rtt;
+  u32 n_sum;
+  clib_spinlock_t w_lock;
+} ec_rttstat_t;
+
 typedef struct ec_session_
 {
   CLIB_CACHE_LINE_ALIGN_MARK (cacheline0);
@@ -38,6 +48,12 @@ typedef struct ec_session_
   f64 time_to_send;
   u64 bytes_paced_target;
   u64 bytes_paced_current;
+  f64 send_rtt;
+  u8 rtt_stat;
+  u32 rtt_udp_buffer_offset;
+  f64 jitter;
+  u64 dgrams_sent;
+  u64 dgrams_received;
 } ec_session_t;
 
 typedef struct ec_worker_
@@ -59,14 +75,22 @@ typedef struct
   volatile u32 ready_connections;
   volatile u64 rx_total;
   volatile u64 tx_total;
+  volatile u64 rx_total_dgrams;
+  volatile u64 tx_total_dgrams;
   volatile int run_test; /**< Signal start of test */
-  volatile bool timer_expired; /**< Signal end of timed test */
+  volatile bool end_test; /**< Signal end of test */
 
   f64 syn_start_time;
   f64 test_start_time;
   f64 test_end_time;
+  f64 last_print_time;
+  u64 last_total_tx_bytes;
+  u64 last_total_rx_bytes;
+  u64 last_total_tx_dgrams;
+  u64 last_total_rx_dgrams;
   u32 prev_conns;
   u32 repeats;
+  ec_rttstat_t rtt_stats;
 
   f64
     pacing_window_len; /**< Time between data chunk sends when limiting tput */
@@ -99,12 +123,18 @@ typedef struct
   u32 no_copy;				/**< Don't memcpy data to tx fifo */
   u32 quic_streams;			/**< QUIC streams per connection */
   u32 ckpair_index;			/**< Cert key pair for tls/quic */
+  u32 ca_trust_index;			/**< CA trust chain to be used */
   u64 attach_flags;			/**< App attach flags */
   u8 *appns_id;				/**< App namespaces id */
   u64 appns_secret;			/**< App namespace secret */
   f64 syn_timeout;			/**< Test syn timeout (s) */
   f64 test_timeout;			/**< Test timeout (s) */
   f64 run_time;				/**< Length of a test (s) */
+  u64 max_chunk_bytes;
+  u64 report_interval;	    /**< Time between periodic reports (s) */
+  u8 report_interval_total; /**< Shown data are totals since the start of the
+			       test */
+  u8 report_interval_jitter; /**< Report jitter in periodic reports */
 
   /*
    * Flags
@@ -119,6 +149,7 @@ typedef struct
   u8 test_failed;
   u8 transport_proto;
   u8 barrier_acq_needed;
+  u8 include_buffer_offset;
 
   vlib_main_t *vlib_main;
 } ec_main_t;
@@ -139,6 +170,12 @@ typedef enum ec_cli_signal_
   EC_CLI_STOP,
   EC_CLI_TEST_DONE
 } ec_cli_signal_t;
+
+typedef enum ec_rtt_stat_
+{
+  EC_UDP_RTT_TX_FLAG = 1,
+  EC_UDP_RTT_RX_FLAG = 2
+} ec_rtt_stat;
 
 void ec_program_connects (void);
 

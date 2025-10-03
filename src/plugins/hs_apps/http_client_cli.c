@@ -167,7 +167,8 @@ hcc_ts_connected_callback (u32 app_index, u32 hc_index, session_t *as,
   msg.method_type = HTTP_REQ_GET;
   /* request target */
   msg.data.target_path_offset = 0;
-  msg.data.target_path_len = vec_len (hcm->http_query);
+  /* request target len must be without null termination */
+  msg.data.target_path_len = strlen ((char *) hcm->http_query);
   /* custom headers */
   msg.data.headers_offset = msg.data.target_path_len;
   msg.data.headers_len = headers.tail_offset;
@@ -179,7 +180,7 @@ hcc_ts_connected_callback (u32 app_index, u32 hc_index, session_t *as,
     msg.data.target_path_len + msg.data.headers_len + msg.data.body_len;
 
   svm_fifo_seg_t segs[3] = { { (u8 *) &msg, sizeof (msg) },
-			     { hcm->http_query, vec_len (hcm->http_query) },
+			     { hcm->http_query, msg.data.target_path_len },
 			     { headers_buf, msg.data.headers_len } };
 
   rv = svm_fifo_enqueue_segments (as->tx_fifo, segs, 3, 0 /* allow partial */);
@@ -269,6 +270,8 @@ hcc_ts_rx_callback (session_t *ts)
     }
 
   u32 max_deq = svm_fifo_max_dequeue (ts->rx_fifo);
+  if (!max_deq)
+    goto done;
 
   u32 n_deq = clib_min (hs->to_recv, max_deq);
   u64 curr = vec_len (hcm->http_response);
@@ -281,6 +284,12 @@ hcc_ts_rx_callback (session_t *ts)
 
   if (rv != n_deq)
     return -1;
+
+  if (svm_fifo_needs_deq_ntf (ts->rx_fifo, n_deq))
+    {
+      svm_fifo_clear_deq_ntf (ts->rx_fifo);
+      session_program_transport_io_evt (ts->handle, SESSION_IO_EVT_RX);
+    }
 
   vec_set_len (hcm->http_response, curr + n_deq);
   ASSERT (hs->to_recv >= rv);
@@ -578,8 +587,6 @@ hcc_command_fn (vlib_main_t *vm, unformat_input_t *input,
 	;
       else if (unformat (line_input, "secret %lu", &hcm->appns_secret))
 	;
-      else if (unformat (line_input, "query %s", &hcm->http_query))
-	;
       else
 	{
 	  err = clib_error_return (0, "unknown input `%U'",
@@ -597,13 +604,19 @@ hcc_command_fn (vlib_main_t *vm, unformat_input_t *input,
       goto done;
     }
 
+  if ((rv = parse_target ((char **) &hcm->uri, (char **) &hcm->http_query)))
+    {
+      err = clib_error_return (0, "target parse error: %U",
+			       format_session_error, rv);
+      goto done;
+    }
+
   if ((rv = parse_uri ((char *) hcm->uri, &hcm->connect_sep)))
     {
       err = clib_error_return (0, "Uri parse error: %d", rv);
       goto done;
     }
-  hcm->need_crypto = hcm->connect_sep.transport_proto == TRANSPORT_PROTO_TLS;
-  hcm->connect_sep.transport_proto = TRANSPORT_PROTO_HTTP;
+  hcm->need_crypto = hcm->connect_sep.flags & SESSION_ENDPT_CFG_F_SECURE;
 
   session_enable_disable_args_t args = { .is_en = 1,
 					 .rt_engine_type =
@@ -630,8 +643,9 @@ done:
 
 VLIB_CLI_COMMAND (hcc_command, static) = {
   .path = "http cli client",
-  .short_help = "[appns <app-ns> secret <appns-secret>] uri http://<ip-addr> "
-		"query <query-string> [no-output]",
+  .short_help =
+    "[appns <app-ns> secret <appns-secret>] uri http[s]://<ip-addr>/<target> "
+    "[no-output]",
   .function = hcc_command_fn,
   .is_mp_safe = 1,
 };
@@ -640,9 +654,11 @@ static clib_error_t *
 hcc_main_init (vlib_main_t *vm)
 {
   hcc_main_t *hcm = &hcc_main;
+  session_endpoint_cfg_t sep_null = SESSION_ENDPOINT_CFG_NULL;
 
   hcm->app_index = ~0;
   hcm->vlib_main = vm;
+  hcm->connect_sep = sep_null;
   return 0;
 }
 

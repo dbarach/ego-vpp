@@ -17,17 +17,9 @@
 
 #include <vlibmemory/api.h>
 #include <svm/message_queue.h>
+#include <vnet/session/application_crypto.h>
 #include <vnet/session/session_types.h>
-#include <vnet/tls/tls_test.h>
 #include <svm/fifo_segment.h>
-
-typedef struct certificate_
-{
-  u32 *app_interests;		/* vec of application index asking for deletion cb */
-  u32 cert_key_index;		/* index in cert & key pool */
-  u8 *key;
-  u8 *cert;
-} app_cert_key_pair_t;
 
 typedef struct session_cb_vft_
 {
@@ -84,8 +76,14 @@ typedef struct session_cb_vft_
   /** Custom fifo allocation for proxy */
   int (*proxy_alloc_session_fifos) (session_t *s);
 
+  /** Allow proxy to write early data */
+  int (*proxy_write_early_data) (session_t *s);
+
   /** Collect and export session logs */
   int (*app_evt_callback) (session_t *s);
+
+  /** Callback to handle async crypto requests */
+  int (*app_crypto_async) (app_crypto_async_req_t *req);
 } session_cb_vft_t;
 
 #define foreach_app_init_args			\
@@ -182,34 +180,6 @@ typedef struct _vnet_application_add_tls_key_args_t
   u8 *key;
 } vnet_app_add_tls_key_args_t;
 
-typedef enum crypto_engine_type_
-{
-  CRYPTO_ENGINE_NONE,
-  CRYPTO_ENGINE_OPENSSL,
-  CRYPTO_ENGINE_MBEDTLS,
-  CRYPTO_ENGINE_VPP,
-  CRYPTO_ENGINE_PICOTLS,
-  CRYPTO_ENGINE_LAST = CRYPTO_ENGINE_PICOTLS,
-} crypto_engine_type_t;
-
-typedef struct _vnet_app_add_cert_key_pair_args_
-{
-  u8 *cert;
-  u8 *key;
-  u32 cert_len;
-  u32 key_len;
-  u32 index;
-} vnet_app_add_cert_key_pair_args_t;
-
-typedef struct crypto_ctx_
-{
-  u32 ctx_index;		/**< index in crypto context pool */
-  u32 n_subscribers;		/**< refcount of sessions using said context */
-  u32 ckpair_index;		/**< certificate & key */
-  u8 crypto_engine;
-  void *data;			/**< protocol specific data */
-} crypto_context_t;
-
 /* Application attach options */
 typedef enum
 {
@@ -217,7 +187,7 @@ typedef enum
   APP_OPTIONS_EVT_QUEUE_SIZE,
   APP_OPTIONS_SEGMENT_SIZE,
   APP_OPTIONS_ADD_SEGMENT_SIZE,
-  APP_OPTIONS_PRIVATE_SEGMENT_COUNT,
+  APP_OPTIONS_MAX_FIFO_MEMORY,
   APP_OPTIONS_RX_FIFO_SIZE,
   APP_OPTIONS_TX_FIFO_SIZE,
   APP_OPTIONS_PREALLOC_FIFO_PAIRS,
@@ -225,7 +195,7 @@ typedef enum
   APP_OPTIONS_NAMESPACE,
   APP_OPTIONS_NAMESPACE_SECRET,
   APP_OPTIONS_PROXY_TRANSPORT,
-  APP_OPTIONS_ACCEPT_COOKIE,
+  APP_OPTIONS_UNUSED2,
   APP_OPTIONS_TLS_ENGINE,
   APP_OPTIONS_MAX_FIFO_SIZE,
   APP_OPTIONS_HIGH_WATERMARK,
@@ -246,7 +216,7 @@ typedef enum
   _ (MEMFD_FOR_BUILTIN, "Use memfd for builtin app segs")                     \
   _ (USE_HUGE_PAGE, "Use huge page for FIFO")                                 \
   _ (GET_ORIGINAL_DST, "Get original dst enabled")                            \
-  _ (LOG_COLLECTOR, "App requests log collector")
+  _ (EVT_COLLECTOR, "App requests event collector")
 
 typedef enum _app_options
 {
@@ -342,6 +312,7 @@ typedef struct session_listen_msg_
   ip46_address_t ip;
   u8 flags;
   uword ext_config;
+  u8 dscp;
 } __clib_packed session_listen_msg_t;
 
 STATIC_ASSERT (sizeof (session_listen_msg_t) <= SESSION_CTRL_MSG_MAX_SIZE,
@@ -660,32 +631,44 @@ app_send_io_evt_to_vpp (svm_msg_q_t * mq, u32 session_index, u8 evt_type,
     }
 }
 
-#define app_send_dgram_raw(f, at, vpp_evt_q, data, len, evt_type, do_evt,     \
-			   noblock)                                           \
-  app_send_dgram_raw_gso (f, at, vpp_evt_q, data, len, 0, evt_type, do_evt,   \
-			  noblock)
+/* NOTE: Make sure the segs parameter has the first element of the array empty
+to write-in the header */
+always_inline u32
+app_gen_dgram_header (svm_fifo_seg_t *segs, u32 data_len,
+		      app_session_transport_t *at, u16 gso_size)
+{
+  session_dgram_hdr_t *hdr = (session_dgram_hdr_t *) segs[0].data;
+  u32 dgram_len = data_len;
+
+  ASSERT (segs != NULL);
+  ASSERT (segs[0].data != NULL);
+  ASSERT (segs[0].len == sizeof (session_dgram_hdr_t));
+
+  hdr->data_length = data_len;
+  hdr->data_offset = 0;
+  clib_memcpy_fast (&hdr->rmt_ip, &at->rmt_ip, sizeof (ip46_address_t));
+  hdr->is_ip4 = at->is_ip4;
+  hdr->rmt_port = at->rmt_port;
+  clib_memcpy_fast (&hdr->lcl_ip, &at->lcl_ip, sizeof (ip46_address_t));
+  hdr->lcl_port = at->lcl_port;
+  hdr->gso_size = gso_size;
+  dgram_len += segs[0].len;
+
+  return dgram_len;
+}
 
 always_inline int
-app_send_dgram_raw_gso (svm_fifo_t *f, app_session_transport_t *at,
-			svm_msg_q_t *vpp_evt_q, u8 *data, u32 len,
-			u16 gso_size, u8 evt_type, u8 do_evt, u8 noblock)
+app_send_dgram_segs_raw (svm_fifo_t *f, app_session_transport_t *at,
+			 svm_msg_q_t *vpp_evt_q, svm_fifo_seg_t *segs,
+			 u32 nsegs, u32 seg_len, u8 evt_type, u8 do_evt,
+			 u8 noblock)
 {
-  session_dgram_hdr_t hdr;
   int rv;
-  if (svm_fifo_max_enqueue_prod (f) < (sizeof (session_dgram_hdr_t) + len))
+
+  if (svm_fifo_max_enqueue_prod (f) < seg_len)
     return 0;
 
-  hdr.data_length = len;
-  hdr.data_offset = 0;
-  clib_memcpy_fast (&hdr.rmt_ip, &at->rmt_ip, sizeof (ip46_address_t));
-  hdr.is_ip4 = at->is_ip4;
-  hdr.rmt_port = at->rmt_port;
-  clib_memcpy_fast (&hdr.lcl_ip, &at->lcl_ip, sizeof (ip46_address_t));
-  hdr.lcl_port = at->lcl_port;
-  hdr.gso_size = gso_size;
-  svm_fifo_seg_t segs[2] = {{ (u8 *) &hdr, sizeof (hdr) }, { data, len }};
-
-  rv = svm_fifo_enqueue_segments (f, segs, 2, 0 /* allow partial */ );
+  rv = svm_fifo_enqueue_segments (f, segs, nsegs, 0 /* allow partial */);
   if (PREDICT_FALSE (rv < 0))
     return 0;
 
@@ -695,8 +678,25 @@ app_send_dgram_raw_gso (svm_fifo_t *f, app_session_transport_t *at,
 	app_send_io_evt_to_vpp (vpp_evt_q, f->vpp_session_index, evt_type,
 				noblock);
     }
-  return len;
+  return seg_len - sizeof (session_dgram_hdr_t);
 }
+
+always_inline int
+app_send_dgram_raw_gso (svm_fifo_t *f, app_session_transport_t *at,
+			svm_msg_q_t *vpp_evt_q, u8 *data, u32 len,
+			u16 gso_size, u8 evt_type, u8 do_evt, u8 noblock)
+{
+  session_dgram_hdr_t hdr;
+  svm_fifo_seg_t segs[2] = { { (u8 *) &hdr, sizeof (hdr) }, { data, len } };
+  u32 seg_len = app_gen_dgram_header (segs, len, at, gso_size);
+  return app_send_dgram_segs_raw (f, at, vpp_evt_q, segs, 2, seg_len, evt_type,
+				  do_evt, noblock);
+}
+
+#define app_send_dgram_raw(f, at, vpp_evt_q, data, len, evt_type, do_evt,     \
+			   noblock)                                           \
+  app_send_dgram_raw_gso (f, at, vpp_evt_q, data, len, 0, evt_type, do_evt,   \
+			  noblock)
 
 always_inline int
 app_send_dgram (app_session_t * s, u8 * data, u32 len, u8 noblock)
@@ -704,6 +704,22 @@ app_send_dgram (app_session_t * s, u8 * data, u32 len, u8 noblock)
   return app_send_dgram_raw (s->tx_fifo, &s->transport, s->vpp_evt_q, data,
 			     len, SESSION_IO_EVT_TX, 1 /* do_evt */ ,
 			     noblock);
+}
+
+always_inline int
+app_send_dgram_segs (app_session_t *s, svm_fifo_seg_t *segs, u32 data_nsegs,
+		     u32 data_len, u8 noblock)
+{
+  session_dgram_hdr_t hdr;
+  ASSERT (segs != NULL);
+  ASSERT (segs[0].len == 0);
+  segs[0].data = (u8 *) &hdr;
+  segs[0].len = sizeof (hdr);
+
+  u32 seg_len = app_gen_dgram_header (segs, data_len, &s->transport, 0);
+  return app_send_dgram_segs_raw (s->tx_fifo, &s->transport, s->vpp_evt_q,
+				  segs, data_nsegs + 1, seg_len,
+				  SESSION_IO_EVT_TX, 1 /* do_evt */, noblock);
 }
 
 always_inline int

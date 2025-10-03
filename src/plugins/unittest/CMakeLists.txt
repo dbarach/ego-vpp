@@ -56,9 +56,12 @@ add_vpp_plugin(unittest
   tcp_test.c
   test_buffer.c
   unittest.c
+  udp_test.c
   util_test.c
   vlib_test.c
   counter_test.c
+  ring_buffer_test.c
+  histogram_test.c
 
   COMPONENT
   vpp-plugin-devtools

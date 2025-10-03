@@ -41,7 +41,8 @@ static struct
   { RTE_ETH_TX_OFFLOAD_OUTER_IPV4_CKSUM, VNET_HW_IF_CAP_TX_IP4_OUTER_CKSUM },
   { RTE_ETH_TX_OFFLOAD_OUTER_UDP_CKSUM, VNET_HW_IF_CAP_TX_UDP_OUTER_CKSUM },
   { RTE_ETH_TX_OFFLOAD_TCP_TSO, VNET_HW_IF_CAP_TCP_GSO },
-  { RTE_ETH_TX_OFFLOAD_VXLAN_TNL_TSO, VNET_HW_IF_CAP_VXLAN_TNL_GSO }
+  { RTE_ETH_TX_OFFLOAD_VXLAN_TNL_TSO, VNET_HW_IF_CAP_VXLAN_TNL_GSO },
+  { RTE_ETH_TX_OFFLOAD_IPIP_TNL_TSO, VNET_HW_IF_CAP_IPIP_TNL_GSO }
 };
 
 void
@@ -100,8 +101,9 @@ dpdk_device_setup (dpdk_device_t * xd)
       RTE_ETH_TX_OFFLOAD_OUTER_IPV4_CKSUM | RTE_ETH_TX_OFFLOAD_OUTER_UDP_CKSUM;
 
   if (xd->conf.disable_tx_checksum_offload == 0)
-    txo |= RTE_ETH_TX_OFFLOAD_IPV4_CKSUM | RTE_ETH_TX_OFFLOAD_TCP_CKSUM |
-	   RTE_ETH_TX_OFFLOAD_UDP_CKSUM;
+    txo |= RTE_ETH_TX_OFFLOAD_OUTER_IPV4_CKSUM |
+	   RTE_ETH_TX_OFFLOAD_OUTER_UDP_CKSUM | RTE_ETH_TX_OFFLOAD_IPV4_CKSUM |
+	   RTE_ETH_TX_OFFLOAD_TCP_CKSUM | RTE_ETH_TX_OFFLOAD_UDP_CKSUM;
 
   if (xd->conf.disable_multi_seg == 0)
     {
@@ -118,7 +120,7 @@ dpdk_device_setup (dpdk_device_t * xd)
   /* per-device offload config */
   if (xd->conf.enable_tso)
     txo |= RTE_ETH_TX_OFFLOAD_TCP_CKSUM | RTE_ETH_TX_OFFLOAD_TCP_TSO |
-	   RTE_ETH_TX_OFFLOAD_VXLAN_TNL_TSO;
+	   RTE_ETH_TX_OFFLOAD_VXLAN_TNL_TSO | RTE_ETH_TX_OFFLOAD_IPIP_TNL_TSO;
 
   if (xd->conf.disable_rx_scatter)
     rxo &= ~RTE_ETH_RX_OFFLOAD_SCATTER;
@@ -512,6 +514,70 @@ dpdk_get_vmbus_device (const struct rte_eth_dev_info *info)
     return NULL;
 }
 #endif /* __linux__ */
+
+clib_error_t *
+dpdk_read_eeprom (vnet_main_t *vnm, vnet_hw_interface_t *hi,
+		  vnet_interface_eeprom_t **eeprom)
+{
+  dpdk_main_t *dm = &dpdk_main;
+  vnet_interface_main_t *im = &vnm->interface_main;
+  dpdk_device_t *xd;
+  vnet_device_class_t *dc;
+  struct rte_eth_dev_module_info mi = { 0 };
+  struct rte_dev_eeprom_info ei = { 0 };
+
+  dc = vec_elt_at_index (im->device_classes, hi->dev_class_index);
+  *eeprom = NULL;
+
+  if (dc->index != dpdk_device_class.index)
+    {
+      return clib_error_return (0, "Interface %v is not a DPDK interface",
+				hi->name);
+    }
+
+  if (hi->dev_instance >= vec_len (dm->devices))
+    {
+      return clib_error_return (0, "Invalid device instance %u",
+				hi->dev_instance);
+    }
+
+  xd = vec_elt_at_index (dm->devices, hi->dev_instance);
+
+  /* Get module info */
+  if (rte_eth_dev_get_module_info (xd->port_id, &mi) != 0)
+    {
+      return clib_error_return (
+	0, "Module info not available for interface %v", hi->name);
+    }
+  if (mi.eeprom_len > 1024)
+    {
+      return clib_error_return (0, "EEPROM invalid length: %u bytes",
+				mi.eeprom_len);
+    }
+
+  /* Allocate EEPROM structure */
+  *eeprom = clib_mem_alloc (sizeof (vnet_interface_eeprom_t));
+  if (!*eeprom)
+    {
+      return clib_error_return (0, "Memory allocation failed");
+    }
+
+  /* Get EEPROM data */
+  ei.length = mi.eeprom_len;
+  ei.data = (*eeprom)->eeprom_raw;
+
+  if (rte_eth_dev_get_module_eeprom (xd->port_id, &ei) != 0)
+    {
+      clib_mem_free (*eeprom);
+      *eeprom = NULL;
+      return clib_error_return (0, "EEPROM read error for interface %v",
+				hi->name);
+    }
+
+  (*eeprom)->eeprom_len = mi.eeprom_len;
+  (*eeprom)->eeprom_type = mi.type;
+  return 0;
+}
 
 /*
  * fd.io coding-style-patch-verification: ON

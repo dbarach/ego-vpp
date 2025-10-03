@@ -231,11 +231,9 @@ dhcp_client_addr_callback (u32 * cindex)
   /* add the address to the interface if they've changed since the last time */
   if (0 != clib_memcmp (&c->installed, &c->learned, sizeof (c->learned)))
     {
-      DHCP_WARN("Replace old DHCP address %U/%d", format_ip4_address,
-                &c->installed.leased_address, c->installed.subnet_mask_width);
       dhcp_client_release_address (dcm, c);
       dhcp_client_acquire_address (dcm, c);
-      DHCP_WARN("With new DHCP address %U/%d", format_ip4_address,
+      DHCP_WARN("Replace DHCP addr With new address %U/%d", format_ip4_address,
                 &c->installed.leased_address, c->installed.subnet_mask_width);
     }
 
@@ -517,7 +515,11 @@ send_dhcp_pkt (dhcp_client_main_t * dcm, dhcp_client_t * c,
       vnet_buffer (b)->ip.adj_index[VLIB_TX] = c->ai_bcast;
     }
   else
-    node_index = dcm->ip4_lookup_node_index;
+    {
+      node_index = dcm->ip4_lookup_node_index;
+      vnet_buffer (b)->sw_if_index[VLIB_TX] =
+	fib_table_get_index_for_sw_if_index (FIB_PROTOCOL_IP4, c->sw_if_index);
+    }
 
   /* Enqueue the packet right now */
   f = vlib_get_frame_to_node (vm, node_index);

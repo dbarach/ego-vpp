@@ -16,6 +16,7 @@
 #include <common.h>
 
 struct roc_model oct_model;
+oct_main_t oct_main;
 
 VLIB_REGISTER_LOG_CLASS (oct_log, static) = {
   .class_name = "octeon",
@@ -59,6 +60,48 @@ static struct
      "Marvell Octeon-10 Cryptographic Accelerator Unit VF"),
   _ (0xa0fe, O9K_CPT_VF, "Marvell Octeon-9 Cryptographic Accelerator Unit VF"),
 #undef _
+};
+
+static vnet_dev_arg_t oct_drv_args[] = {
+  {
+    .id = OCT_DRV_ARG_NPA_MAX_POOLS,
+    .name = "npa_max_pools",
+    .desc = "Max NPA pools",
+    .type = VNET_DEV_ARG_TYPE_UINT32,
+    .default_val.uint32 = 128,
+  },
+  {
+    .id = OCT_DRV_ARG_END,
+    .name = "end",
+    .desc = "Argument end",
+    .type = VNET_DEV_ARG_END,
+  },
+};
+
+static vnet_dev_arg_t oct_port_args[] = {
+  {
+    .id = OCT_PORT_ARG_EN_ETH_PAUSE_FRAME,
+    .name = "eth_pause_frame",
+    .desc = "Enable ethernet pause frame support, applicable to network "
+	    "devices only",
+    .type = VNET_DEV_ARG_TYPE_BOOL,
+    .default_val.boolean = false,
+  },
+  {
+    .id = OCT_PORT_ARG_RSS_FLOW_KEY,
+    .name = "rss_flow_key",
+    .desc = "RSS Flow Key Bitmap, applicable to network devices only",
+    .type = VNET_DEV_ARG_TYPE_UINT32,
+    .default_val.uint32 = FLOW_KEY_TYPE_IPV4 | FLOW_KEY_TYPE_IPV6 |
+			  FLOW_KEY_TYPE_TCP | FLOW_KEY_TYPE_UDP |
+			  FLOW_KEY_TYPE_SCTP,
+  },
+  {
+    .id = OCT_PORT_ARG_END,
+    .name = "end",
+    .desc = "Argument end",
+    .type = VNET_DEV_ARG_END,
+  },
 };
 
 static vnet_dev_arg_t oct_dev_args[] = {
@@ -109,6 +152,29 @@ cnx_return_roc_err (vnet_dev_t *dev, int rrv, char *fmt, ...)
 }
 
 static vnet_dev_rv_t
+oct_config_args (vlib_main_t *vm, vnet_dev_driver_t *drv)
+{
+  if (!oct_main.is_config_done)
+    {
+      foreach_vnet_dev_port_args (arg, drv)
+	{
+	  if (arg->id == OCT_DRV_ARG_NPA_MAX_POOLS &&
+	      vnet_dev_arg_get_uint32 (arg))
+	    oct_main.npa_max_pools = vnet_dev_arg_get_uint32 (arg);
+	}
+      oct_main.is_config_done = 1;
+    }
+  else
+    {
+      log_err (NULL, "Driver config arguments are already initialized or "
+		     "devices are already initialized");
+      return VNET_DEV_ERR_UNSUPPORTED_CONFIG;
+    }
+
+  return 0;
+}
+
+static vnet_dev_rv_t
 oct_alloc (vlib_main_t *vm, vnet_dev_t *dev)
 {
   oct_device_t *cd = vnet_dev_get_data (dev);
@@ -154,6 +220,16 @@ oct_init_nix (vlib_main_t *vm, vnet_dev_t *dev)
 	.tx_offloads = {
 	  .ip4_cksum = 1,
 	},
+
+      },
+      .default_rss_key = {
+        .key = {
+          0xfe, 0xed, 0x0b, 0xad, 0xfe, 0xed, 0x0b, 0xad, 0xad, 0x0b, 0xed, 0xfe,
+          0xad, 0x0b, 0xed, 0xfe, 0x13, 0x57, 0x9b, 0xef, 0x24, 0x68, 0xac, 0x0e,
+          0x91, 0x72, 0x53, 0x11, 0x82, 0x64, 0x20, 0x44, 0x12, 0xef, 0x34, 0xcd,
+          0x56, 0xbc, 0x78, 0x9a, 0x9a, 0x78, 0xbc, 0x56, 0xcd, 0x34, 0xef, 0x12,
+        },
+        .length = 48,
       },
       .ops = {
         .init = oct_port_init,
@@ -168,6 +244,7 @@ oct_init_nix (vlib_main_t *vm, vnet_dev_t *dev)
       },
       .data_size = sizeof (oct_port_t),
       .initial_data = &oct_port,
+      .args = oct_port_args,
     },
     .rx_node = &oct_rx_node,
     .tx_node = &oct_tx_node,
@@ -349,6 +426,13 @@ oct_init (vlib_main_t *vm, vnet_dev_t *dev)
   vlib_pci_config_hdr_t pci_hdr;
   vnet_dev_rv_t rv;
 
+  /*
+   * Drivers config arguments should be initialized by this time
+   * otherwise don't allow to set after device init
+   */
+  if (!oct_main.is_config_done)
+    oct_main.is_config_done = 1;
+
   rv = vnet_dev_pci_read_config_header (vm, dev, &pci_hdr);
   if (rv != VNET_DEV_OK)
     return rv;
@@ -440,6 +524,7 @@ VNET_DEV_REGISTER_DRIVER (octeon) = {
   .bus = "pci",
   .device_data_sz = sizeof (oct_device_t),
   .ops = {
+    .config_args = oct_config_args,
     .alloc = oct_alloc,
     .init = oct_init,
     .deinit = oct_deinit,
@@ -447,7 +532,15 @@ VNET_DEV_REGISTER_DRIVER (octeon) = {
     .probe = oct_probe,
   },
   .args = oct_dev_args,
+  .drv_args = oct_drv_args,
 };
+
+static int
+oct_npa_max_pools_set_cb (struct plt_pci_device *pci_dev)
+{
+  roc_idev_npa_maxpools_set (oct_main.npa_max_pools);
+  return 0;
+}
 
 static clib_error_t *
 oct_plugin_init (vlib_main_t *vm)
@@ -470,6 +563,11 @@ oct_plugin_init (vlib_main_t *vm)
   if (!roc_model_is_cn10k ())
     return clib_error_return (0, "OCTEON model is not OCTEON10");
 #endif
+
+  /* set default values in oct_main */
+  oct_main.npa_max_pools = OCT_NPA_MAX_POOLS;
+
+  roc_npa_lf_init_cb_register (oct_npa_max_pools_set_cb);
 
   return 0;
 }

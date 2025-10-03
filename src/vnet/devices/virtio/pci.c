@@ -530,9 +530,9 @@ virtio_pci_offloads (vlib_main_t * vm, virtio_if_t * vif, int gso_enabled,
 	    {
 	      vif->gso_enabled = 1;
 	      vif->csum_offload_enabled = 1;
-	      cc.val = cc.mask = VNET_HW_IF_CAP_TCP_GSO |
-				 VNET_HW_IF_CAP_TX_TCP_CKSUM |
-				 VNET_HW_IF_CAP_TX_UDP_CKSUM;
+	      cc.val = cc.mask =
+		VNET_HW_IF_CAP_TCP_GSO | VNET_HW_IF_CAP_TX_TCP_CKSUM |
+		VNET_HW_IF_CAP_TX_UDP_CKSUM | VNET_HW_IF_CAP_TX_FIXED_OFFSET;
 	    }
 	}
       else if (csum_offload_enabled
@@ -546,10 +546,12 @@ virtio_pci_offloads (vlib_main_t * vm, virtio_if_t * vif, int gso_enabled,
 	    {
 	      vif->csum_offload_enabled = 1;
 	      vif->gso_enabled = 0;
-	      cc.val =
-		VNET_HW_IF_CAP_TX_TCP_CKSUM | VNET_HW_IF_CAP_TX_UDP_CKSUM;
+	      cc.val = VNET_HW_IF_CAP_TX_TCP_CKSUM |
+		       VNET_HW_IF_CAP_TX_UDP_CKSUM |
+		       VNET_HW_IF_CAP_TX_FIXED_OFFSET;
 	      cc.mask = VNET_HW_IF_CAP_TCP_GSO | VNET_HW_IF_CAP_TX_TCP_CKSUM |
-			VNET_HW_IF_CAP_TX_UDP_CKSUM;
+			VNET_HW_IF_CAP_TX_UDP_CKSUM |
+			VNET_HW_IF_CAP_TX_FIXED_OFFSET;
 	    }
 	}
       else
@@ -563,7 +565,8 @@ virtio_pci_offloads (vlib_main_t * vm, virtio_if_t * vif, int gso_enabled,
 	      vif->csum_offload_enabled = 0;
 	      vif->gso_enabled = 0;
 	      cc.val = 0;
-	      cc.mask = VNET_HW_IF_CAP_L4_TX_CKSUM | VNET_HW_IF_CAP_TCP_GSO;
+	      cc.mask = VNET_HW_IF_CAP_TX_CKSUM | VNET_HW_IF_CAP_TCP_GSO |
+			VNET_HW_IF_CAP_TX_FIXED_OFFSET;
 	    }
 	}
     }
@@ -1410,7 +1413,7 @@ virtio_pci_create_if (vlib_main_t * vm, virtio_pci_create_if_args_t * args)
 	}
     }
 
-  pool_get (vim->interfaces, vif);
+  pool_get_zero (vim->interfaces, vif);
   vif->dev_instance = vif - vim->interfaces;
   vif->per_interface_next_index = ~0;
   vif->pci_addr.as_u32 = args->addr;
@@ -1437,6 +1440,9 @@ virtio_pci_create_if (vlib_main_t * vm, virtio_pci_create_if_args_t * args)
   vlib_pci_set_private_data (vm, h, vif->dev_instance);
   vif->numa_node = vlib_pci_get_numa_node (vm, h);
   vif->type = VIRTIO_IF_TYPE_PCI;
+
+  if (args->if_name)
+    CLIB_SWAP (args->if_name, vif->initial_if_name);
 
   if ((error = vlib_pci_bus_master_enable (vm, h)))
     {
@@ -1678,7 +1684,7 @@ virtio_pci_delete_if (vlib_main_t * vm, virtio_if_t * vif)
   vec_free (vif->cxq_vring);
 
   clib_error_free (vif->error);
-  memset (vif, 0, sizeof (*vif));
+  vec_free (vif->initial_if_name);
   pool_put (vim->interfaces, vif);
 
   return 0;

@@ -16,6 +16,7 @@
  */
 
 #include <hs_apps/echo_client.h>
+#include <vnet/tcp/tcp_types.h>
 
 static ec_main_t ec_main;
 
@@ -58,6 +59,14 @@ ec_worker_get (clib_thread_index_t thread_index)
   return vec_elt_at_index (ec_main.wrk, thread_index);
 }
 
+static inline void
+ec_sessions_stop_clean ()
+{
+  ec_main_t *ecm = &ec_main;
+  ecm->test_timeout += 1;
+  ecm->end_test = true;
+}
+
 static inline ec_session_t *
 ec_session_alloc (ec_worker_t *wrk)
 {
@@ -77,21 +86,54 @@ ec_session_get (ec_worker_t *wrk, u32 ec_index)
 }
 
 static void
+update_rtt_stats (f64 session_rtt)
+{
+  ec_main_t *ecm = &ec_main;
+  clib_spinlock_lock (&ecm->rtt_stats.w_lock);
+  ecm->rtt_stats.last_rtt = session_rtt;
+  ecm->rtt_stats.sum_rtt += session_rtt;
+  ecm->rtt_stats.n_sum++;
+  if (session_rtt < ecm->rtt_stats.min_rtt)
+    ecm->rtt_stats.min_rtt = session_rtt;
+  if (session_rtt > ecm->rtt_stats.max_rtt)
+    ecm->rtt_stats.max_rtt = session_rtt;
+  clib_spinlock_unlock (&ecm->rtt_stats.w_lock);
+}
+
+static void
+update_rtt_stats_tcp (ec_session_t *es)
+{
+  session_t *s = session_get_from_handle_if_valid (es->vpp_session_handle);
+  if (s)
+    {
+      transport_connection_t *tc;
+      tcp_connection_t *tcpc;
+      tc = transport_get_connection (TRANSPORT_PROTO_TCP, s->connection_index,
+				     s->thread_index);
+      if (PREDICT_TRUE (tc != NULL))
+	{
+	  tcpc = tcp_get_connection_from_transport (tc);
+	  update_rtt_stats (tcpc->srtt * TCP_TICK);
+	}
+    }
+}
+
+static void
 send_data_chunk (ec_main_t *ecm, ec_session_t *es)
 {
-  const u64 max_burst = 128000;
   u8 *test_data = ecm->connect_test_data;
-  int test_buf_len, test_buf_offset, rv;
+  int test_buf_len, rv;
   u64 bytes_to_send;
-  u32 bytes_this_chunk;
+  u32 bytes_this_chunk, test_buf_offset;
   svm_fifo_t *f = es->tx_fifo;
 
   test_buf_len = vec_len (test_data);
   ASSERT (test_buf_len > 0);
   if (ecm->run_time)
-    bytes_to_send = clib_min (svm_fifo_max_enqueue_prod (f), max_burst);
+    bytes_to_send =
+      clib_min (svm_fifo_max_enqueue_prod (f), ecm->max_chunk_bytes);
   else
-    bytes_to_send = clib_min (es->bytes_to_send, max_burst);
+    bytes_to_send = clib_min (es->bytes_to_send, ecm->max_chunk_bytes);
   if (ecm->throughput)
     bytes_to_send = clib_min (es->bytes_paced_current, bytes_to_send);
   test_buf_offset = es->bytes_sent % test_buf_len;
@@ -129,6 +171,7 @@ send_data_chunk (ec_main_t *ecm, ec_session_t *es)
 
 	  hdr.data_length = rv;
 	  hdr.data_offset = 0;
+	  hdr.gso_size = 0;
 	  clib_memcpy_fast (&hdr.rmt_ip, &at->rmt_ip,
 			    sizeof (ip46_address_t));
 	  hdr.is_ip4 = at->is_ip4;
@@ -145,15 +188,39 @@ send_data_chunk (ec_main_t *ecm, ec_session_t *es)
 	  bytes_this_chunk = clib_min (bytes_this_chunk, max_enqueue);
 	  if (!ecm->throughput)
 	    bytes_this_chunk = clib_min (bytes_this_chunk, 1460);
-	  rv =
-	    app_send_dgram ((app_session_t *) es, test_data + test_buf_offset,
-			    bytes_this_chunk, 0);
+	  if (ecm->include_buffer_offset)
+	    {
+	      /* Include buffer offset info to also be able to verify
+	       * out-of-order packets */
+	      svm_fifo_seg_t data_segs[3] = {
+		{ NULL, 0 },
+		{ (u8 *) &test_buf_offset, sizeof (u32) },
+		{ test_data + test_buf_offset, bytes_this_chunk }
+	      };
+	      if (ecm->echo_bytes &&
+		  ((es->rtt_stat & EC_UDP_RTT_TX_FLAG) == 0))
+		{
+		  es->rtt_udp_buffer_offset = test_buf_offset;
+		  es->send_rtt = vlib_time_now (vlib_get_main ());
+		  es->rtt_stat |= EC_UDP_RTT_TX_FLAG;
+		}
+	      rv = app_send_dgram_segs ((app_session_t *) es, data_segs, 2,
+					bytes_this_chunk + sizeof (u32), 0);
+	      if (rv)
+		rv -= sizeof (u32);
+	    }
+	  else
+	    rv = app_send_dgram ((app_session_t *) es,
+				 test_data + test_buf_offset, bytes_this_chunk,
+				 0);
 	}
     }
 
   /* If we managed to enqueue data... */
   if (rv > 0)
     {
+      if (es->is_dgram)
+	es->dgrams_sent++;
       /* Account for it... */
       es->bytes_sent += rv;
       if (ecm->run_time)
@@ -190,21 +257,66 @@ receive_data_chunk (ec_worker_t *wrk, ec_session_t *es)
 {
   ec_main_t *ecm = &ec_main;
   svm_fifo_t *rx_fifo = es->rx_fifo;
+  session_dgram_pre_hdr_t ph;
   int n_read, i;
+  u8 *rx_buf_start = wrk->rx_buf;
+  u32 test_buf_offset = es->bytes_received;
 
-  if (ecm->cfg.test_bytes)
+  if (ecm->include_buffer_offset)
     {
       n_read =
 	app_recv ((app_session_t *) es, wrk->rx_buf, vec_len (wrk->rx_buf));
+      if (ecm->transport_proto != TRANSPORT_PROTO_TCP)
+	{
+	  test_buf_offset = *(u32 *) wrk->rx_buf;
+	  rx_buf_start = wrk->rx_buf + sizeof (u32);
+	  n_read -= sizeof (u32);
+	  es->dgrams_received++;
+	}
     }
   else
     {
-      n_read = svm_fifo_max_dequeue_cons (rx_fifo);
-      svm_fifo_dequeue_drop (rx_fifo, n_read);
+      if (!es->is_dgram)
+	{
+	  n_read = svm_fifo_max_dequeue_cons (rx_fifo);
+	  svm_fifo_dequeue_drop (rx_fifo, n_read);
+	}
+      else
+	{
+	  n_read = svm_fifo_max_dequeue_cons (rx_fifo);
+	  if (n_read <= sizeof (session_dgram_hdr_t))
+	    return;
+	  svm_fifo_peek (rx_fifo, 0, sizeof (ph), (u8 *) &ph);
+	  if (n_read < (ph.data_length + SESSION_CONN_HDR_LEN))
+	    return;
+	  svm_fifo_dequeue_drop (rx_fifo,
+				 ph.data_length + SESSION_CONN_HDR_LEN);
+	  n_read = ph.data_length;
+	  es->dgrams_received++;
+	}
     }
 
   if (n_read > 0)
     {
+      if (ecm->transport_proto == TRANSPORT_PROTO_UDP && ecm->echo_bytes &&
+	  (es->rtt_stat & EC_UDP_RTT_RX_FLAG) == 0)
+	{
+	  /* For periodic reports, verify that the buffer offset matches and we
+	   * received the expected dgram, otherwise just match up the first
+	   * received one */
+	  if (((test_buf_offset == es->rtt_udp_buffer_offset) &&
+	       ecm->report_interval) ||
+	      !ecm->report_interval)
+	    {
+	      f64 rtt;
+	      es->rtt_stat |= EC_UDP_RTT_RX_FLAG;
+	      rtt = vlib_time_now (vlib_get_main ()) - es->send_rtt;
+	      if (ecm->rtt_stats.last_rtt > 0)
+		es->jitter =
+		  clib_abs (rtt * 1000 - ecm->rtt_stats.last_rtt * 1000);
+	      update_rtt_stats (rtt);
+	    }
+	}
       if (ecm->cfg.verbose)
 	{
           ELOG_TYPE_DECLARE (e) =
@@ -224,16 +336,23 @@ receive_data_chunk (ec_worker_t *wrk, ec_session_t *es)
 	{
 	  for (i = 0; i < n_read; i++)
 	    {
-	      if (wrk->rx_buf[i] != ((es->bytes_received + i) & 0xff))
+	      if (rx_buf_start[i] != ((test_buf_offset + i) & 0xff))
 		{
 		  ec_err ("read %d error at byte %lld, 0x%x not 0x%x", n_read,
-			  es->bytes_received + i, wrk->rx_buf[i],
-			  ((es->bytes_received + i) & 0xff));
+			  test_buf_offset + i, rx_buf_start[i],
+			  ((test_buf_offset + i) & 0xff));
 		  ecm->test_failed = 1;
 		}
 	    }
 	}
-      ASSERT (n_read <= es->bytes_to_receive);
+      if (n_read > es->bytes_to_receive)
+	{
+	  ec_err ("expected %llu, received %llu bytes!",
+		  es->bytes_received + es->bytes_to_receive,
+		  es->bytes_received + n_read);
+	  ecm->test_failed = 1;
+	  es->bytes_to_receive = n_read;
+	}
       es->bytes_to_receive -= n_read;
       es->bytes_received += n_read;
     }
@@ -294,7 +413,7 @@ ec_node_fn (vlib_main_t *vm, vlib_node_runtime_t *node, vlib_frame_t *frame)
       ecm->repeats = 0;
     }
 
-  time_now = vlib_time_now (ecm->vlib_main);
+  time_now = vlib_time_now (vm);
   /*
    * Handle connections in this batch
    */
@@ -319,14 +438,19 @@ ec_node_fn (vlib_main_t *vm, vlib_node_runtime_t *node, vlib_frame_t *frame)
 	  delete_session = 0;
 	}
 
-      if (PREDICT_FALSE (delete_session == 1) || ecm->timer_expired)
+      if (PREDICT_FALSE (delete_session == 1) || ecm->end_test)
 	{
 	  clib_atomic_fetch_add (&ecm->tx_total, es->bytes_sent);
 	  clib_atomic_fetch_add (&ecm->rx_total, es->bytes_received);
+	  clib_atomic_fetch_add (&ecm->tx_total_dgrams, es->dgrams_sent);
+	  clib_atomic_fetch_add (&ecm->rx_total_dgrams, es->dgrams_received);
 	  s = session_get_from_handle_if_valid (es->vpp_session_handle);
 
 	  if (s)
 	    {
+	      if (ecm->transport_proto == TRANSPORT_PROTO_TCP)
+		update_rtt_stats_tcp (es);
+
 	      vnet_disconnect_args_t _a, *a = &_a;
 	      a->handle = session_handle (s);
 	      a->app_index = ecm->app_index;
@@ -380,11 +504,13 @@ ec_reset_runtime_config (ec_main_t *ecm)
   ecm->tls_engine = CRYPTO_ENGINE_OPENSSL;
   ecm->no_copy = 0;
   ecm->run_test = EC_STARTING;
-  ecm->timer_expired = false;
+  ecm->end_test = false;
   ecm->ready_connections = 0;
   ecm->connect_conn_index = 0;
   ecm->rx_total = 0;
   ecm->tx_total = 0;
+  ecm->rx_total_dgrams = 0;
+  ecm->tx_total_dgrams = 0;
   ecm->barrier_acq_needed = 0;
   ecm->prealloc_sessions = 0;
   ecm->prealloc_fifos = 0;
@@ -396,6 +522,20 @@ ec_reset_runtime_config (ec_main_t *ecm)
   ecm->run_time = 0;
   ecm->throughput = 0;
   ecm->pacing_window_len = 1;
+  ecm->max_chunk_bytes = 128 << 10;
+  ecm->report_interval = 0;
+  ecm->report_interval_total = 0;
+  ecm->last_print_time = 0;
+  ecm->last_total_tx_bytes = 0;
+  ecm->last_total_rx_bytes = 0;
+  ecm->last_total_rx_dgrams = 0;
+  ecm->last_total_tx_dgrams = 0;
+  ecm->report_interval_jitter = 0;
+  ecm->include_buffer_offset = 0;
+  clib_memset (&ecm->rtt_stats, 0, sizeof (ec_rttstat_t));
+  ecm->rtt_stats.min_rtt = CLIB_F64_MAX;
+  if (ecm->rtt_stats.w_lock == NULL)
+    clib_spinlock_init (&ecm->rtt_stats.w_lock);
   vec_free (ecm->connect_uri);
 }
 
@@ -506,6 +646,7 @@ ec_cleanup (ec_main_t *ecm)
     ecm->pacing_window_len = 1;
   if (ecm->barrier_acq_needed)
     vlib_worker_thread_barrier_sync (ecm->vlib_main);
+  clib_spinlock_free (&ecm->rtt_stats.w_lock);
 }
 
 static int
@@ -670,7 +811,9 @@ ec_calc_tput (ec_main_t *ecm)
   /* find a suitable pacing window length & data chunk size */
   bytes_paced_target =
     ecm->throughput * ecm->pacing_window_len / ecm->n_clients;
-  while (bytes_paced_target > target_size_threshold)
+  while (
+    bytes_paced_target > target_size_threshold ||
+    (ecm->transport_proto == TRANSPORT_PROTO_UDP && bytes_paced_target > 1460))
     {
       ecm->pacing_window_len /= 2;
       bytes_paced_target /= 2;
@@ -793,6 +936,7 @@ ec_session_disconnect (session_t *s)
 {
   ec_main_t *ecm = &ec_main;
   vnet_disconnect_args_t _a = { 0 }, *a = &_a;
+
   a->handle = session_handle (s);
   a->app_index = ecm->app_index;
   vnet_disconnect_session (a);
@@ -914,6 +1058,7 @@ static clib_error_t *
 ec_attach ()
 {
   vnet_app_add_cert_key_pair_args_t _ck_pair, *ck_pair = &_ck_pair;
+  app_ca_trust_add_args_t _ca_args = {}, *ca_args = &_ca_args;
   ec_main_t *ecm = &ec_main;
   vnet_app_attach_args_t _a, *a = &_a;
   u32 prealloc_fifos;
@@ -931,12 +1076,10 @@ ec_attach ()
 
   prealloc_fifos = ecm->prealloc_fifos ? ecm->expected_connections : 1;
 
-  options[APP_OPTIONS_ACCEPT_COOKIE] = 0x12345678;
   options[APP_OPTIONS_SEGMENT_SIZE] = ecm->private_segment_size;
   options[APP_OPTIONS_ADD_SEGMENT_SIZE] = ecm->private_segment_size;
   options[APP_OPTIONS_RX_FIFO_SIZE] = ecm->fifo_size;
   options[APP_OPTIONS_TX_FIFO_SIZE] = ecm->fifo_size;
-  options[APP_OPTIONS_PRIVATE_SEGMENT_COUNT] = ecm->private_segment_count;
   options[APP_OPTIONS_PREALLOC_FIFO_PAIRS] = prealloc_fifos;
   options[APP_OPTIONS_FLAGS] = APP_OPTIONS_FLAGS_IS_BUILTIN;
   options[APP_OPTIONS_TLS_ENGINE] = ecm->tls_engine;
@@ -962,6 +1105,13 @@ ec_attach ()
   ck_pair->key_len = test_srv_key_rsa_len;
   vnet_app_add_cert_key_pair (ck_pair);
   ecm->ckpair_index = ck_pair->index;
+
+  vec_validate (ca_args->ca_chain, test_ca_chain_rsa_len - 1);
+  clib_memcpy (ca_args->ca_chain, test_ca_chain_rsa, test_ca_chain_rsa_len);
+  vec_validate (ca_args->crl, test_ca_crl_len - 1);
+  clib_memcpy (ca_args->crl, test_ca_crl, test_ca_crl_len);
+  app_crypto_add_ca_trust (ecm->app_index, ca_args);
+  ecm->ca_trust_index = ca_args->index;
 
   ecm->test_client_attached = 1;
 
@@ -1027,6 +1177,7 @@ ec_connect_rpc (void *args)
 	    &a->sep_ext, TRANSPORT_ENDPT_EXT_CFG_CRYPTO,
 	    sizeof (transport_endpt_crypto_cfg_t));
 	  ext_cfg->crypto.ckpair_index = ecm->ckpair_index;
+	  ext_cfg->crypto.ca_trust_index = ecm->ca_trust_index;
 	}
 
       rv = vnet_connect (a);
@@ -1142,18 +1293,218 @@ ec_ctrl_test_stop ()
       goto cleanup;                                                           \
     }
 
+static void
+ec_print_timeout_stats (vlib_main_t *vm)
+{
+  ec_main_t *ecm = &ec_main;
+  u64 received_bytes = 0, sent_bytes = 0;
+  ec_worker_t *wrk;
+  ec_session_t *sess;
+  vec_foreach (wrk, ecm->wrk)
+    {
+      pool_foreach (sess, wrk->sessions)
+	{
+	  received_bytes += sess->bytes_received;
+	  sent_bytes += sess->bytes_sent;
+	}
+    }
+  ec_cli ("Timeout at %.6f with %d sessions still active...",
+	  vlib_time_now (vm), ecm->ready_connections);
+  if (ecm->transport_proto == TRANSPORT_PROTO_UDP)
+    {
+      ec_cli ("Received %llu bytes out of %llu sent (%llu target)",
+	      received_bytes, sent_bytes, ecm->bytes_to_send * ecm->n_clients);
+    }
+}
+
+static void
+ec_print_periodic_stats (vlib_main_t *vm, bool print_header, bool print_footer)
+{
+  ec_main_t *ecm = &ec_main;
+  f64 time_now, print_delta, interval_start, interval_end, rtt = 0.0,
+							   jitter = 0.0;
+  u64 total_bytes,
+    received_bytes = 0, sent_bytes = 0, dgrams_sent = 0, dgrams_received = 0,
+    last_total_bytes = ecm->last_total_tx_bytes + ecm->last_total_rx_bytes;
+  ec_worker_t *wrk;
+  ec_session_t *sess;
+  vec_foreach (wrk, ecm->wrk)
+    {
+      pool_foreach (sess, wrk->sessions)
+	{
+	  received_bytes += sess->bytes_received;
+	  sent_bytes += sess->bytes_sent;
+	  if (ecm->transport_proto == TRANSPORT_PROTO_UDP)
+	    {
+	      dgrams_received += sess->dgrams_received;
+	      dgrams_sent += sess->dgrams_sent;
+	      sess->rtt_stat = 0;
+	      jitter += sess->jitter;
+	    }
+	  else if (ecm->transport_proto == TRANSPORT_PROTO_TCP)
+	    {
+	      session_t *s =
+		session_get_from_handle_if_valid (sess->vpp_session_handle);
+	      if (s)
+		{
+		  update_rtt_stats_tcp (sess);
+		  rtt += ecm->rtt_stats.last_rtt;
+		}
+	    }
+	}
+    }
+  time_now = vlib_time_now (vm);
+  interval_end = time_now - ecm->test_start_time;
+  interval_start = ecm->last_print_time - ecm->test_start_time;
+  total_bytes = received_bytes + sent_bytes;
+  print_delta = time_now - ecm->last_print_time;
+
+  if (ecm->transport_proto == TRANSPORT_PROTO_UDP)
+    {
+      jitter /= ecm->n_clients;
+      rtt = ecm->rtt_stats.last_rtt * 1000;
+      if (print_header)
+	{
+	  ec_cli ("-----------------------------------------------------------"
+		  "-------------------------");
+	  if (ecm->report_interval_total)
+	    ec_cli (
+	      "Run time (s)  Transmitted   Received   Throughput   "
+	      "%sSent/received dgrams",
+	      (ecm->report_interval_jitter ? "Jitter      " : "Roundtrip   "));
+	  else
+	    ec_cli (
+	      "Interval (s)  Transmitted   Received   Throughput   "
+	      "%sSent/received dgrams",
+	      (ecm->report_interval_jitter ? "Jitter      " : "Roundtrip   "));
+	}
+      if (ecm->report_interval_total)
+	{
+	  ec_cli ("%-13.1f %-13U %-10U %+9Ub/s %+9.3fms %llu/%llu",
+		  interval_end, format_base10, sent_bytes, format_base10,
+		  received_bytes, format_base10,
+		  flt_round_nearest ((f64) (total_bytes - last_total_bytes) /
+				     print_delta) *
+		    8,
+		  (ecm->report_interval_jitter ? jitter : rtt), dgrams_sent,
+		  dgrams_received);
+	}
+      else
+	{
+	  rtt /= ecm->n_clients;
+	  ec_cli ("%.1f-%-9.1f %-13U %-10U %+9Ub/s %+9.3fms %llu/%llu",
+		  interval_start, interval_end, format_base10,
+		  sent_bytes - ecm->last_total_tx_bytes, format_base10,
+		  received_bytes - ecm->last_total_rx_bytes, format_base10,
+		  flt_round_nearest ((f64) (total_bytes - last_total_bytes) /
+				     print_delta) *
+		    8,
+		  (ecm->report_interval_jitter ? jitter : rtt),
+		  (dgrams_sent - ecm->last_total_tx_dgrams),
+		  (dgrams_received - ecm->last_total_rx_dgrams));
+	}
+      if (print_footer)
+	ec_cli ("-------------------------------------------------------------"
+		"-----------------------");
+      ecm->last_total_tx_dgrams = dgrams_sent;
+      ecm->last_total_rx_dgrams = dgrams_received;
+    }
+  else
+    {
+      if (print_header)
+	{
+	  ec_cli (
+	    "-------------------------------------------------------------");
+	  if (ecm->report_interval_total)
+	    ec_cli (
+	      "Run time (s)  Transmitted   Received   Throughput   Roundtrip");
+	  else
+	    ec_cli (
+	      "Interval (s)  Transmitted   Received   Throughput   Roundtrip");
+	}
+      if (ecm->report_interval_total)
+	ec_cli ("%-13.1f %-13U %-10U %+9Ub/s %+7.3fms", interval_end,
+		format_base10, sent_bytes, format_base10, received_bytes,
+		format_base10,
+		flt_round_nearest ((f64) total_bytes /
+				   (time_now - ecm->test_start_time)) *
+		  8,
+		rtt * 1000);
+      else
+	ec_cli ("%.1f-%-9.1f %-13U %-10U %+9Ub/s %+7.3fms", interval_start,
+		interval_end, format_base10,
+		sent_bytes - ecm->last_total_tx_bytes, format_base10,
+		received_bytes - ecm->last_total_rx_bytes, format_base10,
+		flt_round_nearest (((f64) (total_bytes - last_total_bytes)) /
+				   print_delta) *
+		  8,
+		rtt * 1000);
+      if (print_footer)
+	ec_cli (
+	  "-------------------------------------------------------------");
+    }
+  ecm->last_print_time = time_now;
+  ecm->last_total_tx_bytes = sent_bytes;
+  ecm->last_total_rx_bytes = received_bytes;
+}
+
+static void
+ec_print_final_stats (vlib_main_t *vm, f64 total_delta)
+{
+  ec_main_t *ecm = &ec_main;
+  u64 total_bytes;
+  f64 dgram_loss;
+  char *transfer_type;
+
+  if (ecm->transport_proto == TRANSPORT_PROTO_TCP ||
+      (ecm->transport_proto == TRANSPORT_PROTO_UDP && ecm->echo_bytes))
+    {
+      /* display rtt stats in milliseconds */
+      if (ecm->rtt_stats.n_sum == 1)
+	ec_cli ("%.05fms roundtrip", ecm->rtt_stats.min_rtt * 1000);
+      else if (ecm->rtt_stats.n_sum > 1)
+	ec_cli ("%.05fms/%.05fms/%.05fms min/avg/max roundtrip",
+		ecm->rtt_stats.min_rtt * 1000,
+		ecm->rtt_stats.sum_rtt / ecm->rtt_stats.n_sum * 1000,
+		ecm->rtt_stats.max_rtt * 1000);
+      else
+	ec_cli ("error measuring roundtrip time");
+    }
+  if (ecm->transport_proto == TRANSPORT_PROTO_UDP)
+    {
+      ec_cli ("sent total %llu datagrams, received total %llu datagrams",
+	      ecm->tx_total_dgrams, ecm->rx_total_dgrams);
+      dgram_loss = (ecm->tx_total_dgrams ?
+		      ((f64) (ecm->tx_total_dgrams - ecm->rx_total_dgrams) /
+		       (f64) ecm->tx_total_dgrams * 100.0) :
+		      0.0);
+      if (ecm->echo_bytes && dgram_loss > 0.0)
+	ec_cli ("lost %llu datagrams (%.2f%%)",
+		ecm->tx_total_dgrams - ecm->rx_total_dgrams, dgram_loss);
+    }
+  total_bytes = (ecm->echo_bytes ? ecm->rx_total : ecm->tx_total);
+  transfer_type = ecm->echo_bytes ? "full-duplex" : "half-duplex";
+  ec_cli ("%lld bytes (%lld mbytes, %lld gbytes) in %.2f seconds", total_bytes,
+	  total_bytes / (1ULL << 20), total_bytes / (1ULL << 30), total_delta);
+  ec_cli ("%u bytes/second %s",
+	  flt_round_nearest (((f64) total_bytes) / (total_delta)),
+	  transfer_type);
+  ec_cli ("%UB/s %s", format_base10,
+	  flt_round_nearest (((f64) total_bytes) / (total_delta)),
+	  transfer_type);
+}
+
 static clib_error_t *
 ec_command_fn (vlib_main_t *vm, unformat_input_t *input,
 	       vlib_cli_command_t *cmd)
 {
   unformat_input_t _line_input, *line_input = &_line_input;
-  char *default_uri = "tcp://6.0.1.1/1234", *transfer_type;
+  char *default_uri = "tcp://6.0.1.1/1234";
   ec_main_t *ecm = &ec_main;
   uword *event_data = 0, event_type;
   clib_error_t *error = 0;
-  int rv, timed_run_conflict = 0, had_config = 1;
-  u64 total_bytes;
-  f64 delta;
+  int rv, timed_run_conflict = 0, tput_conflict = 0, had_config = 1;
+  f64 delta, wait_time = 0;
 
   if (ecm->test_client_attached)
     return clib_error_return (0, "failed: already running!");
@@ -1182,11 +1533,11 @@ ec_command_fn (vlib_main_t *vm, unformat_input_t *input,
 			 &ecm->bytes_to_send))
 	timed_run_conflict++;
       else if (unformat (line_input, "test-timeout %f", &ecm->test_timeout))
-	;
+	timed_run_conflict++;
       else if (unformat (line_input, "syn-timeout %f", &ecm->syn_timeout))
 	;
       else if (unformat (line_input, "run-time %f", &ecm->run_time))
-	;
+	ecm->test_timeout = ecm->run_time;
       else if (unformat (line_input, "echo-bytes"))
 	ecm->echo_bytes = 1;
       else if (unformat (line_input, "fifo-size %U", unformat_memory_size,
@@ -1198,9 +1549,12 @@ ec_command_fn (vlib_main_t *vm, unformat_input_t *input,
       else if (unformat (line_input, "private-segment-size %U",
 			 unformat_memory_size, &ecm->private_segment_size))
 	;
-      else if (unformat (line_input, "throughput %U", unformat_memory_size,
+      else if (unformat (line_input, "throughput %U", unformat_base10,
 			 &ecm->throughput))
-	;
+	ecm->throughput /= 8;
+      else if (unformat (line_input, "max-tx-chunk %U", unformat_memory_size,
+			 &ecm->max_chunk_bytes))
+	tput_conflict = 1;
       else if (unformat (line_input, "preallocate-fifos"))
 	ecm->prealloc_fifos = 1;
       else if (unformat (line_input, "preallocate-sessions"))
@@ -1208,6 +1562,16 @@ ec_command_fn (vlib_main_t *vm, unformat_input_t *input,
       else if (unformat (line_input, "client-batch %d",
 			 &ecm->connections_per_batch))
 	;
+      else if (unformat (line_input, "report-jitter"))
+	ecm->report_interval_jitter = 1;
+      else if (unformat (line_input, "report-interval-total %u",
+			 &ecm->report_interval))
+	ecm->report_interval_total = 1;
+      else if (unformat (line_input, "report-interval %u",
+			 &ecm->report_interval))
+	;
+      else if (unformat (line_input, "report-interval"))
+	ecm->report_interval = 1;
       else if (unformat (line_input, "appns %_%v%_", &ecm->appns_id))
 	;
       else if (unformat (line_input, "all-scope"))
@@ -1235,6 +1599,9 @@ ec_command_fn (vlib_main_t *vm, unformat_input_t *input,
 
   if (timed_run_conflict && ecm->run_time)
     return clib_error_return (0, "failed: invalid arguments for a timed run!");
+  if (ecm->throughput && tput_conflict)
+    return clib_error_return (
+      0, "failed: can't set fixed tx chunk for a throughput run!");
 
 parse_config:
 
@@ -1267,6 +1634,10 @@ parse_config:
     ecm->cfg.test = HS_TEST_TYPE_BI;
   else
     ecm->cfg.test = HS_TEST_TYPE_UNI;
+
+  if (ecm->cfg.test_bytes ||
+      (ecm->echo_bytes && ecm->transport_proto == TRANSPORT_PROTO_UDP))
+    ecm->include_buffer_offset = 1;
 
   ec_ctrl_connect ();
   ec_wait_for_signal (EC_CLI_CFG_SYNC);
@@ -1304,10 +1675,13 @@ parse_config:
       goto stop_test;
 
     case EC_CLI_CONNECTS_DONE:
-      delta = vlib_time_now (vm) - ecm->syn_start_time;
-      if (delta != 0.0)
-	ec_cli ("%d three-way handshakes in %.2f seconds %.2f/s",
-		ecm->n_clients, delta, ((f64) ecm->n_clients) / delta);
+      if (ecm->transport_proto == TRANSPORT_PROTO_TCP)
+	{
+	  delta = vlib_time_now (vm) - ecm->syn_start_time;
+	  if (delta != 0.0)
+	    ec_cli ("%d three-way handshakes in %.2f seconds %.2f/s",
+		    ecm->n_clients, delta, ((f64) ecm->n_clients) / delta);
+	}
       break;
 
     case EC_CLI_CONNECTS_FAILED:
@@ -1322,46 +1696,81 @@ parse_config:
     }
   /* Testing officially starts now */
   ecm->test_start_time = vlib_time_now (ecm->vlib_main);
+  if (ecm->report_interval)
+    ecm->last_print_time = ecm->test_start_time;
   ec_cli ("Test started at %.6f", ecm->test_start_time);
 
   /*
-   * If a timed run, wait and expire timer
+   * Wait for the sessions to finish or test_timeout (timeout or length
+   * of timed run) seconds pass. If providing periodic reports, wake up
+   * every now and then to print them and loop.
    */
-  if (ecm->run_time)
+  u8 main_loop_done = false, print_header = true, report_timeout = false;
+  do
     {
-      vlib_process_suspend (vm, ecm->run_time);
-      ec_main.timer_expired = true;
+      if (ecm->report_interval)
+	{
+	  delta = vlib_time_now (vm) - ecm->test_start_time;
+	  if (delta + (f64) ecm->report_interval > ecm->test_timeout)
+	    {
+	      report_timeout = true;
+	      wait_time = ecm->test_timeout - delta;
+	    }
+	  else
+	    wait_time = (f64) ecm->report_interval;
+	}
+      else
+	{
+	  report_timeout = true;
+	  wait_time = (f64) ecm->test_timeout;
+	}
+
+      vlib_process_wait_for_event_or_clock (vm, wait_time);
+      event_type = vlib_process_get_events (vm, &event_data);
+      switch (event_type)
+	{
+	case ~0:
+	  if (report_timeout)
+	    {
+	      if (ecm->run_time)
+		{
+		  ec_sessions_stop_clean ();
+		  break;
+		}
+	      ec_print_timeout_stats (vm);
+	      if (ecm->transport_proto != TRANSPORT_PROTO_UDP)
+		error =
+		  clib_error_return (0, "failed: timeout with %d sessions",
+				     ecm->ready_connections);
+	      else if (ecm->echo_bytes)
+		{
+		  ec_sessions_stop_clean ();
+		  break;
+		}
+	      goto stop_test;
+	    }
+	  else
+	    {
+	      ec_print_periodic_stats (vm, print_header, false);
+	      if (PREDICT_FALSE (print_header))
+		print_header = false;
+	    }
+	  break;
+
+	case EC_CLI_TEST_DONE:
+	  ecm->test_end_time = vlib_time_now (vm);
+	  main_loop_done = true;
+	  break;
+
+	default:
+	  ec_cli ("unexpected event(3): %d", event_type);
+	  error = clib_error_return (0, "failed: unexpected event(3): %d",
+				     event_type);
+	  goto stop_test;
+	}
     }
+  while (!main_loop_done);
 
-  /*
-   * Wait for the sessions to finish or test_timeout seconds pass
-   */
-  vlib_process_wait_for_event_or_clock (vm, ecm->test_timeout);
-  event_type = vlib_process_get_events (vm, &event_data);
-  switch (event_type)
-    {
-    case ~0:
-      ec_cli ("Timeout at %.6f with %d sessions still active...",
-	      vlib_time_now (ecm->vlib_main), ecm->ready_connections);
-      error = clib_error_return (0, "failed: timeout with %d sessions",
-				 ecm->ready_connections);
-      goto stop_test;
-
-    case EC_CLI_TEST_DONE:
-      ecm->test_end_time = vlib_time_now (vm);
-      ec_cli ("Test finished at %.6f", ecm->test_end_time);
-      break;
-
-    default:
-      ec_cli ("unexpected event(3): %d", event_type);
-      error =
-	clib_error_return (0, "failed: unexpected event(3): %d", event_type);
-      goto stop_test;
-    }
-
-  /*
-   * Done. Compute stats
-   */
   delta = ecm->test_end_time - ecm->test_start_time;
   if (delta == 0.0)
     {
@@ -1369,15 +1778,12 @@ parse_config:
       error = clib_error_return (0, "failed: zero delta-t");
       goto stop_test;
     }
-
-  total_bytes = (ecm->echo_bytes ? ecm->rx_total : ecm->tx_total);
-  transfer_type = ecm->echo_bytes ? "full-duplex" : "half-duplex";
-  ec_cli ("%lld bytes (%lld mbytes, %lld gbytes) in %.2f seconds", total_bytes,
-	  total_bytes / (1ULL << 20), total_bytes / (1ULL << 30), delta);
-  ec_cli ("%.2f bytes/second %s", ((f64) total_bytes) / (delta),
-	  transfer_type);
-  ec_cli ("%.4f gbit/second %s", (((f64) total_bytes * 8.0) / delta / 1e9),
-	  transfer_type);
+  /* Print last interval */
+  if (ecm->report_interval &&
+      vlib_time_now (vm) - ecm->last_print_time >= 0.1f)
+    ec_print_periodic_stats (vm, print_header, true);
+  ec_cli ("Test finished at %.6f", ecm->test_end_time);
+  ec_print_final_stats (vm, delta);
 
   if (ecm->cfg.test_bytes && ecm->test_failed)
     error = clib_error_return (0, "failed: test bytes");
@@ -1433,7 +1839,10 @@ VLIB_CLI_COMMAND (ec_command, static) = {
     "[run-time <time>][syn-timeout <time>][echo-bytes][fifo-size <size>]"
     "[private-segment-count <count>][private-segment-size <bytes>[m|g]]"
     "[preallocate-fifos][preallocate-sessions][client-batch <batch-size>]"
-    "[throughput <bytes>[m|g]][uri <tcp://ip/port>][test-bytes][verbose]",
+    "[throughput <bytes>[m|g]][report-interval[-total] "
+    "<time>][report-jitter][[uri "
+    "<tcp://ip/port>]"
+    "[test-bytes][verbose]",
   .function = ec_command_fn,
   .is_mp_safe = 1,
 };

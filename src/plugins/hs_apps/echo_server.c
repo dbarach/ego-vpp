@@ -352,18 +352,17 @@ echo_server_builtin_server_rx_callback_no_echo (session_t * s)
 }
 
 static void
-es_test_bytes (es_worker_t *wrk, es_session_t *es, int actual_transfer)
+es_test_bytes (u8 *rx_buf, int actual_transfer, u32 offset)
 {
   int i;
   for (i = 0; i < actual_transfer; i++)
     {
-      if (wrk->rx_buf[i] != ((es->byte_index + i) & 0xff))
+      if (rx_buf[i] != ((offset + i) & 0xff))
 	{
-	  es_err ("at %lld expected %d got %d", es->byte_index + i,
-		  (es->byte_index + i) & 0xff, wrk->rx_buf[i]);
+	  es_err ("at %lld expected %d got %d", offset + i,
+		  (offset + i) & 0xff, rx_buf[i]);
 	}
     }
-  es->byte_index += actual_transfer;
 }
 
 int
@@ -373,11 +372,15 @@ echo_server_rx_callback (session_t * s)
   int actual_transfer;
   svm_fifo_t *tx_fifo, *rx_fifo;
   echo_server_main_t *esm = &echo_server_main;
-  clib_thread_index_t thread_index = vlib_get_thread_index ();
+  clib_thread_index_t thread_index = s->thread_index;
   es_worker_t *wrk;
   es_session_t *es;
 
-  ASSERT (s->thread_index == thread_index);
+  ASSERT (thread_index == vlib_get_thread_index ());
+
+  /* Closes are treated as half-closes by session layer */
+  if (PREDICT_FALSE (s->flags & SESSION_F_APP_CLOSED))
+    return 0;
 
   rx_fifo = s->rx_fifo;
   tx_fifo = s->tx_fifo;
@@ -439,11 +442,25 @@ echo_server_rx_callback (session_t * s)
 
   vec_validate (wrk->rx_buf, max_transfer);
   actual_transfer = app_recv ((app_session_t *) es, wrk->rx_buf, max_transfer);
+  if (!actual_transfer)
+    return 0;
   ASSERT (actual_transfer == max_transfer);
 
   if (esm->cfg.test_bytes)
     {
-      es_test_bytes (wrk, es, actual_transfer);
+      if (esm->transport_proto == TRANSPORT_PROTO_TCP)
+	{
+	  es_test_bytes (wrk->rx_buf, actual_transfer, es->byte_index);
+	  es->byte_index += actual_transfer;
+	}
+      else
+	{
+	  /* Sanity check, in case of a broken dgram */
+	  if (actual_transfer < sizeof (u32) + 1)
+	    return 0;
+	  es_test_bytes ((wrk->rx_buf + sizeof (u32)),
+			 actual_transfer - sizeof (u32), *(u32 *) wrk->rx_buf);
+	}
     }
 
   /*
@@ -512,7 +529,6 @@ echo_server_attach (u8 * appns_id, u64 appns_flags, u64 appns_secret)
   a->options[APP_OPTIONS_ADD_SEGMENT_SIZE] = esm->private_segment_size;
   a->options[APP_OPTIONS_RX_FIFO_SIZE] = esm->fifo_size;
   a->options[APP_OPTIONS_TX_FIFO_SIZE] = esm->fifo_size;
-  a->options[APP_OPTIONS_PRIVATE_SEGMENT_COUNT] = esm->private_segment_count;
   a->options[APP_OPTIONS_TLS_ENGINE] = esm->tls_engine;
   a->options[APP_OPTIONS_PCT_FIRST_ALLOC] = 100;
   a->options[APP_OPTIONS_PREALLOC_FIFO_PAIRS] =

@@ -15,8 +15,6 @@
 
 #include <vcl/vcl_private.h>
 
-static pthread_key_t vcl_worker_stop_key;
-
 vcl_mq_evt_conn_t *
 vcl_mq_evt_conn_alloc (vcl_worker_t * wrk)
 {
@@ -50,7 +48,7 @@ vcl_mq_epoll_add_api_sock (vcl_worker_t *wrk)
   int rv;
 
   e.data.u32 = VCL_EP_SAPIFD_EVT;
-  rv = epoll_ctl (wrk->mqs_epfd, EPOLL_CTL_ADD, cs->fd, &e);
+  rv = vcm->vcl_epoll_ctl (wrk->mqs_epfd, EPOLL_CTL_ADD, cs->fd, &e);
   if (rv != EEXIST && rv < 0)
     return -1;
 
@@ -79,7 +77,7 @@ vcl_mq_epoll_add_evfd (vcl_worker_t * wrk, svm_msg_q_t * mq)
 
   e.events = EPOLLIN;
   e.data.u32 = mqc_index;
-  if (epoll_ctl (wrk->mqs_epfd, EPOLL_CTL_ADD, mq_fd, &e) < 0)
+  if (vcm->vcl_epoll_ctl (wrk->mqs_epfd, EPOLL_CTL_ADD, mq_fd, &e) < 0)
     {
       VDBG (0, "failed to add mq eventfd to mq epoll fd");
       return -1;
@@ -103,7 +101,7 @@ vcl_mq_epoll_del_evfd (vcl_worker_t * wrk, u32 mqc_index)
     return -1;
 
   mqc = vcl_mq_evt_conn_get (wrk, mqc_index);
-  if (epoll_ctl (wrk->mqs_epfd, EPOLL_CTL_DEL, mqc->mq_fd, 0) < 0)
+  if (vcm->vcl_epoll_ctl (wrk->mqs_epfd, EPOLL_CTL_DEL, mqc->mq_fd, 0) < 0)
     {
       VDBG (0, "failed to del mq eventfd to mq epoll fd");
       return -1;
@@ -172,22 +170,6 @@ vcl_worker_cleanup (vcl_worker_t * wrk, u8 notify_vpp)
   clib_spinlock_unlock (&vcm->workers_lock);
 }
 
-static void
-vcl_worker_cleanup_cb (void *arg)
-{
-  vcl_worker_t *wrk;
-  u32 wrk_index;
-
-  wrk_index = vcl_get_worker_index ();
-  wrk = vcl_worker_get_if_valid (wrk_index);
-  if (!wrk)
-    return;
-
-  vcl_worker_cleanup (wrk, 1 /* notify vpp */ );
-  vcl_set_worker_index (~0);
-  VDBG (0, "cleaned up worker %u", wrk_index);
-}
-
 void
 vcl_worker_detached_start_signal_mq (vcl_worker_t *wrk)
 {
@@ -205,8 +187,8 @@ vcl_worker_detached_start_signal_mq (vcl_worker_t *wrk)
   struct epoll_event evt = {};
   evt.events = EPOLLIN;
   evt.data.u32 = VCL_EP_PIPEFD_EVT;
-  if (epoll_ctl (wrk->mqs_epfd, EPOLL_CTL_ADD, wrk->detached_pipefds[0],
-		 &evt) < 0)
+  if (vcm->vcl_epoll_ctl (wrk->mqs_epfd, EPOLL_CTL_ADD,
+			  wrk->detached_pipefds[0], &evt) < 0)
     {
       VDBG (0, "failed to add mq eventfd to mq epoll fd");
       exit (1);
@@ -229,8 +211,8 @@ vcl_worker_detached_signal_mq (vcl_worker_t *wrk)
 void
 vcl_worker_detached_stop_signal_mq (vcl_worker_t *wrk)
 {
-  if (epoll_ctl (wrk->mqs_epfd, EPOLL_CTL_DEL, wrk->detached_pipefds[0], 0) <
-      0)
+  if (vcm->vcl_epoll_ctl (wrk->mqs_epfd, EPOLL_CTL_DEL,
+			  wrk->detached_pipefds[0], 0) < 0)
     {
       VDBG (0, "failed to del mq eventfd to mq epoll fd");
       exit (1);
@@ -253,18 +235,28 @@ vcl_worker_detach_sessions (vcl_worker_t *wrk)
 	  s->flags |= VCL_SESSION_F_LISTEN_NO_MQ;
 	  continue;
 	}
-      if ((s->flags & VCL_SESSION_F_IS_VEP) ||
-	  s->session_state == VCL_STATE_CLOSED)
+      if ((s->flags & VCL_SESSION_F_IS_VEP))
 	continue;
 
-      hash_set (seg_indices_map, s->tx_fifo->segment_index, 1);
+      /* App closed, vpp detached, free session */
+      if (s->session_state == VCL_STATE_CLOSED)
+	{
+	  vcl_session_free (wrk, s);
+	  continue;
+	}
+
+      /* In other states expect close from app */
+      if (s->session_state == VCL_STATE_READY)
+	{
+	  hash_set (seg_indices_map, s->tx_fifo->segment_index, 1);
+	  vec_add2 (wrk->unhandled_evts_vector, e, 1);
+	  e->event_type = SESSION_CTRL_EVT_DISCONNECTED;
+	  e->session_index = s->session_index;
+	  e->postponed = 1;
+	}
 
       s->session_state = VCL_STATE_DETACHED;
       s->flags |= VCL_SESSION_F_APP_CLOSING;
-      vec_add2 (wrk->unhandled_evts_vector, e, 1);
-      e->event_type = SESSION_CTRL_EVT_DISCONNECTED;
-      e->session_index = s->session_index;
-      e->postponed = 1;
     }
 
   hash_foreach (seg_index, val, seg_indices_map,
@@ -332,9 +324,7 @@ vcl_worker_alloc_and_init ()
   wrk->mqs_epfd = -1;
   if (vcm->cfg.use_mq_eventfd)
     {
-      wrk->vcl_needs_real_epoll = 1;
-      wrk->mqs_epfd = epoll_create (1);
-      wrk->vcl_needs_real_epoll = 0;
+      wrk->mqs_epfd = vcm->vcl_epoll_create1 (0);
       if (wrk->mqs_epfd < 0)
 	{
 	  clib_unix_warning ("epoll_create() returned");
@@ -369,10 +359,6 @@ vcl_worker_register_with_vpp (void)
       clib_spinlock_unlock (&vcm->workers_lock);
       return -1;
     }
-  if (pthread_key_create (&vcl_worker_stop_key, vcl_worker_cleanup_cb))
-    VDBG (0, "failed to add pthread cleanup function");
-  if (pthread_setspecific (vcl_worker_stop_key, &wrk->thread_id))
-    VDBG (0, "failed to setup key value");
 
   clib_spinlock_unlock (&vcm->workers_lock);
 
@@ -384,6 +370,17 @@ svm_msg_q_t *
 vcl_worker_ctrl_mq (vcl_worker_t * wrk)
 {
   return wrk->ctrl_mq;
+}
+
+void
+vcl_init_epoll_fns ()
+{
+  if (!vcm->vcl_epoll_create1)
+    vcm->vcl_epoll_create1 = epoll_create1;
+  if (!vcm->vcl_epoll_ctl)
+    vcm->vcl_epoll_ctl = epoll_ctl;
+  if (!vcm->vcl_epoll_wait)
+    vcm->vcl_epoll_wait = epoll_wait;
 }
 
 int
@@ -405,6 +402,10 @@ vcl_session_read_ready (vcl_session_t * s)
 	{
 	  session_dgram_pre_hdr_t ph;
 	  u32 max_deq;
+
+	  /* CL listener that's not yet ready */
+	  if (vcl_session_is_cl (s) && !s->rx_fifo)
+	    return 0;
 
 	  max_deq = svm_fifo_max_dequeue_cons (s->rx_fifo);
 	  if (max_deq <= SESSION_CONN_HDR_LEN)
@@ -445,6 +446,10 @@ vcl_session_read_ready2 (vcl_session_t *s)
 
       if (s->is_dgram)
 	{
+	  /* CL listener that's not yet ready */
+	  if (vcl_session_is_cl (s) && !s->rx_fifo)
+	    return 0;
+
 	  if (svm_fifo_max_dequeue_cons (s->rx_fifo) <= SESSION_CONN_HDR_LEN)
 	    return 0;
 

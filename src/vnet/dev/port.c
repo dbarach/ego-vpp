@@ -280,6 +280,9 @@ vnet_dev_port_add (vlib_main_t *vm, vnet_dev_t *dev, vnet_dev_port_id_t id,
   port->rx_node = *args->rx_node;
   port->tx_node = *args->tx_node;
 
+  if (port->attr.caps.rss && args->port.default_rss_key.length)
+    port->rss_key = args->port.default_rss_key;
+
   if (args->port.args)
     for (vnet_dev_arg_t *a = args->port.args; a->type != VNET_DEV_ARG_END; a++)
       vec_add1 (port->args, *a);
@@ -354,6 +357,11 @@ vnet_dev_port_cfg_change_req_validate (vlib_main_t *vm, vnet_dev_port_t *port,
 	  found = 1;
       if (!found)
 	return VNET_DEV_ERR_NO_SUCH_ENTRY;
+      break;
+
+    case VNET_DEV_PORT_CFG_SET_RSS_KEY:
+      if (!port->attr.caps.rss)
+	return VNET_DEV_ERR_NOT_SUPPORTED;
       break;
 
     default:
@@ -470,6 +478,10 @@ vnet_dev_port_cfg_change (vlib_main_t *vm, vnet_dev_port_t *port,
 	    pool_put (port->secondary_hw_addr, a);
 	    break;
 	  }
+      break;
+
+    case VNET_DEV_PORT_CFG_SET_RSS_KEY:
+      port->rss_key = req->rss_key;
       break;
 
     default:
@@ -608,11 +620,27 @@ vnet_dev_port_if_create (vlib_main_t *vm, vnet_dev_port_t *port, void *ptr)
     a->num_rx_queues, a->rxq_sz, a->num_tx_queues, a->txq_sz);
 
   for (int i = 0; i < ifs->num_rx_queues; i++)
-    if ((rv = vnet_dev_rx_queue_alloc (vm, port, ifs->rxq_sz)) != VNET_DEV_OK)
-      goto error;
+    {
+      clib_thread_index_t ti = 0;
+      if (n_threads > 1)
+	{
+	  if (!a->queue_per_thread)
+	    {
+	      ti = dm->next_rx_queue_thread++;
+	      if (dm->next_rx_queue_thread >= n_threads)
+		dm->next_rx_queue_thread = 0;
+	    }
+	  else
+	    ti = i;
+	}
+      if ((rv = vnet_dev_rx_queue_alloc (vm, port, ifs->rxq_sz, i, ti)) !=
+	  VNET_DEV_OK)
+	goto error;
+    }
 
   for (u32 i = 0; i < ifs->num_tx_queues; i++)
-    if ((rv = vnet_dev_tx_queue_alloc (vm, port, ifs->txq_sz)) != VNET_DEV_OK)
+    if ((rv = vnet_dev_tx_queue_alloc (vm, port, ifs->txq_sz, i)) !=
+	VNET_DEV_OK)
       goto error;
 
   for (ti = 0; ti < n_threads; ti++)

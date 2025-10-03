@@ -160,6 +160,8 @@ list(APPEND VNET_SOURCES
   ethernet/node.c
   ethernet/pg.c
   ethernet/sfp.c
+  ethernet/sfp_sff8472.c
+  ethernet/sfp_sff8636.c
   ethernet/p2p_ethernet.c
   ethernet/p2p_ethernet_input.c
   ethernet/p2p_ethernet_api.c
@@ -177,6 +179,8 @@ list(APPEND VNET_HEADERS
   ethernet/packet.h
   ethernet/types.def
   ethernet/sfp.h
+  ethernet/sfp_sff8472.h
+  ethernet/sfp_sff8636.h
   ethernet/p2p_ethernet.h
   ethernet/arp_packet.h
 )
@@ -459,6 +463,8 @@ list(APPEND VNET_HEADERS
   ip/punt.h
   ip/reass/ip4_sv_reass.h
   ip/reass/ip6_sv_reass.h
+  ip/reass/ip4_full_reass.h
+  ip/reass/ip6_full_reass.h
 )
 
 list(APPEND VNET_API_FILES
@@ -978,6 +984,7 @@ list(APPEND VNET_SOURCES
   session/application_interface.c
   session/application_local.c
   session/application_namespace.c
+  session/application_crypto.c
   session/segment_manager.c
   session/session_api.c
   session/session_sdl.c
@@ -996,6 +1003,7 @@ list(APPEND VNET_HEADERS
   session/application_eventing.h
   session/application_local.h
   session/application_namespace.h
+  session/application_crypto.h
   session/session_debug.h
   session/segment_manager.h
   session/mma_template.h
@@ -1020,6 +1028,7 @@ list(APPEND VNET_HEADERS
   tls/tls_inlines.h
   tls/tls_record.h
   tls/tls_test.h
+  tls/tls_types.h
 )
 
 

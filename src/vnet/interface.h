@@ -98,6 +98,35 @@ typedef clib_error_t *(vnet_interface_rss_queues_set_t)
   (struct vnet_main_t * vnm, struct vnet_hw_interface_t * hi,
    clib_bitmap_t * bitmap);
 
+/* Interface EEPROM types */
+#define foreach_vnet_interface_eeprom_type                                    \
+  _ (UNKNOWN, 0x00, "unknown")                                                \
+  _ (SFF8079, 0x01, "SFF-8079")                                               \
+  _ (SFF8472, 0x02, "SFF-8472")                                               \
+  _ (SFF8636, 0x03, "SFF-8636")                                               \
+  _ (SFF8436, 0x04, "SFF-8436")
+
+typedef enum
+{
+#define _(n, v, s) VNET_INTERFACE_EEPROM_TYPE_##n = v,
+  foreach_vnet_interface_eeprom_type
+#undef _
+} vnet_interface_eeprom_type_t;
+
+/* EEPROM structure for physical network devices */
+typedef struct
+{
+  vnet_interface_eeprom_type_t eeprom_type; /* from linux/ethtool.h */
+  u32 eeprom_len;
+  u8 eeprom_raw[1024];
+} vnet_interface_eeprom_t;
+
+/* Interface EEPROM read function */
+typedef clib_error_t *(
+  vnet_interface_eeprom_read_t) (struct vnet_main_t *vnm,
+				 struct vnet_hw_interface_t *hi,
+				 vnet_interface_eeprom_t **eeprom);
+
 typedef enum
 {
   VNET_FLOW_DEV_OP_ADD_FLOW,
@@ -305,6 +334,9 @@ typedef struct _vnet_device_class
 
   /* Interface to set rss queues of the interface */
   vnet_interface_rss_queues_set_t *set_rss_queues_function;
+
+  /* Function to read EEPROM data from physical network device */
+  vnet_interface_eeprom_read_t *eeprom_read_function;
 
 } vnet_device_class_t;
 
@@ -565,12 +597,13 @@ typedef enum vnet_hw_interface_flags_t_
   _ (16, UDP_TNL_GSO, "udp-tnl-gso")                                          \
   _ (17, IP_TNL_GSO, "ip-tnl-gso")                                            \
   _ (18, TCP_LRO, "tcp-lro")                                                  \
+  _ (19, TX_FIXED_OFFSET, "fixed-offset") /* virtual interfaces */            \
   _ (30, INT_MODE, "int-mode")                                                \
   _ (31, MAC_FILTER, "mac-filter")
 
 typedef enum vnet_hw_if_caps_t_
 {
-  VNET_HW_INTERFACE_CAP_NONE,
+  VNET_HW_IF_CAP_NONE,
 #define _(bit, sfx, str) VNET_HW_IF_CAP_##sfx = (1 << (bit)),
   foreach_vnet_hw_if_caps
 #undef _
@@ -1069,6 +1102,7 @@ typedef struct
 
   /* feature_arc_index */
   u8 output_feature_arc_index;
+  u8 drop_feature_arc_index;
 
   /* fast lookup tables */
   u32 *hw_if_index_by_sw_if_index;
@@ -1117,6 +1151,8 @@ typedef struct
 } vnet_pcap_dispatch_trace_args_t;
 
 int vnet_pcap_dispatch_trace_configure (vnet_pcap_dispatch_trace_args_t *);
+
+u8 *format_vnet_interface_eeprom_type (u8 *s, va_list *args);
 
 extern vlib_node_registration_t vnet_interface_output_node;
 extern vlib_node_registration_t vnet_interface_output_arc_end_node;

@@ -73,6 +73,11 @@ ifeq ($(V),)
 V=0
 endif
 
+MACHINE=$(shell uname -m)
+ifeq ($(shell test -d /opt/vpp/optional/${MACHINE}/lib64 && echo yes),yes)
+VPP_OPT_DEPS_LIBRARY_PATH?=/opt/vpp/optional/${MACHINE}/lib64
+endif
+
 PYTHON_VERSION=$(shell $(PYTHON_INTERP) -c 'import sys; print(sys.version_info.major)')
 PIP_VERSION=25.0.1
 # Keep in sync with requirements.txt
@@ -266,6 +271,12 @@ else
 ARG19=
 endif
 
+ifneq ($(VPP_OPT_DEPS_LIBRARY_PATH),)
+ARG20=--vpp-opt-deps-library-path=$(VPP_OPT_DEPS_LIBRARY_PATH)
+else
+ARG20=
+endif
+
 EXC_PLUGINS_ARG=
 ifneq ($(VPP_EXCLUDED_PLUGINS),)
 # convert the comma-separated list into N invocations of the argument to exclude a plugin
@@ -274,7 +285,7 @@ endif
 
 
 
-EXTRA_ARGS=$(ARG0) $(ARG1) $(ARG2) $(ARG3) $(ARG4) $(ARG5) $(ARG6) $(ARG7) $(ARG8) $(ARG9) $(ARG10) $(ARG11) $(ARG12) $(ARG13) $(ARG14) $(ARG15) $(ARG16) $(ARG17) $(ARG18) $(ARG19)
+EXTRA_ARGS=$(ARG0) $(ARG1) $(ARG2) $(ARG3) $(ARG4) $(ARG5) $(ARG6) $(ARG7) $(ARG8) $(ARG9) $(ARG10) $(ARG11) $(ARG12) $(ARG13) $(ARG14) $(ARG15) $(ARG16) $(ARG17) $(ARG18) $(ARG19) $(ARG20)
 
 RUN_TESTS_ARGS=--failed-dir=$(FAILED_DIR) --verbose=$(V) --jobs=$(TEST_JOBS) --filter=$(TEST) --skip-filter=$(SKIP_TESTS) --retries=$(RETRIES) --venv-dir=$(VENV_PATH) --vpp-ws-dir=$(WS_ROOT) --vpp-tag=$(TAG) --rnd-seed=$(RND_SEED) --vpp-worker-count="$(VPP_WORKER_COUNT)" --keep-pcaps $(PLUGIN_PATH_ARGS) $(EXC_PLUGINS_ARG) $(TEST_PLUGIN_PATH_ARGS) $(EXTRA_ARGS)
 RUN_SCRIPT_ARGS=--python-opts=$(PYTHON_OPTS)
@@ -366,7 +377,7 @@ COV_REM_UNUSED_FEAT="*/vnet/srp/*" \
 					"*/lawful-intercept/*" "*/lisp/*" "*/plugins/osi/*" \
 					"*/plugins/nsh/*"
 
-COV_REM_TODO_NO_TEST="*/vpp-api/client/*" "*/plugins/prom/*" \
+COV_REM_TODO_NO_TEST="*/vpp-api/client/*" \
 					 "*/plugins/tlspicotls/*" "*/plugins/tlsmbedtls/*" \
 					 "*/vppinfra/perfmon/*" "*/plugins/ila/*" \
 					 "*/vlib/linux/*" "*/vnet/util/radix.c" "*/vapi/vapi.hpp" \
@@ -388,8 +399,7 @@ COV_REM_TODO_NO_TEST="*/vpp-api/client/*" "*/plugins/prom/*" \
 					 "*/vnet/ethernet/ethernet_format_fns.h" \
 					 "*/plugins/ikev2/ikev2_format.c" "*/vnet/bier/bier_types.c" \
 					 "*/plugins/ioam/*" "*/plugins/vxlan-gpe/*" "*/plugins/ioam/*" \
-					 "*/plugins/hsi/*" "*/api/api_format.c" "*/*/api.c" "*/*/*_api.c" \
-					 "*/plugins/http/http2/*" "*/plugins/http_static/*" "*/plugins/hs_apps/*"
+					 "*/api/api_format.c" "*/*/api.c" "*/*/*_api.c" "*/plugins/hs_apps/alpn_*"
 ifeq ($(HS_TEST),1)
 COV_REM_HST_UNUSED_FEAT= "*/plugins/ping/*" "*/plugins/unittest/mpcap_node.c" "*/vnet/bfd/*" \
 			                 "*/vnet/bier/*" "*/vnet/bonding/*" "*/vnet/classify/*" \
@@ -399,6 +409,8 @@ COV_REM_HST_UNUSED_FEAT= "*/plugins/ping/*" "*/plugins/unittest/mpcap_node.c" "*
 					 "*/vnet/span/*" "*/vnet/srv6/*" "*/vnet/teib/*" \
 					 "*/vnet/tunnel/*" "*/vpp-api/vapi/*" "*/vpp/app/vpe_cli.c" \
 					 "*/vppinfra/pcap.c" "*/vppinfra/pcap_funcs.h"
+else
+COV_REM_TODO_NO_TEST := $(COV_REM_TODO_NO_TEST) "*/plugins/http/http2/*" "*/plugins/prom/*"
 endif
 
 LCOV_VERSION=$(shell lcov --version | sed -E 's/^lcov: LCOV version ([0-9]+)[.].*/\1/')
@@ -437,7 +449,9 @@ cov-post: wipe-cov $(BUILD_COV_DIR)
 
 .PHONY: cov
 cov:
-	$(MAKE) -C . cov-prep test cov-post
+	$(MAKE) -C . cov-prep
+	-$(MAKE) -C . test
+	$(MAKE) -C . cov-post
 
 .PHONY: wipe-cov
 wipe-cov: wipe

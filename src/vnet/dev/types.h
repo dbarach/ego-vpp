@@ -17,6 +17,11 @@ typedef struct vnet_dev vnet_dev_t;
 typedef struct vnet_dev_port vnet_dev_port_t;
 typedef struct vnet_dev_rx_queue vnet_dev_rx_queue_t;
 typedef struct vnet_dev_tx_queue vnet_dev_tx_queue_t;
+typedef struct
+{
+  u8 key[48];
+  u8 length;
+} vnet_dev_rss_key_t;
 
 typedef enum
 {
@@ -51,7 +56,8 @@ typedef union
 /* do not change bit assignments - API dependency */
 #define foreach_vnet_dev_port_flag                                            \
   _ (0, INTERRUPT_MODE, "enable interrupt mode")                              \
-  _ (1, CONSISTENT_QP, "consistent queue pairs")
+  _ (1, CONSISTENT_QP, "consistent queue pairs")                              \
+  _ (2, QUEUE_PER_THREAD, "one rx and one tx queue per thread (inc main)")
 
 typedef union
 {

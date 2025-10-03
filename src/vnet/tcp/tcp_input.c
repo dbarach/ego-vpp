@@ -1173,27 +1173,37 @@ tcp_session_enqueue_ooo (tcp_connection_t * tc, vlib_buffer_t * b,
 static int
 tcp_buffer_discard_bytes (vlib_buffer_t * b, u32 n_bytes_to_drop)
 {
-  u32 discard, first = b->current_length;
-  vlib_main_t *vm = vlib_get_main ();
-
   /* Handle multi-buffer segments */
   if (n_bytes_to_drop > b->current_length)
     {
+      u32 n_to_drop, first = b->current_length;
+      vlib_main_t *vm = vlib_get_main ();
+
       if (!(b->flags & VLIB_BUFFER_NEXT_PRESENT) ||
 	  (first + b->total_length_not_including_first_buffer <
 	   n_bytes_to_drop))
 	return -1;
       b->total_length_not_including_first_buffer -= n_bytes_to_drop - first;
+      n_to_drop = n_bytes_to_drop;
       do
 	{
-	  discard = clib_min (n_bytes_to_drop, b->current_length);
-	  vlib_buffer_advance (b, discard);
+	  /* Not calling vlib_buffer_advance to avoid min chain seg size
+	   * asserts that are not relevant for chained buffers that are about
+	   * to be freed */
+	  if (n_to_drop <= b->current_length)
+	    {
+	      b->current_length -= n_to_drop;
+	      b->current_data += n_to_drop;
+	      break;
+	    }
+	  n_to_drop -= b->current_length;
+	  b->current_data += b->current_length;
+	  b->current_length = 0;
 	  b = vlib_get_buffer (vm, b->next_buffer);
-	  n_bytes_to_drop -= discard;
-	  if (!b && n_bytes_to_drop)
+	  if (!b)
 	    return -1;
 	}
-      while (n_bytes_to_drop);
+      while (n_to_drop);
     }
   else
     vlib_buffer_advance (b, n_bytes_to_drop);
@@ -2573,25 +2583,39 @@ tcp46_listen_inline (vlib_main_t *vm, vlib_node_runtime_t *node,
       /* Probably we are in time-wait or closed state */
       else
 	{
+	  u32 fib_index;
 	  tcp_connection_t *tc;
 	  tc = tcp_connection_get (vnet_buffer (b[0])->tcp.connection_index,
 				   thread_index);
-	  if (!tc || tc->state != TCP_STATE_TIME_WAIT)
+	  if (!tc)
 	    {
+	      tcp_inc_counter (listen, TCP_ERROR_INVALID_CONNECTION, 1);
+	      goto done;
+	    }
+
+	  fib_index = tc->c_fib_index;
+	  switch (tc->state)
+	    {
+	    case TCP_STATE_TIME_WAIT:
+	      if (PREDICT_FALSE (!syn_during_timewait (tc, b[0], &tw_iss)))
+		{
+		  /* This SYN can't be accepted */
+		  tcp_inc_counter (listen, TCP_ERROR_CREATE_EXISTS, 1);
+		  goto done;
+		}
+	      /* clean up the old session */
+	      tcp_connection_cleanup_and_notify (tc);
+	      break;
+	    case TCP_STATE_CLOSED:
+	      session_lookup_del_connection (&tc->connection);
+	      tc->c_flags |= TRANSPORT_CONNECTION_F_NO_LOOKUP;
+	      break;
+	    default:
 	      tcp_inc_counter (listen, TCP_ERROR_CREATE_EXISTS, 1);
 	      goto done;
 	    }
 
-	  if (PREDICT_FALSE (!syn_during_timewait (tc, b[0], &tw_iss)))
-	    {
-	      /* This SYN can't be accepted */
-	      tcp_inc_counter (listen, TCP_ERROR_CREATE_EXISTS, 1);
-	      goto done;
-	    }
-
-	  lc = tcp_lookup_listener (b[0], tc->c_fib_index, is_ip4);
-	  /* clean up the old session */
-	  tcp_connection_cleanup_and_notify (tc);
+	  lc = tcp_lookup_listener (b[0], fib_index, is_ip4);
 	  /* listener was cleaned up */
 	  if (!lc)
 	    {
@@ -2603,7 +2627,7 @@ tcp46_listen_inline (vlib_main_t *vm, vlib_node_runtime_t *node,
       /* Make sure connection wasn't just created */
       child =
 	tcp_lookup_connection (lc->c_fib_index, b[0], thread_index, is_ip4);
-      if (PREDICT_FALSE (child->state != TCP_STATE_LISTEN))
+      if (PREDICT_FALSE (child && child->state != TCP_STATE_LISTEN))
 	{
 	  tcp_inc_counter (listen, TCP_ERROR_CREATE_EXISTS, 1);
 	  goto done;

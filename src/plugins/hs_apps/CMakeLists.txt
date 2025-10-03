@@ -11,11 +11,17 @@
 # See the License for the specific language governing permissions and
 # limitations under the License.
 
+if(NOT VPP_BUILD_VCL)
+  return()
+endif()
+
 ##############################################################################
 # vpp builtin hs apps
 ##############################################################################
 add_vpp_plugin(hs_apps
   SOURCES
+  alpn_client.c
+  alpn_server.c
   echo_client.c
   echo_server.c
   hs_apps.c
@@ -24,6 +30,7 @@ add_vpp_plugin(hs_apps
   http_client.c
   http_tps.c
   proxy.c
+  http_connect_proxy_client.c
   test_builtins.c
 )
 

@@ -82,6 +82,9 @@ typedef struct {
   ethernet_main_t * ethernet_main;
   ip4_main_t *ip4_main;
 
+  /* To syslog warnings, etc. */
+  vlib_log_class_t hgnat_logger;
+
   /* Pool of doubly-linked list elements */
   dlist_elt_t * list_pool;
   u32 global_lru_list_head_index;
@@ -92,6 +95,7 @@ typedef struct {
   u32 port_random_seed;
   u32 outside_sw_if_index;
   ip4_address_t outside_addr;
+  ip4_address_t last_outside_addr;
   hgnat_session_t *session_pool;
 
   /* config params */
@@ -108,13 +112,6 @@ typedef struct {
   /* Table / ager process init complete */
   u8 table_init_done;
 } hgnat_main_t;
-
-typedef struct
-{
-  u16 identifier;
-  u16 sequence;
-} icmp_echo_header_t;
-
 
 #define HGNAT_HASH_BUCKET_DEFAULT 8192
 #define HGNAT_HASH_MEMORY_DEFAULT (128<<20)

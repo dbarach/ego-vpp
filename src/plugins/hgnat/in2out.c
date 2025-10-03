@@ -362,11 +362,23 @@ VLIB_NODE_FN (in2out_node) (vlib_main_t * vm, vlib_node_runtime_t * node,
   hgnat_main_t *hgm = &hgnat_main;
   hgnat_in2out_now = vlib_time_now(vm);
   ip4_address_t *addr;
+  u32 cur, prev;
 
   /* lookup the outside interface address */
   addr = ip4_interface_first_address (hgm->ip4_main,
                                       hgm->outside_sw_if_index, 0);
-  hgm->outside_addr.as_u32 = addr ? addr->as_u32 : 0;
+  cur = hgm->outside_addr.as_u32 = addr ? addr->as_u32 : 0;
+  prev = hgm->last_outside_addr.as_u32;
+
+  /* Starlink sometimes changes the leased address for one cycle. Wish they
+     wouldn't do that... */
+  if (cur && prev && (cur != prev))
+    {
+      hgnat_maybe_reclaim_translations (hgm, 1 /* remove all translations */);
+      vlib_log_warn (hgm->hgnat_logger,
+                     "DHCP address change, reset translation tables");
+      hgm->last_outside_addr.as_u32 = cur;
+    }
 
   return dispatch_pipeline(vm, node, frame);
 }

@@ -46,14 +46,25 @@ static const char *connection_upgrade_template = "Connection: upgrade\r\n"
 /**
  * http request boilerplate
  */
-static const char *get_request_template = "GET %s HTTP/1.1\r\n"
+static const char *get_request_template = "GET %U HTTP/1.1\r\n"
 					  "Host: %v\r\n"
 					  "User-Agent: %v\r\n";
 
-static const char *post_request_template = "POST %s HTTP/1.1\r\n"
+static const char *post_request_template = "POST %U HTTP/1.1\r\n"
 					   "Host: %v\r\n"
 					   "User-Agent: %v\r\n"
 					   "Content-Length: %llu\r\n";
+
+static const char *put_request_template = "PUT %U HTTP/1.1\r\n"
+					  "Host: %v\r\n"
+					  "User-Agent: %v\r\n"
+					  "Content-Length: %llu\r\n";
+
+static const char *put_chunked_request_template =
+  "PUT %U HTTP/1.1\r\n"
+  "Host: %v\r\n"
+  "User-Agent: %v\r\n"
+  "Transfer-Encoding: chunked\r\n";
 
 always_inline http_req_t *
 http1_conn_alloc_req (http_conn_t *hc)
@@ -303,6 +314,12 @@ http1_parse_request_line (http_req_t *req, u8 *rx_buf, http_status_code_t *ec)
       HTTP_DBG (0, "POST method");
       req->method = HTTP_REQ_POST;
       req->target_path_offset = method_offset + 5;
+    }
+  else if (!memcmp (rx_buf + method_offset, "PUT ", 4))
+    {
+      HTTP_DBG (0, "PUT method");
+      req->method = HTTP_REQ_PUT;
+      req->target_path_offset = method_offset + 4;
     }
   else if (!memcmp (rx_buf + method_offset, "CONNECT ", 8))
     {
@@ -768,12 +785,12 @@ http1_target_fixup (http_conn_t *hc, http_req_t *req)
 		  HTTP_URL_SCHEME_HTTP;
 
   if (req->target_form == HTTP_TARGET_AUTHORITY_FORM ||
-      req->connection_header_index == ~0)
+      req->host_header_index == ~0)
     return;
 
   /* authority fixup */
-  host = vec_elt_at_index (req->headers, req->connection_header_index);
-  req->target_authority_offset = host->value_offset;
+  host = vec_elt_at_index (req->headers, req->host_header_index);
+  req->target_authority_offset = req->headers_offset + host->value_offset;
   req->target_authority_len = host->value_len;
 }
 
@@ -854,6 +871,7 @@ http1_req_state_wait_transport_reply (http_conn_t *hc, http_req_t *req,
     }
 
   HTTP_DBG (3, "%v", rx_buf);
+  http_stats_responses_received_inc (hc->c_thread_index);
 
   if (vec_len (rx_buf) < 8)
     {
@@ -922,6 +940,7 @@ error:
   session_transport_closing_notify (&req->connection);
   session_transport_closed_notify (&req->connection);
   http_disconnect_transport (hc);
+  http_stats_proto_errors_inc (hc->c_thread_index);
   return HTTP_SM_ERROR;
 }
 
@@ -944,6 +963,7 @@ http1_req_state_wait_transport_method (http_conn_t *hc, http_req_t *req,
     return HTTP_SM_STOP;
 
   HTTP_DBG (3, "%v", rx_buf);
+  http_stats_requests_received_inc (hc->c_thread_index);
 
   if (vec_len (rx_buf) < 8)
     {
@@ -1028,6 +1048,7 @@ error:
   http_io_ts_after_read (hc, 1);
   http1_send_error (hc, ec, 0);
   session_transport_closing_notify (&req->connection);
+  http_stats_proto_errors_inc (hc->c_thread_index);
   http_disconnect_transport (hc);
 
   return HTTP_SM_ERROR;
@@ -1066,6 +1087,7 @@ http1_req_state_transport_io_more_data (http_conn_t *hc, http_req_t *req,
       clib_warning ("http protocol error: received more data than expected");
       session_transport_closing_notify (&req->connection);
       http_disconnect_transport (hc);
+      http_stats_proto_errors_inc (hc->c_thread_index);
       http_req_state_change (req, HTTP_REQ_STATE_WAIT_APP_METHOD);
       return HTTP_SM_ERROR;
     }
@@ -1169,6 +1191,7 @@ http1_req_state_udp_tunnel_rx (http_conn_t *hc, http_req_t *req,
 	      session_transport_closing_notify (&req->connection);
 	      session_transport_closed_notify (&req->connection);
 	      http_disconnect_transport (hc);
+	      http_stats_proto_errors_inc (hc->c_thread_index);
 	      return HTTP_SM_STOP;
 	    }
 	  else
@@ -1211,6 +1234,7 @@ http1_req_state_udp_tunnel_rx (http_conn_t *hc, http_req_t *req,
 
       hdr.data_length = payload_len;
       hdr.data_offset = 0;
+      hdr.gso_size = 0;
 
       /* send datagram header and payload */
       svm_fifo_seg_t segs[2] = { { (u8 *) &hdr, sizeof (hdr) },
@@ -1249,7 +1273,7 @@ http1_req_state_wait_app_reply (http_conn_t *hc, http_req_t *req,
 
   http_get_app_msg (req, &msg);
 
-  if (msg.data.type > HTTP_MSG_DATA_PTR)
+  if (msg.data.type >= HTTP_MSG_DATA_N_TYPES)
     {
       clib_warning ("no data");
       sc = HTTP_STATUS_INTERNAL_ERROR;
@@ -1342,12 +1366,14 @@ http1_req_state_wait_app_reply (http_conn_t *hc, http_req_t *req,
   http_req_state_change (req, next_state);
 
   http_io_ts_after_write (hc, 0);
+  http_stats_responses_sent_inc (hc->c_thread_index);
   return sm_result;
 
 error:
   http1_send_error (hc, sc, sp);
   session_transport_closing_notify (&req->connection);
   http_disconnect_transport (hc);
+  http_stats_proto_errors_inc (hc->c_thread_index);
   return HTTP_SM_STOP;
 }
 
@@ -1363,7 +1389,7 @@ http1_req_state_wait_app_method (http_conn_t *hc, http_req_t *req,
 
   http_get_app_msg (req, &msg);
 
-  if (msg.data.type > HTTP_MSG_DATA_PTR)
+  if (msg.data.type >= HTTP_MSG_DATA_N_TYPES)
     {
       clib_warning ("no data");
       goto error;
@@ -1394,7 +1420,7 @@ http1_req_state_wait_app_method (http_conn_t *hc, http_req_t *req,
        */
       request = format (request, get_request_template,
 			/* target */
-			target,
+			format_http_bytes, target, msg.data.target_path_len,
 			/* Host */
 			hc->host,
 			/* User-Agent */
@@ -1418,7 +1444,7 @@ http1_req_state_wait_app_method (http_conn_t *hc, http_req_t *req,
        */
       request = format (request, post_request_template,
 			/* target */
-			target,
+			format_http_bytes, target, msg.data.target_path_len,
 			/* Host */
 			hc->host,
 			/* User-Agent */
@@ -1431,6 +1457,57 @@ http1_req_state_wait_app_method (http_conn_t *hc, http_req_t *req,
       next_state = HTTP_REQ_STATE_APP_IO_MORE_DATA;
       sm_result = HTTP_SM_CONTINUE;
     }
+  else if (msg.method_type == HTTP_REQ_PUT)
+    {
+      /* Check if this is a streaming PUT */
+      if (msg.data.type == HTTP_MSG_DATA_STREAMING)
+	{
+	  /*
+	   * Streaming PUT with chunked transfer encoding
+	   */
+	  request =
+	    format (request, put_chunked_request_template,
+		    /* target */
+		    format_http_bytes, target, msg.data.target_path_len,
+		    /* Host */
+		    hc->host,
+		    /* User-Agent */
+		    hc->app_name);
+
+	  http_req_tx_buffer_init (req, &msg);
+
+	  /* For streaming, we need a different state */
+	  next_state = HTTP_REQ_STATE_APP_IO_MORE_STREAMING_DATA;
+	  sm_result = HTTP_SM_CONTINUE;
+	}
+      else
+	{
+	  if (!msg.data.body_len)
+	    {
+	      clib_warning ("PUT request should include data");
+	      goto error;
+	    }
+	  /*
+	   * Regular PUT with Content-Length
+	   */
+	  request =
+	    format (request, put_request_template,
+		    /* target */
+		    format_http_bytes, target, msg.data.target_path_len,
+		    /* Host */
+		    hc->host,
+		    /* User-Agent */
+		    hc->app_name,
+		    /* Content-Length */
+		    msg.data.body_len);
+
+	  http_req_tx_buffer_init (req, &msg);
+
+	  next_state = HTTP_REQ_STATE_APP_IO_MORE_DATA;
+	  sm_result = HTTP_SM_CONTINUE;
+	}
+    }
+
   else
     {
       clib_warning ("unsupported method %d", msg.method_type);
@@ -1459,6 +1536,7 @@ http1_req_state_wait_app_method (http_conn_t *hc, http_req_t *req,
   http_req_state_change (req, next_state);
 
   http_io_ts_after_write (hc, 0);
+  http_stats_requests_sent_inc (hc->c_thread_index);
   goto done;
 
 error:
@@ -1466,6 +1544,7 @@ error:
   session_transport_closing_notify (&req->connection);
   session_transport_closed_notify (&req->connection);
   http_disconnect_transport (hc);
+  http_stats_proto_errors_inc (hc->c_thread_index);
 
 done:
   return sm_result;
@@ -1502,6 +1581,75 @@ http1_req_state_app_io_more_data (http_conn_t *hc, http_req_t *req,
 
   if (finished)
     {
+      /* Finished transaction:
+       * server back to HTTP_REQ_STATE_WAIT_TRANSPORT_METHOD
+       * client to HTTP_REQ_STATE_WAIT_TRANSPORT_REPLY */
+      http_req_state_change (req, (hc->flags & HTTP_CONN_F_IS_SERVER) ?
+				    HTTP_REQ_STATE_WAIT_TRANSPORT_METHOD :
+				    HTTP_REQ_STATE_WAIT_TRANSPORT_REPLY);
+      http_buffer_free (hb);
+    }
+  http_io_ts_after_write (hc, finished);
+
+check_fifo:
+  http1_check_and_deschedule (hc, req, sp);
+  return HTTP_SM_STOP;
+}
+
+static http_sm_result_t
+http1_req_state_app_io_more_streaming_data (http_conn_t *hc, http_req_t *req,
+					    transport_send_params_t *sp)
+{
+  u32 max_write, chunk_size, n_segs, n_written = 0;
+  http_buffer_t *hb = &req->tx_buf;
+  svm_fifo_seg_t *seg;
+  int finished = 0;
+  int chunk_sz_value_headroom = 20;
+  u8 chunk_hdr[32];
+  int hdr_len;
+
+  ASSERT (hb->type == HTTP_BUFFER_STREAMING);
+
+  /* For streaming, check if we have data available */
+  max_write = http_io_ts_max_write (hc, sp);
+  /*
+   * do not drain more than we are going to write at a max - which
+   * is max_write minus chunk_sz_value_headroom (overhead for the chunk
+   * size value) bytes to leave the room for chunk headers.
+   */
+  if (max_write < chunk_sz_value_headroom)
+    {
+      HTTP_DBG (1, "ts tx fifo full - before write");
+      goto check_fifo;
+    }
+  chunk_size = http_buffer_get_segs (hb, max_write - chunk_sz_value_headroom,
+				     &seg, &n_segs);
+  if (chunk_size == 0)
+    {
+      /* No data available right now, wait for more */
+      HTTP_DBG (1, "streaming: no data available");
+      return HTTP_SM_STOP;
+    }
+
+  /* Write chunk size in hex */
+  hdr_len =
+    snprintf ((char *) chunk_hdr, sizeof (chunk_hdr), "%x\r\n", chunk_size);
+  http_io_ts_write (hc, chunk_hdr, hdr_len, sp);
+
+  /* Write chunk data */
+  n_written = http_io_ts_write_segs (hc, seg, n_segs, sp);
+
+  /* Write chunk trailer */
+  http_io_ts_write (hc, (u8 *) "\r\n", 2, sp);
+
+  http_buffer_drain (hb, n_written);
+
+  finished = http_buffer_bytes_left (hb) == 0;
+  if (finished)
+    {
+      /* Send final chunk (0-sized) */
+      http_io_ts_write (hc, (u8 *) "0\r\n\r\n", 5, sp);
+
       /* Finished transaction:
        * server back to HTTP_REQ_STATE_WAIT_TRANSPORT_METHOD
        * client to HTTP_REQ_STATE_WAIT_TRANSPORT_REPLY */
@@ -1568,7 +1716,7 @@ http1_req_state_udp_tunnel_tx (http_conn_t *hc, http_req_t *req,
   while (to_deq > 0)
     {
       /* read datagram header */
-      http_io_as_read (req, (u8 *) &hdr, sizeof (hdr), 1);
+      http_io_as_peek (req, (u8 *) &hdr, sizeof (hdr), 0);
       ASSERT (hdr.data_length <= HTTP_UDP_PAYLOAD_MAX_LEN);
       dgram_size = hdr.data_length + SESSION_CONN_HDR_LEN;
       ASSERT (to_deq >= dgram_size);
@@ -1584,7 +1732,7 @@ http1_req_state_udp_tunnel_tx (http_conn_t *hc, http_req_t *req,
       payload = http_encap_udp_payload_datagram (buf, hdr.data_length);
       capsule_size = (payload - buf) + hdr.data_length;
       /* read payload */
-      http_io_as_read (req, payload, hdr.data_length, 1);
+      http_io_as_peek (req, payload, hdr.data_length, sizeof (hdr));
       http_io_as_drain (req, dgram_size);
       /* send capsule */
       http_io_ts_write (hc, buf, capsule_size, sp);
@@ -1614,6 +1762,7 @@ static http_sm_handler tx_state_funcs[HTTP_REQ_N_STATES] = {
   http1_req_state_app_io_more_data,
   http1_req_state_tunnel_tx,
   http1_req_state_udp_tunnel_tx,
+  http1_req_state_app_io_more_streaming_data,
 };
 
 static http_sm_handler rx_state_funcs[HTTP_REQ_N_STATES] = {
@@ -1626,6 +1775,7 @@ static http_sm_handler rx_state_funcs[HTTP_REQ_N_STATES] = {
   0, /* app io more data */
   http1_req_state_tunnel_rx,
   http1_req_state_udp_tunnel_rx,
+  0, /* app io more streaming data */
 };
 
 static_always_inline int
@@ -1772,7 +1922,7 @@ http1_app_rx_evt_callback (http_conn_t *hc, u32 req_index,
 
 static void
 http1_app_close_callback (http_conn_t *hc, u32 req_index,
-			  clib_thread_index_t thread_index)
+			  clib_thread_index_t thread_index, u8 is_shutdown)
 {
   http_req_t *req;
 
@@ -1804,6 +1954,7 @@ http1_app_reset_callback (http_conn_t *hc, u32 req_index,
   req = http1_req_get (req_index, thread_index);
   session_transport_closed_notify (&req->connection);
   http_disconnect_transport (hc);
+  http_stats_connections_reset_by_app_inc (hc->c_thread_index);
 }
 
 static int
@@ -1815,7 +1966,8 @@ http1_transport_connected_callback (http_conn_t *hc)
 
   req = http1_conn_alloc_req (hc);
   http_req_state_change (req, HTTP_REQ_STATE_WAIT_APP_METHOD);
-  return http_conn_established (hc, req);
+  http_stats_connections_established_inc (hc->c_thread_index);
+  return http_conn_established (hc, req, hc->hc_pa_app_api_ctx, 0);
 }
 
 static void
@@ -1829,6 +1981,7 @@ http1_transport_rx_callback (http_conn_t *hc)
       /* first request - create request ctx and notify app about new conn */
       req = http1_conn_alloc_req (hc);
       http_conn_accept_request (hc, req);
+      http_stats_connections_accepted_inc (hc->c_thread_index);
       http_req_state_change (req, HTTP_REQ_STATE_WAIT_TRANSPORT_METHOD);
       hc->flags &= ~HTTP_CONN_F_NO_APP_SESSION;
     }
@@ -1838,15 +1991,30 @@ http1_transport_rx_callback (http_conn_t *hc)
   if (!http1_req_state_is_rx_valid (req))
     {
       if (http_io_ts_max_read (hc))
-	clib_warning ("hc [%u]%x invalid rx state: http req state "
-		      "'%U', session state '%U'",
-		      hc->c_thread_index, hc->hc_hc_index,
-		      format_http_req_state, req->state,
-		      format_http_conn_state, hc);
-      http_io_ts_drain_all (hc);
+	{
+	  if (req->state == HTTP_REQ_STATE_APP_IO_MORE_DATA &&
+	      !(hc->flags & HTTP_CONN_F_IS_SERVER))
+	    {
+	      /* client can receive error response from server when still
+	       * sending content */
+	      /* TODO: 100 continue support */
+	      HTTP_DBG (1, "server send response while client sending data");
+	      http_io_as_drain_all (req);
+	      hc->state = HTTP_CONN_STATE_CLOSED;
+	      http_req_state_change (req, HTTP_REQ_STATE_WAIT_TRANSPORT_REPLY);
+	      goto run_sm;
+	    }
+	  clib_warning ("hc [%u]%x invalid rx state: http req state "
+			"'%U', session state '%U'",
+			hc->c_thread_index, hc->hc_hc_index,
+			format_http_req_state, req->state,
+			format_http_conn_state, hc);
+	  http_io_ts_drain_all (hc);
+	}
       return;
     }
 
+run_sm:
   HTTP_DBG (1, "run state machine");
   http1_req_run_state_machine (hc, req, 0, 0);
 }
@@ -1871,6 +2039,7 @@ http1_transport_reset_callback (http_conn_t *hc)
     return;
   http_req_t *req = http1_conn_get_req (hc);
   session_transport_reset_notify (&req->connection);
+  http_stats_connections_reset_by_peer_inc (hc->c_thread_index);
 }
 
 static void

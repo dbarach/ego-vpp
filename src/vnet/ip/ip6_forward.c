@@ -132,10 +132,6 @@ ip6_add_interface_routes (vnet_main_t * vnm, u32 sw_if_index,
     .fp_addr.ip6 = *address,
   };
 
-  /* set special routes for the prefix if needed */
-  ip6_add_interface_prefix_routes (im, sw_if_index, fib_index,
-				   address, a->address_length);
-
   pfx.fp_len = 128;
   if (sw_if_index < vec_len (lm->classify_table_index_by_sw_if_index))
     {
@@ -166,6 +162,11 @@ ip6_add_interface_routes (vnet_main_t * vnm, u32 sw_if_index,
 				   &pfx.fp_addr,
 				   sw_if_index, ~0,
 				   1, NULL, FIB_ROUTE_PATH_FLAG_NONE);
+
+  /* set special routes for the prefix if needed */
+  if (a->address_length < 128)
+    ip6_add_interface_prefix_routes (im, sw_if_index, fib_index, address,
+				     a->address_length);
 }
 
 static void
@@ -1311,6 +1312,10 @@ ip6_local_inline (vlib_main_t *vm, vlib_node_runtime_t *node,
 	{
 	  vnet_buffer (b[0])->l3_hdr_offset = b[0]->current_data;
 	  vnet_buffer (b[1])->l3_hdr_offset = b[1]->current_data;
+	  b[0]->flags |=
+	    VNET_BUFFER_F_IS_IP6 | VNET_BUFFER_F_L3_HDR_OFFSET_VALID;
+	  b[1]->flags |=
+	    VNET_BUFFER_F_IS_IP6 | VNET_BUFFER_F_L3_HDR_OFFSET_VALID;
 
 	  u8 type[2];
 	  type[0] = lm->builtin_protocol_by_ip_protocol[ip[0]->protocol];
@@ -1524,6 +1529,9 @@ ip6_local_inline (vlib_main_t *vm, vlib_node_runtime_t *node,
       if (head_of_feature_arc)
 	{
 	  vnet_buffer (b[0])->l3_hdr_offset = b[0]->current_data;
+	  b[0]->flags |=
+	    VNET_BUFFER_F_IS_IP6 | VNET_BUFFER_F_L3_HDR_OFFSET_VALID;
+
 	  u8 type = lm->builtin_protocol_by_ip_protocol[ip->protocol];
 
 	  u32 flags = b[0]->flags;

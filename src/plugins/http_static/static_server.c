@@ -15,6 +15,7 @@
 
 #include <http_static/http_static.h>
 #include <vnet/session/application.h>
+#include <vnet/tls/tls_types.h>
 
 #include <sys/types.h>
 #include <sys/stat.h>
@@ -434,12 +435,7 @@ static u32
 try_index_file (hss_listener_t *l, hss_session_t *hs, u8 *path)
 {
   hss_main_t *hsm = &hss_main;
-  u8 *port_str = 0, *redirect;
-  transport_endpoint_t endpt;
-  transport_proto_t proto;
-  int print_port = 0;
-  u16 local_port;
-  session_t *ts;
+  u8 *redirect;
   u32 plen;
 
   /* Remove the trailing space */
@@ -463,28 +459,12 @@ try_index_file (hss_listener_t *l, hss_session_t *hs, u8 *path)
    */
   vec_delete (path, vec_len (l->www_root) - 1, 0);
 
-  ts = session_get (hs->vpp_session_index, hs->thread_index);
-  session_get_endpoint (ts, &endpt, 1 /* is_local */);
-
-  local_port = clib_net_to_host_u16 (endpt.port);
-  proto = session_type_transport_proto (ts->session_type);
-
-  if ((proto == TRANSPORT_PROTO_TCP && local_port != 80) ||
-      (proto == TRANSPORT_PROTO_TLS && local_port != 443))
-    {
-      print_port = 1;
-      port_str = format (0, ":%u", (u32) local_port);
-    }
-
-  redirect =
-    format (0, "http%s://%U%s%s", proto == TRANSPORT_PROTO_TLS ? "s" : "",
-	    format_ip46_address, &endpt.ip, endpt.is_ip4,
-	    print_port ? port_str : (u8 *) "", path);
+  redirect = format (0, "http%s://%s%s",
+		     l->flags & HSS_LISTENER_F_NEED_CRYPTO ? "s" : "",
+		     hs->authority, path);
 
   if (hsm->debug_level > 0)
     clib_warning ("redirect: %s", redirect);
-
-  vec_free (port_str);
 
   if (hss_add_header (hs, HTTP_HEADER_LOCATION, (const char *) redirect,
 		      vec_len (redirect)))
@@ -617,7 +597,7 @@ handle_request (hss_session_t *hs)
 
   l = hss_listener_get (hs->listener_index);
 
-  if (hs->left_recv > l->max_body_size)
+  if (hs->left_recv > l->max_req_body_size)
     {
       start_send_data (hs, HTTP_STATUS_CONTENT_TOO_LARGE);
       hss_session_disconnect_transport (hs);
@@ -690,6 +670,7 @@ hss_ts_rx_callback (session_t *ts)
   hs->data_len = 0;
   vec_free (hs->target_path);
   vec_free (hs->target_query);
+  vec_free (hs->authority);
   http_init_headers_ctx (&hs->resp_headers, hs->headers_buf,
 			 vec_len (hs->headers_buf));
 
@@ -709,6 +690,21 @@ hss_ts_rx_callback (session_t *ts)
 
   hs->rt = msg.method_type;
 
+  /* Read authority */
+  if (msg.data.target_authority_len)
+    {
+      vec_validate (hs->authority, msg.data.target_authority_len - 1);
+      rv = svm_fifo_peek (ts->rx_fifo, msg.data.target_authority_offset,
+			  msg.data.target_authority_len, hs->authority);
+      ASSERT (rv == msg.data.target_authority_len);
+    }
+  else
+    {
+      /* Mandatory Host header was missing in HTTP/1.1 request */
+      start_send_data (hs, HTTP_STATUS_BAD_REQUEST);
+      vec_add1 (hs->authority, 0);
+      goto err_done;
+    }
   /* Read target path */
   if (msg.data.target_path_len)
     {
@@ -890,6 +886,7 @@ hss_ts_cleanup (session_t *s, session_cleanup_ntf_t ntf)
   hs->free_data = 0;
   vec_free (hs->headers_buf);
   vec_free (hs->path);
+  vec_free (hs->authority);
   vec_free (hs->target_path);
   vec_free (hs->target_query);
 
@@ -987,10 +984,13 @@ hss_listen (hss_listener_t *l, session_handle_t *lh)
 
   if (need_crypto)
     {
+      l->flags |= HSS_LISTENER_F_NEED_CRYPTO;
       ext_cfg = session_endpoint_add_ext_cfg (
 	&a->sep_ext, TRANSPORT_ENDPT_EXT_CFG_CRYPTO,
 	sizeof (transport_endpt_crypto_cfg_t));
       ext_cfg->crypto.ckpair_index = hsm->ckpair_index;
+      if (l->flags & HSS_LISTENER_F_HTTP1_ONLY)
+	ext_cfg->crypto.alpn_protos[0] = TLS_ALPN_PROTO_HTTP_1_1;
     }
 
   if (!(rv = vnet_listen (a)))
@@ -1129,9 +1129,10 @@ hss_create_command_fn (vlib_main_t *vm, unformat_input_t *input,
 
   l->cache_size = 10 << 20;
   l->max_age = HSS_DEFAULT_MAX_AGE;
-  l->max_body_size = HSS_DEFAULT_MAX_BODY_SIZE;
+  l->max_req_body_size = HSS_DEFAULT_MAX_BODY_SIZE;
   l->rx_buff_thresh = HSS_DEFAULT_RX_BUFFER_THRESH;
   l->keepalive_timeout = HSS_DEFAULT_KEEPALIVE_TIMEOUT;
+  l->flags = 0;
 
   /* Get a line of input. */
   if (!unformat_user (input, unformat_line_input, line_input))
@@ -1165,8 +1166,8 @@ hss_create_command_fn (vlib_main_t *vm, unformat_input_t *input,
 	;
       else if (unformat (line_input, "max-age %d", &l->max_age))
 	;
-      else if (unformat (line_input, "max-body-size %U", unformat_memory_size,
-			 &l->max_body_size))
+      else if (unformat (line_input, "max-req-body-size %U",
+			 unformat_memory_size, &l->max_req_body_size))
 	;
       else if (unformat (line_input, "rx-buff-thresh %U", unformat_memory_size,
 			 &l->rx_buff_thresh))
@@ -1176,6 +1177,12 @@ hss_create_command_fn (vlib_main_t *vm, unformat_input_t *input,
 	;
       else if (unformat (line_input, "ptr-thresh %U", unformat_memory_size,
 			 &l->use_ptr_thresh))
+	;
+      else if (unformat (line_input, "http1-only"))
+	l->flags |= HSS_LISTENER_F_HTTP1_ONLY;
+      /* Deprecated */
+      else if (unformat (line_input, "max-body-size %U", unformat_memory_size,
+			 &l->max_req_body_size))
 	;
       else
 	{
@@ -1230,22 +1237,24 @@ done:
  * Enable the static http server
  *
  * @cliexpar
- * This command enables the static http server. Only the www-root
- * parameter is required
+ * This command enables the static http server. Listeners can be added later
  * @clistart
  * http static server www-root /tmp/www uri tcp://0.0.0.0/80 cache-size 2m
  * @cliend
- * @cliexcmd{http static server www-root <path> [prealloc-fios <nn>]
- *   [private-segment-size <nnMG>] [fifo-size <nbytes>] [uri <uri>]
- *   [keepalive-timeout <nn>]}
+ * @cliexcmd{http static server [private-segment-size <nnMG>]
+ * [fifo-size <nbytes>] [prealloc-fifos <nn>] [debug <nn>] [uri <uri>]
+ * [www-root <path>] [url-handlers] [cache-size <nn>] [max-age <nseconds>]
+ * [max-req-body-size <nn>] [rx-buff-thresh <nn>] [keepalive-timeout <nn>]
+ * [ptr-thresh <nn>] [http1-only]}
 ?*/
 VLIB_CLI_COMMAND (hss_create_command, static) = {
   .path = "http static server",
   .short_help =
-    "http static server [www-root <path>] [url-handlers]\n"
-    "[private-segment-size <nnMG>] [fifo-size <nbytes>] [max-age <nseconds>]\n"
-    "[uri <uri>] [ptr-thresh <nn>] [prealloc-fifos <nn>] [debug [nn]]\n"
-    "[keepalive-timeout <nn>] [max-body-size <nn>]\n",
+    "http static server [private-segment-size <nnMG>] [fifo-size <nbytes>]\n"
+    "[prealloc-fifos <nn>] [debug <nn>] [uri <uri>] [www-root <path>]\n"
+    "[url-handlers] [cache-size <nn>] [max-age <nseconds>]\n"
+    "[max-req-body-size <nn>] [rx-buff-thresh <nn>] [keepalive-timeout <nn>]\n"
+    "[ptr-thresh <nn>] [http1-only]\n",
   .function = hss_create_command_fn,
 };
 
@@ -1268,9 +1277,10 @@ hss_add_del_listener_command_fn (vlib_main_t *vm, unformat_input_t *input,
 
   l->cache_size = 10 << 20;
   l->max_age = HSS_DEFAULT_MAX_AGE;
-  l->max_body_size = HSS_DEFAULT_MAX_BODY_SIZE;
+  l->max_req_body_size = HSS_DEFAULT_MAX_BODY_SIZE;
   l->rx_buff_thresh = HSS_DEFAULT_RX_BUFFER_THRESH;
   l->keepalive_timeout = HSS_DEFAULT_KEEPALIVE_TIMEOUT;
+  l->flags = 0;
 
   while (unformat_check_input (line_input) != UNFORMAT_END_OF_INPUT)
     {
@@ -1287,19 +1297,25 @@ hss_add_del_listener_command_fn (vlib_main_t *vm, unformat_input_t *input,
       else if (unformat (line_input, "cache-size %U", unformat_memory_size,
 			 &l->cache_size))
 	;
+      else if (unformat (line_input, "max-age %d", &l->max_age))
+	;
+      else if (unformat (line_input, "max-req-body-size %U",
+			 unformat_memory_size, &l->max_req_body_size))
+	;
+      else if (unformat (line_input, "rx-buff-thresh %U", unformat_memory_size,
+			 &l->rx_buff_thresh))
+	;
       else if (unformat (line_input, "keepalive-timeout %d",
 			 &l->keepalive_timeout))
 	;
       else if (unformat (line_input, "ptr-thresh %U", unformat_memory_size,
 			 &l->use_ptr_thresh))
 	;
-      else if (unformat (line_input, "max-age %d", &l->max_age))
-	;
+      else if (unformat (line_input, "http1-only"))
+	l->flags |= HSS_LISTENER_F_HTTP1_ONLY;
+      /* Deprecated */
       else if (unformat (line_input, "max-body-size %U", unformat_memory_size,
-			 &l->max_body_size))
-	;
-      else if (unformat (line_input, "rx-buff-thresh %U", unformat_memory_size,
-			 &l->rx_buff_thresh))
+			 &l->max_req_body_size))
 	;
       else
 	{
@@ -1352,10 +1368,28 @@ done:
   return error;
 }
 
+/*?
+ * Add static http server listener
+ *
+ * @cliexpar
+ * Add a static http server listener. The listener can be used to
+ * serve static files from the www-root directory or to handle
+ * requests using url handlers.
+ * @clistart
+ * http static listener www-root /tmp/www uri tcp://0.0.0.0/80 cache-size 2m
+ * @cliend
+ * @cliexcmd{http static listener [uri <uri>] [www-root <path>] [url-handlers]
+ * [cache-size <nn>] [max-age <nseconds>] [max-req-body-size <nn>]
+ * [rx-buff-thresh <nn>] [keepalive-timeout <nn>] [ptr-thresh <nn>]
+ * [http1-only]}
+?*/
 VLIB_CLI_COMMAND (hss_add_del_listener_command, static) = {
   .path = "http static listener",
-  .short_help = "http static listener [add|del] uri <uri>\n"
-		"[www-root <path>] [url-handlers] \n",
+  .short_help =
+    "http static listener [add|del] [uri <uri>] [www-root <path>]\n"
+    "[url-handlers] [cache-size <nn>] [max-age <nseconds>]\n"
+    "[max-req-body-size <nn>] [rx-buff-thresh <nn>] [keepalive-timeout <nn>]\n"
+    "[ptr-thresh <nn>] [http1-only]\n",
   .function = hss_add_del_listener_command_fn,
 };
 

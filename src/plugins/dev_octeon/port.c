@@ -18,17 +18,6 @@ VLIB_REGISTER_LOG_CLASS (oct_log, static) = {
   .subclass_name = "port",
 };
 
-static const u8 default_rss_key[] = {
-  0xfe, 0xed, 0x0b, 0xad, 0xfe, 0xed, 0x0b, 0xad, 0xad, 0x0b, 0xed, 0xfe,
-  0xad, 0x0b, 0xed, 0xfe, 0x13, 0x57, 0x9b, 0xef, 0x24, 0x68, 0xac, 0x0e,
-  0x91, 0x72, 0x53, 0x11, 0x82, 0x64, 0x20, 0x44, 0x12, 0xef, 0x34, 0xcd,
-  0x56, 0xbc, 0x78, 0x9a, 0x9a, 0x78, 0xbc, 0x56, 0xcd, 0x34, 0xef, 0x12
-};
-
-static const u32 default_rss_flowkey =
-  (FLOW_KEY_TYPE_IPV4 | FLOW_KEY_TYPE_IPV6 | FLOW_KEY_TYPE_TCP |
-   FLOW_KEY_TYPE_UDP | FLOW_KEY_TYPE_SCTP);
-
 static const u64 rxq_cfg =
   ROC_NIX_LF_RX_CFG_DIS_APAD | ROC_NIX_LF_RX_CFG_IP6_UDP_OPT |
   ROC_NIX_LF_RX_CFG_L2_LEN_ERR | ROC_NIX_LF_RX_CFG_DROP_RE |
@@ -132,10 +121,20 @@ oct_port_init (vlib_main_t *vm, vnet_dev_port_t *port)
   vnet_dev_port_interfaces_t *ifs = port->interfaces;
   u8 mac_addr[PLT_ETHER_ADDR_LEN];
   struct roc_nix *nix = cd->nix;
+  bool is_pause_frame_enable = false;
   vnet_dev_rv_t rv;
   int rrv;
 
   log_debug (dev, "port init: port %u", port->port_id);
+
+  foreach_vnet_dev_port_args (arg, port)
+    {
+      if (arg->id == OCT_PORT_ARG_EN_ETH_PAUSE_FRAME &&
+	  vnet_dev_arg_get_bool (arg))
+	is_pause_frame_enable = true;
+      else if (arg->id == OCT_PORT_ARG_RSS_FLOW_KEY)
+	cp->rss_flowkey = vnet_dev_arg_get_uint32 (arg);
+    }
 
   if ((rrv = roc_nix_lf_alloc (nix, ifs->num_rx_queues, ifs->num_tx_queues,
 			       rxq_cfg)))
@@ -178,13 +177,13 @@ oct_port_init (vlib_main_t *vm, vnet_dev_port_t *port)
       return oct_roc_err (dev, rrv, "roc_nix_tm_hierarchy_enable() failed");
     }
 
-  if ((rrv = roc_nix_rss_default_setup (nix, default_rss_flowkey)))
+  if ((rrv = roc_nix_rss_default_setup (nix, cp->rss_flowkey)))
     {
       oct_port_deinit (vm, port);
       return oct_roc_err (dev, rrv, "roc_nix_rss_default_setup() failed");
     }
 
-  roc_nix_rss_key_set (nix, default_rss_key);
+  roc_nix_rss_key_set (nix, port->rss_key.key);
 
   cp->npc.roc_nix = nix;
   cp->npc.flow_prealloc_size = OCT_FLOW_PREALLOC_SIZE;
@@ -221,7 +220,9 @@ oct_port_init (vlib_main_t *vm, vnet_dev_port_t *port)
     }
 
   /* Configure pause frame flow control*/
-  if ((rv = oct_port_pause_flow_control_init (vm, port)))
+
+  if (is_pause_frame_enable &&
+      (rv = oct_port_pause_flow_control_init (vm, port)))
     {
       oct_port_deinit (vm, port);
       return rv;
@@ -483,6 +484,28 @@ oct_port_start (vlib_main_t *vm, vnet_dev_port_t *port)
       goto done;
     }
 
+  if (!(roc_nix_is_sdp (nix) || roc_nix_is_lbk (nix)))
+    {
+
+      rv = roc_nix_npc_promisc_ena_dis (nix, port->promisc);
+      if (rv)
+	{
+	  return oct_roc_err (dev, rv, "roc_nix_npc_promisc_ena_dis failed");
+	}
+
+      if (roc_nix_is_pf (nix))
+	{
+
+	  rv = roc_nix_mac_promisc_mode_enable (nix, port->promisc);
+	  if (rv)
+	    {
+	      return oct_roc_err (dev, rv,
+				  "roc_nix_mac_promisc_mode_enable(%s) failed",
+				  port->promisc ? "true" : "false");
+	    }
+	}
+    }
+
   vnet_dev_poll_port_add (vm, port, 0.5, oct_port_poll);
 
   if (roc_nix_eeprom_info_get (nix, &eeprom_info) == 0)
@@ -591,6 +614,7 @@ oct_port_add_del_eth_addr (vlib_main_t *vm, vnet_dev_port_t *port,
 {
   vnet_dev_t *dev = port->dev;
   oct_device_t *cd = vnet_dev_get_data (dev);
+  oct_port_t *cp = vnet_dev_get_port_data (port);
   struct roc_nix *nix = cd->nix;
   vnet_dev_rv_t rv = VNET_DEV_OK;
   i32 rrv;
@@ -617,7 +641,7 @@ oct_port_add_del_eth_addr (vlib_main_t *vm, vnet_dev_port_t *port,
 		}
 	    }
 
-	  rrv = roc_nix_rss_default_setup (nix, default_rss_flowkey);
+	  rrv = roc_nix_rss_default_setup (nix, cp->rss_flowkey);
 	  if (rrv)
 	    rv = oct_roc_err (dev, rrv, "roc_nix_rss_default_setup() failed");
 	}
@@ -644,6 +668,19 @@ oct_op_config_max_rx_len (vlib_main_t *vm, vnet_dev_port_t *port,
 }
 
 vnet_dev_rv_t
+oct_op_config_set_rss_key (vlib_main_t *vm, vnet_dev_port_t *port,
+			   vnet_dev_rss_key_t *k)
+{
+  vnet_dev_t *dev = port->dev;
+  oct_device_t *cd = vnet_dev_get_data (dev);
+  vnet_dev_rv_t rv = VNET_DEV_OK;
+
+  roc_nix_rss_key_set (cd->nix, k->key);
+
+  return rv;
+}
+
+vnet_dev_rv_t
 oct_port_cfg_change_validate (vlib_main_t *vm, vnet_dev_port_t *port,
 			      vnet_dev_port_cfg_change_req_t *req)
 {
@@ -662,6 +699,7 @@ oct_port_cfg_change_validate (vlib_main_t *vm, vnet_dev_port_t *port,
     case VNET_DEV_PORT_CFG_CHANGE_PRIMARY_HW_ADDR:
     case VNET_DEV_PORT_CFG_ADD_SECONDARY_HW_ADDR:
     case VNET_DEV_PORT_CFG_REMOVE_SECONDARY_HW_ADDR:
+    case VNET_DEV_PORT_CFG_SET_RSS_KEY:
       break;
 
     case VNET_DEV_PORT_CFG_ADD_RX_FLOW:
@@ -705,6 +743,10 @@ oct_port_cfg_change (vlib_main_t *vm, vnet_dev_port_t *port,
 
     case VNET_DEV_PORT_CFG_MAX_RX_FRAME_SIZE:
       rv = oct_op_config_max_rx_len (vm, port, req->max_rx_frame_size);
+      break;
+
+    case VNET_DEV_PORT_CFG_SET_RSS_KEY:
+      rv = oct_op_config_set_rss_key (vm, port, &req->rss_key);
       break;
 
     case VNET_DEV_PORT_CFG_ADD_RX_FLOW:

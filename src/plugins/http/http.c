@@ -16,17 +16,20 @@
 #include <vpp/app/version.h>
 #include <vnet/session/application_interface.h>
 #include <vnet/session/application.h>
+#include <vnet/tls/tls_types.h>
 
 #include <http/http.h>
 #include <http/http_private.h>
 #include <http/http_timer.h>
 
-static http_main_t http_main;
+http_main_t http_main;
+
 static http_engine_vft_t *http_vfts;
 
 const http_buffer_type_t msg_to_buf_type[] = {
   [HTTP_MSG_DATA_INLINE] = HTTP_BUFFER_FIFO,
   [HTTP_MSG_DATA_PTR] = HTTP_BUFFER_PTR,
+  [HTTP_MSG_DATA_STREAMING] = HTTP_BUFFER_STREAMING,
 };
 
 void
@@ -112,12 +115,6 @@ format_http_time_now (u8 *s, va_list *args)
   return format (s, "%U", format_clib_timebase_time, now);
 }
 
-static inline http_worker_t *
-http_worker_get (clib_thread_index_t thread_index)
-{
-  return &http_main.wrk[thread_index];
-}
-
 static inline u32
 http_conn_alloc_w_thread (clib_thread_index_t thread_index)
 {
@@ -128,7 +125,7 @@ http_conn_alloc_w_thread (clib_thread_index_t thread_index)
   return (hc - wrk->conn_pool);
 }
 
-static inline http_conn_t *
+http_conn_t *
 http_conn_get_w_thread (u32 hc_index, clib_thread_index_t thread_index)
 {
   http_worker_t *wrk = http_worker_get (thread_index);
@@ -161,7 +158,7 @@ http_add_postponed_ho_cleanups (u32 ho_hc_index)
   vec_add1 (hm->postponed_ho_free, ho_hc_index);
 }
 
-static inline http_conn_t *
+http_conn_t *
 http_ho_conn_get (u32 ho_hc_index)
 {
   http_main_t *hm = &http_main;
@@ -316,6 +313,7 @@ http_get_app_header_list (http_req_t *req, http_msg_t *msg)
   else
     {
       app_headers = hm->app_header_lists[as->thread_index];
+      vec_validate (app_headers, msg->data.headers_len - 1);
       rv = svm_fifo_dequeue (as->tx_fifo, msg->data.headers_len, app_headers);
       ASSERT (rv == msg->data.headers_len);
     }
@@ -424,6 +422,7 @@ http_conn_timeout_cb (void *hc_handlep)
   if (PREDICT_FALSE (hc->version != HTTP_VERSION_NA))
     http_vfts[hc->version].transport_close_callback (hc);
   http_disconnect_transport (hc);
+  http_stats_connections_timeout_inc (hs_handle >> 24);
 }
 
 /*************************/
@@ -438,6 +437,7 @@ http_ts_accept_callback (session_t *ts)
   u32 hc_index, thresh;
   http_conn_handle_t hc_handle;
   transport_proto_t tp;
+  tls_alpn_proto_t alpn_proto;
 
   ts_listener = listen_session_get_from_handle (ts->listener_handle);
   lhc = http_listener_get (ts_listener->opaque);
@@ -457,14 +457,30 @@ http_ts_accept_callback (session_t *ts)
   tp = session_get_transport_proto (ts);
   if (tp == TRANSPORT_PROTO_TLS)
     {
-      /* TODO: set by ALPN result */
-      hc->version = HTTP_VERSION_1;
+      alpn_proto = tls_get_alpn_selected (ts->connection_index);
+      HTTP_DBG (1, "ALPN selected: %U", format_tls_alpn_proto, alpn_proto);
+      switch (alpn_proto)
+	{
+	case TLS_ALPN_PROTO_HTTP_2:
+	  hc->version = HTTP_VERSION_2;
+	  http_vfts[hc->version].conn_accept_callback (hc);
+	  break;
+	case TLS_ALPN_PROTO_HTTP_1_1:
+	case TLS_ALPN_PROTO_NONE:
+	  hc->version = HTTP_VERSION_1;
+	  break;
+	default:
+	  ASSERT (0);
+	  return -1;
+	}
     }
   else
     {
       /* going to decide in http_ts_rx_callback */
       hc->version = HTTP_VERSION_NA;
     }
+
+  HTTP_DBG (1, "identified HTTP/%u", hc->version == HTTP_VERSION_1 ? 1 : 2);
   hc_handle.version = hc->version;
   hc_handle.conn_index = hc_index;
   ts->opaque = hc_handle.as_u32;
@@ -492,6 +508,8 @@ http_ts_connected_callback (u32 http_app_index, u32 ho_hc_index, session_t *ts,
   http_conn_t *hc, *ho_hc;
   app_worker_t *app_wrk;
   http_conn_handle_t hc_handle;
+  transport_proto_t tp;
+  tls_alpn_proto_t alpn_proto;
   int rv;
 
   ho_hc = http_ho_conn_get (ho_hc_index);
@@ -513,9 +531,6 @@ http_ts_connected_callback (u32 http_app_index, u32 ho_hc_index, session_t *ts,
 
   clib_memcpy_fast (hc, ho_hc, sizeof (*hc));
 
-  /* in chain with TLS there is race on half-open cleanup */
-  __atomic_fetch_or (&ho_hc->flags, HTTP_CONN_F_HO_DONE, __ATOMIC_RELEASE);
-
   hc->timer_handle = HTTP_TIMER_HANDLE_INVALID;
   hc->c_thread_index = ts->thread_index;
   hc->hc_tc_session_handle = session_handle (ts);
@@ -524,17 +539,40 @@ http_ts_connected_callback (u32 http_app_index, u32 ho_hc_index, session_t *ts,
   hc->state = HTTP_CONN_STATE_ESTABLISHED;
   ts->session_state = SESSION_STATE_READY;
   hc->flags |= HTTP_CONN_F_NO_APP_SESSION;
-  /* TODO: TLS set by ALPN result, TCP: prior knowledge (set in ho) */
+  hc->ho_index = ho_hc_index;
+  tp = session_get_transport_proto (ts);
+  /* TLS set by ALPN result, TCP: prior knowledge (set in ho) */
+  if (tp == TRANSPORT_PROTO_TLS)
+    {
+      alpn_proto = tls_get_alpn_selected (ts->connection_index);
+      HTTP_DBG (1, "ALPN selected: %U", format_tls_alpn_proto, alpn_proto);
+      switch (alpn_proto)
+	{
+	case TLS_ALPN_PROTO_HTTP_2:
+	  hc->version = HTTP_VERSION_2;
+	  break;
+	case TLS_ALPN_PROTO_HTTP_1_1:
+	case TLS_ALPN_PROTO_NONE:
+	  hc->version = HTTP_VERSION_1;
+	  break;
+	default:
+	  ASSERT (0);
+	  return -1;
+	}
+    }
+
+  HTTP_DBG (1, "identified HTTP/%u", hc->version == HTTP_VERSION_1 ? 1 : 2);
   hc_handle.version = hc->version;
   hc_handle.conn_index = new_hc_index;
   ts->opaque = hc_handle.as_u32;
 
-  HTTP_DBG (1, "half-open hc index %x,  hc [%u]%x", ho_hc_index,
-	    ts->thread_index, new_hc_index);
+  HTTP_DBG (1, "half-open hc index %x,  hc [%u]%x", ts->thread_index,
+	    ho_hc_index, new_hc_index);
 
   if ((rv = http_vfts[hc->version].transport_connected_callback (hc)))
     {
       clib_warning ("transport_connected_callback failed, rv=%d", rv);
+      __atomic_fetch_or (&ho_hc->flags, HTTP_CONN_F_HO_DONE, __ATOMIC_RELEASE);
       return rv;
     }
 
@@ -617,14 +655,8 @@ http_ts_rx_callback (session_t *ts)
 	  if (memcmp (rx_buf, http2_conn_preface.base,
 		      http2_conn_preface.len) == 0)
 	    {
-#if HTTP_2_ENABLE > 0
 	      hc->version = HTTP_VERSION_2;
 	      http_vfts[hc->version].conn_accept_callback (hc);
-#else
-	      svm_fifo_dequeue_drop_all (ts->rx_fifo);
-	      http_disconnect_transport (hc);
-	      return 0;
-#endif
 	    }
 	  else
 	    hc->version = HTTP_VERSION_1;
@@ -750,12 +782,14 @@ http_transport_enable (vlib_main_t *vm, u8 is_en)
   http_main_t *hm = &http_main;
   u32 num_threads, i;
   http_engine_vft_t *http_version;
+  http_worker_t *wrk;
 
   if (!is_en)
     {
       da->app_index = hm->app_index;
       da->api_client_index = APP_INVALID_INDEX;
       vnet_application_detach (da);
+      http_timers_set_state (vm, false);
       return 0;
     }
 
@@ -783,9 +817,17 @@ http_transport_enable (vlib_main_t *vm, u8 is_en)
   vec_free (a->name);
 
   if (hm->is_init)
-    return 0;
+    {
+      http_timers_set_state (vm, true);
+      return 0;
+    }
 
   vec_validate (hm->wrk, num_threads - 1);
+  vec_foreach (wrk, hm->wrk)
+    {
+      clib_spinlock_init (&wrk->pending_stream_connects_lock);
+      clib_memset (&wrk->stats, 0, sizeof (wrk->stats));
+    }
   vec_validate (hm->rx_bufs, num_threads - 1);
   vec_validate (hm->tx_bufs, num_threads - 1);
   vec_validate (hm->app_header_lists, num_threads - 1);
@@ -797,7 +839,7 @@ http_transport_enable (vlib_main_t *vm, u8 is_en)
       vec_validate (hm->tx_bufs[i],
 		    HTTP_UDP_PAYLOAD_MAX_LEN +
 		      HTTP_UDP_PROXY_DATAGRAM_CAPSULE_OVERHEAD);
-      vec_validate (hm->app_header_lists[i], 32 << 10);
+      vec_validate (hm->app_header_lists[i], 64 << 10);
     }
 
   clib_timebase_init (&hm->timebase, 0 /* GMT */, CLIB_TIMEBASE_DAYLIGHT_NONE,
@@ -816,17 +858,17 @@ http_transport_enable (vlib_main_t *vm, u8 is_en)
 }
 
 static int
-http_transport_connect (transport_endpoint_cfg_t *tep)
+http_connect_connection (session_endpoint_cfg_t *sep)
 {
   vnet_connect_args_t _cargs, *cargs = &_cargs;
   http_main_t *hm = &http_main;
-  session_endpoint_cfg_t *sep = (session_endpoint_cfg_t *) tep;
   application_t *app;
   http_conn_t *hc;
   int error;
   u32 hc_index;
   session_t *ho;
   transport_endpt_ext_cfg_t *ext_cfg;
+  segment_manager_props_t *props;
   app_worker_t *app_wrk = app_worker_get (sep->app_wrk_index);
 
   clib_memset (cargs, 0, sizeof (*cargs));
@@ -841,7 +883,6 @@ http_transport_connect (transport_endpoint_cfg_t *tep)
   hc->hc_pa_wrk_index = sep->app_wrk_index;
   hc->hc_pa_app_api_ctx = sep->opaque;
   hc->state = HTTP_CONN_STATE_CONNECTING;
-  /* TODO: set to HTTP_VERSION_NA in case of TLS */
   hc->version = HTTP_VERSION_1;
   cargs->api_context = hc_index;
 
@@ -852,13 +893,27 @@ http_transport_connect (transport_endpoint_cfg_t *tep)
 	(transport_endpt_cfg_http_t *) ext_cfg->data;
       HTTP_DBG (1, "app set timeout %u", http_cfg->timeout);
       hc->timeout = http_cfg->timeout;
+      hc->udp_tunnel_mode = http_cfg->udp_tunnel_mode;
+      if (http_cfg->flags & HTTP_ENDPT_CFG_F_HTTP2_PRIOR_KNOWLEDGE)
+	{
+	  HTTP_DBG (1, "app want http2 with prior knowledge");
+	  hc->version = HTTP_VERSION_2;
+	}
     }
 
   ext_cfg = session_endpoint_get_ext_cfg (sep, TRANSPORT_ENDPT_EXT_CFG_CRYPTO);
   if (ext_cfg)
     {
       HTTP_DBG (1, "app set tls");
+      hc->version = HTTP_VERSION_NA;
       cargs->sep.transport_proto = TRANSPORT_PROTO_TLS;
+      if (ext_cfg->crypto.alpn_protos[0] == TLS_ALPN_PROTO_NONE)
+	{
+	  HTTP_DBG (1,
+		    "app do not set alpn list, using default (h2,http/1.1)");
+	  ext_cfg->crypto.alpn_protos[0] = TLS_ALPN_PROTO_HTTP_2;
+	  ext_cfg->crypto.alpn_protos[1] = TLS_ALPN_PROTO_HTTP_1_1;
+	}
     }
 
   if (vec_len (app->name))
@@ -870,7 +925,7 @@ http_transport_connect (transport_endpoint_cfg_t *tep)
     hc->host = format (0, "%U:%d", format_ip4_address, &sep->ip.ip4,
 		       clib_net_to_host_u16 (sep->port));
   else
-    hc->host = format (0, "%U:%d", format_ip6_address, &sep->ip.ip6,
+    hc->host = format (0, "[%U]:%d", format_ip6_address, &sep->ip.ip6,
 		       clib_net_to_host_u16 (sep->port));
 
   HTTP_DBG (1, "hc ho_index %x", hc_index);
@@ -886,8 +941,131 @@ http_transport_connect (transport_endpoint_cfg_t *tep)
     session_type_from_proto_and_ip (TRANSPORT_PROTO_HTTP, sep->is_ip4);
   hc->hc_tc_session_handle = cargs->sh;
   hc->c_s_index = ho->session_index;
+  props = application_segment_manager_properties (app);
+  hc->app_rx_fifo_size = props->rx_fifo_size;
 
   return 0;
+}
+
+static int
+http_connect_stream (u64 parent_handle, u32 opaque)
+{
+  session_t *hs;
+  http_req_handle_t rh;
+  u32 hc_index;
+  http_conn_t *hc;
+
+  hs = session_get_from_handle (parent_handle);
+  if (session_type_transport_proto (hs->session_type) != TRANSPORT_PROTO_HTTP)
+    {
+      HTTP_DBG (1, "received incompatible session");
+      return -1;
+    }
+
+  rh.as_u32 = hs->connection_index;
+  if (rh.version != HTTP_VERSION_2)
+    {
+      HTTP_DBG (1, "%U multiplexing not supported", format_http_version,
+		rh.version);
+      return -1;
+    }
+
+  hc_index = http_vfts[rh.version].hc_index_get_by_req_index (
+    rh.req_index, hs->thread_index);
+  HTTP_DBG (1, "hc [%u]%x", hs->thread_index, hc_index);
+
+  hc = http_conn_get_w_thread (hc_index, hs->thread_index);
+
+  if (hc->state == HTTP_CONN_STATE_CLOSED)
+    {
+      HTTP_DBG (1, "conn closed");
+      return -1;
+    }
+
+  return http_vfts[rh.version].conn_connect_stream_callback (hc, opaque);
+}
+
+static void
+http_handle_stream_connects_rpc (void *args)
+{
+  clib_thread_index_t thread_index = pointer_to_uword (args);
+  http_worker_t *wrk;
+  u32 n_pending, max_connects, n_connects = 0;
+  http_pending_connect_stream_t *pc;
+
+  wrk = http_worker_get (thread_index);
+
+  clib_spinlock_lock (&wrk->pending_stream_connects_lock);
+
+  n_pending = clib_fifo_elts (wrk->pending_connect_streams);
+  max_connects = clib_min (32, n_pending);
+  vec_validate (wrk->burst_connect_streams, max_connects);
+
+  while (n_connects < max_connects)
+    clib_fifo_sub1 (wrk->pending_connect_streams,
+		    wrk->burst_connect_streams[n_connects++]);
+
+  clib_spinlock_unlock (&wrk->pending_stream_connects_lock);
+
+  n_connects = 0;
+  while (n_connects < max_connects)
+    {
+      pc = &wrk->burst_connect_streams[n_connects++];
+      http_connect_stream (pc->parent_handle, pc->opaque);
+    }
+
+  /* more work to do? */
+  if (max_connects < n_pending)
+    session_send_rpc_evt_to_thread_force (
+      thread_index, http_handle_stream_connects_rpc,
+      uword_to_pointer ((uword) thread_index, void *));
+}
+
+static int
+http_program_connect_stream (session_endpoint_cfg_t *sep)
+{
+  clib_thread_index_t parent_thread_index =
+    session_thread_from_handle (sep->parent_handle);
+  http_worker_t *wrk;
+  u32 n_pending;
+
+  ASSERT (session_vlib_thread_is_cl_thread ());
+
+  /* if we are already on same worker as parent, handle connect */
+  if (parent_thread_index == transport_cl_thread ())
+    return http_connect_stream (sep->parent_handle, sep->opaque);
+
+  /* if not on same worker as parent, queue request */
+  wrk = http_worker_get (parent_thread_index);
+
+  clib_spinlock_lock (&wrk->pending_stream_connects_lock);
+
+  http_pending_connect_stream_t p = { .parent_handle = sep->parent_handle,
+				      .opaque = sep->opaque };
+  clib_fifo_add1 (wrk->pending_connect_streams, p);
+  n_pending = clib_fifo_elts (wrk->pending_connect_streams);
+
+  clib_spinlock_unlock (&wrk->pending_stream_connects_lock);
+
+  if (n_pending == 1)
+    session_send_rpc_evt_to_thread_force (
+      parent_thread_index, http_handle_stream_connects_rpc,
+      uword_to_pointer ((uword) parent_thread_index, void *));
+
+  return 0;
+}
+
+static int
+http_transport_connect (transport_endpoint_cfg_t *tep)
+{
+  session_endpoint_cfg_t *sep = (session_endpoint_cfg_t *) tep;
+  session_t *hs;
+
+  hs = session_get_from_handle_if_valid (sep->parent_handle);
+  if (hs)
+    return http_program_connect_stream (sep);
+  else
+    return http_connect_connection (sep);
 }
 
 static u32
@@ -920,6 +1098,13 @@ http_start_listen (u32 app_listener_index, transport_endpoint_cfg_t *tep)
     {
       HTTP_DBG (1, "app set tls");
       tp = TRANSPORT_PROTO_TLS;
+      if (ext_cfg->crypto.alpn_protos[0] == TLS_ALPN_PROTO_NONE)
+	{
+	  HTTP_DBG (1,
+		    "app do not set alpn list, using default (h2,http/1.1)");
+	  ext_cfg->crypto.alpn_protos[0] = TLS_ALPN_PROTO_HTTP_2;
+	  ext_cfg->crypto.alpn_protos[1] = TLS_ALPN_PROTO_HTTP_1_1;
+	}
     }
   args->sep_ext.transport_proto = tp;
 
@@ -986,9 +1171,8 @@ http_stop_listen (u32 listener_index)
 
   return 0;
 }
-
-static void
-http_transport_close (u32 rh, clib_thread_index_t thread_index)
+static_always_inline void
+http_app_close (u32 rh, clib_thread_index_t thread_index, u8 is_shutdown)
 {
   http_conn_t *hc;
   u32 hc_index;
@@ -998,7 +1182,8 @@ http_transport_close (u32 rh, clib_thread_index_t thread_index)
 
   hc_index = http_vfts[hr_handle.version].hc_index_get_by_req_index (
     hr_handle.req_index, thread_index);
-  HTTP_DBG (1, "App disconnecting [%u]%x", thread_index, hc_index);
+  HTTP_DBG (1, "App disconnecting [%u]%x is_shutdown=%u", thread_index,
+	    hc_index, is_shutdown);
 
   hc = http_conn_get_w_thread (hc_index, thread_index);
   if (hc->state == HTTP_CONN_STATE_CONNECTING)
@@ -1015,7 +1200,19 @@ http_transport_close (u32 rh, clib_thread_index_t thread_index)
     }
 
   http_vfts[hc->version].app_close_callback (hc, hr_handle.req_index,
-					     thread_index);
+					     thread_index, is_shutdown);
+}
+
+static void
+http_transport_shutdown (u32 rh, clib_thread_index_t thread_index)
+{
+  http_app_close (rh, thread_index, 1);
+}
+
+static void
+http_transport_close (u32 rh, clib_thread_index_t thread_index)
+{
+  http_app_close (rh, thread_index, 0);
 }
 
 static void
@@ -1069,7 +1266,7 @@ http_app_tx_callback (void *session, transport_send_params_t *sp)
 
   hc_index = http_vfts[hr_handle.version].hc_index_get_by_req_index (
     hr_handle.req_index, as->thread_index);
-  HTTP_DBG (1, "hc [%u]%x", hc_index, as->connection_index);
+  HTTP_DBG (1, "hc [%u]%x", as->thread_index, hc_index);
 
   hc = http_conn_get_w_thread (hc_index, as->thread_index);
 
@@ -1087,7 +1284,7 @@ http_app_tx_callback (void *session, transport_send_params_t *sp)
 
   if (hc->state == HTTP_CONN_STATE_APP_CLOSED)
     http_vfts[hc->version].app_close_callback (hc, hr_handle.req_index,
-					       as->thread_index);
+					       as->thread_index, 0);
 
   sent = max_burst_sz - sp->max_burst_size;
 
@@ -1101,7 +1298,7 @@ http_app_rx_evt_cb (transport_connection_t *tc)
   http_conn_t *hc;
   http_req_handle_t hr_handle;
 
-  HTTP_DBG (1, "hc [%u]%x", vlib_get_thread_index (), req->hr_hc_index);
+  HTTP_DBG (1, "hc [%u]%x", req->c_thread_index, req->hr_hc_index);
 
   hr_handle.as_u32 = req->hr_req_handle;
   hc = http_conn_get_w_thread (req->hr_hc_index, req->c_thread_index);
@@ -1188,11 +1385,18 @@ format_http_transport_half_open (u8 *s, va_list *args)
   session_t *tcp_ho;
 
   ho_hc = http_ho_conn_get (ho_index);
-  tcp_ho = session_get_from_handle (ho_hc->hc_tc_session_handle);
+  tcp_ho = session_get_from_handle_if_valid (ho_hc->hc_tc_session_handle);
 
-  s = format (s, "[%d:%d][H] half-open app_wrk %u ts %d:%d",
+  if (tcp_ho)
+    s =
+      format (s, "[%d:%d][H] half-open app_wrk %u ts %d:%d",
 	      ho_hc->c_thread_index, ho_hc->c_s_index, ho_hc->hc_pa_wrk_index,
 	      tcp_ho->thread_index, tcp_ho->session_index);
+  else
+    s =
+      format (s, "[%d:%d][H] half-open app_wrk %u (postponed cleanup)",
+	      ho_hc->c_thread_index, ho_hc->c_s_index, ho_hc->hc_pa_wrk_index);
+
   return s;
 }
 
@@ -1228,6 +1432,7 @@ static const transport_proto_vft_t http_proto = {
   .connect = http_transport_connect,
   .start_listen = http_start_listen,
   .stop_listen = http_stop_listen,
+  .half_close = http_transport_shutdown,
   .close = http_transport_close,
   .reset = http_transport_reset,
   .cleanup_ho = http_transport_cleanup_ho,
@@ -1287,6 +1492,78 @@ http_transport_init (vlib_main_t *vm)
 }
 
 VLIB_INIT_FUNCTION (http_transport_init);
+
+static clib_error_t *
+show_http_stats_fn (vlib_main_t *vm, unformat_input_t *input,
+		    vlib_cli_command_t *cmd)
+{
+  vlib_thread_main_t *vtm = vlib_get_thread_main ();
+  http_main_t *hm = &http_main;
+  http_worker_t *wrk;
+  u32 num_threads, i;
+
+  if (unformat_check_input (input) != UNFORMAT_END_OF_INPUT)
+    return clib_error_return (0, "unknown input `%U'", format_unformat_error,
+			      input);
+
+  if (!hm->is_init)
+    return clib_error_return (0, "http transport disabled");
+
+  num_threads = 1 /* main thread */ + vtm->n_threads;
+
+  for (i = 0; i < num_threads; i++)
+    {
+      wrk = http_worker_get (i);
+      vlib_cli_output (vm, "Thread %u:\n", i);
+
+#define _(name, str)                                                          \
+  if (wrk->stats.name)                                                        \
+    vlib_cli_output (vm, " %lu %s", wrk->stats.name, str);
+      foreach_http_wrk_stat
+#undef _
+    }
+
+  return 0;
+}
+
+VLIB_CLI_COMMAND (show_http_stats_command, static) = {
+  .path = "show http stats",
+  .short_help = "show http stats",
+  .function = show_http_stats_fn,
+};
+
+static clib_error_t *
+clear_http_stats_fn (vlib_main_t *vm, unformat_input_t *input,
+		     vlib_cli_command_t *cmd)
+{
+  vlib_thread_main_t *vtm = vlib_get_thread_main ();
+  http_main_t *hm = &http_main;
+  http_worker_t *wrk;
+  u32 num_threads, i;
+
+  if (unformat_check_input (input) != UNFORMAT_END_OF_INPUT)
+    return clib_error_return (0, "unknown input `%U'", format_unformat_error,
+			      input);
+
+  if (!hm->is_init)
+    return clib_error_return (0, "http transport disabled");
+
+  num_threads = 1 /* main thread */ + vtm->n_threads;
+
+  for (i = 0; i < num_threads; i++)
+    {
+      wrk = http_worker_get (i);
+      clib_memset (&wrk->stats, 0, sizeof (wrk->stats));
+    }
+
+  return 0;
+}
+
+VLIB_CLI_COMMAND (clear_http_stats_command, static) = {
+  .path = "clear http stats",
+  .short_help = "clear http stats",
+  .function = clear_http_stats_fn,
+};
 
 static uword
 unformat_http_version_cfg (unformat_input_t *input, va_list *va)

@@ -243,6 +243,8 @@ static clib_error_t * hgnat_init (vlib_main_t * vm)
   hgm->translation_timeout = HGNAT_TRANSLATION_TIMEOUT_DEFAULT;
   hgm->translation_reclaim_if_expired = HGNAT_TRANSLATION_RECLAIM_IF_EXPIRED_DEFAULT;
   hgm->translation_limit = HGNAT_TRANSLATION_LIMIT_DEFAULT;
+  hgm->hgnat_logger = vlib_log_register_class ("hgnat", "all");
+
   return error;
 }
 

@@ -74,14 +74,17 @@ openssl_ctx_free (tls_ctx_t * ctx)
     {
       if (SSL_is_init_finished (oc->ssl) &&
 	  !(ctx->flags & TLS_CONN_F_PASSIVE_CLOSE))
-	SSL_shutdown (oc->ssl);
+	{
+	  int rv = SSL_shutdown (oc->ssl);
+	  if (rv < 0)
+	    (void) SSL_get_error (oc->ssl, rv);
+	}
 
       if (openssl_main.async)
 	tls_async_evts_free_list (ctx);
 
       SSL_free (oc->ssl);
       vec_free (ctx->srv_hostname);
-      SSL_CTX_free (oc->client_ssl_ctx);
     }
 
   pool_put_index (openssl_main.ctx_pool[ctx->c_thread_index],
@@ -187,6 +190,8 @@ openssl_read_from_ssl_into_fifo (svm_fifo_t *f, tls_ctx_t *ctx, u32 max_len)
   read = SSL_read (ssl, fs[0].data, fs[0].len);
   if (read <= 0)
     {
+      ossl_check_err_is_fatal (ssl, read);
+
       if (openssl_main.async && SSL_want_async (oc->ssl))
 	{
 	  session_t *tls_session =
@@ -195,7 +200,6 @@ openssl_read_from_ssl_into_fifo (svm_fifo_t *f, tls_ctx_t *ctx, u32 max_len)
 				    tls_session, SSL_ASYNC_EVT_RD, NULL, 0);
 	  return 0;
 	}
-      ossl_check_err_is_fatal (ssl, read);
       return 0;
     }
 
@@ -247,15 +251,15 @@ openssl_write_from_fifo_into_ssl (svm_fifo_t *f, tls_ctx_t *ctx,
 
 	      if (err == SSL_ERROR_WANT_WRITE)
 		break;
-
-	      if (openssl_main.async && SSL_want_async (ssl))
+	      if (openssl_main.async &&
+		  (err == SSL_ERROR_WANT_ASYNC || SSL_want_async (ssl)))
 		{
 		  session_t *ts =
 		    session_get_from_handle (ctx->tls_session_handle);
 		  vpp_tls_async_init_event (ctx, tls_async_write_event_handler,
 					    ts, SSL_ASYNC_EVT_WR, sp,
 					    sp->max_burst_size);
-		  return 0;
+		  break;
 		}
 	    }
 	  break;
@@ -267,6 +271,14 @@ openssl_write_from_fifo_into_ssl (svm_fifo_t *f, tls_ctx_t *ctx,
     svm_fifo_dequeue_drop (f, wrote);
 
   return wrote;
+}
+
+u8 *
+format_openssl_alpn_proto (u8 *s, va_list *va)
+{
+  const unsigned char *proto = va_arg (*va, const unsigned char *);
+  unsigned int proto_len = va_arg (*va, unsigned int);
+  return format (s, "%U", format_ascii_bytes, proto, proto_len);
 }
 
 void
@@ -345,6 +357,22 @@ openssl_ctx_handshake_rx (tls_ctx_t *ctx, session_t *tls_session)
   /*
    * Handshake complete
    */
+  if (ctx->alpn_list)
+    {
+      const unsigned char *proto = 0;
+      unsigned int proto_len;
+      SSL_get0_alpn_selected (oc->ssl, &proto, &proto_len);
+      if (proto_len)
+	{
+	  TLS_DBG (1, "Selected ALPN protocol: %U", format_openssl_alpn_proto,
+		   proto, proto_len);
+	  tls_alpn_proto_id_t id = { .len = (u8) proto_len,
+				     .base = (u8 *) proto };
+	  ctx->alpn_selected = tls_alpn_proto_by_str (&id);
+	}
+      else
+	TLS_DBG (1, "No ALPN negotiated");
+    }
   if (!SSL_is_server (oc->ssl))
     {
       /*
@@ -397,8 +425,13 @@ void
 openssl_confirm_app_close (tls_ctx_t *ctx)
 {
   openssl_ctx_t *oc = (openssl_ctx_t *) ctx;
-  SSL_shutdown (oc->ssl);
-  tls_disconnect_transport (ctx);
+  int rv = SSL_shutdown (oc->ssl);
+  if (rv < 0)
+    (void) SSL_get_error (oc->ssl, rv);
+  if (ctx->flags & TLS_CONN_F_SHUTDOWN_TRANSPORT)
+    tls_shutdown_transport (ctx);
+  else
+    tls_disconnect_transport (ctx);
   session_transport_closed_notify (&ctx->connection);
 }
 
@@ -626,6 +659,7 @@ openssl_ctx_read_dtls (tls_ctx_t *ctx, session_t *us)
 
       hdr.data_length = read;
       hdr.data_offset = 0;
+      hdr.gso_size = 0;
 
       svm_fifo_seg_t segs[2] = { { (u8 *) &hdr, sizeof (hdr) },
 				 { buf, read } };
@@ -653,17 +687,58 @@ openssl_ctx_read (tls_ctx_t *ctx, session_t *ts)
     return openssl_ctx_read_dtls (ctx, ts);
 }
 
+static void
+openssl_cleanup_certkey_int_ctx (app_certkey_int_ctx_t *cki)
+{
+  X509_free (cki->cert);
+  EVP_PKEY_free (cki->key);
+}
+
+static app_certkey_int_ctx_t *
+openssl_init_certkey_init_ctx (app_cert_key_pair_t *ckpair,
+			       clib_thread_index_t thread_index)
+{
+  app_certkey_int_ctx_t *cki = 0;
+  EVP_PKEY *pkey;
+  X509 *cert;
+  BIO *bio;
+
+  cki = app_certkey_alloc_int_ctx (ckpair, thread_index);
+  bio = BIO_new (BIO_s_mem ());
+  BIO_write (bio, ckpair->cert, vec_len (ckpair->cert));
+  cert = PEM_read_bio_X509 (bio, NULL, NULL, NULL);
+  if (!cert)
+    {
+      clib_warning ("unable to parse certificate");
+      BIO_free (bio);
+      return 0;
+    }
+  cki->cert = cert;
+  BIO_free (bio);
+
+  bio = BIO_new (BIO_s_mem ());
+  BIO_write (bio, ckpair->key, vec_len (ckpair->key));
+  pkey = PEM_read_bio_PrivateKey (bio, NULL, NULL, NULL);
+  if (!pkey)
+    {
+      clib_warning ("unable to parse pkey");
+      BIO_free (bio);
+      return 0;
+    }
+  cki->key = pkey;
+  BIO_free (bio);
+
+  cki->cleanup_cb = openssl_cleanup_certkey_int_ctx;
+
+  return cki;
+}
+
 static int
-openssl_set_ckpair (SSL *ssl, u32 ckpair_index)
+openssl_set_ckpair (SSL *ssl, u32 ckpair_index,
+		    clib_thread_index_t thread_index)
 {
   app_cert_key_pair_t *ckpair;
-  BIO *cert_bio;
-  EVP_PKEY *pkey;
-  X509 *srvcert;
-
-  /* Configure a ckpair index only if non-default/test provided */
-  if (ckpair_index == 0)
-    return 0;
+  app_certkey_int_ctx_t *cki;
 
   ckpair = app_cert_key_pair_get_if_valid (ckpair_index);
   if (!ckpair)
@@ -674,112 +749,327 @@ openssl_set_ckpair (SSL *ssl, u32 ckpair_index)
       TLS_DBG (1, "tls cert and/or key not configured");
       return -1;
     }
-  /*
-   * Set the key and cert
-   */
-  cert_bio = BIO_new (BIO_s_mem ());
-  BIO_write (cert_bio, ckpair->cert, vec_len (ckpair->cert));
-  srvcert = PEM_read_bio_X509 (cert_bio, NULL, NULL, NULL);
-  if (!srvcert)
-    {
-      clib_warning ("unable to parse certificate");
-      return -1;
-    }
-  SSL_use_certificate (ssl, srvcert);
-  BIO_free (cert_bio);
 
-  cert_bio = BIO_new (BIO_s_mem ());
-  BIO_write (cert_bio, ckpair->key, vec_len (ckpair->key));
-  pkey = PEM_read_bio_PrivateKey (cert_bio, NULL, NULL, NULL);
-  if (!pkey)
+  cki = app_certkey_get_int_ctx (ckpair, thread_index);
+  if (!cki || !cki->cert)
     {
-      clib_warning ("unable to parse pkey");
-      return -1;
+      cki = openssl_init_certkey_init_ctx (ckpair, thread_index);
+      if (!cki)
+	{
+	  clib_warning ("unable to initialize certificate/key pair");
+	  return -1;
+	}
     }
-  SSL_use_PrivateKey (ssl, pkey);
-  BIO_free (cert_bio);
+
+  SSL_use_certificate (ssl, cki->cert);
+  SSL_use_PrivateKey (ssl, cki->key);
+
   TLS_DBG (1, "TLS client using ckpair index: %d", ckpair_index);
   return 0;
 }
 
-static int
-openssl_client_init_verify (SSL *ssl, const char *srv_hostname,
-			    int set_hostname_verification,
-			    int set_hostname_strict_check)
+static void
+openssl_cleanup_ca_trust_int_ctx (app_crypto_ca_trust_int_ctx_t *cki)
 {
-  if (set_hostname_verification)
+  X509_STORE_free (cki->ca_store);
+}
+
+static app_crypto_ca_trust_int_ctx_t *
+openssl_init_int_ca_trust_ctx (app_crypto_ca_trust_t *ca_trust,
+			       clib_thread_index_t thread_index)
+{
+  app_crypto_ca_trust_int_ctx_t *cti = 0;
+  X509_STORE *store;
+  X509 *cert;
+  BIO *bio;
+
+  cti = app_crypto_alloc_int_ca_trust (ca_trust, thread_index);
+  store = X509_STORE_new ();
+  if (!store)
     {
-      X509_VERIFY_PARAM *param = SSL_get0_param (ssl);
-      if (!param)
-	{
-	  TLS_DBG (1, "Couldn't fetch SSL param");
-	  return -1;
-	}
-
-      if (set_hostname_strict_check)
-	X509_VERIFY_PARAM_set_hostflags (param,
-					 X509_CHECK_FLAG_NO_PARTIAL_WILDCARDS);
-
-      if (!X509_VERIFY_PARAM_set1_host (param, srv_hostname, 0))
-	{
-	  TLS_DBG (1, "Couldn't set hostname for verification");
-	  return -1;
-	}
-      SSL_set_verify (ssl, SSL_VERIFY_PEER, 0);
+      clib_warning ("unable to create x509 store");
+      return 0;
     }
-  if (!SSL_set_tlsext_host_name (ssl, srv_hostname))
+
+  /* Create BIO from the single PEM string containing multiple certificates */
+  bio = BIO_new (BIO_s_mem ());
+  BIO_write (bio, ca_trust->ca_chain, vec_len (ca_trust->ca_chain));
+
+  /* Read all certificates from the PEM string */
+  while ((cert = PEM_read_bio_X509 (bio, NULL, NULL, NULL)) != NULL)
     {
-      TLS_DBG (1, "Couldn't set hostname");
+      if (X509_STORE_add_cert (store, cert) != 1)
+	{
+	  char buf[512];
+	  ERR_error_string (ERR_get_error (), buf);
+	  clib_warning ("unable to add certificate to store: %s", buf);
+	  X509_free (cert);
+	  BIO_free (bio);
+	  X509_STORE_free (store);
+	  return 0;
+	}
+      X509_free (cert);
+    }
+
+  BIO_free (bio);
+
+  /* Parse and add CRL if present */
+  if (ca_trust->crl && vec_len (ca_trust->crl) > 0)
+    {
+      X509_CRL *crl;
+      bio = BIO_new (BIO_s_mem ());
+      BIO_write (bio, ca_trust->crl, vec_len (ca_trust->crl));
+
+      /* Read all CRLs from the PEM string */
+      while ((crl = PEM_read_bio_X509_CRL (bio, NULL, NULL, NULL)) != NULL)
+	{
+	  if (X509_STORE_add_crl (store, crl) != 1)
+	    {
+	      char buf[512];
+	      ERR_error_string (ERR_get_error (), buf);
+	      clib_warning ("unable to add CRL to store: %s", buf);
+	      X509_CRL_free (crl);
+	      BIO_free (bio);
+	      X509_STORE_free (store);
+	      return 0;
+	    }
+	  X509_CRL_free (crl);
+	}
+
+      BIO_free (bio);
+
+      /* Enable CRL checking */
+      X509_STORE_set_flags (store,
+			    X509_V_FLAG_CRL_CHECK | X509_V_FLAG_CRL_CHECK_ALL);
+    }
+
+  cti->ca_store = store;
+  cti->cleanup_cb = openssl_cleanup_ca_trust_int_ctx;
+
+  return cti;
+}
+
+static int
+openssl_set_ca_trust (tls_ctx_t *ctx)
+{
+  openssl_ctx_t *oc = (openssl_ctx_t *) ctx;
+  app_crypto_ca_trust_int_ctx_t *cti;
+  app_crypto_ca_trust_t *ca_trust;
+
+  ca_trust = app_crypto_get_wrk_ca_trust (ctx->parent_app_wrk_index,
+					  ctx->ca_trust_index);
+  if (!ca_trust)
+    return -1;
+
+  cti = app_crypto_get_int_ca_trust (ca_trust, ctx->c_thread_index);
+  if (!cti || !cti->ca_store)
+    {
+      cti = openssl_init_int_ca_trust_ctx (ca_trust, ctx->c_thread_index);
+      if (!cti)
+	{
+	  clib_warning ("unable to initialize certificate/key pair");
+	  return -1;
+	}
+    }
+
+  if (SSL_set1_verify_cert_store (oc->ssl, cti->ca_store) != 1)
+    {
+      char buf[512];
+      ERR_error_string (ERR_get_error (), buf);
+      clib_warning ("Failed to set CA trust store: %s", buf);
       return -1;
     }
+
   return 0;
 }
 
 static int
-openssl_ctx_init_client (tls_ctx_t * ctx)
+openssl_init_client_ctx (clib_thread_index_t thread_index,
+			 transport_proto_t proto)
 {
   long flags = SSL_OP_NO_SSLv2 | SSL_OP_NO_SSLv3 | SSL_OP_NO_COMPRESSION;
-  openssl_ctx_t *oc = (openssl_ctx_t *) ctx;
   openssl_main_t *om = &openssl_main;
   const SSL_METHOD *method;
-  int rv, err;
+  SSL_CTX *client_ssl_ctx;
+  int rv;
 
-  method = ctx->tls_type == TRANSPORT_PROTO_TLS ? SSLv23_client_method () :
-						  DTLS_client_method ();
-  if (method == NULL)
-    {
-      TLS_DBG (1, "(D)TLS_method returned null");
-      return -1;
-    }
+  method = proto == TRANSPORT_PROTO_TLS ? TLS_client_method () :
+					  DTLS_client_method ();
 
-  oc->client_ssl_ctx = SSL_CTX_new (method);
-  if (oc->client_ssl_ctx == NULL)
+  client_ssl_ctx = SSL_CTX_new (method);
+  if (client_ssl_ctx == NULL)
     {
       TLS_DBG (1, "SSL_CTX_new returned null");
       return -1;
     }
 
-  SSL_CTX_set_ecdh_auto (oc->client_ssl_ctx, 1);
-  SSL_CTX_set_mode (oc->client_ssl_ctx, SSL_MODE_ENABLE_PARTIAL_WRITE);
+  SSL_CTX_set_ecdh_auto (client_ssl_ctx, 1);
+  SSL_CTX_set_mode (client_ssl_ctx, SSL_MODE_ENABLE_PARTIAL_WRITE);
+#ifdef HAVE_OPENSSL_ASYNC
   if (om->async)
-    SSL_CTX_set_mode (oc->client_ssl_ctx, SSL_MODE_ASYNC);
+    {
+      SSL_CTX_set_mode (client_ssl_ctx, SSL_MODE_ASYNC);
+      SSL_CTX_set_async_callback (client_ssl_ctx, tls_async_openssl_callback);
+    }
+#endif
 
-  rv =
-    SSL_CTX_set_cipher_list (oc->client_ssl_ctx, (const char *) om->ciphers);
+  rv = SSL_CTX_set_cipher_list (client_ssl_ctx, (const char *) om->ciphers);
   if (rv != 1)
     {
       TLS_DBG (1, "Couldn't set cipher");
       return -1;
     }
 
-  SSL_CTX_set_options (oc->client_ssl_ctx, flags);
-  SSL_CTX_set1_cert_store (oc->client_ssl_ctx, om->cert_store);
+  SSL_CTX_set_options (client_ssl_ctx, flags);
+  SSL_CTX_set1_cert_store (client_ssl_ctx, om->cert_store);
 
-  oc->ssl = SSL_new (oc->client_ssl_ctx);
+  /* Set TLS Record size */
+  if (om->record_size)
+    {
+      rv = SSL_CTX_set_max_send_fragment (client_ssl_ctx, om->record_size);
+      if (rv != 1)
+	{
+	  TLS_DBG (1, "Couldn't set TLS record-size");
+	  return -1;
+	}
+      TLS_DBG (1, "Using TLS record-size of %d", om->record_size);
+    }
+
+  if (proto == TRANSPORT_PROTO_TLS)
+    om->default_client_ssl_ctx[thread_index] = client_ssl_ctx;
+  else
+    om->default_dtls_client_ssl_ctx[thread_index] = client_ssl_ctx;
+
+  return 0;
+}
+
+static inline SSL_CTX *
+openssl_get_client_ssl_ctx (clib_thread_index_t thread_index,
+			    transport_proto_t proto)
+{
+  openssl_main_t *om = &openssl_main;
+
+  /* One time init of the default client ssl ctxs */
+  if (PREDICT_FALSE (!om->default_client_ssl_ctx[thread_index]))
+    {
+      openssl_init_client_ctx (thread_index, TRANSPORT_PROTO_TLS);
+      openssl_init_client_ctx (thread_index, TRANSPORT_PROTO_DTLS);
+    }
+
+  return proto == TRANSPORT_PROTO_TLS ?
+	   om->default_client_ssl_ctx[thread_index] :
+	   om->default_dtls_client_ssl_ctx[thread_index];
+}
+
+static int
+openssl_make_verify_flags (tls_verify_cfg_t verify_cfg)
+{
+  int flags = SSL_VERIFY_PEER;
+
+  if (verify_cfg & TLS_VERIFY_F_PEER)
+    flags |= SSL_VERIFY_PEER;
+  if (verify_cfg & TLS_VERIFY_F_PEER_CERT)
+    flags |= SSL_VERIFY_FAIL_IF_NO_PEER_CERT;
+
+  return flags;
+}
+
+static int
+openssl_client_set_verify (tls_ctx_t *ctx)
+{
+  openssl_ctx_t *oc = (openssl_ctx_t *) ctx;
+
+  if (ctx->verify_cfg & (TLS_VERIFY_F_HOSTNAME | TLS_VERIFY_F_HOSTNAME_STRICT))
+    {
+      X509_VERIFY_PARAM *param = SSL_get0_param (oc->ssl);
+      if (!param)
+	{
+	  TLS_DBG (1, "Couldn't fetch SSL param");
+	  return -1;
+	}
+
+      if (ctx->verify_cfg & TLS_VERIFY_F_HOSTNAME_STRICT)
+	X509_VERIFY_PARAM_set_hostflags (param,
+					 X509_CHECK_FLAG_NO_PARTIAL_WILDCARDS);
+
+      if (ctx->verify_cfg & TLS_VERIFY_F_HOSTNAME)
+	{
+	  if (!X509_VERIFY_PARAM_set1_host (
+		param, (const char *) ctx->srv_hostname, 0))
+	    {
+	      TLS_DBG (1, "Couldn't set hostname for verification");
+	      return -1;
+	    }
+	}
+    }
+  SSL_set_verify (oc->ssl, openssl_make_verify_flags (ctx->verify_cfg), 0);
+
+  return 0;
+}
+
+static int
+openssl_ctx_init_client (tls_ctx_t *ctx)
+{
+  openssl_ctx_t *oc = (openssl_ctx_t *) ctx;
+  SSL_CTX *client_ssl_ctx;
+  int rv, err;
+
+  client_ssl_ctx =
+    openssl_get_client_ssl_ctx (ctx->c_thread_index, ctx->tls_type);
+  if (PREDICT_FALSE (!client_ssl_ctx))
+    return -1;
+
+  oc->ssl = SSL_new (client_ssl_ctx);
   if (oc->ssl == NULL)
     {
       TLS_DBG (1, "Couldn't initialize ssl struct");
       return -1;
+    }
+
+  if (ctx->alpn_list)
+    {
+      rv =
+	SSL_set_alpn_protos (oc->ssl, (const unsigned char *) ctx->alpn_list,
+			     (unsigned int) vec_len (ctx->alpn_list));
+      if (rv != 0)
+	{
+	  TLS_DBG (1, "Couldn't set alpn protos");
+	  return -1;
+	}
+    }
+
+  if (!SSL_set_tlsext_host_name (oc->ssl, (const char *) ctx->srv_hostname))
+    {
+      TLS_DBG (1, "Couldn't set hostname");
+      return -1;
+    }
+
+  if (ctx->verify_cfg)
+    {
+      if (openssl_client_set_verify (ctx))
+	{
+	  TLS_DBG (1, "ERROR: setting verify flags failed");
+	  return -1;
+	}
+    }
+
+  /* Configure a ckpair index only if non-default/test provided */
+  if (ctx->ckpair_index)
+    {
+      if (openssl_set_ckpair (oc->ssl, ctx->ckpair_index, ctx->c_thread_index))
+	{
+	  TLS_DBG (1, "Couldn't set client certificate-key pair");
+	}
+    }
+
+  /* Configure trusted ca only if non-default*/
+  if (ctx->ca_trust_index)
+    {
+      if (openssl_set_ca_trust (ctx))
+	{
+	  TLS_DBG (1, "Couldn't set trusted CA");
+	  return -1;
+	}
     }
 
   if (ctx->tls_type == TRANSPORT_PROTO_TLS)
@@ -796,29 +1086,6 @@ openssl_ctx_init_client (tls_ctx_t * ctx)
   SSL_set_bio (oc->ssl, oc->wbio, oc->rbio);
   SSL_set_connect_state (oc->ssl);
 
-  /* Hostname validation and strict check by name are disabled by default */
-  rv = openssl_client_init_verify (oc->ssl, (const char *) ctx->srv_hostname,
-				   0, 0);
-  if (rv)
-    {
-      TLS_DBG (1, "ERROR:verify init failed:%d", rv);
-      return -1;
-    }
-  if (openssl_set_ckpair (oc->ssl, ctx->ckpair_index))
-    {
-      TLS_DBG (1, "Couldn't set client certificate-key pair");
-    }
-  /* Set TLS Record size */
-  if (om->record_size)
-    {
-      rv = SSL_CTX_set_max_send_fragment (oc->client_ssl_ctx, om->record_size);
-      if (rv != 1)
-	{
-	  TLS_DBG (1, "Couldn't set TLS record-size");
-	  return -1;
-	}
-      TLS_DBG (1, "Using TLS record-size of %d", om->record_size);
-    }
   /*
    * 2. Do the first steps in the handshake.
    */
@@ -847,33 +1114,60 @@ openssl_ctx_init_client (tls_ctx_t * ctx)
 }
 
 static int
+openssl_alpn_select_cb (SSL *ssl, const unsigned char **out,
+			unsigned char *outlen, const unsigned char *in,
+			unsigned int inlen, void *arg)
+{
+  u8 *proto_list = arg;
+  if (SSL_select_next_proto (
+	(unsigned char **) out, outlen, (const unsigned char *) proto_list,
+	vec_len (proto_list), in, inlen) != OPENSSL_NPN_NEGOTIATED)
+    {
+      TLS_DBG (1, "server support no alpn proto advertised by client");
+      return SSL_TLSEXT_ERR_ALERT_FATAL;
+    }
+  return SSL_TLSEXT_ERR_OK;
+}
+
+static int
 openssl_start_listen (tls_ctx_t * lctx)
 {
+  u64 flags = SSL_OP_NO_SSLv2 | SSL_OP_NO_SSLv3 | SSL_OP_NO_COMPRESSION;
+  openssl_main_t *om = &openssl_main;
   const SSL_METHOD *method;
   SSL_CTX *ssl_ctx;
   int rv;
-  BIO *cert_bio;
-  X509 *srvcert;
-  EVP_PKEY *pkey;
   u32 olc_index;
   openssl_listen_ctx_t *olc;
   app_cert_key_pair_t *ckpair;
+  app_certkey_int_ctx_t *cki = 0;
 
-  long flags = SSL_OP_NO_SSLv2 | SSL_OP_NO_SSLv3 | SSL_OP_NO_COMPRESSION;
-  openssl_main_t *om = &openssl_main;
-
-  ckpair = app_cert_key_pair_get_if_valid (lctx->ckpair_index);
-  if (!ckpair)
-    return -1;
-
-  if (!ckpair->cert || !ckpair->key)
+  if (lctx->ckpair_index)
     {
-      TLS_DBG (1, "tls cert and/or key not configured %d",
-	       lctx->parent_app_wrk_index);
-      return -1;
+      ckpair = app_cert_key_pair_get_if_valid (lctx->ckpair_index);
+      if (!ckpair)
+	return -1;
+
+      if (!ckpair->cert || !ckpair->key)
+	{
+	  TLS_DBG (1, "tls cert and/or key not configured %d",
+		   lctx->parent_app_wrk_index);
+	  return -1;
+	}
+
+      cki = app_certkey_get_int_ctx (ckpair, lctx->c_thread_index);
+      if (!cki || !cki->cert)
+	{
+	  cki = openssl_init_certkey_init_ctx (ckpair, lctx->c_thread_index);
+	  if (!cki)
+	    {
+	      clib_warning ("unable to initialize certificate/key pair");
+	      return -1;
+	    }
+	}
     }
 
-  method = lctx->tls_type == TRANSPORT_PROTO_TLS ? SSLv23_server_method () :
+  method = lctx->tls_type == TRANSPORT_PROTO_TLS ? TLS_server_method () :
 						   DTLS_server_method ();
   ssl_ctx = SSL_CTX_new (method);
   if (!ssl_ctx)
@@ -944,55 +1238,33 @@ openssl_start_listen (tls_ctx_t * lctx)
   /*
    * Set the key and cert
    */
-  cert_bio = BIO_new (BIO_s_mem ());
-  if (!cert_bio)
+  if (cki)
     {
-      clib_warning ("unable to allocate memory");
-      return -1;
+      rv = SSL_CTX_use_certificate (ssl_ctx, cki->cert);
+      if (rv != 1)
+	{
+	  clib_warning ("unable to use SSL certificate");
+	  goto err;
+	}
+      rv = SSL_CTX_use_PrivateKey (ssl_ctx, cki->key);
+      if (rv != 1)
+	{
+	  clib_warning ("unable to use SSL PrivateKey");
+	  goto err;
+	}
     }
-  BIO_write (cert_bio, ckpair->cert, vec_len (ckpair->cert));
-  srvcert = PEM_read_bio_X509 (cert_bio, NULL, NULL, NULL);
-  if (!srvcert)
+  else
     {
-      clib_warning ("unable to parse certificate");
-      goto err;
-    }
-  rv = SSL_CTX_use_certificate (ssl_ctx, srvcert);
-  if (rv != 1)
-    {
-      clib_warning ("unable to use SSL certificate");
-      goto err;
-    }
-
-  BIO_free (cert_bio);
-
-  cert_bio = BIO_new (BIO_s_mem ());
-  if (!cert_bio)
-    {
-      clib_warning ("unable to allocate memory");
-      return -1;
-    }
-  BIO_write (cert_bio, ckpair->key, vec_len (ckpair->key));
-  pkey = PEM_read_bio_PrivateKey (cert_bio, NULL, NULL, NULL);
-  if (!pkey)
-    {
-      clib_warning ("unable to parse pkey");
-      goto err;
-    }
-  rv = SSL_CTX_use_PrivateKey (ssl_ctx, pkey);
-  if (rv != 1)
-    {
-      clib_warning ("unable to use SSL PrivateKey");
-      goto err;
+      lctx->flags |= TLS_CONN_F_ASYNC_CERT;
     }
 
-  BIO_free (cert_bio);
+  if (lctx->alpn_list)
+    SSL_CTX_set_alpn_select_cb (ssl_ctx, openssl_alpn_select_cb,
+				(void *) lctx->alpn_list);
 
   olc_index = openssl_listen_ctx_alloc ();
   olc = openssl_lctx_get (olc_index);
   olc->ssl_ctx = ssl_ctx;
-  olc->srvcert = srvcert;
-  olc->pkey = pkey;
 
   /* store SSL_CTX into TLS level structure */
   lctx->tls_ssl_ctx = olc_index;
@@ -1000,8 +1272,6 @@ openssl_start_listen (tls_ctx_t * lctx)
   return 0;
 
 err:
-  if (cert_bio)
-    BIO_free (cert_bio);
   return -1;
 }
 
@@ -1014,13 +1284,130 @@ openssl_stop_listen (tls_ctx_t * lctx)
   olc_index = lctx->tls_ssl_ctx;
   olc = openssl_lctx_get (olc_index);
 
-  X509_free (olc->srvcert);
-  EVP_PKEY_free (olc->pkey);
-
   SSL_CTX_free (olc->ssl_ctx);
   openssl_listen_ctx_free (olc);
 
   return 0;
+}
+
+static void
+openssl_server_async_cert_cb (app_crypto_async_reply_t *reply)
+{
+  app_crypto_async_req_handle_t handle = reply->handle;
+  clib_thread_index_t thread_index;
+  app_cert_key_pair_t *ckpair;
+  app_certkey_int_ctx_t *cki;
+  openssl_ctx_t *oc;
+  tls_ctx_t *ctx;
+
+  thread_index = handle.thread_index;
+  ASSERT (thread_index == vlib_get_thread_index ());
+  ctx = openssl_ctx_get_w_thread (handle.opaque & TLS_IDX_MASK,
+				  handle.thread_index);
+  oc = (openssl_ctx_t *) ctx;
+
+  ckpair = app_cert_key_pair_get_if_valid (reply->async_cert.ckpair_index);
+  if (!ckpair || !ckpair->cert || !ckpair->key)
+    {
+      TLS_DBG (1, "Invalid certificate/key pair %u", ckpair_index);
+      goto error;
+    }
+
+  /* Get or initialize certificate context */
+  cki = app_certkey_get_int_ctx (ckpair, thread_index);
+  if (!cki || !cki->cert)
+    {
+      cki = openssl_init_certkey_init_ctx (ckpair, thread_index);
+      if (!cki)
+	{
+	  TLS_DBG (1, "Failed to initialize certificate context");
+	  goto error;
+	}
+    }
+
+  /* Set the certificate and private key */
+  if (SSL_use_certificate (oc->ssl, cki->cert) != 1)
+    {
+      TLS_DBG (1, "Failed to set certificate");
+      goto error;
+    }
+
+  if (SSL_use_PrivateKey (oc->ssl, cki->key) != 1)
+    {
+      TLS_DBG (1, "Failed to set private key");
+      goto error;
+    }
+
+  /* Verify that the private key matches the certificate */
+  if (SSL_check_private_key (oc->ssl) != 1)
+    {
+      TLS_DBG (1, "Private key does not match certificate");
+      goto error;
+    }
+
+  TLS_DBG (2, "Successfully set certificate for server %s",
+	   SSL_get_servername (oc->ssl, TLSEXT_NAMETYPE_host_name));
+
+  /* Continue handshake */
+  while (1)
+    {
+      int rv, err;
+      rv = SSL_do_handshake (oc->ssl);
+      err = SSL_get_error (oc->ssl, rv);
+      if (openssl_main.async && err == SSL_ERROR_WANT_ASYNC)
+	break;
+
+      if (err != SSL_ERROR_WANT_WRITE)
+	break;
+    }
+
+  return;
+
+error:
+  /* Do not free ctx yet, in case we have pending rx events */
+  ctx->flags |= TLS_CONN_F_NO_APP_SESSION;
+  tls_disconnect_transport (ctx);
+}
+
+static int
+openssl_server_cert_callback (SSL *ssl, void *arg)
+{
+  u32 ctx_index = (u32) pointer_to_uword (arg);
+  tls_ctx_t *ctx = openssl_ctx_get (ctx_index);
+  openssl_ctx_t *oc = (openssl_ctx_t *) ctx;
+  const char *servername;
+
+  TLS_DBG (2, "Server certificate callback invoked for ctx %u",
+	   oc->openssl_ctx_index);
+
+  /* Get the requested server name from SNI extension */
+  servername = SSL_get_servername (ssl, TLSEXT_NAMETYPE_host_name);
+  if (!servername)
+    {
+      /* TODO maybe handle using default cert, if provided */
+      TLS_DBG (1, "No SNI provided");
+      return 0;
+    }
+
+  TLS_DBG (2, "SNI requested server name: %s", servername);
+
+  app_crypto_async_req_t req = { .req_type = APP_CRYPTO_ASYNC_REQ_TYPE_CERT,
+				 .handle = {
+                                        .thread_index = ctx->c_thread_index,
+                                        .opaque = ctx->tls_ctx_handle,
+                                        },
+				 .cb = openssl_server_async_cert_cb,
+				 .app_wrk_index = ctx->parent_app_wrk_index,
+				 .async_cert = {
+				   .servername = (const u8 *) servername,
+				 } };
+
+  oc->req_ticket = app_crypto_async_req (&req);
+  if (oc->req_ticket.as_u64 == APP_CRYPTO_ASYNC_INVALID_TICKET.as_u64)
+    return 0;
+
+  /* Certificate selection in progress */
+  return -1;
 }
 
 static int
@@ -1063,6 +1450,16 @@ openssl_ctx_init_server (tls_ctx_t * ctx)
       session_t *tls_session =
 	session_get_from_handle (ctx->tls_session_handle);
       openssl_ctx_handshake_rx (ctx, tls_session);
+    }
+
+  /* Set up certificate callback for async certificate retrieval */
+  if (ctx->flags & TLS_CONN_F_ASYNC_CERT)
+    {
+      uword oc_index = oc->openssl_ctx_index;
+      TLS_DBG (2, "Set async cert callback for ctx %u", oc_index);
+      SSL_set_cert_cb (oc->ssl, openssl_server_cert_callback,
+		       uword_to_pointer (oc_index, void *));
+      return 0;
     }
 
   while (1)
@@ -1166,12 +1563,14 @@ tls_init_ca_chain (void)
       cert_bio = BIO_new (BIO_s_mem ());
       BIO_write (cert_bio, test_srv_crt_rsa, test_srv_crt_rsa_len);
       testcert = PEM_read_bio_X509 (cert_bio, NULL, NULL, NULL);
+      BIO_free (cert_bio);
       if (!testcert)
 	{
 	  clib_warning ("unable to parse certificate");
 	  return -1;
 	}
       X509_STORE_add_cert (om->cert_store, testcert);
+      X509_free (testcert);
       rv = 0;
     }
   return (rv < 0 ? -1 : 0);
@@ -1243,6 +1642,9 @@ tls_openssl_init (vlib_main_t * vm)
   vec_validate (om->ctx_pool, num_threads - 1);
   vec_validate (om->rx_bufs, num_threads - 1);
   vec_validate (om->tx_bufs, num_threads - 1);
+  vec_validate (om->default_client_ssl_ctx, num_threads - 1);
+  vec_validate (om->default_dtls_client_ssl_ctx, num_threads - 1);
+
   for (i = 0; i < num_threads; i++)
     {
       vec_validate (om->rx_bufs[i], DTLSO_MAX_DGRAM);

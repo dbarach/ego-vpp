@@ -20,6 +20,7 @@
 #include <vnet/plugin/plugin.h>
 #include <vnet/ip/format.h>
 #include <vnet/ip/ip46_address.h>
+#include <vnet/session/session.h>
 
 #define HTTP_DEBUG 0
 
@@ -31,16 +32,42 @@
 #define HTTP_DBG(_lvl, _fmt, _args...)
 #endif
 
+typedef enum http_version_
+{
+  HTTP_VERSION_1,
+  HTTP_VERSION_2,
+  HTTP_VERSION_3,
+  HTTP_VERSION_NA = 7,
+} http_version_t;
+
 typedef enum http_udp_tunnel_mode_
 {
   HTTP_UDP_TUNNEL_CAPSULE, /**< app receive raw capsule */
   HTTP_UDP_TUNNEL_DGRAM,   /**< convert capsule to datagram (zc proxy) */
 } http_udp_tunnel_mode_t;
 
+#define foreach_http_endpt_cfg_flags                                          \
+  _ (HTTP2_PRIOR_KNOWLEDGE) /**< HTTP/2 connections over cleartext TCP */
+
+typedef enum http_endpt_cfg_flags_bit_
+{
+#define _(sym) HTTP_ENDPT_CFG_F_BIT_##sym,
+  foreach_http_endpt_cfg_flags
+#undef _
+} http_endpt_cfg_flags_bit_t;
+
+typedef enum http_endpt_cfg_flags_
+{
+#define _(sym) HTTP_ENDPT_CFG_F_##sym = 1 << HTTP_ENDPT_CFG_F_BIT_##sym,
+  foreach_http_endpt_cfg_flags
+#undef _
+} __clib_packed http_endpt_cfg_flags_t;
+
 typedef struct transport_endpt_cfg_http
 {
   u32 timeout; /**< HTTP session timeout in seconds */
   http_udp_tunnel_mode_t udp_tunnel_mode; /**< connect-udp mode */
+  u8 flags;
 } transport_endpt_cfg_http_t;
 
 typedef struct
@@ -51,12 +78,18 @@ typedef struct
 
 #define http_token_lit(s) (s), sizeof (s) - 1
 
+#define foreach_http_method                                                   \
+  _ (GET, "GET")                                                              \
+  _ (POST, "POST")                                                            \
+  _ (PUT, "PUT")                                                              \
+  _ (CONNECT, "CONNECT")                                                      \
+  _ (UNKNOWN, "UNKNOWN") /* for internal use */
+
 typedef enum http_req_method_
 {
-  HTTP_REQ_GET = 0,
-  HTTP_REQ_POST,
-  HTTP_REQ_CONNECT,
-  HTTP_REQ_UNKNOWN, /* for internal use */
+#define _(s, str) HTTP_REQ_##s,
+  foreach_http_method
+#undef _
 } http_req_method_t;
 
 typedef enum http_msg_type_
@@ -335,7 +368,10 @@ typedef enum http_upgrade_proto_
 typedef enum http_msg_data_type_
 {
   HTTP_MSG_DATA_INLINE,
-  HTTP_MSG_DATA_PTR
+  HTTP_MSG_DATA_PTR,
+  HTTP_MSG_DATA_STREAMING,
+  /* The value below is used for boundary checks of http_msg_data_type_t */
+  HTTP_MSG_DATA_N_TYPES,
 } http_msg_data_type_t;
 
 typedef struct http_field_line_
@@ -384,6 +420,66 @@ typedef struct http_msg_
   http_msg_data_t data;
 } http_msg_t;
 
+typedef union
+{
+  struct
+  {
+    u32 version : 3;
+    u32 req_index : 29;
+  };
+  u32 as_u32;
+} http_req_handle_t;
+
+STATIC_ASSERT (sizeof (http_req_handle_t) == sizeof (u32), "must fit in u32");
+
+always_inline http_version_t
+http_session_get_version (session_t *s)
+{
+  http_req_handle_t h;
+  h.as_u32 = s->connection_index;
+  return (http_version_t) h.version;
+}
+
+always_inline u8 *
+format_http_version (u8 *s, va_list *va)
+{
+  http_version_t v = va_arg (*va, http_version_t);
+  switch (v)
+    {
+    case HTTP_VERSION_1:
+      s = format (s, "HTTP/1.1");
+      break;
+    case HTTP_VERSION_2:
+      s = format (s, "HTTP/2");
+      break;
+    case HTTP_VERSION_3:
+      s = format (s, "HTTP/3");
+      break;
+    default:
+      s = format (s, "unknown");
+      break;
+    }
+  return s;
+}
+
+always_inline u8 *
+format_http_method (u8 *s, va_list *va)
+{
+  http_req_method_t method = va_arg (*va, http_req_method_t);
+  u8 *t = 0;
+
+  switch (method)
+    {
+#define _(s, str)                                                             \
+  case HTTP_REQ_##s:                                                          \
+    t = (u8 *) str;                                                           \
+    break;
+      foreach_http_method
+#undef _
+	default : return format (s, "unknown");
+    }
+  return format (s, "%s", t);
+}
 always_inline u8 *
 format_http_bytes (u8 *s, va_list *va)
 {
@@ -714,11 +810,16 @@ always_inline void
 http_reset_header_table (http_header_table_t *ht)
 {
   int i;
+  hash_pair_t *p;
   for (i = 0; i < vec_len (ht->concatenated_values); i++)
     vec_free (ht->concatenated_values[i]);
   vec_reset_length (ht->concatenated_values);
   vec_reset_length (ht->values);
   vec_reset_length (ht->buf);
+  hash_foreach_pair (p, ht->value_by_name, ({
+		       void *k = uword_to_pointer (p->key, void *);
+		       clib_mem_free (k);
+		     }));
   hash_free (ht->value_by_name);
 }
 
@@ -742,11 +843,16 @@ always_inline void
 http_free_header_table (http_header_table_t *ht)
 {
   int i;
+  hash_pair_t *p;
   for (i = 0; i < vec_len (ht->concatenated_values); i++)
     vec_free (ht->concatenated_values[i]);
   vec_free (ht->concatenated_values);
   vec_free (ht->values);
   vec_free (ht->buf);
+  hash_foreach_pair (p, ht->value_by_name, ({
+		       void *k = uword_to_pointer (p->key, void *);
+		       clib_mem_free (k);
+		     }));
   hash_free (ht->value_by_name);
 }
 
@@ -888,6 +994,27 @@ http_get_header (http_header_table_t *header_table, const char *name,
     }
 
   return 0;
+}
+
+/**
+ * Print all headers in http header table.
+ *
+ * @note arg0 - http_header_table_t *ht, arg1 - char *line_prefix
+ */
+always_inline u8 *
+format_http_header_table (u8 *s, va_list *va)
+{
+  http_header_table_t *ht = va_arg (*va, http_header_table_t *);
+  char *prefix = va_arg (*va, char *);
+  void *v = (void *) ht->value_by_name;
+  hash_t *h = hash_header (v);
+  hash_pair_t *p;
+
+  hash_foreach_pair (p, v, {
+    s = format (s, "%s%U\n", prefix, h->format_pair, h->format_pair_arg, v, p);
+  });
+
+  return s;
 }
 
 typedef struct

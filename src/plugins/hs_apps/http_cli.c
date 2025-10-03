@@ -16,6 +16,7 @@
 #include <vnet/session/application.h>
 #include <vnet/session/application_interface.h>
 #include <vnet/session/session.h>
+#include <vnet/tls/tls_types.h>
 #include <http/http.h>
 #include <http/http_header_names.h>
 #include <http/http_content_types.h>
@@ -56,6 +57,22 @@ typedef struct
   u8 *resp_headers_buf;
 } hcs_session_t;
 
+#define foreach_hcs_listener_flags _ (HTTP1_ONLY)
+
+typedef enum hcs_listener_flags_bit_
+{
+#define _(sym) HCS_LISTENER_F_BIT_##sym,
+  foreach_hcs_listener_flags
+#undef _
+} hcs_listener_flags_bit_t;
+
+typedef enum hcs_listener_flags_
+{
+#define _(sym) HCS_LISTENER_F_##sym = 1 << HCS_LISTENER_F_BIT_##sym,
+  foreach_hcs_listener_flags
+#undef _
+} __clib_packed hcs_listener_flags_t;
+
 typedef struct
 {
   hcs_session_t **sessions;
@@ -70,6 +87,7 @@ typedef struct
   u32 fifo_size;
   u8 *uri;
   vlib_main_t *vlib_main;
+  u8 flags;
 
   /* hash table to store uri -> uri map pool index */
   uword *index_by_uri;
@@ -613,19 +631,11 @@ hcs_attach ()
 }
 
 static int
-hcs_transport_needs_crypto (transport_proto_t proto)
-{
-  return proto == TRANSPORT_PROTO_TLS || proto == TRANSPORT_PROTO_DTLS ||
-	 proto == TRANSPORT_PROTO_QUIC;
-}
-
-static int
 hcs_listen ()
 {
   session_endpoint_cfg_t sep = SESSION_ENDPOINT_CFG_NULL;
   hcs_main_t *hcm = &hcs_main;
   vnet_listen_args_t _a, *a = &_a;
-  u8 need_crypto;
   int rv;
   char *uri;
 
@@ -638,17 +648,17 @@ hcs_listen ()
   if (parse_uri (uri, &sep))
     return -1;
 
-  need_crypto = hcs_transport_needs_crypto (sep.transport_proto);
-
   sep.transport_proto = TRANSPORT_PROTO_HTTP;
   clib_memcpy (&a->sep_ext, &sep, sizeof (sep));
 
-  if (need_crypto)
+  if (sep.flags & SESSION_ENDPT_CFG_F_SECURE)
     {
       transport_endpt_ext_cfg_t *ext_cfg = session_endpoint_add_ext_cfg (
 	&a->sep_ext, TRANSPORT_ENDPT_EXT_CFG_CRYPTO,
 	sizeof (transport_endpt_crypto_cfg_t));
       ext_cfg->crypto.ckpair_index = hcm->ckpair_index;
+      if (hcm->flags & HCS_LISTENER_F_HTTP1_ONLY)
+	ext_cfg->crypto.alpn_protos[0] = TLS_ALPN_PROTO_HTTP_1_1;
     }
 
   rv = vnet_listen (a);
@@ -661,7 +671,7 @@ hcs_listen ()
       hash_set_mem (hcm->index_by_uri, map->uri, map - hcm->uri_map_pool);
     }
 
-  if (need_crypto)
+  if (sep.flags & SESSION_ENDPT_CFG_F_SECURE)
     session_endpoint_free_ext_cfgs (&a->sep_ext);
 
   return rv;
@@ -774,6 +784,8 @@ hcs_create_command_fn (vlib_main_t *vm, unformat_input_t *input,
 	;
       else if (unformat (line_input, "secret %lu", &hcm->appns_secret))
 	;
+      else if (unformat (line_input, "http1-only"))
+	hcm->flags |= HCS_LISTENER_F_HTTP1_ONLY;
       else if (unformat (line_input, "listener"))
 	{
 	  if (unformat (line_input, "add"))
@@ -802,7 +814,7 @@ hcs_create_command_fn (vlib_main_t *vm, unformat_input_t *input,
 start_server:
 
   if (hcm->uri == 0)
-    hcm->uri = format (0, "tcp://0.0.0.0/80");
+    hcm->uri = format (0, "http://0.0.0.0");
 
   if (hcm->app_index != (u32) ~0)
     {

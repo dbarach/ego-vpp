@@ -641,6 +641,29 @@ lcp_router_mk_addr46 (const struct nl_addr *rna, ip46_address_t *ia)
   return (fproto);
 }
 
+static u32
+lcp_router_count_interface_addresses (u32 sw_if_index, u8 address_family)
+{
+  ip_lookup_main_t *lm = NULL;
+  ip_interface_address_t *ia = NULL;
+  u32 count = 0;
+
+  if (address_family == AF_IP4)
+    lm = &ip4_main.lookup_main;
+  else if (address_family == AF_IP6)
+    lm = &ip6_main.lookup_main;
+  else
+    return 0;
+
+  foreach_ip_interface_address (lm, ia, sw_if_index, 1 /* honor unnumbered */,
+				({
+				  (void) ia;
+				  count++;
+				}));
+
+  return count;
+}
+
 static void
 lcp_router_link_addr_add_del (struct rtnl_addr *rla, int is_del)
 {
@@ -659,7 +682,9 @@ lcp_router_link_addr_add_del (struct rtnl_addr *rla, int is_del)
 	  ip4_add_del_interface_address (
 	    vlib_get_main (), sw_if_index, &ip_addr_v4 (&nh),
 	    rtnl_addr_get_prefixlen (rla), is_del);
-	  lcp_router_ip4_mroutes_add_del (sw_if_index, !is_del);
+	  if (!is_del ||
+	      !lcp_router_count_interface_addresses (sw_if_index, AF_IP4))
+	    lcp_router_ip4_mroutes_add_del (sw_if_index, !is_del);
 	}
       else if (AF_IP6 == ip_addr_version (&nh))
 	{
@@ -675,7 +700,9 @@ lcp_router_link_addr_add_del (struct rtnl_addr *rla, int is_del)
 	    ip6_add_del_interface_address (
 	      vlib_get_main (), sw_if_index, &ip_addr_v6 (&nh),
 	      rtnl_addr_get_prefixlen (rla), is_del);
-	  lcp_router_ip6_mroutes_add_del (sw_if_index, !is_del);
+	  if (!is_del ||
+	      !lcp_router_count_interface_addresses (sw_if_index, AF_IP6))
+	    lcp_router_ip6_mroutes_add_del (sw_if_index, !is_del);
 	}
 
       LCP_ROUTER_DBG ("link-addr: %U %U/%d", format_vnet_sw_if_index_name,
@@ -1332,7 +1359,6 @@ lcp_router_route_add (struct rtnl_route *rr, int is_replace)
   lcp_router_route_mk_prefix (rr, &pfx);
   entry_flags = lcp_router_route_mk_entry_flags (rtype, table_id, rproto);
 
-  nlt = lcp_router_table_add_or_lock (table_id, pfx.fp_proto);
   /* Skip any kernel routes and IPv6 LL or multicast routes */
   if (rproto == RTPROT_KERNEL ||
       (FIB_PROTOCOL_IP6 == pfx.fp_proto &&
@@ -1360,6 +1386,8 @@ lcp_router_route_add (struct rtnl_route *rr, int is_replace)
 
   if (0 != vec_len (np.paths))
     {
+      nlt = lcp_router_table_add_or_lock (table_id, pfx.fp_proto);
+
       if (rtype == RTN_MULTICAST)
 	{
 	  /* it's not clear to me how linux expresses the RPF paramters
@@ -1423,6 +1451,16 @@ lcp_router_route_add (struct rtnl_route *rr, int is_replace)
       LCP_ROUTER_DBG ("no paths for route: %d:%U %U",
 		      rtnl_route_get_table (rr), format_fib_prefix, &pfx,
 		      format_fib_entry_flags, entry_flags);
+
+      nlt =
+	lcp_router_table_find (lcp_router_table_k2f (table_id), pfx.fp_proto);
+
+      if (is_replace && nlt)
+	{
+	  fib_source_t fib_src;
+	  fib_src = lcp_router_proto_fib_source (rproto);
+	  fib_table_entry_delete (nlt->nlt_fib_index, &pfx, fib_src);
+	}
     }
   vec_free (np.paths);
 }

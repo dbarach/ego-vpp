@@ -452,9 +452,6 @@ ip4_add_interface_routes (u32 sw_if_index,
     .fp_addr.ip4 = *address,
   };
 
-  /* set special routes for the prefix if needed */
-  ip4_add_interface_prefix_routes (im, sw_if_index, fib_index, a);
-
   if (sw_if_index < vec_len (lm->classify_table_index_by_sw_if_index))
     {
       u32 classify_table_index =
@@ -487,6 +484,10 @@ ip4_add_interface_routes (u32 sw_if_index,
                                    ~0,
 				   1, NULL,
 				   FIB_ROUTE_PATH_FLAG_NONE);
+
+  /* set special routes for the prefix if needed */
+  if (a->address_length < 32)
+    ip4_add_interface_prefix_routes (im, sw_if_index, fib_index, a);
 }
 
 static void
@@ -1786,6 +1787,8 @@ ip4_local_inline (vlib_main_t *vm, vlib_node_runtime_t *node,
 
       vnet_buffer (b[0])->l3_hdr_offset = b[0]->current_data;
       vnet_buffer (b[1])->l3_hdr_offset = b[1]->current_data;
+      b[0]->flags |= VNET_BUFFER_F_IS_IP4 | VNET_BUFFER_F_L3_HDR_OFFSET_VALID;
+      b[1]->flags |= VNET_BUFFER_F_IS_IP4 | VNET_BUFFER_F_L3_HDR_OFFSET_VALID;
 
       pt[0] = ip4_local_classify (b[0], ip[0], &next[0]);
       pt[1] = ip4_local_classify (b[1], ip[1], &next[1]);
@@ -1834,6 +1837,7 @@ ip4_local_inline (vlib_main_t *vm, vlib_node_runtime_t *node,
 
       ip[0] = vlib_buffer_get_current (b[0]);
       vnet_buffer (b[0])->l3_hdr_offset = b[0]->current_data;
+      b[0]->flags |= VNET_BUFFER_F_IS_IP4 | VNET_BUFFER_F_L3_HDR_OFFSET_VALID;
       pt[0] = ip4_local_classify (b[0], ip[0], &next[0]);
 
       if (head_of_feature_arc == 0 || pt[0])

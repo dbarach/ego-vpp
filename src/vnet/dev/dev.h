@@ -81,6 +81,7 @@ typedef union
 typedef struct vnet_dev_bus_registration vnet_dev_bus_registration_t;
 typedef struct vnet_dev_driver_registration vnet_dev_driver_registration_t;
 
+typedef struct vnet_dev_driver vnet_dev_driver_t;
 typedef struct vnet_dev vnet_dev_t;
 typedef struct vnet_dev_port vnet_dev_port_t;
 typedef struct vnet_dev_rx_queue vnet_dev_rx_queue_t;
@@ -91,6 +92,7 @@ typedef struct vnet_dev_counter vnet_dev_counter_t;
 typedef struct vnet_dev_counter_main vnet_dev_counter_main_t;
 typedef struct vnet_dev_port_cfg_change_req vnet_dev_port_cfg_change_req_t;
 
+typedef vnet_dev_rv_t (vnet_dev_drv_op_t) (vlib_main_t *, vnet_dev_driver_t *);
 typedef vnet_dev_rv_t (vnet_dev_op_t) (vlib_main_t *, vnet_dev_t *);
 typedef vnet_dev_rv_t (vnet_dev_port_op_t) (vlib_main_t *, vnet_dev_port_t *);
 typedef vnet_dev_rv_t (vnet_dev_port_cfg_change_op_t) (
@@ -156,7 +158,8 @@ typedef struct
   _ (ADD_RX_FLOW)                                                             \
   _ (DEL_RX_FLOW)                                                             \
   _ (GET_RX_FLOW_COUNTER)                                                     \
-  _ (RESET_RX_FLOW_COUNTER)
+  _ (RESET_RX_FLOW_COUNTER)                                                   \
+  _ (SET_RSS_KEY)
 
 typedef enum
 {
@@ -178,6 +181,7 @@ typedef struct vnet_dev_port_cfg_change_req
     vnet_dev_hw_addr_t addr;
     u16 max_rx_frame_size;
     vnet_dev_queue_id_t queue_id;
+    vnet_dev_rss_key_t rss_key;
     struct
     {
       u32 flow_index;
@@ -234,6 +238,7 @@ typedef struct
 
 typedef struct
 {
+  vnet_dev_drv_op_t *config_args;
   vnet_dev_op_t *alloc;
   vnet_dev_op_t *init;
   vnet_dev_op_no_rv_t *deinit;
@@ -390,6 +395,7 @@ typedef struct vnet_dev_port
   vnet_dev_node_t rx_node;
   vnet_dev_node_t tx_node;
   vnet_dev_port_interfaces_t *interfaces;
+  vnet_dev_rss_key_t rss_key;
 
   CLIB_CACHE_LINE_ALIGN_MARK (data0);
   u8 data[];
@@ -466,6 +472,7 @@ struct vnet_dev_driver_registration
   int priority;
   vnet_dev_ops_t ops;
   vnet_dev_arg_t *args;
+  vnet_dev_arg_t *drv_args;
 };
 
 typedef struct
@@ -475,7 +482,7 @@ typedef struct
   vnet_dev_bus_ops_t ops;
 } vnet_dev_bus_t;
 
-typedef struct
+typedef struct vnet_dev_driver
 {
   u32 index;
   void *dev_data;
@@ -483,6 +490,7 @@ typedef struct
   u32 dev_class_index;
   vnet_dev_bus_index_t bus_index;
   vnet_dev_ops_t ops;
+  vnet_dev_arg_t *args;
 } vnet_dev_driver_t;
 
 typedef struct
@@ -506,7 +514,11 @@ typedef struct
   u32 *free_rx_node_indices;
   uword *device_index_by_id;
 
+  /* startup config */
   u8 *startup_config;
+  u32 *process_nodes_waiting_for_startup_conf;
+  u8 startup_config_completed;
+
   u16 next_rx_queue_thread;
   u8 eth_port_rx_feature_arc_index;
 } vnet_dev_main_t;
@@ -523,6 +535,7 @@ typedef struct
     vnet_dev_arg_t *sec_if_args;
     u16 data_size;
     void *initial_data;
+    vnet_dev_rss_key_t default_rss_key;
   } port;
 
   vnet_dev_node_t *rx_node;
@@ -566,6 +579,9 @@ void vnet_dev_arg_clear_value (vnet_dev_arg_t *);
 format_function_t format_vnet_dev_arg_type;
 format_function_t format_vnet_dev_arg_value;
 format_function_t format_vnet_dev_args;
+
+/* config.c */
+void vnet_dev_wait_for_startup_config_complete (vlib_main_t *);
 
 /* dev.c */
 vnet_dev_t *vnet_dev_alloc (vlib_main_t *, vnet_dev_device_id_t,
@@ -616,6 +632,7 @@ typedef struct
   u16 txq_sz;
   u8 default_is_intr_mode : 1;
   u8 consistent_qp : 1;
+  u8 queue_per_thread : 1;
 
   /* return */
   u32 sw_if_index;
@@ -660,8 +677,11 @@ vnet_dev_port_op_with_ptr_t vnet_dev_port_if_create;
 vnet_dev_port_op_t vnet_dev_port_if_remove;
 
 /* queue.c */
-vnet_dev_rv_t vnet_dev_rx_queue_alloc (vlib_main_t *, vnet_dev_port_t *, u16);
-vnet_dev_rv_t vnet_dev_tx_queue_alloc (vlib_main_t *, vnet_dev_port_t *, u16);
+vnet_dev_rv_t vnet_dev_rx_queue_alloc (vlib_main_t *, vnet_dev_port_t *, u16,
+				       vnet_dev_queue_id_t,
+				       clib_thread_index_t);
+vnet_dev_rv_t vnet_dev_tx_queue_alloc (vlib_main_t *, vnet_dev_port_t *, u16,
+				       vnet_dev_queue_id_t);
 vnet_dev_rx_queue_op_no_rv_t vnet_dev_rx_queue_free;
 vnet_dev_tx_queue_op_no_rv_t vnet_dev_tx_queue_free;
 void vnet_dev_rx_queue_add_counters (vlib_main_t *, vnet_dev_rx_queue_t *,
@@ -746,6 +766,7 @@ format_function_t format_vnet_dev_tx_queue_info;
 format_function_t format_vnet_dev_flow;
 unformat_function_t unformat_vnet_dev_flags;
 unformat_function_t unformat_vnet_dev_port_flags;
+unformat_function_t unformat_vnet_dev_rss_key;
 
 typedef struct
 {
