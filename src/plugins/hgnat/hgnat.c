@@ -136,6 +136,47 @@ hgnat_maybe_reclaim_translations (hgnat_main_t *hgm, int all)
     }
 }
 
+void
+hgnat_reclaim_translations_for_in2out_addr (hgnat_main_t *hgm,
+                                            ip4_address_t in2out_addr)
+{
+  hgnat_session_t *s;
+  clib_bihash_kv_8_8_t kv;
+
+  pool_foreach (s, hgm->session_pool)
+    {
+
+      /* Skip unintended inside address sessions */
+      if (s->in2out.addr.as_u32 != in2out_addr.as_u32)
+        continue;
+
+      /* Skip static sessions */
+      if (s->global_lru_list_index == ~0)
+        continue;
+
+      clib_dlist_remove (hgm->list_pool, s->global_lru_list_index);
+
+      pool_put_index (hgm->list_pool, s->global_lru_list_index);
+
+      hgm->active_translations--;
+      hgm->reclaims++;
+      kv.key = s->in2out.as_u64;
+      clib_bihash_add_del_8_8 (&hgm->in2out, &kv, 0 /* is_add */);
+
+      kv.key = s->out2in.as_u64;
+      if (0)
+	clib_warning ("del out2in map for %U, port %d", format_ip4_address,
+		      &hgm->outside_addr,
+		      clib_net_to_host_u16 (s->out2in.port));
+
+      clib_bihash_add_del_8_8 (&hgm->out2in, &kv, 0 /* is_add */);
+      pool_put (hgm->session_pool, s);
+    }
+}
+
+
+
+
 static uword
 hgnat_ager_process (vlib_main_t *vm, vlib_node_runtime_t *node,
 		    vlib_frame_t *f)
@@ -374,10 +415,12 @@ show_hgnat_command_fn (vlib_main_t * vm,
   int verbose = 0;
   int sessions = 0;
   int tables = 0;
+  int ip_address = 0;
   int static_sessions = 0;
   clib_error_t * error = 0;
   u32 one_session = ~0;
   hgnat_session_t *s;
+  ip4_address_t inside_address;
   f64 now = vlib_time_now(vm);
 
   /* Get a line of input. */
@@ -398,6 +441,11 @@ show_hgnat_command_fn (vlib_main_t * vm,
         verbose = 1;
       else if (unformat (line_input, "static"))
         static_sessions = 1;
+      else if (unformat (line_input, "ip %U", unformat_ip4_address,
+                         &inside_address)) {
+        ip_address = 1;
+        sessions = 1;
+      }
       else
         return clib_error_return (0, "unknown input '%U'",
                                   format_unformat_error, input);
@@ -437,14 +485,17 @@ show_hgnat_command_fn (vlib_main_t * vm,
         vlib_cli_output (vm, "WARNING: %ld active translations != %d pool elts",
                          hgm->active_translations,
                          pool_elts (hgm->session_pool));
-      if (verbose)
+      if (verbose || ip_address)
         {
           vlib_cli_output (vm, "%s", static_sessions ? "Static Sessions" :
-                           "All Sessions");
+                           "Sessions");
           /* *INDENT-OFF* */
           pool_foreach (s, hgm->session_pool)
             {
               if (static_sessions && (s->global_lru_list_index != ~0))
+                continue;
+
+              if (ip_address && s->in2out.addr.as_u32 != inside_address.as_u32)
                 continue;
 
 	      vlib_cli_output (vm, "Index %d, last heard %f seconds ago",
@@ -479,7 +530,8 @@ show_hgnat_command_fn (vlib_main_t * vm,
 VLIB_CLI_COMMAND (show_hgnat_command, static) = {
   .path = "show hgnat",
   .function = show_hgnat_command_fn,
-  .short_help = "show hgnat [sessions] [tables] [static] [[verbose] nn]",
+  .short_help = "show hgnat [sessions] [tables] [static] [ip <inside-addr>] \n"
+  "[[verbose] nn]",
 };
 
 static clib_error_t *
@@ -490,6 +542,8 @@ clear_hgnat_command_fn (vlib_main_t * vm,
   hgnat_main_t * hgm = &hgnat_main;
   unformat_input_t _line_input, *line_input = &_line_input;
   int clear_all = 0;
+  int clear_specific = 0;
+  ip4_address_t inside_address;
 
   /* Get a line of input. */
   if (!unformat_user (input, unformat_line_input, line_input))
@@ -501,11 +555,20 @@ clear_hgnat_command_fn (vlib_main_t * vm,
         clear_all = 0;
       else if (unformat(line_input, "all"))
         clear_all = 1;
+      else if (unformat(line_input, "ip %U", unformat_ip4_address,
+                        &inside_address))
+        clear_specific = 1;
       else
         return clib_error_return (0, "unknown input '%U'",
                                   format_unformat_error, input);
     }
   unformat_free (line_input);
+
+  if (clear_specific)
+    {
+      hgnat_reclaim_translations_for_in2out_addr (hgm, inside_address);
+      return 0;
+    }
 
  clear_expired:
   hgnat_maybe_reclaim_translations(hgm, clear_all);
@@ -515,7 +578,7 @@ clear_hgnat_command_fn (vlib_main_t * vm,
 VLIB_CLI_COMMAND (clear_hgnat_command, static) = {
   .path = "clear hgnat",
   .function = clear_hgnat_command_fn,
-  .short_help = "clear hgnat [expired] | [all]",
+  .short_help = "clear hgnat [expired] | [all] | [ip <inside-addr-to-clear>]",
 };
 
 static clib_error_t *
