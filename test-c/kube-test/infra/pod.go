@@ -16,7 +16,7 @@ import (
 )
 
 type Pod struct {
-	suite         *KubeSuite
+	suite         *BaseSuite
 	Name          string
 	Image         string
 	ContainerName string
@@ -49,7 +49,28 @@ type Config struct {
 	Pods []PodYaml `yaml:"pods"`
 }
 
-func (s *KubeSuite) LoadPodConfigs() {
+func (s *BaseSuite) LoadPodConfigs() {
+	envVarsSet := os.Getenv("KUBE_WRK1") != "" && os.Getenv("KUBE_WRK2") != ""
+
+	if KindCluster && !envVarsSet {
+		s.Log("KUBE_WRK1, KUBE_WRK2 not set, using default names (KinD only)")
+		os.Setenv("KUBE_WRK1", "kind-worker")
+		os.Setenv("KUBE_WRK2", "kind-worker2")
+		envVarsSet = true
+	}
+
+	_, err := os.Stat("kubernetes/pod-definitions.yaml")
+	if envVarsSet {
+		s.Envsubst("kubernetes/pod-definitions-template.yaml", "kubernetes/pod-definitions.yaml")
+		s.Log("pod-definitions.yaml OK [updated]")
+	} else if err == nil {
+		s.Log("pod-definitions.yaml OK")
+	} else if errors.Is(err, os.ErrNotExist) {
+		s.AssertNil(err, "Please set KUBE_WRK1 and KUBE_WRK2 env vars")
+	} else {
+		s.AssertNil(err)
+	}
+
 	data, err := os.ReadFile("kubernetes/pod-definitions.yaml")
 	s.AssertNil(err)
 
@@ -62,14 +83,14 @@ func (s *KubeSuite) LoadPodConfigs() {
 	}
 }
 
-func newPod(suite *KubeSuite, input PodYaml) (*Pod, error) {
+func newPod(suite *BaseSuite, input PodYaml) (*Pod, error) {
 	var pod = new(Pod)
 	pod.suite = suite
-	pod.Name = input.Name + suite.Ppid
+	pod.Name = input.Name + Ppid
 	pod.Image = input.Image[0].Name
 	pod.ContainerName = input.Container[0].Name
 	pod.Worker = input.Worker[0].Name
-	pod.Namespace = input.Namespace[0].Name + suite.Ppid
+	pod.Namespace = input.Namespace[0].Name + Ppid
 
 	if suite.AllPods == nil {
 		suite.AllPods = make(map[string]*Pod)
@@ -84,20 +105,12 @@ func newPod(suite *KubeSuite, input PodYaml) (*Pod, error) {
 	return pod, nil
 }
 
-func (s *KubeSuite) initPods() {
-	s.Pods.Ab = s.getPodsByName("ab")
-	s.Pods.ClientGeneric = s.getPodsByName("client-generic")
-	s.Pods.ServerGeneric = s.getPodsByName("server-generic")
-	s.Pods.Nginx = s.getPodsByName("nginx-ldp")
-	s.Pods.NginxProxy = s.getPodsByName("nginx-proxy")
-}
-
-func (s *KubeSuite) getPodsByName(podName string) *Pod {
-	return s.AllPods[podName+s.Ppid]
+func (s *BaseSuite) getPodsByName(podName string) *Pod {
+	return s.AllPods[podName+Ppid]
 }
 
 func (pod *Pod) CopyToPod(src string, dst string) {
-	cmd := exec.Command("kubectl", "--kubeconfig="+pod.suite.KubeconfigPath, "cp", src, pod.Namespace+"/"+pod.Name+":"+dst)
+	cmd := exec.Command("kubectl", "--kubeconfig="+Kubeconfig, "cp", src, pod.Namespace+"/"+pod.Name+":"+dst)
 	out, err := cmd.CombinedOutput()
 	pod.suite.AssertNil(err, string(out))
 }

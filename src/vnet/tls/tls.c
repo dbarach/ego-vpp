@@ -240,7 +240,6 @@ tls_notify_app_accept (tls_ctx_t * ctx)
   app_session->session_state = SESSION_STATE_ACCEPTING;
   app_session->session_type = app_listener->session_type;
   app_session->listener_handle = listen_session_get_handle (app_listener);
-  app_session->app_wrk_index = ctx->parent_app_wrk_index;
   app_session->connection_index = ctx->tls_ctx_handle;
   ctx->c_s_index = app_session->session_index;
 
@@ -661,7 +660,8 @@ tls_connect (transport_endpoint_cfg_t * tep)
   app = application_get (app_wrk->app_index);
 
   ccfg = &ext_cfg->crypto;
-  engine_type = tls_get_engine_type (ccfg->crypto_engine, app->tls_engine);
+  engine_type = tls_get_engine_type (ccfg->crypto_engine,
+				     app_crypto_ctx_get (app)->tls_engine);
   if (engine_type == CRYPTO_ENGINE_NONE)
     {
       clib_warning ("No tls engine_type available");
@@ -767,7 +767,8 @@ tls_start_listen (u32 app_listener_index, transport_endpoint_cfg_t *tep)
   app = application_get (app_wrk->app_index);
 
   ccfg = &ext_cfg->crypto;
-  engine_type = tls_get_engine_type (ccfg->crypto_engine, app->tls_engine);
+  engine_type = tls_get_engine_type (ccfg->crypto_engine,
+				     app_crypto_ctx_get (app)->tls_engine);
   if (engine_type == CRYPTO_ENGINE_NONE)
     {
       clib_warning ("No tls engine_type available");
@@ -1043,41 +1044,57 @@ format_tls_listener (u8 * s, va_list * args)
   return s;
 }
 
+static u8 *
+format_tls_ho_conn_id (u8 *s, va_list *args)
+{
+  tls_ctx_t *ho_ctx = va_arg (*args, tls_ctx_t *);
+
+  s = format (s, "[%d:%d][%s] half-open app_wrk %u engine %u ts %d:%d",
+	      ho_ctx->c_thread_index, ho_ctx->c_s_index, "TLS",
+	      ho_ctx->parent_app_wrk_index, ho_ctx->tls_ctx_engine,
+	      session_thread_from_handle (ho_ctx->tls_session_handle),
+	      session_index_from_handle (ho_ctx->tls_session_handle));
+  return s;
+}
+
 u8 *
-format_tls_half_open (u8 * s, va_list * args)
+format_tls_half_open (u8 *s, va_list *args)
 {
   u32 ho_index = va_arg (*args, u32);
   u32 __clib_unused thread_index = va_arg (*args, u32);
-  u32 __clib_unused verbose = va_arg (*args, u32);
-  session_t *tcp_ho;
+  u32 verbose = va_arg (*args, u32);
   tls_ctx_t *ho_ctx;
 
   ho_ctx = tls_ctx_half_open_get (ho_index);
 
-  tcp_ho = session_get_from_handle (ho_ctx->tls_session_handle);
-  s = format (s, "[%d:%d][%s] half-open app_wrk %u engine %u ts %d:%d",
-	      ho_ctx->c_thread_index, ho_ctx->c_s_index, "TLS",
-	      ho_ctx->parent_app_wrk_index, ho_ctx->tls_ctx_engine,
-	      tcp_ho->thread_index, tcp_ho->session_index);
+  s = format (s, "%-" SESSION_CLI_ID_LEN "U", format_tls_ho_conn_id, ho_ctx);
+  if (verbose)
+    s = format (s, "%-" SESSION_CLI_STATE_LEN "s",
+		(ho_ctx->tls_session_handle == SESSION_INVALID_HANDLE) ?
+		  (ho_ctx->flags & TLS_CONN_F_HO_DONE) ? "CLOSED" :
+							 "CLOSED-PNDG" :
+		  "CONNECTING");
 
   return s;
 }
 
 static void
 tls_transport_endpoint_get (u32 ctx_handle, clib_thread_index_t thread_index,
-			    transport_endpoint_t *tep, u8 is_lcl)
+			    transport_endpoint_t *tep_rmt,
+			    transport_endpoint_t *tep_lcl)
 {
   tls_ctx_t *ctx = tls_ctx_get_w_thread (ctx_handle, thread_index);
   session_t *ts;
 
   ts = session_get_from_handle (ctx->tls_session_handle);
   if (ts && ts->session_state < SESSION_STATE_TRANSPORT_DELETED)
-    session_get_endpoint (ts, tep, is_lcl);
+    session_get_endpoint (ts, tep_rmt, tep_lcl);
 }
 
 static void
 tls_transport_listener_endpoint_get (u32 ctx_handle,
-				     transport_endpoint_t * tep, u8 is_lcl)
+				     transport_endpoint_t *tep_rmt,
+				     transport_endpoint_t *tep_lcl)
 {
   session_t *tls_listener;
   app_listener_t *al;
@@ -1085,7 +1102,7 @@ tls_transport_listener_endpoint_get (u32 ctx_handle,
 
   al = app_listener_get_w_handle (ctx->tls_session_handle);
   tls_listener = app_listener_get_session (al);
-  session_get_endpoint (tls_listener, tep, is_lcl);
+  session_get_endpoint (tls_listener, tep_rmt, tep_lcl);
 }
 
 static clib_error_t *
@@ -1184,7 +1201,8 @@ dtls_connect (transport_endpoint_cfg_t *tep)
   app = application_get (app_wrk->app_index);
 
   ccfg = &ext_cfg->crypto;
-  engine_type = tls_get_engine_type (ccfg->crypto_engine, app->tls_engine);
+  engine_type = tls_get_engine_type (ccfg->crypto_engine,
+				     app_crypto_ctx_get (app)->tls_engine);
   if (engine_type == CRYPTO_ENGINE_NONE)
     {
       clib_warning ("No tls engine_type available");

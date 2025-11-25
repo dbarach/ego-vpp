@@ -538,6 +538,7 @@ session_clone_safe (u32 session_index, clib_thread_index_t thread_index)
 }
 
 int session_open (session_endpoint_cfg_t *sep, session_handle_t *rsh);
+int session_open_stream (session_endpoint_cfg_t *sep, session_handle_t *rsh);
 int session_listen (session_t * s, session_endpoint_cfg_t * sep);
 int session_stop_listen (session_t * s);
 void session_half_close (session_t *s);
@@ -570,8 +571,8 @@ void session_add_self_custom_tx_evt (transport_connection_t * tc,
 				     u8 has_prio);
 void sesssion_reschedule_tx (transport_connection_t * tc);
 transport_connection_t *session_get_transport (session_t * s);
-void session_get_endpoint (session_t * s, transport_endpoint_t * tep,
-			   u8 is_lcl);
+void session_get_endpoint (session_t *s, transport_endpoint_t *tep_rmt,
+			   transport_endpoint_t *tep_lcl);
 int session_transport_attribute (session_t *s, u8 is_get,
 				 transport_endpt_attr_t *attr);
 u64 session_segment_handle (session_t *s);

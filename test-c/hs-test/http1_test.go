@@ -33,12 +33,12 @@ func init() {
 		HttpStaticMacTimeTest, HttpStaticBuildInUrlGetVersionVerboseTest, HttpVersionNotSupportedTest,
 		HttpInvalidContentLengthTest, HttpInvalidTargetSyntaxTest, HttpStaticPathSanitizationTest, HttpUriDecodeTest,
 		HttpHeadersTest, HttpStaticFileHandlerTest, HttpStaticFileHandlerDefaultMaxAgeTest, HttpClientTest,
-		HttpClientErrRespTest, HttpClientPostFormTest, HttpClientGet128kbResponseTest, HttpClientGetResponseBodyTest,
+		HttpClientErrRespTest, HttpClientPostFormTest, HttpClientPostFormPtrTest, HttpClientGet128kbResponseTest, HttpClientGetResponseBodyTest,
 		HttpClientGetTlsNoRespBodyTest, HttpClientPostFileTest, HttpClientPostFilePtrTest,
 		HttpRequestLineTest, HttpClientGetTimeout, HttpStaticFileHandlerWrkTest, HttpStaticUrlHandlerWrkTest, HttpConnTimeoutTest,
 		HttpClientGetRepeatTest, HttpClientPostRepeatTest, HttpIgnoreH2UpgradeTest, HttpInvalidAuthorityFormUriTest, HttpHeaderErrorConnectionDropTest,
 		HttpClientInvalidHeaderNameTest, HttpStaticHttp1OnlyTest, HttpTimerSessionDisable, HttpClientBodySizeTest,
-		HttpStaticRedirectTest, HttpClientNoPrintTest, HttpClientChunkedDownloadTest, HttpClientPostRejectedTest)
+		HttpStaticRedirectTest, HttpClientNoPrintTest, HttpClientChunkedDownloadTest, HttpClientPostRejectedTest, HttpSendGetAndCloseTest)
 	RegisterHttp1SoloTests(HttpStaticPromTest, HttpGetTpsTest, HttpGetTpsInterruptModeTest, PromConcurrentConnectionsTest,
 		PromMemLeakTest, HttpClientPostMemLeakTest, HttpInvalidClientRequestMemLeakTest, HttpPostTpsTest, HttpPostTpsInterruptModeTest,
 		PromConsecutiveConnectionsTest, HttpGetTpsTlsTest, HttpPostTpsTlsTest)
@@ -75,7 +75,7 @@ func HttpGetTpsTest(s *Http1Suite) {
 	serverAddress := s.VppAddr() + ":" + s.Ports.Http
 	url := "http://" + serverAddress + "/test_file_10M"
 
-	vpp.Vppctl("http tps uri tcp://%s", serverAddress)
+	vpp.Vppctl("http tps uri http://%s", serverAddress)
 
 	s.RunBenchmark("HTTP tps download 10M", 10, 0, httpDownloadBenchmark, url)
 }
@@ -85,7 +85,7 @@ func HttpGetTpsTlsTest(s *Http1Suite) {
 	serverAddress := s.VppAddr() + ":" + s.Ports.Http
 	url := "https://" + serverAddress + "/test_file_10M"
 
-	vpp.Vppctl("http tps uri tls://%s", serverAddress)
+	vpp.Vppctl("http tps uri https://%s", serverAddress)
 
 	s.RunBenchmark("HTTP tps download 10M", 10, 0, httpDownloadBenchmark, url)
 }
@@ -118,7 +118,7 @@ func HttpPostTpsTest(s *Http1Suite) {
 	serverAddress := s.VppAddr() + ":" + s.Ports.Http
 	url := "http://" + serverAddress + "/test_file_10M"
 
-	vpp.Vppctl("http tps uri tcp://%s", serverAddress)
+	vpp.Vppctl("http tps uri http://%s", serverAddress)
 
 	s.RunBenchmark("HTTP tps upload 10M", 10, 0, httpUploadBenchmark, url)
 }
@@ -128,7 +128,7 @@ func HttpPostTpsTlsTest(s *Http1Suite) {
 	serverAddress := s.VppAddr() + ":" + s.Ports.Http
 	url := "https://" + serverAddress + "/test_file_10M"
 
-	vpp.Vppctl("http tps uri tls://%s", serverAddress)
+	vpp.Vppctl("http tps uri https://%s", serverAddress)
 
 	s.RunBenchmark("HTTP tps upload 10M", 10, 0, httpUploadBenchmark, url)
 }
@@ -470,7 +470,7 @@ func HttpClientErrRespTest(s *Http1Suite) {
 	s.AssertContains(o, "404: Not Found", "error not found in the result!")
 }
 
-func HttpClientPostFormTest(s *Http1Suite) {
+func httpClientPostFormTest(s *Http1Suite, usePtr bool) {
 	serverAddress := s.HostAddr() + ":" + s.Ports.Http
 	body := "field1=value1&field2=value2"
 
@@ -492,10 +492,22 @@ func HttpClientPostFormTest(s *Http1Suite) {
 
 	uri := "http://" + serverAddress + "/test"
 	vpp := s.Containers.Vpp.VppInstance
-	o := vpp.Vppctl("http client post verbose header Hello:World uri " + uri + " data " + body)
+	cmd := "http client post verbose header Hello:World uri " + uri + " data " + body
+	if usePtr {
+		cmd += " use-ptr"
+	}
+	o := vpp.Vppctl(cmd)
 
 	s.Log(o)
 	s.AssertContains(o, "200 OK")
+}
+
+func HttpClientPostFormTest(s *Http1Suite) {
+	httpClientPostFormTest(s, false)
+}
+
+func HttpClientPostFormPtrTest(s *Http1Suite) {
+	httpClientPostFormTest(s, true)
 }
 
 func HttpClientNoPrintTest(s *Http1Suite) {
@@ -1947,4 +1959,23 @@ func HttpIgnoreH2UpgradeTest(s *Http1Suite) {
 	s.Log(DumpHttpResp(resp, true))
 	s.AssertHttpStatus(resp, 200)
 	s.AssertHttpHeaderNotPresent(resp, "Upgrade")
+}
+
+func HttpSendGetAndCloseTest(s *Http1Suite) {
+	vpp := s.Containers.Vpp.VppInstance
+	serverAddress := s.VppAddr() + ":" + s.Ports.Http
+
+	vpp.Container.Exec(false, "mkdir -p "+wwwRootPath)
+	content := "xxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxx"
+	err := vpp.Container.CreateFile(wwwRootPath+"/index.html", content)
+	s.AssertNil(err, fmt.Sprint(err))
+	s.Log(vpp.Vppctl("http static server www-root " + wwwRootPath + " uri tcp://" + serverAddress + " private-segment-size 256m"))
+
+	err = TcpSendAndClose(serverAddress, "GET http://www.example.com/index.html HTTP/1.1\r\nHost: example.com\r\n\r\n")
+	s.AssertNil(err, fmt.Sprint(err))
+
+	// mostly to verify that vpp is still up
+	o := vpp.Vppctl("show session verbose proto http")
+	s.Log(o)
+	s.AssertNotContains(o, "established")
 }

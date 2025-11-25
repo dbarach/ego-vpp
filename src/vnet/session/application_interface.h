@@ -67,9 +67,6 @@ typedef struct session_cb_vft_
   /** Direct TX callback for built-in application */
   int (*builtin_app_tx_callback) (session_t * session);
 
-  /** Cert and key pair delete notification */
-  int (*app_cert_key_pair_delete_callback) (app_cert_key_pair_t * ckpair);
-
   /** Delegate fifo-tuning-logic to application */
   int (*fifo_tuning_callback) (session_t * s, svm_fifo_t * f,
 			       session_ft_action_t act, u32 bytes);
@@ -264,14 +261,13 @@ session_error_t vnet_application_attach (vnet_app_attach_args_t *a);
 session_error_t vnet_application_detach (vnet_app_detach_args_t *a);
 session_error_t vnet_listen (vnet_listen_args_t *a);
 session_error_t vnet_connect (vnet_connect_args_t *a);
+session_error_t vnet_connect_stream (vnet_connect_args_t *a);
 session_error_t vnet_unlisten (vnet_unlisten_args_t *a);
 session_error_t vnet_shutdown_session (vnet_shutdown_args_t *a);
 session_error_t vnet_disconnect_session (vnet_disconnect_args_t *a);
 
 int vnet_app_add_cert_key_pair (vnet_app_add_cert_key_pair_args_t * a);
 int vnet_app_del_cert_key_pair (u32 index);
-/** Ask for app cb on pair deletion */
-int vnet_app_add_cert_key_interest (u32 index, u32 app_index);
 
 uword unformat_vnet_uri (unformat_input_t *input, va_list *args);
 
@@ -667,11 +663,11 @@ app_send_dgram_segs_raw (svm_fifo_t *f, app_session_transport_t *at,
   int rv;
 
   if (svm_fifo_max_enqueue_prod (f) < seg_len)
-    return 0;
+    return -1;
 
   rv = svm_fifo_enqueue_segments (f, segs, nsegs, 0 /* allow partial */);
   if (PREDICT_FALSE (rv < 0))
-    return 0;
+    return rv;
 
   if (do_evt)
     {
@@ -762,23 +758,18 @@ app_recv_dgram_raw (svm_fifo_t * f, u8 * buf, u32 len,
   u32 max_deq;
   int rv;
 
-  max_deq = svm_fifo_max_dequeue_cons (f);
-  if (max_deq <= sizeof (session_dgram_hdr_t))
-    {
-      if (clear_evt)
-	svm_fifo_unset_event (f);
-      return 0;
-    }
-
   if (clear_evt)
     svm_fifo_unset_event (f);
+
+  max_deq = svm_fifo_max_dequeue_cons (f);
+  if (max_deq <= sizeof (session_dgram_hdr_t))
+    return 0;
 
   svm_fifo_peek (f, 0, sizeof (ph), (u8 *) & ph);
   ASSERT (ph.data_length >= ph.data_offset);
 
   /* Check if we have the full dgram */
-  if (max_deq < (ph.data_length + SESSION_CONN_HDR_LEN)
-      && len >= ph.data_length)
+  if (max_deq < (ph.data_length + SESSION_CONN_HDR_LEN))
     return 0;
 
   svm_fifo_peek (f, sizeof (ph), sizeof (*at), (u8 *) at);

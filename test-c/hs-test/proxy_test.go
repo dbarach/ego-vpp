@@ -29,7 +29,7 @@ func init() {
 		VppProxyUdpIperfMWTest, VppConnectProxyStressMWTest, VppConnectProxyConnectionFailedMWTest)
 	RegisterVppProxySoloTests(VppConnectProxyStressTest)
 	RegisterVppUdpProxyTests(VppProxyUdpTest, VppConnectUdpProxyTest, VppConnectUdpInvalidCapsuleTest,
-		VppConnectUdpUnknownCapsuleTest, VppConnectUdpClientCloseTest, VppConnectUdpInvalidTargetTest)
+		VppConnectUdpUnknownCapsuleTest, VppConnectUdpClientCloseTest, VppConnectUdpInvalidTargetTest, VppConnectUdpServerCloseTest)
 	RegisterVppUdpProxySoloTests(VppConnectUdpStressTest)
 	RegisterVppUdpProxyMWTests(VppProxyUdpMigrationMWTest, VppConnectUdpStressMWTest)
 	RegisterEnvoyProxyTests(EnvoyHttpGetTcpTest, EnvoyHttpPutTcpTest)
@@ -65,39 +65,28 @@ func vppProxyIperfMWTest(s *VppProxySuite, proto string) {
 	s.ConfigureVppProxy("tcp", s.Ports.Proxy)
 	if proto == "udp" {
 		s.ConfigureVppProxy("udp", s.Ports.Proxy)
-		proto = "-u"
+		proto = "-u -b 10g"
 	} else {
 		proto = ""
 	}
 
-	stopServerCh := make(chan struct{}, 1)
-	srvCh := make(chan error, 1)
-	clnCh := make(chan error)
-	clnRes := make(chan []byte, 1)
+	cmd := fmt.Sprintf("iperf3 -4 -s --one-off -D -B %s -p %s --logfile %s",
+		s.ServerAddr(), fmt.Sprint(s.Ports.Server), s.IperfLogFileName(s.Containers.IperfS))
+	o, err := s.Containers.IperfS.Exec(true, cmd)
 
-	defer func() {
-		stopServerCh <- struct{}{}
-	}()
+	s.AssertNil(err, o)
+	cmd = fmt.Sprintf("iperf3 -c %s -P 4 -l 1460 -p %d -B %s %s",
+		s.VppProxyAddr(), s.Ports.Proxy, s.ClientAddr(), proto)
+	o, err = s.Containers.IperfC.Exec(true, cmd)
 
-	go func() {
-		defer GinkgoRecover()
-		cmd := fmt.Sprintf("iperf3 -4 -s -B %s -p %s --logfile %s", s.ServerAddr(), fmt.Sprint(s.Ports.Server), s.IperfLogFileName(s.Containers.IperfS))
-		s.StartServerApp(s.Containers.IperfS, "iperf3", cmd, srvCh, stopServerCh)
-	}()
+	fileLog, _ := s.Containers.IperfS.Exec(false, "cat "+s.IperfLogFileName(s.Containers.IperfS))
+	s.Log("*** Server logs: \n%s\n***", fileLog)
 
-	err := <-srvCh
-	s.AssertNil(err, fmt.Sprint(err))
-
-	go func() {
-		defer GinkgoRecover()
-		cmd := fmt.Sprintf("iperf3 -c %s -P 4 -l 1460 -b 10g -J -p %d -B %s %s", s.VppProxyAddr(), s.Ports.Proxy, s.ClientAddr(), proto)
-		s.StartClientApp(s.Containers.IperfC, cmd, clnCh, clnRes)
-	}()
-
-	s.AssertChannelClosed(time.Minute*4, clnCh)
-	result := s.ParseJsonIperfOutput(<-clnRes)
-	s.LogJsonIperfOutput(result)
-	s.AssertIperfMinTransfer(result, 200)
+	s.Log(o)
+	s.AssertNil(err, o)
+	result, err := ParseIperfText(o)
+	s.AssertNil(err)
+	s.AssertGreaterEqualUnlessCoverageBuild(result.BitrateMbps, 200)
 }
 
 func VppProxyHttpGetTcpTest(s *VppProxySuite) {
@@ -158,7 +147,7 @@ func nginxMirroring(s *NginxProxySuite, multiThreadWorkers bool) {
 
 	s.AddVclConfig(s.Containers.NginxProxy, multiThreadWorkers)
 	s.CreateNginxProxyConfig(s.Containers.NginxProxy, multiThreadWorkers)
-	s.Containers.NginxProxy.Start()
+	s.AssertNil(s.Containers.NginxProxy.Start())
 	vpp.WaitForApp("nginx-", 5)
 	uri := fmt.Sprintf("http://%s:%d/httpTestFile", s.ProxyAddr(), s.Ports.Proxy)
 	s.CurlDownloadResource(uri)
@@ -190,7 +179,7 @@ func VppH2ConnectProxyGetTest(s *VppProxySuite) {
 	proxyUri := fmt.Sprintf("https://%s:%d", s.VppProxyAddr(), s.Ports.Proxy)
 	_, log := s.CurlDownloadResourceViaTunnel(targetUri, proxyUri, "--proxy-http2")
 	// ALPN result check
-	s.AssertContains(log, "CONNECT tunnel: HTTP/2 negotiated")
+	s.AssertContains(log, "CONNECT: 'h2' negotiated")
 }
 
 func VppConnectProxyConnectionFailedMWTest(s *VppProxySuite) {
@@ -222,7 +211,7 @@ func VppH2ConnectProxyPutTest(s *VppProxySuite) {
 	targetUri := fmt.Sprintf("http://%s:%d/upload/testFile", s.ServerAddr(), s.Ports.Server)
 	_, log := s.CurlUploadResourceViaTunnel(targetUri, proxyUri, CurlContainerTestFile, "--proxy-http2")
 	// ALPN result check
-	s.AssertContains(log, "CONNECT tunnel: HTTP/2 negotiated")
+	s.AssertContains(log, "CONNECT: 'h2' negotiated")
 }
 
 func vppConnectProxyStressLoad(s *VppProxySuite, proxyPort string) {
@@ -424,6 +413,45 @@ func VppConnectUdpProxyTest(s *VppUdpProxySuite) {
 	s.AssertEqual(data, payload)
 }
 
+func VppConnectUdpServerCloseTest(s *VppUdpProxySuite) {
+	remoteServerConn := s.StartUdpEchoServer(s.ServerAddr(), s.Ports.Server)
+	defer remoteServerConn.Close()
+
+	vppProxy := s.Containers.VppProxy.VppInstance
+	vppProxy.Disconnect()
+	cmd := fmt.Sprintf("test proxy server fifo-size 512k server-uri http://%s/%d", s.VppProxyAddr(), s.Ports.Proxy)
+	s.Log(vppProxy.Vppctl(cmd))
+
+	proxyAddress := fmt.Sprintf("%s:%d", s.VppProxyAddr(), s.Ports.Proxy)
+	targetUri := fmt.Sprintf("http://%s:%d/.well-known/masque/udp/%s/%d/", s.VppProxyAddr(), s.Ports.Proxy, s.ServerAddr(), s.Ports.Server)
+	c := s.NewConnectUdpClient(s.MaxTimeout, true)
+	err := c.Dial(proxyAddress, targetUri)
+	s.AssertNil(err, fmt.Sprint(err))
+	defer c.Close()
+
+	err = remoteServerConn.Close()
+	s.AssertNil(err, fmt.Sprint(err))
+
+	data := []byte("hello")
+	err = c.WriteDgramCapsule(data)
+	s.AssertNil(err, fmt.Sprint(err))
+
+	proxyClientConn := fmt.Sprintf("[T] %s:%d->%s", s.VppProxyAddr(), s.Ports.Proxy, s.ClientAddr())
+	proxyTargetConn := fmt.Sprintf("[U] %s:", s.Interfaces.Server.Ip4Address)
+	for nTries := 0; nTries < 10; nTries++ {
+		o := vppProxy.Vppctl("show session verbose 2")
+		s.Log(o)
+		if !strings.Contains(o, proxyClientConn) {
+			break
+		}
+		time.Sleep(3 * time.Second)
+	}
+	sessions := vppProxy.Vppctl("show session verbose 2")
+	s.Log(sessions)
+	s.AssertNotContains(sessions, proxyClientConn, "client-proxy session not closed")
+	s.AssertNotContains(sessions, proxyTargetConn, "proxy-server session not closed")
+}
+
 func VppConnectUdpInvalidTargetTest(s *VppUdpProxySuite) {
 	vppProxy := s.Containers.VppProxy.VppInstance
 	cmd := fmt.Sprintf("test proxy server fifo-size 512k server-uri http://%s/%d", s.VppProxyAddr(), s.Ports.Proxy)
@@ -621,7 +649,7 @@ func vppConnectUdpStressLoad(s *VppUdpProxySuite) {
 			}
 		}()
 	}
-	for i := 0; i < 30; i++ {
+	for range 30 {
 		GinkgoWriter.Print(".")
 		time.Sleep(time.Second)
 	}
@@ -694,12 +722,12 @@ func vppConnectProxyClientCheckCleanup(s *MasqueSuite) {
 		}
 	}
 	// one stream for http/2 connection (parent stays open)
-	s.AssertEqual(streamsOpened-streamsClosed, 1)
+	s.AssertEqual(streamsOpened-streamsClosed, 1, "only parent stream should stays open")
 }
 
 func vppConnectProxyServerCheckCleanup(s *MasqueSuite) {
 	o := s.Containers.VppServer.VppInstance.Vppctl("show session verbose")
-	s.AssertNotContains(o, "[H2]")
+	s.AssertEqual(1, strings.Count(o, "[H2]"), "there should be http/2 connection session")
 	h2Stats := s.Containers.VppServer.VppInstance.Vppctl("show http stats")
 	streamsOpened := 0
 	streamsClosed := 0
@@ -714,7 +742,7 @@ func vppConnectProxyServerCheckCleanup(s *MasqueSuite) {
 			streamsClosed, _ = strconv.Atoi(tmp[1])
 		}
 	}
-	s.AssertEqual(streamsOpened-streamsClosed, 0)
+	s.AssertEqual(streamsOpened-streamsClosed, 0, "all streams should be closed")
 }
 
 func VppConnectProxyClientDownloadTcpMWTest(s *MasqueSuite) {
@@ -803,20 +831,10 @@ func VppConnectProxyIperfTcpTest(s *MasqueSuite) {
 	s.ProxyClientConnect("tcp", s.Ports.Nginx)
 	clientVpp := s.Containers.VppClient.VppInstance
 
-	stopServerCh := make(chan struct{})
-	srvCh := make(chan error, 1)
+	cmd := fmt.Sprintf("iperf3 -s --one-off -D -B %s -p %s --logfile %s", s.NginxAddr(), s.Ports.Nginx, s.IperfLogFileName(s.Containers.IperfServer))
+	o, err := s.Containers.IperfServer.Exec(true, cmd)
 
-	defer func() {
-		stopServerCh <- struct{}{}
-	}()
-
-	go func() {
-		defer GinkgoRecover()
-		c := "iperf3 -s -B " + s.NginxAddr() + " -p " + s.Ports.Nginx
-		s.StartServerApp(s.Containers.IperfServer, "iperf3", c, srvCh, stopServerCh)
-	}()
-	err := <-srvCh
-	s.AssertNil(err, fmt.Sprint(err))
+	s.AssertNil(err, o)
 	s.Log("server running")
 
 	finished := make(chan error, 1)
@@ -826,7 +844,10 @@ func VppConnectProxyIperfTcpTest(s *MasqueSuite) {
 			s.NetNamespaces.Client, []string{"-P", "4"})
 	}()
 	s.Log(clientVpp.Vppctl("show http connect proxy client sessions"))
-	s.AssertNil(<-finished)
+	err = <-finished
+	fileLog, _ := s.Containers.IperfServer.Exec(false, "cat "+s.IperfLogFileName(s.Containers.IperfServer))
+	s.Log("*** Server logs: \n%s\n***", fileLog)
+	s.AssertNil(err)
 }
 
 func VppConnectProxyIperfUdpTest(s *MasqueSuite) {
@@ -834,23 +855,13 @@ func VppConnectProxyIperfUdpTest(s *MasqueSuite) {
 	// test listen all, we are running solo anyway
 	s.ProxyClientConnect("udp", "0")
 	clientVpp := s.Containers.VppClient.VppInstance
-	cmd := fmt.Sprintf("http connect proxy client listener add listener tcp://0.0.0.0:0")
+	cmd := "http connect proxy client listener add listener tcp://0.0.0.0:0"
 	s.Log(clientVpp.Vppctl(cmd))
 
-	stopServerCh := make(chan struct{})
-	srvCh := make(chan error, 1)
+	cmd = fmt.Sprintf("iperf3 -s --one-off -D -B %s -p %s --logfile %s", s.NginxAddr(), s.Ports.Nginx, s.IperfLogFileName(s.Containers.IperfServer))
+	o, err := s.Containers.IperfServer.Exec(true, cmd)
 
-	defer func() {
-		stopServerCh <- struct{}{}
-	}()
-
-	go func() {
-		defer GinkgoRecover()
-		c := "iperf3 -s -B " + s.NginxAddr() + " -p " + s.Ports.Nginx
-		s.StartServerApp(s.Containers.IperfServer, "iperf3", c, srvCh, stopServerCh)
-	}()
-	err := <-srvCh
-	s.AssertNil(err, fmt.Sprint(err))
+	s.AssertNil(err, o)
 	s.Log("server running")
 
 	finished := make(chan error, 1)
@@ -860,7 +871,10 @@ func VppConnectProxyIperfUdpTest(s *MasqueSuite) {
 			s.NetNamespaces.Client, []string{"-u", "-P", "4"})
 	}()
 	s.Log(clientVpp.Vppctl("show http connect proxy client sessions"))
-	s.AssertNil(<-finished)
+	err = <-finished
+	fileLog, _ := s.Containers.IperfServer.Exec(false, "cat "+s.IperfLogFileName(s.Containers.IperfServer))
+	s.Log("*** Server logs: \n%s\n***", fileLog)
+	s.AssertNil(err)
 }
 
 func VppConnectProxyIperfTcpMWTest(s *MasqueSuite) {
@@ -878,7 +892,7 @@ func VppConnectProxyIperfUdpMWTest(s *MasqueSuite) {
 	VppConnectProxyIperfUdpTest(s)
 	clientVpp := s.Containers.VppClient.VppInstance
 	closed := false
-	for nTries := 0; nTries < 60; nTries++ {
+	for range 60 {
 		o := clientVpp.Vppctl("show http connect proxy client sessions")
 		if !strings.Contains(o, "] tcp ") {
 			closed = true

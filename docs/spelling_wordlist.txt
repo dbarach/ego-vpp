@@ -537,6 +537,8 @@ ipN
 ipsec
 IPsec
 ipsecmb
+ipset
+ipsets
 iptables
 ipv
 iPv
@@ -565,6 +567,7 @@ kbps
 keepalives
 keychain
 kflows
+KinD
 KMG
 kni
 KOC
@@ -609,6 +612,7 @@ libmemifs
 libsrtp
 libvirt
 libvppapiclient
+lifecycle
 ligato
 LimitCORE
 linearization
@@ -777,6 +781,7 @@ nodaemon
 noevaluate
 nonaddress
 nosyslog
+npol
 npt
 npt66
 ns
@@ -984,6 +989,7 @@ restack
 reStructured
 reStructuredText
 resync
+retransmit
 retransmits
 rfc
 rint
@@ -1007,6 +1013,8 @@ rwlocks
 rx
 rxandtx
 sa
+sasc
+SASC
 sbin
 scalable
 scanf
@@ -1033,6 +1041,8 @@ setjmp
 settingupenvironment
 setUp
 setUpClass
+sfdp
+SFDP
 sflow
 sFlow
 sfr
@@ -1058,6 +1068,7 @@ snat
 socketsvr
 socksvr
 sourceNATing
+sp
 spd
 Specialisations
 spinlock

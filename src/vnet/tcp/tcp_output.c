@@ -1359,7 +1359,7 @@ tcp_timer_retransmit_handler (tcp_connection_t * tc)
 	{
 	  tcp_send_reset (tc);
 	  tcp_connection_set_state (tc, TCP_STATE_CLOSED);
-	  session_transport_closing_notify (&tc->connection);
+	  session_transport_reset_notify (&tc->connection);
 	  session_transport_closed_notify (&tc->connection);
 	  tcp_connection_timers_reset (tc);
 	  tcp_program_cleanup (wrk, tc);
@@ -2440,9 +2440,14 @@ tcp46_reset_inline (vlib_main_t *vm, vlib_node_runtime_t *node,
 
       /* IP lookup in fib where it was received. Previous value
        * was overwritten by tcp-input */
-      vnet_buffer (b[0])->sw_if_index[VLIB_TX] =
-	vec_elt (ip4_main.fib_index_by_sw_if_index,
-		 vnet_buffer (b[0])->sw_if_index[VLIB_RX]);
+      if (is_ip4)
+	vnet_buffer (b[0])->sw_if_index[VLIB_TX] =
+	  vec_elt (ip4_main.fib_index_by_sw_if_index,
+		   vnet_buffer (b[0])->sw_if_index[VLIB_RX]);
+      else
+	vnet_buffer (b[0])->sw_if_index[VLIB_TX] =
+	  vec_elt (ip6_main.fib_index_by_sw_if_index,
+		   vnet_buffer (b[0])->sw_if_index[VLIB_RX]);
 
       b[0]->flags |= VNET_BUFFER_F_LOCALLY_ORIGINATED;
       next[0] = TCP_RESET_NEXT_IP_LOOKUP;

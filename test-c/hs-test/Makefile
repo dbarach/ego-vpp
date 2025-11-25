@@ -139,16 +139,22 @@ list-tests:
 	@go run github.com/onsi/ginkgo/v2/ginkgo --dry-run -v --no-color --seed=2 | head -n -1 | grep 'test.go' | \
 		sed 's/^/* /; s/\(Suite\) /\1\//g'
 
+.PHONY: .set-core-pattern
+.set-core-pattern:
+	-if [ -n "$(BUILD_NUMBER)" ]; then \
+        echo /var/lib/vpp/vppcore.%e.%p | sudo tee /proc/sys/kernel/core_pattern; \
+    fi
+
 .PHONY: build-vpp-release
-build-vpp-release:
+build-vpp-release: .set-core-pattern
 	@$(MAKE) -C ../.. build-release
 
 .PHONY: build-vpp-debug
-build-vpp-debug:
+build-vpp-debug: .set-core-pattern
 	@$(MAKE) -C ../.. build
 
 .PHONY: build-vpp-gcov
-build-vpp-gcov:
+build-vpp-gcov: .set-core-pattern
 	@$(MAKE) -C ../.. build-gcov
 
 .build.ok: build
@@ -241,11 +247,11 @@ build-debug: .deps.ok build-vpp-debug
 install-deps:
 	@rm -f .deps.ok
 	@if [ -d "/usr/local/go" ]; then \
-        echo "Go is already installed. You may have to update it manually if version < 1.23.10"; \
+        echo "Go is already installed. You may have to update it manually if version < 1.25.4"; \
 		go version; \
     else \
-        echo "Installing Go 1.23"; \
-		wget -t 2 https://go.dev/dl/go1.23.10.linux-$(ARCH).tar.gz -O /tmp/go1.23.10.linux-$(ARCH).tar.gz && sudo tar -C /usr/local -xzf /tmp/go1.23.10.linux-$(ARCH).tar.gz; \
+        echo "Installing Go 1.25.4"; \
+		wget -t 2 https://go.dev/dl/go1.25.4.linux-$(ARCH).tar.gz -O /tmp/go1.25.4.linux-$(ARCH).tar.gz && sudo tar -C /usr/local -xzf /tmp/go1.25.4.linux-$(ARCH).tar.gz; \
 		sudo ln -s /usr/local/go/bin/go /usr/bin/go ; \
 	fi
 	@sudo -E apt-get update
@@ -262,7 +268,7 @@ install-deps:
 
 .PHONY: checkstyle-go
 checkstyle-go:
-	@output=$$(find . -type f -name '*.go' -not -path './.go_cache/*' -exec go run golang.org/x/tools/cmd/goimports@v0.35.0 -d {} +); \
+	@output=$$(find . -type f -name '*.go' -not -path './.go_cache/*' -exec go run golang.org/x/tools/cmd/goimports@v0.39.0 -d {} +); \
 	status=$$?; \
 	if [ $$status -ne 0 ]; then \
 		exit $$status; \
@@ -281,7 +287,7 @@ checkstyle-go:
 .PHONY: fixstyle-go
 fixstyle-go:
 	@echo "Modified files:"
-	@find . -type f -name '*.go' -not -path './.go_cache/*' -exec go run golang.org/x/tools/cmd/goimports@v0.35.0 -w -l {} +
+	@find . -type f -name '*.go' -not -path './.go_cache/*' -exec go run golang.org/x/tools/cmd/goimports@v0.39.0 -w -l {} +
 	@go mod tidy
 	@echo "*******************************************************************"
 	@echo "Fixstyle done."

@@ -355,23 +355,6 @@ session_program_cleanup (session_t *s)
   session_cleanup_notify (s, SESSION_CLEANUP_SESSION);
 }
 
-/**
- * Cleans up session and lookup table.
- *
- * Transport connection must still be valid.
- */
-static void
-session_delete (session_t * s)
-{
-  int rv;
-
-  /* Delete from the main lookup table. */
-  if ((rv = session_lookup_del_session (s)))
-    clib_warning ("session %u hash delete rv %d", s->session_index, rv);
-
-  session_program_cleanup (s);
-}
-
 void
 session_cleanup_half_open (session_handle_t ho_handle)
 {
@@ -502,6 +485,29 @@ session_alloc_for_connection (transport_connection_t * tc)
   /* Attach transport to session and vice versa */
   s->connection_index = tc->c_index;
   tc->s_index = s->session_index;
+  return s;
+}
+
+static session_t *
+session_alloc_for_stream (session_handle_t parent_handle)
+{
+  session_t *s, *ps;
+  clib_thread_index_t thread_index =
+    session_thread_from_handle (parent_handle);
+
+  ASSERT (thread_index == vlib_get_thread_index ());
+
+  s = session_alloc (thread_index);
+  ps = session_get_from_handle_if_valid (parent_handle);
+  if (!ps)
+    {
+      session_free (s);
+      return 0;
+    }
+  s->listener_handle = SESSION_INVALID_HANDLE;
+  s->session_type = ps->session_type;
+  session_set_state (s, SESSION_STATE_CLOSED);
+
   return s;
 }
 
@@ -749,6 +755,7 @@ session_stream_connect_notify (transport_connection_t * tc,
   s = session_alloc_for_connection (tc);
   session_set_state (s, SESSION_STATE_CONNECTING);
   s->app_wrk_index = app_wrk->wrk_index;
+  s->listener_handle = SESSION_INVALID_HANDLE;
   s->opaque = opaque;
   new_si = s->session_index;
   new_ti = s->thread_index;
@@ -869,6 +876,7 @@ session_dgram_connect_notify (transport_connection_t *tc,
    */
   new_s = session_clone_safe (tc->s_index, osh.thread_index);
   new_s->connection_index = tc->c_index;
+  new_s->listener_handle = SESSION_INVALID_HANDLE;
   session_set_state (new_s, SESSION_STATE_READY);
   new_s->flags |= SESSION_F_IS_MIGRATING;
 
@@ -945,9 +953,7 @@ session_transport_delete_notify (transport_connection_t * tc)
 {
   session_t *s;
 
-  /* App might've been removed already */
-  if (!(s = session_get_if_valid (tc->s_index, tc->thread_index)))
-    return;
+  s = session_get (tc->s_index, tc->thread_index);
 
   switch (s->session_state)
     {
@@ -985,15 +991,17 @@ session_transport_delete_notify (transport_connection_t * tc)
     case SESSION_STATE_TRANSPORT_DELETED:
       break;
     case SESSION_STATE_CLOSED:
-      session_cleanup_notify (s, SESSION_CLEANUP_TRANSPORT);
+      session_lookup_del_session (s);
       session_set_state (s, SESSION_STATE_TRANSPORT_DELETED);
-      session_delete (s);
+      session_cleanup_notify (s, SESSION_CLEANUP_TRANSPORT);
+      session_program_cleanup (s);
       break;
     default:
       clib_warning ("session %u state %u", s->session_index, s->session_state);
+      session_lookup_del_session (s);
       session_set_state (s, SESSION_STATE_TRANSPORT_DELETED);
       session_cleanup_notify (s, SESSION_CLEANUP_TRANSPORT);
-      session_delete (s);
+      session_program_cleanup (s);
       break;
     }
 }
@@ -1012,12 +1020,7 @@ session_transport_delete_request (transport_connection_t *tc,
 {
   session_t *s;
 
-  /* App might've been removed already */
-  if (!(s = session_get_if_valid (tc->s_index, tc->thread_index)))
-    {
-      transport_cleanup_cb (cb_fn, tc);
-      return;
-    }
+  s = session_get (tc->s_index, tc->thread_index);
 
   switch (s->session_state)
     {
@@ -1057,15 +1060,17 @@ session_transport_delete_request (transport_connection_t *tc,
       transport_cleanup_cb (cb_fn, tc);
       break;
     case SESSION_STATE_CLOSED:
-      session_cleanup_notify_custom (s, SESSION_CLEANUP_TRANSPORT, cb_fn);
+      session_lookup_del_session (s);
       session_set_state (s, SESSION_STATE_TRANSPORT_DELETED);
-      session_delete (s);
+      session_cleanup_notify_custom (s, SESSION_CLEANUP_TRANSPORT, cb_fn);
+      session_program_cleanup (s);
       break;
     default:
       clib_warning ("session %u state %u", s->session_index, s->session_state);
+      session_lookup_del_session (s);
       session_set_state (s, SESSION_STATE_TRANSPORT_DELETED);
       session_cleanup_notify_custom (s, SESSION_CLEANUP_TRANSPORT, cb_fn);
-      session_delete (s);
+      session_program_cleanup (s);
       break;
     }
 }
@@ -1350,6 +1355,70 @@ session_open (session_endpoint_cfg_t *rmt, session_handle_t *rsh)
 }
 
 /**
+ * Ask transport to open stream on existing connection.
+ */
+int
+session_open_stream (session_endpoint_cfg_t *sep, session_handle_t *rsh)
+{
+  transport_connection_t *tc;
+  transport_endpoint_cfg_t *tep;
+  app_worker_t *app_wrk;
+  session_t *s;
+  u32 conn_index;
+  int rv;
+
+  app_wrk = app_worker_get (sep->app_wrk_index);
+  tep = session_endpoint_to_transport_cfg (sep);
+
+  /* allocate session and fifos now */
+  s = session_alloc_for_stream (sep->parent_handle);
+  if (PREDICT_FALSE (!s))
+    return SESSION_E_INVALID;
+
+  s->app_wrk_index = app_wrk->wrk_index;
+  s->opaque = sep->opaque;
+  s->flags |= SESSION_F_STREAM;
+  if ((rv = app_worker_init_connected (app_wrk, s)))
+    {
+      session_free (s);
+      if (app_worker_application_is_builtin (app_wrk))
+	return rv;
+      return app_worker_connect_notify (app_wrk, 0, rv, sep->opaque);
+    }
+
+  rv = transport_connect_stream (sep->transport_proto, tep, s, &conn_index);
+  if (rv < 0)
+    {
+      SESSION_DBG ("Transport failed to open stream.");
+      segment_manager_dealloc_fifos (s->rx_fifo, s->tx_fifo);
+      session_free (s);
+      if (app_worker_application_is_builtin (app_wrk))
+	return rv;
+      return app_worker_connect_notify (app_wrk, 0, rv, sep->opaque);
+    }
+
+  session_set_state (s, SESSION_STATE_READY);
+
+  tc =
+    transport_get_connection (sep->transport_proto, conn_index,
+			      session_thread_from_handle (sep->parent_handle));
+
+  /* Attach transport to session and vice versa */
+  s->connection_index = tc->c_index;
+  tc->s_index = s->session_index;
+  *rsh = session_handle (s);
+
+  /* builtin apps are synchronous */
+  if (app_worker_application_is_builtin (app_wrk))
+    {
+      s->flags |= SESSION_F_RX_READY;
+      return SESSION_E_NONE;
+    }
+
+  return app_worker_connect_notify (app_wrk, s, SESSION_E_NONE, sep->opaque);
+}
+
+/**
  * Ask transport to listen on session endpoint.
  *
  * @param s Session for which listen will be called. Note that unlike
@@ -1471,8 +1540,10 @@ session_close (session_t * s)
 void
 session_reset (session_t * s)
 {
-  if (s->session_state >= SESSION_STATE_CLOSING)
+  if (s->flags & SESSION_F_APP_CLOSED)
     return;
+  s->flags |= SESSION_F_APP_CLOSED;
+  s->flags &= ~SESSION_F_CUSTOM_FIFO_TUNING;
   /* Drop all outstanding tx data
    * App might disconnect session before connected, in this case,
    * tx_fifo may not be setup yet, so clear only it's inited. */
@@ -1790,15 +1861,16 @@ session_get_transport (session_t * s)
 }
 
 void
-session_get_endpoint (session_t * s, transport_endpoint_t * tep, u8 is_lcl)
+session_get_endpoint (session_t *s, transport_endpoint_t *tep_rmt,
+		      transport_endpoint_t *tep_lcl)
 {
   if (s->session_state != SESSION_STATE_LISTENING)
     return transport_get_endpoint (session_get_transport_proto (s),
-				   s->connection_index, s->thread_index, tep,
-				   is_lcl);
+				   s->connection_index, s->thread_index,
+				   tep_rmt, tep_lcl);
   else
-    return transport_get_listener_endpoint (session_get_transport_proto (s),
-					    s->connection_index, tep, is_lcl);
+    return transport_get_listener_endpoint (
+      session_get_transport_proto (s), s->connection_index, tep_rmt, tep_lcl);
 }
 
 int

@@ -806,11 +806,9 @@ show_memory_usage (vlib_main_t * vm,
 {
   clib_mem_main_t *mm = &clib_mem_main;
   int verbose __attribute__ ((unused)) = 0;
-  int api_segment = 0, stats_segment = 0, main_heap = 0, numa_heaps = 0;
+  int api_segment = 0, stats_segment = 0, main_heap = 0;
   int map = 0;
   clib_error_t *error;
-  u32 index = 0;
-  int i;
   uword clib_mem_trace_enable_disable (uword enable);
   uword was_enabled;
 
@@ -825,8 +823,6 @@ show_memory_usage (vlib_main_t * vm,
 	stats_segment = 1;
       else if (unformat (input, "main-heap"))
 	main_heap = 1;
-      else if (unformat (input, "numa-heaps"))
-	numa_heaps = 1;
       else if (unformat (input, "map"))
 	map = 1;
       else
@@ -837,10 +833,15 @@ show_memory_usage (vlib_main_t * vm,
 	}
     }
 
-  if ((api_segment + stats_segment + main_heap + numa_heaps + map) == 0)
-    return clib_error_return
-      (0, "Need one of api-segment, stats-segment, main-heap, numa-heaps "
-       "or map");
+  if ((api_segment + stats_segment + main_heap + map) == 0)
+    {
+      was_enabled = clib_mem_trace_enable_disable (0);
+      vec_foreach_pointer (h, clib_mem_main.heaps)
+	vlib_cli_output (vm, "%U\n\n", format_clib_mem_heap, h, 1);
+
+      clib_mem_trace_enable_disable (was_enabled);
+      return 0;
+    }
 
   if (api_segment)
     {
@@ -883,41 +884,13 @@ show_memory_usage (vlib_main_t * vm,
   {
     if (main_heap)
       {
-	/*
-	 * Note: the foreach_vlib_main causes allocator traffic,
-	 * so shut off tracing before we go there...
-	 */
 	was_enabled = clib_mem_trace_enable_disable (0);
 
-	foreach_vlib_main ()
-	  {
-	    vlib_cli_output (vm, "%sThread %d %s\n", index ? "\n" : "", index,
-			     vlib_worker_threads[index].name);
-	    vlib_cli_output (vm, "  %U\n", format_clib_mem_heap,
-			     mm->per_cpu_mheaps[index], verbose);
-	    index++;
-	  }
+	vlib_cli_output (vm, "  %U\n", format_clib_mem_heap, mm->main_heap,
+			 verbose);
 
 	/* Restore the trace flag */
 	clib_mem_trace_enable_disable (was_enabled);
-      }
-    if (numa_heaps)
-      {
-	for (i = 0; i < ARRAY_LEN (mm->per_numa_mheaps); i++)
-	  {
-	    if (mm->per_numa_mheaps[i] == 0)
-	      continue;
-	    if (mm->per_numa_mheaps[i] == mm->per_cpu_mheaps[i])
-	      {
-		vlib_cli_output (vm, "Numa %d uses the main heap...", i);
-		continue;
-	      }
-	    was_enabled = clib_mem_trace_enable_disable (0);
-
-	    vlib_cli_output (vm, "Numa %d:", i);
-	    vlib_cli_output (vm, "  %U\n", format_clib_mem_heap,
-			     mm->per_numa_mheaps[index], verbose);
-	  }
       }
     if (map)
       {
@@ -930,7 +903,7 @@ show_memory_usage (vlib_main_t * vm,
 		    "StartAddr", "size", "FD", "PageSz", "Pages");
 	while ((numa = vlib_mem_get_next_numa_node (numa)) != -1)
 	  s = format (s, " Numa%u", numa);
-	s = format (s, " NotMap");
+	s = format (s, " NotPop");
 	s = format (s, " Name");
 	vlib_cli_output (vm, "%v", s);
 	vec_reset_length (s);
@@ -954,7 +927,7 @@ show_memory_usage (vlib_main_t * vm,
 			hdr->num_pages);
 	    while ((numa = vlib_mem_get_next_numa_node (numa)) != -1)
 	      s = format (s, "%6lu", stats.per_numa[numa]);
-	    s = format (s, "%7lu", stats.not_mapped);
+	    s = format (s, "%7lu", stats.not_populated);
 	    s = format (s, " %s", hdr->name);
 	    vlib_cli_output (vm, "%v", s);
 	    vec_reset_length (s);
@@ -968,7 +941,7 @@ show_memory_usage (vlib_main_t * vm,
 VLIB_CLI_COMMAND (show_memory_usage_command, static) = {
   .path = "show memory",
   .short_help = "show memory [api-segment][stats-segment][verbose]\n"
-		"            [numa-heaps][map][main-heap]",
+		"            [map][main-heap]",
   .function = show_memory_usage,
 };
 
@@ -1008,13 +981,11 @@ enable_disable_memory_trace (vlib_main_t * vm,
 			     unformat_input_t * input,
 			     vlib_cli_command_t * cmd)
 {
-  clib_mem_main_t *mm = &clib_mem_main;
   unformat_input_t _line_input, *line_input = &_line_input;
   int enable = 1;
   int api_segment = 0;
   int stats_segment = 0;
   int main_heap = 0;
-  u32 numa_id = ~0;
   void *oldheap;
 
   if (!unformat_user (input, unformat_line_input, line_input))
@@ -1030,8 +1001,6 @@ enable_disable_memory_trace (vlib_main_t * vm,
 	stats_segment = 1;
       else if (unformat (line_input, "main-heap"))
 	main_heap = 1;
-      else if (unformat (line_input, "numa-heap %d", &numa_id))
-	;
       else
 	{
 	  unformat_free (line_input);
@@ -1040,12 +1009,11 @@ enable_disable_memory_trace (vlib_main_t * vm,
     }
   unformat_free (line_input);
 
-  if ((api_segment + stats_segment + main_heap + (enable == 0)
-       + (numa_id != ~0)) == 0)
+  if ((api_segment + stats_segment + main_heap + (enable == 0)) == 0)
     {
-      return clib_error_return
-	(0, "Need one of main-heap, stats-segment, api-segment,\n"
-	 "numa-heap <nn> or disable");
+      return clib_error_return (
+	0, "Need one of main-heap, stats-segment, api-segment,\n"
+	   "or disable");
     }
 
   /* Turn off current trace, if any */
@@ -1089,23 +1057,6 @@ enable_disable_memory_trace (vlib_main_t * vm,
       clib_mem_trace (main_heap);
     }
 
-  if (numa_id != ~0)
-    {
-      if (numa_id >= ARRAY_LEN (mm->per_numa_mheaps))
-	return clib_error_return (0, "Numa %d out of range", numa_id);
-      if (mm->per_numa_mheaps[numa_id] == 0)
-	return clib_error_return (0, "Numa %d heap not active", numa_id);
-
-      if (mm->per_numa_mheaps[numa_id] == clib_mem_get_heap ())
-	return clib_error_return (0, "Numa %d uses the main heap...",
-				  numa_id);
-      current_traced_heap = mm->per_numa_mheaps[numa_id];
-      oldheap = clib_mem_set_heap (current_traced_heap);
-      clib_mem_trace (1);
-      clib_mem_set_heap (oldheap);
-    }
-
-
   return 0;
 }
 
@@ -1122,7 +1073,7 @@ save_memory_trace (vlib_main_t *vm, unformat_input_t *input,
 {
   char *file, *chroot_file;
   uword was_enabled;
-  mheap_trace_t *t, *mem_traces = 0;
+  clib_mem_trace_t *t, *mem_traces = 0;
   u8 *tmp;
   cJSON *traces, *trace, *traceback, *symbol;
   int i;

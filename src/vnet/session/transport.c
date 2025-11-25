@@ -15,7 +15,9 @@
 
 #include <vnet/session/transport.h>
 #include <vnet/session/session.h>
+#include <vnet/ip/icmp4.h>
 #include <vnet/fib/fib.h>
+#include <vnet/udp/udp.h>
 
 /**
  * Per-type vector of transport protocol virtual function tables
@@ -85,7 +87,7 @@ format_transport_flags (u8 *s, va_list *args)
   transport_connection_flags_t flags;
   int i, last = -1;
 
-  flags = va_arg (*args, transport_connection_flags_t);
+  flags = va_arg (*args, u32);
 
   for (i = 0; i < TRANSPORT_CONNECTION_N_FLAGS; i++)
     if (flags & (1 << i))
@@ -127,7 +129,7 @@ format_transport_connection (u8 * s, va_list * args)
 	s = format (s, "%Upacer: %U\n", format_white_space, indent,
 		    format_transport_pacer, &tc->pacer, tc->thread_index);
       s = format (s, "%Utransport: flags: %U\n", format_white_space, indent,
-		  format_transport_flags, tc->flags);
+		  format_transport_flags, (u32) tc->flags);
     }
   return s;
 }
@@ -323,6 +325,112 @@ transport_register_new_protocol (const transport_proto_vft_t * vft,
   return transport_proto;
 }
 
+static transport_proto_t
+transport_proto_from_ip_proto (u8 ip_proto)
+{
+  switch (ip_proto)
+    {
+    case IP_PROTOCOL_TCP:
+      return TRANSPORT_PROTO_TCP;
+    case IP_PROTOCOL_UDP:
+      return TRANSPORT_PROTO_UDP;
+    default:
+      return TRANSPORT_PROTO_NONE;
+    }
+}
+
+#define foreach_transport_icmp_dest_unreachable_error                         \
+  _ (RECEIVED, received, WARN, "received ICMPs")
+
+static vlib_error_desc_t transport_icmp_unreach_error[] = {
+#define _(f, n, s, d) { #n, d, VL_COUNTER_SEVERITY_##s },
+  foreach_transport_icmp_dest_unreachable_error
+#undef _
+};
+
+enum _transport_icmp_unreach_error
+{
+#define _(f, n, s, d) TRANSPORT_ICMP_UNREACH_ERROR_##f,
+  foreach_transport_icmp_dest_unreachable_error
+#undef _
+};
+
+/* 4 bytes of ICMP header & 4 reserved */
+#define ICMP_HEADER_SIZE 8
+
+static uword
+transport_icmp_dest_unreachable (vlib_main_t *vm, vlib_node_runtime_t *node,
+				 vlib_frame_t *frame)
+{
+  u32 n_left_from, *from;
+  vlib_buffer_t *bufs[VLIB_FRAME_SIZE], **b;
+
+  from = vlib_frame_vector_args (frame);
+  n_left_from = frame->n_vectors;
+  vlib_get_buffers (vm, from, bufs, n_left_from);
+
+  b = bufs;
+
+  vlib_node_increment_counter (
+    vm, node->node_index, TRANSPORT_ICMP_UNREACH_ERROR_RECEIVED, n_left_from);
+
+  while (n_left_from > 0)
+    {
+      u16 *src_port, *dst_port;
+      icmp46_header_t *icmp0;
+      ip4_header_t *ip0, *ip1;
+      session_t *s0;
+
+      if (n_left_from > 1)
+	{
+	  vlib_prefetch_buffer_header (b[1], LOAD);
+	  CLIB_PREFETCH (b[1]->data, CLIB_CACHE_LINE_BYTES, LOAD);
+	}
+
+      ip0 = vlib_buffer_get_current (b[0]);
+      icmp0 = ip4_next_header (ip0);
+
+      vlib_buffer_advance (b[0], ip4_header_bytes (ip0) + ICMP_HEADER_SIZE);
+      ip1 = vlib_buffer_get_current (b[0]);
+      src_port = (u16 *) ip4_next_header (ip1);
+      dst_port = src_port + 1;
+      s0 = session_lookup_safe4 (
+	vnet_buffer (b[0])->ip.fib_index, &ip0->dst_address, &ip0->src_address,
+	*src_port, *dst_port, transport_proto_from_ip_proto (ip1->protocol));
+      if (s0)
+	{
+	  /* direct calls here since vft used only for N to S notifications
+	   */
+	  switch (session_get_transport_proto (s0))
+	    {
+	    case TRANSPORT_PROTO_UDP:
+	      udp_connection_handle_icmp (session_get_transport (s0),
+					  icmp0->type, icmp0->code);
+	      break;
+	    default:
+	      if (CLIB_DEBUG > 0)
+		clib_warning ("transport handler unimplemented!");
+	      break;
+	    }
+	}
+
+      b += 1;
+      n_left_from -= 1;
+    }
+
+  vlib_buffer_free (vm, from, frame->n_vectors);
+
+  return frame->n_vectors;
+}
+
+VLIB_REGISTER_NODE (transport_icmp_dest_unreachable_node) = {
+  .function = transport_icmp_dest_unreachable,
+  .name = "transport-icmp-dest-unreachable",
+  .vector_size = sizeof (u32),
+  .error_counters = transport_icmp_unreach_error,
+  .n_errors = ARRAY_LEN (transport_icmp_unreach_error),
+};
+
 /**
  * Get transport virtual function table
  *
@@ -369,6 +477,15 @@ transport_connect (transport_proto_t tp, transport_endpoint_cfg_t * tep)
   return tp_vfts[tp].connect (tep);
 }
 
+int
+transport_connect_stream (transport_proto_t tp, transport_endpoint_cfg_t *tep,
+			  session_t *stream_session, u32 *conn_index)
+{
+  if (PREDICT_FALSE (!tp_vfts[tp].connect_stream))
+    return SESSION_E_TRANSPORT_NO_REG;
+  return tp_vfts[tp].connect_stream (tep, stream_session, conn_index);
+}
+
 void
 transport_half_close (transport_proto_t tp, u32 conn_index, u8 thread_index)
 {
@@ -413,50 +530,53 @@ transport_protocol_is_cl (transport_proto_t tp)
 }
 
 always_inline void
-default_get_transport_endpoint (transport_connection_t * tc,
-				transport_endpoint_t * tep, u8 is_lcl)
+default_get_transport_endpoint (transport_connection_t *tc,
+				transport_endpoint_t *tep_rmt,
+				transport_endpoint_t *tep_lcl)
 {
-  if (is_lcl)
+  if (tep_lcl)
     {
-      tep->port = tc->lcl_port;
-      tep->is_ip4 = tc->is_ip4;
-      clib_memcpy_fast (&tep->ip, &tc->lcl_ip, sizeof (tc->lcl_ip));
+      tep_lcl->port = tc->lcl_port;
+      tep_lcl->is_ip4 = tc->is_ip4;
+      clib_memcpy_fast (&tep_lcl->ip, &tc->lcl_ip, sizeof (tc->lcl_ip));
     }
-  else
+  if (tep_rmt)
     {
-      tep->port = tc->rmt_port;
-      tep->is_ip4 = tc->is_ip4;
-      clib_memcpy_fast (&tep->ip, &tc->rmt_ip, sizeof (tc->rmt_ip));
+      tep_rmt->port = tc->rmt_port;
+      tep_rmt->is_ip4 = tc->is_ip4;
+      clib_memcpy_fast (&tep_rmt->ip, &tc->rmt_ip, sizeof (tc->rmt_ip));
     }
 }
 
 void
 transport_get_endpoint (transport_proto_t tp, u32 conn_index,
 			clib_thread_index_t thread_index,
-			transport_endpoint_t *tep, u8 is_lcl)
+			transport_endpoint_t *tep_rmt,
+			transport_endpoint_t *tep_lcl)
 {
   if (tp_vfts[tp].get_transport_endpoint)
-    tp_vfts[tp].get_transport_endpoint (conn_index, thread_index, tep,
-					is_lcl);
+    tp_vfts[tp].get_transport_endpoint (conn_index, thread_index, tep_rmt,
+					tep_lcl);
   else
     {
       transport_connection_t *tc;
       tc = transport_get_connection (tp, conn_index, thread_index);
-      default_get_transport_endpoint (tc, tep, is_lcl);
+      default_get_transport_endpoint (tc, tep_rmt, tep_lcl);
     }
 }
 
 void
 transport_get_listener_endpoint (transport_proto_t tp, u32 conn_index,
-				 transport_endpoint_t * tep, u8 is_lcl)
+				 transport_endpoint_t *tep_rmt,
+				 transport_endpoint_t *tep_lcl)
 {
   if (tp_vfts[tp].get_transport_listener_endpoint)
-    tp_vfts[tp].get_transport_listener_endpoint (conn_index, tep, is_lcl);
+    tp_vfts[tp].get_transport_listener_endpoint (conn_index, tep_rmt, tep_lcl);
   else
     {
       transport_connection_t *tc;
       tc = transport_get_listener (tp, conn_index);
-      default_get_transport_endpoint (tc, tep, is_lcl);
+      default_get_transport_endpoint (tc, tep_rmt, tep_lcl);
     }
 }
 
@@ -1079,6 +1199,9 @@ transport_enable_disable (vlib_main_t * vm, u8 is_en)
     if (vft->update_time)
       session_register_update_time_fn (vft->update_time, is_en);
   }
+  if (is_en)
+  ip4_icmp_register_type (vlib_get_main (), ICMP4_destination_unreachable,
+			  transport_icmp_dest_unreachable_node.index);
 }
 
 void

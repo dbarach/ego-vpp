@@ -291,7 +291,7 @@ trace (char *chroot_path, char *name, int enable_disable)
 
   oldheap = svm_push_data_heap (db_rp);
 
-  mheap_trace (db_rp->data_heap, enable_disable);
+  clib_mem_trace_heap (db_rp->data_heap, enable_disable);
 
   svm_pop_heap (oldheap);
   region_unlock (db_rp);
@@ -454,7 +454,7 @@ main (int argc, char **argv)
   char *chroot_path = 0;
   u8 *chroot_u8;
 
-  clib_mem_init_thread_safe (0, 128 << 20);
+  clib_mem_init (0, 128 << 20);
 
   unformat_init_command_line (&input, argv);
 

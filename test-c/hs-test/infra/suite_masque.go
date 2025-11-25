@@ -82,10 +82,12 @@ func (s *MasqueSuite) SetupTest() {
 	clientVpp, err := s.Containers.VppClient.newVppInstance(s.Containers.VppClient.AllocatedCpus, memoryConfig)
 	s.AssertNotNil(clientVpp, fmt.Sprint(err))
 	s.AssertNil(clientVpp.Start())
-	idx, err := clientVpp.createAfPacket(s.Interfaces.Client, false)
+	numCpus := uint16(len(s.Containers.VppClient.AllocatedCpus))
+	numWorkers := uint16(max(numCpus-1, 1))
+	idx, err := clientVpp.createAfPacket(s.Interfaces.Client, false, WithNumRxQueues(numWorkers), WithNumTxQueues(numCpus))
 	s.AssertNil(err, fmt.Sprint(err))
 	s.AssertNotEqual(0, idx)
-	idx, err = clientVpp.createAfPacket(s.Interfaces.TunnelClient, false)
+	idx, err = clientVpp.createAfPacket(s.Interfaces.TunnelClient, false, WithNumRxQueues(numWorkers), WithNumTxQueues(numCpus))
 	s.AssertNil(err, fmt.Sprint(err))
 	s.AssertNotEqual(0, idx)
 
@@ -93,10 +95,12 @@ func (s *MasqueSuite) SetupTest() {
 	serverVpp, err := s.Containers.VppServer.newVppInstance(s.Containers.VppServer.AllocatedCpus, memoryConfig)
 	s.AssertNotNil(serverVpp, fmt.Sprint(err))
 	s.AssertNil(serverVpp.Start())
-	idx, err = serverVpp.createAfPacket(s.Interfaces.TunnelServer, false)
+	numCpus = uint16(len(s.Containers.VppServer.AllocatedCpus))
+	numWorkers = uint16(max(numCpus-1, 1))
+	idx, err = serverVpp.createAfPacket(s.Interfaces.TunnelServer, false, WithNumRxQueues(numWorkers), WithNumTxQueues(numCpus))
 	s.AssertNil(err, fmt.Sprint(err))
 	s.AssertNotEqual(0, idx)
-	idx, err = serverVpp.createAfPacket(s.Interfaces.Server, false)
+	idx, err = serverVpp.createAfPacket(s.Interfaces.Server, false, WithNumRxQueues(numWorkers), WithNumTxQueues(numCpus))
 	s.AssertNil(err, fmt.Sprint(err))
 	s.AssertNotEqual(0, idx)
 	proxyCmd := fmt.Sprintf("test proxy server fifo-size 512k server-uri https://%s:%s", s.ProxyAddr(), s.Ports.Proxy)
@@ -171,13 +175,13 @@ func (s *MasqueSuite) ProxyClientConnect(proto, port string, extraArgs ...string
 	connected := false
 	for nTries := 0; nTries < 10; nTries++ {
 		o := vpp.Vppctl("show http connect proxy client")
-		if strings.Contains(o, "connection state: connected") {
+		if strings.Contains(strings.ToLower(o), "connection state: connected") {
 			connected = true
 			break
 		}
 		time.Sleep(1 * time.Second)
 	}
-	vpp.Container.Suite.AssertEqual(connected, true)
+	vpp.Container.Suite.AssertEqual(connected, true, "client not connected to the server")
 }
 
 func (s *MasqueSuite) StartNginxServer() {

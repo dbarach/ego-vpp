@@ -13,7 +13,6 @@ import (
 	"text/template"
 	"time"
 
-	"github.com/cilium/cilium/pkg/sysctl"
 	containerTypes "github.com/docker/docker/api/types/container"
 	"github.com/docker/docker/api/types/filters"
 	"github.com/docker/docker/api/types/image"
@@ -223,7 +222,7 @@ func (c *Container) Start() error {
 	for nTries = 0; nTries < 5; nTries++ {
 		err = c.Suite.Docker.ContainerStart(c.ctx, c.ID, containerTypes.StartOptions{})
 		if err == nil {
-			continue
+			break
 		}
 		c.Suite.Log("Error while starting " + c.Name + ". Retrying...")
 		time.Sleep(1 * time.Second)
@@ -233,7 +232,7 @@ func (c *Container) Start() error {
 	}
 
 	// wait for container to start
-	time.Sleep(1 * time.Second)
+	time.Sleep(500 * time.Millisecond)
 
 	// check if container exited right after startup
 	containers, err := c.Suite.Docker.ContainerList(c.ctx, containerTypes.ListOptions{
@@ -243,12 +242,14 @@ func (c *Container) Start() error {
 	if err != nil {
 		return err
 	}
-	if containers[0].State == "exited" {
+
+	c.Suite.Log("Container '%s': %s", c.Name, containers[0].Status)
+	if !(strings.Contains(strings.ToLower(containers[0].Status), "up") || strings.Contains(strings.ToLower(containers[0].Status), "exited (0)")) {
 		c.Suite.Log("Container details: " + fmt.Sprint(containers[0]))
 		return fmt.Errorf("Container %s exited: '%s'", c.Name, containers[0].Status)
 	}
 
-	return err
+	return nil
 }
 
 func (c *Container) GetOutput() (string, string) {
@@ -348,7 +349,8 @@ func (c *Container) getVolumesAsSlice() []string {
 		volumeSlice = append(volumeSlice, fmt.Sprintf("%s:%s", *VppSourceFileDir, *VppSourceFileDir))
 	}
 
-	core_pattern, err := sysctl.Read("kernel.core_pattern")
+	core_pattern_byte, err := os.ReadFile("/proc/sys/kernel/core_pattern")
+	core_pattern := string(core_pattern_byte)
 	if err == nil {
 		if len(core_pattern) > 0 && core_pattern[0] != '|' {
 			index := strings.LastIndex(core_pattern, "/")
@@ -467,9 +469,14 @@ func (c *Container) GetFile(sourceFileName, targetFileName string) error {
  * Executes in detached mode so that the started application can continue to run
  * without blocking execution of test
  */
-func (c *Container) ExecServer(useEnvVars bool, command string, arguments ...any) {
+func (c *Container) ExecServer(useEnvVars bool, command any, arguments ...any) {
 	var envVars string
-	serverCommand := fmt.Sprintf(command, arguments...)
+	var serverCommand string
+	if len(arguments) > 0 {
+		serverCommand = fmt.Sprintf(fmt.Sprint(command), arguments...)
+	} else {
+		serverCommand = fmt.Sprint(command)
+	}
 	if useEnvVars {
 		envVars = c.getEnvVarsAsCliOption()
 	} else {
@@ -481,9 +488,14 @@ func (c *Container) ExecServer(useEnvVars bool, command string, arguments ...any
 	c.Suite.AssertNil(exechelper.Run(containerExecCommand))
 }
 
-func (c *Container) Exec(useEnvVars bool, command string, arguments ...any) (string, error) {
+func (c *Container) Exec(useEnvVars bool, command any, arguments ...any) (string, error) {
 	var envVars string
-	serverCommand := fmt.Sprintf(command, arguments...)
+	var serverCommand string
+	if len(arguments) > 0 {
+		serverCommand = fmt.Sprintf(fmt.Sprint(command), arguments...)
+	} else {
+		serverCommand = fmt.Sprint(command)
+	}
 	if useEnvVars {
 		envVars = c.getEnvVarsAsCliOption()
 	} else {
@@ -493,6 +505,65 @@ func (c *Container) Exec(useEnvVars bool, command string, arguments ...any) (str
 	ginkgo.GinkgoHelper()
 	c.Suite.Log(containerExecCommand)
 	byteOutput, err := exechelper.CombinedOutput(containerExecCommand)
+	return string(byteOutput), err
+}
+
+// Returns outputBuffer.String(), errorBuffer.String(), error. Runs commands with 'stdbuf -oL'.
+func (c *Container) ExecLineBuffered(ctx context.Context, useEnvVars bool, command any, arguments ...any) (string, string, error) {
+	var envVars string
+	outputBuffer := bytes.NewBuffer([]byte{})
+	errBuffer := bytes.NewBuffer([]byte{})
+	var serverCommand string
+	if len(arguments) > 0 {
+		serverCommand = fmt.Sprintf(fmt.Sprint(command), arguments...)
+	} else {
+		serverCommand = fmt.Sprint(command)
+	}
+	if useEnvVars {
+		envVars = c.getEnvVarsAsCliOption()
+	} else {
+		envVars = ""
+	}
+
+	containerExecCommand := fmt.Sprintf("docker exec %s %s stdbuf -oL %s", envVars, c.Name, serverCommand)
+	ginkgo.GinkgoHelper()
+	c.Suite.Log(containerExecCommand)
+	err := exechelper.Run(containerExecCommand, exechelper.WithContext(ctx),
+		exechelper.WithStdout(outputBuffer), exechelper.WithStderr(errBuffer))
+
+	// ignore SIGKILL errors
+	if IsKilledError(err) {
+		c.Suite.Log("'%v' error ignored (context cancelled)", err)
+		err = nil
+	}
+
+	return outputBuffer.String(), errBuffer.String(), err
+}
+
+func (c *Container) ExecContext(ctx context.Context, useEnvVars bool, command any, arguments ...any) (string, error) {
+	var envVars string
+	var serverCommand string
+	if len(arguments) > 0 {
+		serverCommand = fmt.Sprintf(fmt.Sprint(command), arguments...)
+	} else {
+		serverCommand = fmt.Sprint(command)
+	}
+	if useEnvVars {
+		envVars = c.getEnvVarsAsCliOption()
+	} else {
+		envVars = ""
+	}
+	containerExecCommand := fmt.Sprintf("docker exec %s %s %s", envVars, c.Name, serverCommand)
+	ginkgo.GinkgoHelper()
+	c.Suite.Log(containerExecCommand)
+	byteOutput, err := exechelper.CombinedOutput(containerExecCommand, exechelper.WithContext(ctx))
+
+	// ignore SIGKILL errors
+	if IsKilledError(err) {
+		c.Suite.Log("'%v' error ignored (context cancelled)", err)
+		err = nil
+	}
+
 	return string(byteOutput), err
 }
 

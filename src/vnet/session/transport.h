@@ -17,6 +17,7 @@
 #define SRC_VNET_SESSION_TRANSPORT_H_
 
 #include <vnet/vnet.h>
+#include <vnet/session/session_types.h>
 #include <vnet/session/transport_types.h>
 
 #define TRANSPORT_PACER_MIN_MSS 	1460
@@ -74,6 +75,8 @@ typedef struct _transport_proto_vft
   u32 (*start_listen) (u32 session_index, transport_endpoint_cfg_t *lcl);
   u32 (*stop_listen) (u32 conn_index);
   int (*connect) (transport_endpoint_cfg_t * rmt);
+  int (*connect_stream) (transport_endpoint_cfg_t *rmt,
+			 session_t *session_index, u32 *conn_index);
   void (*half_close) (u32 conn_index, clib_thread_index_t thread_index);
   void (*close) (u32 conn_index, clib_thread_index_t thread_index);
   void (*reset) (u32 conn_index, clib_thread_index_t thread_index);
@@ -114,10 +117,11 @@ typedef struct _transport_proto_vft
    */
   void (*get_transport_endpoint) (u32 conn_index,
 				  clib_thread_index_t thread_index,
-				  transport_endpoint_t *tep, u8 is_lcl);
+				  transport_endpoint_t *tep_rmt,
+				  transport_endpoint_t *tep_lcl);
   void (*get_transport_listener_endpoint) (u32 conn_index,
-					   transport_endpoint_t *tep,
-					   u8 is_lcl);
+					   transport_endpoint_t *tep_rmt,
+					   transport_endpoint_t *tep_lcl);
   int (*attribute) (u32 conn_index, clib_thread_index_t thread_index,
 		    u8 is_get, transport_endpt_attr_t *attr);
   tls_alpn_proto_t (*get_alpn_selected) (u32 conn_index,
@@ -137,6 +141,9 @@ extern transport_proto_vft_t *tp_vfts;
       if (VAR_ALLOW_BM & (1 << VAR))
 
 int transport_connect (transport_proto_t tp, transport_endpoint_cfg_t * tep);
+int transport_connect_stream (transport_proto_t tp,
+			      transport_endpoint_cfg_t *tep,
+			      session_t *stream_session, u32 *conn_index);
 void transport_half_close (transport_proto_t tp, u32 conn_index,
 			   u8 thread_index);
 void transport_close (transport_proto_t tp, u32 conn_index, u8 thread_index);
@@ -149,9 +156,11 @@ void transport_cleanup (transport_proto_t tp, u32 conn_index,
 void transport_cleanup_half_open (transport_proto_t tp, u32 conn_index);
 void transport_get_endpoint (transport_proto_t tp, u32 conn_index,
 			     clib_thread_index_t thread_index,
-			     transport_endpoint_t *tep, u8 is_lcl);
+			     transport_endpoint_t *tep_rmt,
+			     transport_endpoint_t *tep_lcl);
 void transport_get_listener_endpoint (transport_proto_t tp, u32 conn_index,
-				      transport_endpoint_t * tep, u8 is_lcl);
+				      transport_endpoint_t *tep_rmt,
+				      transport_endpoint_t *tep_lcl);
 int transport_connection_attribute (transport_proto_t tp, u32 conn_index,
 				    u8 thread_index, u8 is_get,
 				    transport_endpt_attr_t *attr);

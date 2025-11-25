@@ -37,8 +37,10 @@ endif()
 # Generate vppinfra/config.h
 ##############################################################################
 set(LOG2_CACHE_LINE_BYTES ${VPP_LOG2_CACHE_LINE_SIZE})
+set(N_PREFETCHES ${VPP_N_PREFETCHES})
 
 option(VPP_VECTOR_GROW_BY_ONE "Vectors grow by one, instead of 3/2" OFF)
+option(VPP_ALLOC_FREE_INTERCEPT "intercept libc alloc/free calls" ON)
 if(VPP_VECTOR_GROW_BY_ONE)
   set(VECTOR_GROW_BY_ONE 1)
 else(VPP_VECTOR_GROW_BY_ONE)
@@ -86,6 +88,7 @@ set(VPPINFRA_SRCS
   mem.c
   mem_bulk.c
   mem_dlmalloc.c
+  mem_trace.c
   mhash.c
   mpcap.c
   pcap.c
@@ -119,6 +122,10 @@ set(VPPINFRA_SRCS
   vector/toeplitz.c
   cJSON.c
 )
+
+if (VPP_ALLOC_FREE_INTERCEPT)
+  list(APPEND VPPINFRA_SRCS mem_intercept.c)
+endif()
 
 set(VPPINFRA_HEADERS
   bihash_12_4.h
