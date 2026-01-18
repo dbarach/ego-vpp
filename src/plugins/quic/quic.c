@@ -70,7 +70,7 @@ static int
 quic_connect_connection (transport_endpoint_cfg_t *tep)
 {
   session_endpoint_cfg_t *sep = (session_endpoint_cfg_t *) tep;
-  vnet_connect_args_t _cargs, *cargs = &_cargs;
+  vnet_connect_args_t _cargs = {}, *cargs = &_cargs;
   transport_endpt_crypto_cfg_t *ccfg;
   quic_main_t *qm = &quic_main;
   u32 ctx_index, thread_index;
@@ -88,17 +88,18 @@ quic_connect_connection (transport_endpoint_cfg_t *tep)
   thread_index = transport_cl_thread ();
   ccfg = &ext_cfg->crypto;
 
-  clib_memset (cargs, 0, sizeof (*cargs));
   ctx_index = quic_ctx_alloc (qm, thread_index);
   ctx = quic_ctx_get (ctx_index, thread_index);
   ctx->parent_app_wrk_id = sep->app_wrk_index;
-  ctx->c_s_index = QUIC_SESSION_INVALID;
+  ctx->c_s_index = SESSION_INVALID_INDEX;
   ctx->c_c_index = ctx_index;
+  ctx->c_thread_index = thread_index;
+  ctx->c_proto = TRANSPORT_PROTO_QUIC;
+  ctx->c_flags |= TRANSPORT_CONNECTION_F_NO_LOOKUP;
   ctx->udp_is_ip4 = sep->is_ip4;
   ctx->timer_handle = QUIC_TIMER_HANDLE_INVALID;
   ctx->conn_state = QUIC_CONN_STATE_HANDSHAKE;
   ctx->client_opaque = sep->opaque;
-  ctx->c_flags |= TRANSPORT_CONNECTION_F_NO_LOOKUP;
   if (ccfg->hostname[0])
     ctx->srv_hostname = format (0, "%s", ccfg->hostname);
   else
@@ -129,7 +130,7 @@ quic_connect_connection (transport_endpoint_cfg_t *tep)
   if (error)
     return error;
 
-  return 0;
+  return ctx_index;
 }
 
 static int
@@ -177,6 +178,8 @@ quic_connect_stream (transport_endpoint_cfg_t *tep, session_t *stream_session,
   sctx->c_c_index = sctx_index;
   sctx->c_flags |= TRANSPORT_CONNECTION_F_NO_LOOKUP;
   sctx->flags |= QUIC_F_IS_STREAM;
+  sctx->udp_session_handle = qctx->udp_session_handle;
+  sctx->crypto_context_index = qctx->crypto_context_index;
 
   if (!(conn = qctx->conn))
     return SESSION_E_UNKNOWN;
@@ -194,8 +197,6 @@ quic_connect_stream (transport_endpoint_cfg_t *tep, session_t *stream_session,
   quic_increment_counter (qm, QUIC_ERROR_OPENED_STREAM, 1);
 
   sctx->stream = stream;
-  sctx->crypto_context_index = qctx->crypto_context_index;
-  sctx->c_s_index = stream_session->session_index;
   stream_data->ctx_id = sctx->c_c_index;
   stream_data->thread_index = sctx->c_thread_index;
   stream_data->app_rx_data_len = 0;
@@ -221,6 +222,18 @@ static void
 quic_proto_on_close (u32 ctx_index, clib_thread_index_t thread_index)
 {
   quic_eng_proto_on_close (ctx_index, thread_index);
+}
+
+static void
+quic_proto_on_half_close (u32 ctx_index, clib_thread_index_t thread_index)
+{
+  quic_eng_proto_on_half_close (ctx_index, thread_index);
+}
+
+static void
+quic_proto_on_reset (u32 ctx_index, clib_thread_index_t thread_index)
+{
+  quic_eng_proto_on_reset (ctx_index, thread_index);
 }
 
 static u32
@@ -342,6 +355,14 @@ quic_listener_get (u32 listener_index)
   return &ctx->connection;
 }
 
+static transport_connection_t *
+quic_half_open_get (u32 ho_index)
+{
+  quic_ctx_t *ctx;
+  ctx = quic_ctx_get (ho_index, transport_cl_thread ());
+  return &ctx->connection;
+}
+
 /* Session layer callbacks */
 
 static void
@@ -392,17 +413,14 @@ quic_udp_session_connected_callback (u32 quic_app_index, u32 ctx_index,
    * worker, although this may be main thread. If it is main, it's done
    * with a worker barrier */
   thread_index = udp_session->thread_index;
-  ASSERT (thread_index == 0 ||
-	  thread_index ==
-	    1); /* TODO: FIXME multi-worker support (e.g. thread > 1) */
+  ASSERT (thread_index == transport_cl_thread ());
   ctx = quic_ctx_get (ctx_index, thread_index);
   if (err)
     {
-      u32 api_context;
       app_wrk = app_worker_get_if_valid (ctx->parent_app_wrk_id);
       if (app_wrk)
 	{
-	  api_context = ctx->c_s_index;
+	  u32 api_context = ctx->c_s_index;
 	  app_worker_connect_notify (app_wrk, 0, err, api_context);
 	}
       return 0;
@@ -429,6 +447,9 @@ static void
 quic_udp_session_disconnect_callback (session_t *ts)
 {
   quic_ctx_t *ctx = quic_ctx_get (ts->opaque, ts->thread_index);
+  QUIC_DBG (2, "UDP session closed: udp_handle %lx, ctx_index %u, thread %u",
+	    session_handle (ts), ctx->c_c_index, ctx->c_thread_index);
+  ctx->conn_state = QUIC_CONN_STATE_TRANSPORT_CLOSED;
   quic_eng_transport_closed (ctx);
 }
 
@@ -452,9 +473,10 @@ quic_udp_session_cleanup_callback (session_t *udp_session,
 }
 
 static void
-quic_udp_session_reset_callback (session_t * s)
+quic_udp_session_reset_callback (session_t *ts)
 {
-  clib_warning ("UDP session reset???");
+  quic_ctx_t *ctx = quic_ctx_get (ts->opaque, ts->thread_index);
+  quic_eng_transport_closed (ctx);
 }
 
 static void
@@ -472,6 +494,7 @@ quic_udp_session_migrate_callback (session_t * s, session_handle_t new_sh)
 #if QUIC_DEBUG >= 1
   s->opaque = 0xfeedface;
 #endif
+  session_half_open_migrate_notify (&ctx->connection);
   quic_transfer_connection (ctx->c_c_index, new_thread);
 }
 
@@ -530,16 +553,12 @@ quic_del_segment_callback (u32 client_index, u64 seg_handle)
 static int
 quic_custom_app_rx_callback (transport_connection_t * tc)
 {
-  quic_ctx_t *ctx;
   session_t *stream_session = session_get (tc->s_index, tc->thread_index);
-  QUIC_DBG (3, "Received app READ notification");
-  quic_eng_ack_rx_data (stream_session);
-  svm_fifo_reset_has_deq_ntf (stream_session->rx_fifo);
 
-  /* Need to send packets (acks may never be sent otherwise) */
-  ctx = quic_ctx_get (stream_session->connection_index,
-		      stream_session->thread_index);
-  quic_eng_send_packets (ctx);
+  QUIC_DBG (3, "Received app READ notification");
+  svm_fifo_reset_has_deq_ntf (stream_session->rx_fifo);
+  quic_eng_ack_rx_data (stream_session);
+
   return 0;
 }
 
@@ -549,32 +568,38 @@ quic_custom_tx_callback (void *s, transport_send_params_t * sp)
   session_t *stream_session = (session_t *) s;
   quic_ctx_t *ctx;
 
-  if (PREDICT_FALSE
-      (stream_session->session_state >= SESSION_STATE_TRANSPORT_CLOSING))
-    return 0;
   ctx = quic_ctx_get (stream_session->connection_index,
 		      stream_session->thread_index);
   if (PREDICT_FALSE (!quic_ctx_is_stream (ctx)))
     {
-      QUIC_DBG (1, "NOT a stream: ctx_index %u, thread %u",
-		stream_session->connection_index,
-		stream_session->thread_index);
-      goto tx_end; /* Most probably a reschedule */
+      /* this is invoked from quic_update_timer when we need to send
+       * immediately */
+      quic_eng_send_packets (ctx);
+      return 0;
     }
 
   QUIC_DBG (3, "Stream TX event");
-  quic_eng_ack_rx_data (stream_session);
-  if (PREDICT_FALSE (!quic_eng_stream_tx (ctx, stream_session)))
-    return 0;
 
-tx_end:
-  return quic_eng_send_packets (ctx);
+  /* Add stream to engine tx scheduler. This decides when stream is to send and
+   * how much. If successful deschedule from session layer scheduler */
+  if (quic_eng_stream_tx (ctx, stream_session))
+    sp->flags |= TRANSPORT_SND_F_DESCHED;
+
+  return 0;
 }
 
 static int
 quic_udp_session_rx_callback (session_t * udp_session)
 {
   return quic_eng_udp_session_rx_packets (udp_session);
+}
+
+static int
+quic_udp_session_tx_callback (session_t *udp_session)
+{
+  quic_ctx_t *ctx;
+  ctx = quic_ctx_get (udp_session->opaque, udp_session->thread_index);
+  return quic_eng_send_packets (ctx);
 }
 
 always_inline void
@@ -618,12 +643,42 @@ quic_get_transport_endpoint (u32 ctx_index, clib_thread_index_t thread_index,
   quic_common_get_transport_endpoint (ctx, tep_rmt, tep_lcl);
 }
 
-static tls_alpn_proto_t
-quic_get_alpn_selected (u32 ctx_index, clib_thread_index_t thread_index)
+static int
+quic_session_attribute (u32 ctx_index, clib_thread_index_t thread_index,
+			u8 is_get, transport_endpt_attr_t *attr)
 {
   quic_ctx_t *ctx;
+
   ctx = quic_ctx_get (ctx_index, thread_index);
-  return ctx->alpn_selected;
+
+  if (!is_get)
+    {
+      switch (attr->type)
+	{
+	case TRANSPORT_ENDPT_ATTR_APP_PROTO_ERR_CODE:
+	  ctx->app_err_code = (quic_app_err_code_t) attr->app_proto_err_code;
+	  break;
+	default:
+	  return -1;
+	}
+      return 0;
+    }
+
+  switch (attr->type)
+    {
+    case TRANSPORT_ENDPT_ATTR_TLS_ALPN:
+      attr->tls_alpn = ctx->alpn_selected;
+      break;
+    case TRANSPORT_ENDPT_ATTR_NEXT_TRANSPORT:
+      attr->next_transport = ctx->udp_session_handle;
+      break;
+    case TRANSPORT_ENDPT_ATTR_APP_PROTO_ERR_CODE:
+      attr->app_proto_err_code = (u64) ctx->app_err_code;
+      break;
+    default:
+      return -1;
+    }
+  return 0;
 }
 
 static session_cb_vft_t quic_app_cb_vft = {
@@ -635,35 +690,8 @@ static session_cb_vft_t quic_app_cb_vft = {
   .add_segment_callback = quic_add_segment_callback,
   .del_segment_callback = quic_del_segment_callback,
   .builtin_app_rx_callback = quic_udp_session_rx_callback,
+  .builtin_app_tx_callback = quic_udp_session_tx_callback,
   .session_cleanup_callback = quic_udp_session_cleanup_callback,
-};
-
-static clib_error_t *quic_enable (vlib_main_t *vm, u8 is_en);
-
-static transport_proto_vft_t quic_proto = {
-  .enable = quic_enable,
-  .connect = quic_connect_connection,
-  .connect_stream = quic_connect_stream,
-  .close = quic_proto_on_close,
-  .start_listen = quic_start_listen,
-  .stop_listen = quic_stop_listen,
-  .get_connection = quic_connection_get,
-  .get_listener = quic_listener_get,
-  .update_time = quic_update_time,
-  .app_rx_evt = quic_custom_app_rx_callback,
-  .custom_tx = quic_custom_tx_callback,
-  .format_connection = format_quic_connection,
-  .format_half_open = format_quic_half_open,
-  .format_listener = format_quic_listener,
-  .get_transport_endpoint = quic_get_transport_endpoint,
-  .get_transport_listener_endpoint = quic_get_transport_listener_endpoint,
-  .get_alpn_selected = quic_get_alpn_selected,
-  .transport_options = {
-    .name = "quic",
-    .short_name = "Q",
-    .tx_type = TRANSPORT_TX_INTERNAL,
-    .service_type = TRANSPORT_SERVICE_APP,
-  },
 };
 
 static clib_error_t *
@@ -733,14 +761,6 @@ quic_enable (vlib_main_t *vm, u8 is_en)
     quic_get_engine_type (QUIC_ENGINE_QUICLY, QUIC_ENGINE_OPENSSL);
   if (qm->engine_type == QUIC_ENGINE_NONE)
     {
-      /* Prevent crash in transport layer callbacks with no quic engine */
-      quic_proto.connect = 0;
-      quic_proto.start_listen = 0;
-      transport_register_protocol (TRANSPORT_PROTO_QUIC, &quic_proto,
-				   FIB_PROTOCOL_IP4, ~0);
-      transport_register_protocol (TRANSPORT_PROTO_QUIC, &quic_proto,
-				   FIB_PROTOCOL_IP6, ~0);
-
       clib_warning (
 	"ERROR: NO QUIC ENGINE PLUGIN ENABLED!"
 	"\nEnable a quic engine plugin in the startup configuration.");
@@ -778,6 +798,35 @@ quic_enable (vlib_main_t *vm, u8 is_en)
   qm->engine_is_initialized[qm->engine_type] = 1;
   return 0;
 }
+
+static transport_proto_vft_t quic_proto = {
+  .enable = quic_enable,
+  .connect = quic_connect_connection,
+  .connect_stream = quic_connect_stream,
+  .close = quic_proto_on_close,
+  .half_close = quic_proto_on_half_close,
+  .reset = quic_proto_on_reset,
+  .start_listen = quic_start_listen,
+  .stop_listen = quic_stop_listen,
+  .get_connection = quic_connection_get,
+  .get_listener = quic_listener_get,
+  .get_half_open = quic_half_open_get,
+  .update_time = quic_update_time,
+  .app_rx_evt = quic_custom_app_rx_callback,
+  .custom_tx = quic_custom_tx_callback,
+  .attribute = quic_session_attribute,
+  .format_connection = format_quic_connection,
+  .format_half_open = format_quic_half_open,
+  .format_listener = format_quic_listener,
+  .get_transport_endpoint = quic_get_transport_endpoint,
+  .get_transport_listener_endpoint = quic_get_transport_listener_endpoint,
+  .transport_options = {
+    .name = "quic",
+    .short_name = "Q",
+    .tx_type = TRANSPORT_TX_INTERNAL,
+    .service_type = TRANSPORT_SERVICE_VC,
+  },
+};
 
 void
 quic_update_fifo_size ()

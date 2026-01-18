@@ -1,16 +1,6 @@
 /*
+ * SPDX-License-Identifier: Apache-2.0
  * Copyright (c) 2019 Cisco and/or its affiliates.
- * Licensed under the Apache License, Version 2.0 (the "License");
- * you may not use this file except in compliance with the License.
- * You may obtain a copy of the License at:
- *
- *     http://www.apache.org/licenses/LICENSE-2.0
- *
- * Unless required by applicable law or agreed to in writing, software
- * distributed under the License is distributed on an "AS IS" BASIS,
- * WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
- * See the License for the specific language governing permissions and
- * limitations under the License.
  */
 
 #include <stdio.h>
@@ -356,12 +346,12 @@ echo_attach_session (uword segment_handle, uword rxf_offset, uword txf_offset,
   s->tx_fifo = fifo_segment_alloc_fifo_w_offset (fs, txf_offset);
   s->rx_fifo->segment_index = fs_index;
   s->tx_fifo->segment_index = fs_index;
-  s->rx_fifo->vpp_session_index = s->rx_fifo->shr->master_session_index;
-  s->tx_fifo->vpp_session_index = s->tx_fifo->shr->master_session_index;
+  s->rx_fifo->vpp_sh = s->vpp_session_handle;
+  s->tx_fifo->vpp_sh = s->vpp_session_handle;
   s->rx_fifo->app_session_index = s->session_index;
   s->tx_fifo->app_session_index = s->session_index;
-  s->rx_fifo->shr->client_session_index = s->session_index;
-  s->tx_fifo->shr->client_session_index = s->session_index;
+  s->rx_fifo->signals = &s->rx_fifo->shr->signals;
+  s->tx_fifo->signals = &s->tx_fifo->shr->signals;
 
   if (mq_offset != (uword) ~0)
     {
@@ -628,11 +618,3 @@ echo_api_hookup (echo_main_t * em)
   foreach_quic_echo_msg;
 #undef _
 }
-
-/*
- * fd.io coding-style-patch-verification: ON
- *
- * Local Variables:
- * eval: (c-set-style "gnu")
- * End:
- */

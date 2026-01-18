@@ -79,6 +79,7 @@ set(VPPINFRA_SRCS
   fifo.c
   format.c
   format_table.c
+  args.c
   hash.c
   heap.c
   interrupt.c
@@ -173,6 +174,7 @@ set(VPPINFRA_HEADERS
   format.h
   format_ansi.h
   format_table.h
+  args.h
   hash.h
   heap.h
   interrupt.h
@@ -326,6 +328,7 @@ set(test_files
   test/compress.c
   test/count_equal.c
   test/crc32c.c
+  test/dynamic_shuffle.c
   test/index_to_ptr.c
   test/ip_csum.c
   test/mask_compare.c
@@ -346,4 +349,3 @@ vpp_library_set_multiarch_sources(test_infra
   SOURCES
   ${test_files}
 )
-

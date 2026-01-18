@@ -104,6 +104,7 @@ typedef struct
   _ (tunnels_reset_by_client, "tunnels reset by client")                      \
   _ (tunnels_reset_by_target, "tunnels reset by target")                      \
   _ (max_streams_hit, "max streams hit")                                      \
+  _ (http_conns_reset_by_server, "http connections reset by server")          \
   _ (target_unreachable, "target unreachable")                                \
   _ (client_closed_before_stream_opened, "client closed before stream "       \
 					 "opened")                            \
@@ -442,6 +443,15 @@ hcpc_timer_update (hcpc_session_t *ps)
   tw_timer_update_2t_1w_2048sl (&hcpcm->tw, ps->timer_handle,
 				hcpcm->udp_idle_timeout);
   clib_spinlock_unlock_if_init (&hcpcm->tw_lock);
+}
+
+static void
+hcpc_reset_session_rpc (void *handlep)
+{
+  session_t *s;
+
+  s = session_get_from_handle (pointer_to_uword (handlep));
+  session_reset (s);
 }
 
 static void
@@ -890,8 +900,10 @@ hcpc_open_http_stream (u32 session_index)
 	    ps->intercept.tx_fifo->master_thread_index;
 	  if (ps->intercept.session_handle != SESSION_INVALID_HANDLE)
 	    {
-	      session_reset (
-		session_get_from_handle (ps->intercept.session_handle));
+	      session_send_rpc_evt_to_thread_force (
+		session_thread_from_handle (ps->intercept.session_handle),
+		hcpc_reset_session_rpc,
+		uword_to_pointer (ps->intercept.session_handle, void *));
 	      ps->intercept_diconnected = 1;
 	    }
 	  else
@@ -1204,10 +1216,12 @@ hcpc_http_session_reset_callback (session_t *s)
   HCPC_DBG ("session [%u]", s->opaque);
   clib_spinlock_lock_if_init (&hcpcm->sessions_lock);
   ps = hcpc_session_get (s->opaque);
+  ASSERT (ps);
   if (ps->flags & HCPC_SESSION_F_IS_PARENT)
     {
       hcpc_http_connection_closed (ps);
       clib_spinlock_unlock_if_init (&hcpcm->sessions_lock);
+      hcpc_worker_stats_inc (s->thread_index, http_conns_reset_by_server, 1);
       return;
     }
   ps->state = HCPC_SESSION_CLOSED;
@@ -1215,7 +1229,10 @@ hcpc_http_session_reset_callback (session_t *s)
   if (!ps->intercept_diconnected &&
       ps->intercept.session_handle != SESSION_INVALID_HANDLE)
     {
-      session_reset (session_get_from_handle (ps->intercept.session_handle));
+      session_send_rpc_evt_to_thread_force (
+	session_thread_from_handle (ps->intercept.session_handle),
+	hcpc_reset_session_rpc,
+	uword_to_pointer (ps->intercept.session_handle, void *));
       ps->intercept_diconnected = 1;
     }
   clib_spinlock_unlock_if_init (&hcpcm->sessions_lock);
@@ -1275,8 +1292,10 @@ hcpc_http_rx_callback (session_t *s)
 	  if (!ps->intercept_diconnected)
 	    {
 	      if (ps->intercept.session_handle != SESSION_INVALID_HANDLE)
-		session_reset (
-		  session_get_from_handle (ps->intercept.session_handle));
+		session_send_rpc_evt_to_thread_force (
+		  session_thread_from_handle (ps->intercept.session_handle),
+		  hcpc_reset_session_rpc,
+		  uword_to_pointer (ps->intercept.session_handle, void *));
 	      ps->intercept_diconnected = 1;
 	    }
 	  else
@@ -1432,7 +1451,6 @@ hcpc_http_alloc_session_fifos (session_t *s)
 	  clib_spinlock_unlock_if_init (&hcpcm->sessions_lock);
 	  return rv;
 	}
-      rx_fifo->shr->master_session_index = s->session_index;
       rx_fifo->vpp_sh = s->handle;
       s->flags &= ~SESSION_F_PROXY;
     }
@@ -1453,7 +1471,6 @@ hcpc_http_alloc_session_fifos (session_t *s)
       tx_fifo->refcnt++;
     }
 
-  tx_fifo->shr->master_session_index = s->session_index;
   tx_fifo->vpp_sh = s->handle;
 
   clib_spinlock_unlock_if_init (&hcpcm->sessions_lock);
@@ -1556,7 +1573,10 @@ hcpc_intercept_session_reset_callback (session_t *s)
   if (!ps->http_disconnected &&
       ps->http.session_handle != SESSION_INVALID_HANDLE)
     {
-      session_reset (session_get_from_handle (ps->http.session_handle));
+      session_send_rpc_evt_to_thread_force (
+	session_thread_from_handle (ps->http.session_handle),
+	hcpc_reset_session_rpc,
+	uword_to_pointer (ps->http.session_handle, void *));
       ps->http_disconnected = 1;
     }
   clib_spinlock_unlock_if_init (&hcpcm->sessions_lock);

@@ -1,16 +1,6 @@
 /*
+ * SPDX-License-Identifier: Apache-2.0
  * Copyright (c) 2019 Cisco and/or its affiliates.
- * Licensed under the Apache License, Version 2.0 (the "License");
- * you may not use this file except in compliance with the License.
- * You may obtain a copy of the License at:
- *
- *     http://www.apache.org/licenses/LICENSE-2.0
- *
- * Unless required by applicable law or agreed to in writing, software
- * distributed under the License is distributed on an "AS IS" BASIS,
- * WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
- * See the License for the specific language governing permissions and
- * limitations under the License.
  */
 
 #include <vnet/session/application_local.h>
@@ -810,6 +800,7 @@ ct_app_rx_evt (transport_connection_t * tc)
   ps = session_get (peer_ct->c_s_index, peer_ct->c_thread_index);
   if (ps->session_state >= SESSION_STATE_TRANSPORT_CLOSING)
     return -1;
+  svm_fifo_reset_has_deq_ntf (s->rx_fifo);
   return session_dequeue_notify (ps);
 }
 
@@ -951,6 +942,9 @@ ct_session_tx (session_t * s)
   if (peer_s->session_state >= SESSION_STATE_TRANSPORT_CLOSING)
     return 0;
   peer_s->flags |= SESSION_F_RX_EVT;
+  /* Propagate dequeue ntf request along with enqueue notify */
+  if (s->tx_fifo->signals->want_deq_ntf)
+    peer_s->rx_fifo->signals->want_deq_ntf = s->tx_fifo->signals->want_deq_ntf;
   return session_enqueue_notify (peer_s);
 }
 
@@ -965,11 +959,3 @@ ct_transport_init (vlib_main_t * vm)
 }
 
 VLIB_INIT_FUNCTION (ct_transport_init);
-
-/*
- * fd.io coding-style-patch-verification: ON
- *
- * Local Variables:
- * eval: (c-set-style "gnu")
- * End:
- */

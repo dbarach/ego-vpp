@@ -27,7 +27,6 @@ list(APPEND VNET_SOURCES
   devices/devices.c
   devices/netlink.c
   dev/api.c
-  dev/args.c
   dev/bus/pci.c
   dev/cli.c
   dev/config.c
@@ -75,7 +74,6 @@ list(APPEND VNET_HEADERS
   devices/devices.h
   devices/netlink.h
   dev/api.h
-  dev/args.h
   dev/bus/pci.h
   dev/counters.h
   dev/dev_funcs.h
@@ -900,8 +898,7 @@ list(APPEND VNET_SOURCES
   devices/virtio/pci.c
   devices/virtio/virtio.c
   devices/virtio/virtio_api.c
-  devices/virtio/virtio_pci_legacy.c
-  devices/virtio/virtio_pci_modern.c
+  devices/virtio/virtio_pci.c
   devices/virtio/virtio_pre_input.c
   devices/virtio/virtio_types_api.c
 )
@@ -911,8 +908,7 @@ list(APPEND VNET_HEADERS
   devices/virtio/virtio.h
   devices/virtio/virtio_buffering.h
   devices/virtio/virtio_std.h
-  devices/virtio/virtio_pci_legacy.h
-  devices/virtio/virtio_pci_modern.h
+  devices/virtio/virtio_pci.h
   devices/virtio/vhost_std.h
   devices/virtio/virtio_types_api.h
 )
@@ -934,18 +930,10 @@ list(APPEND VNET_API_FILES
 if("${CMAKE_SYSTEM_NAME}" STREQUAL "Linux")
 list(APPEND VNET_SOURCES
   dev/bus/platform.c
-  devices/tap/cli.c
-  devices/tap/tap.c
-  devices/tap/tapv2_api.c
 )
 
 list(APPEND VNET_HEADERS
   dev/bus/platform.h
-  devices/tap/tap.h
-)
-
-list(APPEND VNET_API_FILES
-  devices/tap/tapv2.api
 )
 endif()
 
@@ -1457,7 +1445,7 @@ add_vpp_library(vnet
   MULTIARCH_SOURCES ${VNET_MULTIARCH_SOURCES}
   INSTALL_HEADERS ${VNET_HEADERS}
   API_FILES ${VNET_API_FILES}
-  LINK_LIBRARIES vppinfra svm vlib
+  LINK_LIBRARIES vppinfra svm vlibapi vlibmemory vlib
   DEPENDS vpp_version_h api_headers
 )
 

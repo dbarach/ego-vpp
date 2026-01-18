@@ -1,17 +1,8 @@
 /*
+ * SPDX-License-Identifier: Apache-2.0
  * Copyright (c) 2015 Cisco and/or its affiliates.
- * Licensed under the Apache License, Version 2.0 (the "License");
- * you may not use this file except in compliance with the License.
- * You may obtain a copy of the License at:
- *
- *     http://www.apache.org/licenses/LICENSE-2.0
- *
- * Unless required by applicable law or agreed to in writing, software
- * distributed under the License is distributed on an "AS IS" BASIS,
- * WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
- * See the License for the specific language governing permissions and
- * limitations under the License.
  */
+
 #include <vnet/vnet.h>
 #include <vppinfra/vec.h>
 #include <vppinfra/error.h>
@@ -1153,6 +1144,8 @@ dpdk_config (vlib_main_t * vm, unformat_input_t * input)
   void *fmt_func;
   void *fmt_addr;
   f64 poll_interval;
+  u8 *tracepat = 0;
+  u8 *tracedir = 0;
 
   conf->device_config_index_by_pci_addr = hash_create (0, sizeof (uword));
   mhash_init (&conf->device_config_index_by_vmbus_addr, sizeof (uword),
@@ -1296,6 +1289,21 @@ dpdk_config (vlib_main_t * vm, unformat_input_t * input)
 	{
 	  no_vmbus = 1;
 	  tmp = format (0, "--no-vmbus%c", 0);
+	  vec_add1 (conf->eal_init_args, tmp);
+	}
+
+      /*
+       * this format "trace-dir %s" must come before "trace %s"
+       */
+      else if (unformat (input, "trace-dir %s", &tracedir))
+	{
+	  tmp = format (0, "--trace-dir=%s%c", (char *) tracedir, 0);
+	  vec_add1 (conf->eal_init_args, tmp);
+	}
+
+      else if (unformat (input, "trace %s", &tracepat))
+	{
+	  tmp = format (0, "--trace=%s%c", (char *) tracepat, 0);
 	  vec_add1 (conf->eal_init_args, tmp);
 	}
 

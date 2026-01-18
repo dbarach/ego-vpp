@@ -1,41 +1,9 @@
-/*
+/* SPDX-License-Identifier: Apache-2.0 OR MIT
  * Copyright (c) 2015 Cisco and/or its affiliates.
- * Licensed under the Apache License, Version 2.0 (the "License");
- * you may not use this file except in compliance with the License.
- * You may obtain a copy of the License at:
- *
- *     http://www.apache.org/licenses/LICENSE-2.0
- *
- * Unless required by applicable law or agreed to in writing, software
- * distributed under the License is distributed on an "AS IS" BASIS,
- * WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
- * See the License for the specific language governing permissions and
- * limitations under the License.
- */
-/*
- * buffer.c: allocate/free network buffers.
- *
  * Copyright (c) 2008 Eliot Dresselhaus
- *
- * Permission is hereby granted, free of charge, to any person obtaining
- * a copy of this software and associated documentation files (the
- * "Software"), to deal in the Software without restriction, including
- * without limitation the rights to use, copy, modify, merge, publish,
- * distribute, sublicense, and/or sell copies of the Software, and to
- * permit persons to whom the Software is furnished to do so, subject to
- * the following conditions:
- *
- * The above copyright notice and this permission notice shall be
- * included in all copies or substantial portions of the Software.
- *
- *  THE SOFTWARE IS PROVIDED "AS IS", WITHOUT WARRANTY OF ANY KIND,
- *  EXPRESS OR IMPLIED, INCLUDING BUT NOT LIMITED TO THE WARRANTIES OF
- *  MERCHANTABILITY, FITNESS FOR A PARTICULAR PURPOSE AND
- *  NONINFRINGEMENT. IN NO EVENT SHALL THE AUTHORS OR COPYRIGHT HOLDERS BE
- *  LIABLE FOR ANY CLAIM, DAMAGES OR OTHER LIABILITY, WHETHER IN AN ACTION
- *  OF CONTRACT, TORT OR OTHERWISE, ARISING FROM, OUT OF OR IN CONNECTION
- *  WITH THE SOFTWARE OR THE USE OR OTHER DEALINGS IN THE SOFTWARE.
  */
+
+/* buffer.c: allocate/free network buffers. */
 
 /**
  * @file
@@ -591,6 +559,7 @@ format_vlib_buffer_pool (u8 * s, va_list * va)
 {
   vlib_main_t *vm = va_arg (*va, vlib_main_t *);
   vlib_buffer_pool_t *bp = va_arg (*va, vlib_buffer_pool_t *);
+  int detail = va_arg (*va, int);
   vlib_buffer_pool_thread_t *bpt;
   u32 cached = 0;
 
@@ -609,6 +578,13 @@ format_vlib_buffer_pool (u8 * s, va_list * va)
 	      bp->data_size, bp->n_buffers, bp->n_avail, cached,
 	      bp->n_buffers - bp->n_avail - cached);
 
+  if (detail)
+    {
+      vec_foreach (bpt, bp->threads)
+	s = format (s, "\n%20s%=6d%=37s%=8u", "thread", bpt - bp->threads, "",
+		    bpt->n_cached);
+    }
+
   return s;
 }
 
@@ -616,13 +592,14 @@ u8 *
 format_vlib_buffer_pool_all (u8 *s, va_list *va)
 {
   vlib_main_t *vm = va_arg (*va, vlib_main_t *);
+  int detail = va_arg (*va, int);
   vlib_buffer_main_t *bm = vm->buffer_main;
   vlib_buffer_pool_t *bp;
 
-  s = format (s, "%U", format_vlib_buffer_pool, vm, 0);
+  s = format (s, "%U", format_vlib_buffer_pool, vm, 0, detail);
 
   vec_foreach (bp, bm->buffer_pools)
-    s = format (s, "\n%U", format_vlib_buffer_pool, vm, bp);
+    s = format (s, "\n%U", format_vlib_buffer_pool, vm, bp, detail);
 
   return s;
 }
@@ -631,13 +608,28 @@ static clib_error_t *
 show_buffers (vlib_main_t *vm, unformat_input_t *input,
 	      vlib_cli_command_t *cmd)
 {
-  vlib_cli_output (vm, "%U", format_vlib_buffer_pool_all, vm);
+  unformat_input_t _line_input, *line_input = &_line_input;
+  int detail = 0;
+
+  if (unformat_user (input, unformat_line_input, line_input))
+    {
+      while (unformat_check_input (line_input) != UNFORMAT_END_OF_INPUT)
+	{
+	  if (unformat (line_input, "detail"))
+	    detail = 1;
+	  else
+	    break;
+	}
+      unformat_free (line_input);
+    }
+
+  vlib_cli_output (vm, "%U", format_vlib_buffer_pool_all, vm, detail);
   return 0;
 }
 
 VLIB_CLI_COMMAND (show_buffers_command, static) = {
   .path = "show buffers",
-  .short_help = "Show packet buffer allocation",
+  .short_help = "show buffers [detail] - show packet buffer allocation",
   .function = show_buffers,
 };
 
@@ -757,7 +749,8 @@ vlib_buffer_main_alloc (vlib_main_t * vm)
   if (vm->buffer_main)
     return;
 
-  vm->buffer_main = bm = clib_mem_alloc (sizeof (bm[0]));
+  vm->buffer_main = bm =
+    clib_mem_alloc_aligned (sizeof (bm[0]), CLIB_CACHE_LINE_BYTES);
   clib_memset (vm->buffer_main, 0, sizeof (bm[0]));
   bm->default_data_size = VLIB_BUFFER_DEFAULT_DATA_SIZE;
 }
@@ -1020,10 +1013,3 @@ vlib_buffer_set_alloc_free_callback (
 }
 
 /** @endcond */
-/*
- * fd.io coding-style-patch-verification: ON
- *
- * Local Variables:
- * eval: (c-set-style "gnu")
- * End:
- */

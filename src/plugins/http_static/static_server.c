@@ -1,16 +1,6 @@
 /*
+ * SPDX-License-Identifier: Apache-2.0
  * Copyright (c) 2017-2022 Cisco and/or its affiliates.
- * Licensed under the Apache License, Version 2.0 (the "License");
- * you may not use this file except in compliance with the License.
- * You may obtain a copy of the License at:
- *
- *     http://www.apache.org/licenses/LICENSE-2.0
- *
- * Unless required by applicable law or agreed to in writing, software
- * distributed under the License is distributed on an "AS IS" BASIS,
- * WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
- * See the License for the specific language governing permissions and
- * limitations under the License.
  */
 
 #include <http_static/http_static.h>
@@ -953,10 +943,12 @@ hss_attach ()
 }
 
 static int
-hss_transport_needs_crypto (transport_proto_t proto)
+hss_transport_needs_crypto (session_endpoint_cfg_t *sep)
 {
-  return proto == TRANSPORT_PROTO_TLS || proto == TRANSPORT_PROTO_DTLS ||
-	 proto == TRANSPORT_PROTO_QUIC;
+  return sep->flags & SESSION_ENDPT_CFG_F_SECURE ||
+	 sep->transport_proto == TRANSPORT_PROTO_TLS ||
+	 sep->transport_proto == TRANSPORT_PROTO_DTLS ||
+	 sep->transport_proto == TRANSPORT_PROTO_QUIC;
 }
 
 static int
@@ -972,7 +964,7 @@ hss_listen (hss_listener_t *l, session_handle_t *lh)
   clib_memset (a, 0, sizeof (*a));
   a->app_index = hsm->app_index;
 
-  need_crypto = hss_transport_needs_crypto (l->sep.transport_proto);
+  need_crypto = hss_transport_needs_crypto (&l->sep);
 
   l->sep.transport_proto = TRANSPORT_PROTO_HTTP;
   clib_memcpy (&a->sep_ext, &l->sep, sizeof (l->sep));
@@ -1584,11 +1576,3 @@ hss_main_init (vlib_main_t *vm)
 }
 
 VLIB_INIT_FUNCTION (hss_main_init);
-
-/*
- * fd.io coding-style-patch-verification: ON
- *
- * Local Variables:
- * eval: (c-set-style "gnu")
- * End:
- */

@@ -1,41 +1,9 @@
-/*
+/* SPDX-License-Identifier: Apache-2.0 OR MIT
  * Copyright (c) 2016 Cisco and/or its affiliates.
- * Licensed under the Apache License, Version 2.0 (the "License");
- * you may not use this file except in compliance with the License.
- * You may obtain a copy of the License at:
- *
- *     http://www.apache.org/licenses/LICENSE-2.0
- *
- * Unless required by applicable law or agreed to in writing, software
- * distributed under the License is distributed on an "AS IS" BASIS,
- * WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
- * See the License for the specific language governing permissions and
- * limitations under the License.
- */
-/*
- * pci.c: Linux user space PCI bus management.
- *
  * Copyright (c) 2008 Eliot Dresselhaus
- *
- * Permission is hereby granted, free of charge, to any person obtaining
- * a copy of this software and associated documentation files (the
- * "Software"), to deal in the Software without restriction, including
- * without limitation the rights to use, copy, modify, merge, publish,
- * distribute, sublicense, and/or sell copies of the Software, and to
- * permit persons to whom the Software is furnished to do so, subject to
- * the following conditions:
- *
- * The above copyright notice and this permission notice shall be
- * included in all copies or substantial portions of the Software.
- *
- *  THE SOFTWARE IS PROVIDED "AS IS", WITHOUT WARRANTY OF ANY KIND,
- *  EXPRESS OR IMPLIED, INCLUDING BUT NOT LIMITED TO THE WARRANTIES OF
- *  MERCHANTABILITY, FITNESS FOR A PARTICULAR PURPOSE AND
- *  NONINFRINGEMENT. IN NO EVENT SHALL THE AUTHORS OR COPYRIGHT HOLDERS BE
- *  LIABLE FOR ANY CLAIM, DAMAGES OR OTHER LIABILITY, WHETHER IN AN ACTION
- *  OF CONTRACT, TORT OR OTHERWISE, ARISING FROM, OUT OF OR IN CONNECTION
- *  WITH THE SOFTWARE OR THE USE OR OTHER DEALINGS IN THE SOFTWARE.
  */
+
+/* pci.c: Linux user space PCI bus management. */
 
 #include <vppinfra/linux/sysfs.h>
 #include <vppinfra/bitmap.h>
@@ -129,6 +97,7 @@ typedef struct
   /* Interrupt handlers */
   linux_pci_irq_t intx_irq;
   linux_pci_irq_t *msix_irqs;
+  linux_pci_irq_t *msi_irqs;
 
   /* private data */
   uword private_data;
@@ -194,6 +163,24 @@ vlib_pci_get_num_msix_interrupts (vlib_main_t * vm, vlib_pci_dev_handle_t h)
 
       ii.argsz = sizeof (struct vfio_irq_info);
       ii.index = VFIO_PCI_MSIX_IRQ_INDEX;
+      if (ioctl (d->fd, VFIO_DEVICE_GET_IRQ_INFO, &ii) < 0)
+	return 0;
+      return ii.count;
+    }
+  return 0;
+}
+
+u32
+vlib_pci_get_num_msi_interrupts (vlib_main_t *vm, vlib_pci_dev_handle_t h)
+{
+  linux_pci_device_t *d = linux_pci_get_device (h);
+
+  if (d->type == LINUX_PCI_DEVICE_TYPE_VFIO)
+    {
+      struct vfio_irq_info ii = { 0 };
+
+      ii.argsz = sizeof (struct vfio_irq_info);
+      ii.index = VFIO_PCI_MSI_IRQ_INDEX;
       if (ioctl (d->fd, VFIO_DEVICE_GET_IRQ_INFO, &ii) < 0)
 	return 0;
       return ii.count;
@@ -733,6 +720,25 @@ linux_pci_vfio_msix_read_ready (clib_file_t * uf)
 }
 
 static clib_error_t *
+linux_pci_vfio_msi_read_ready (clib_file_t *uf)
+{
+  vlib_main_t *vm = vlib_get_main ();
+  int __attribute__ ((unused)) rv;
+  vlib_pci_dev_handle_t h = uf->private_data >> 16;
+  u16 line = uf->private_data & 0xffff;
+  linux_pci_device_t *p = linux_pci_get_device (h);
+  linux_pci_irq_t *irq = vec_elt_at_index (p->msi_irqs, line);
+
+  u64 icount;
+  rv = read (uf->file_descriptor, &icount, sizeof (icount));
+
+  if (irq->msix_handler)
+    irq->msix_handler (vm, h, line);
+
+  return /* no error */ 0;
+}
+
+static clib_error_t *
 linux_pci_vfio_intx_read_ready (clib_file_t * uf)
 {
   vlib_main_t *vm = vlib_get_main ();
@@ -776,7 +782,6 @@ add_device_uio (vlib_main_t * vm, linux_pci_device_t * p,
 
   p->config_fd = open ((char *) s, O_RDWR);
   p->config_offset = 0;
-  vec_reset_length (s);
 
   if (p->config_fd == -1)
     {
@@ -784,8 +789,9 @@ add_device_uio (vlib_main_t * vm, linux_pci_device_t * p,
       goto error;
     }
 
-  s = format (0, "%s/%U/uio%c", sysfs_pci_dev_path,
-	      format_vlib_pci_addr, &di->addr, 0);
+  vec_reset_length (s);
+  s = format (s, "%s/%U/uio%c", sysfs_pci_dev_path, format_vlib_pci_addr,
+	      &di->addr, 0);
   foreach_directory_file ((char *) s, scan_uio_dir, p,	/* scan_dirs */
 			  1);
   vec_reset_length (s);
@@ -970,6 +976,88 @@ vlib_pci_unregister_msix_handler (vlib_main_t *vm, vlib_pci_dev_handle_t h,
 }
 
 clib_error_t *
+vlib_pci_register_msi_handler (vlib_main_t *vm, vlib_pci_dev_handle_t h,
+			       u32 start, u32 count,
+			       pci_msix_handler_function_t *msi_handler)
+{
+  clib_error_t *err = 0;
+  linux_pci_device_t *p = linux_pci_get_device (h);
+  u32 i;
+
+  if (p->type != LINUX_PCI_DEVICE_TYPE_VFIO)
+    return clib_error_return (0, "vfio driver is needed for MSI interrupt "
+				 "support");
+
+  vec_validate_init_empty (p->msi_irqs, start + count - 1,
+			   (linux_pci_irq_t){ .fd = -1 });
+
+  for (i = start; i < start + count; i++)
+    {
+      clib_file_t t = { 0 };
+      linux_pci_irq_t *irq = vec_elt_at_index (p->msi_irqs, i);
+      ASSERT (irq->fd == -1);
+
+      irq->fd = eventfd (0, EFD_NONBLOCK);
+      if (irq->fd == -1)
+	{
+	  err = clib_error_return_unix (0, "eventfd");
+	  goto error;
+	}
+
+      t.read_function = linux_pci_vfio_msi_read_ready;
+      t.file_descriptor = irq->fd;
+      t.error_function = linux_pci_vfio_error_ready;
+      t.private_data = p->handle << 16 | i;
+      t.description =
+	format (0, "PCI %U MSI #%u", format_vlib_pci_addr, &p->addr, i);
+      irq->clib_file_index = clib_file_add (&file_main, &t);
+      irq->msix_handler = msi_handler;
+    }
+
+  return 0;
+
+error:
+  while (i-- > start)
+    {
+      linux_pci_irq_t *irq = vec_elt_at_index (p->msi_irqs, i);
+      if (irq->fd != -1)
+	{
+	  clib_file_del_by_index (&file_main, irq->clib_file_index);
+	  close (irq->fd);
+	  irq->fd = -1;
+	}
+    }
+  return err;
+}
+
+clib_error_t *
+vlib_pci_unregister_msi_handler (vlib_main_t *vm, vlib_pci_dev_handle_t h,
+				 u32 start, u32 count)
+{
+  clib_error_t *err = 0;
+  linux_pci_device_t *p = linux_pci_get_device (h);
+  u32 i;
+
+  if (p->type != LINUX_PCI_DEVICE_TYPE_VFIO)
+    return clib_error_return (0, "vfio driver is needed for MSI interrupt "
+				 "support");
+
+  for (i = start; i < start + count; i++)
+    {
+      linux_pci_irq_t *irq = vec_elt_at_index (p->msi_irqs, i);
+
+      if (irq->fd != -1)
+	{
+	  clib_file_del_by_index (&file_main, irq->clib_file_index);
+	  close (irq->fd);
+	  irq->fd = -1;
+	}
+    }
+
+  return err;
+}
+
+clib_error_t *
 vlib_pci_enable_msix_irq (vlib_main_t * vm, vlib_pci_dev_handle_t h,
 			  u16 start, u16 count)
 {
@@ -1017,6 +1105,46 @@ vlib_pci_disable_msix_irq (vlib_main_t * vm, vlib_pci_dev_handle_t h,
     fds[i] = -1;
 
   return vfio_set_irqs (vm, p, VFIO_PCI_MSIX_IRQ_INDEX, start, count,
+			VFIO_IRQ_SET_ACTION_TRIGGER, fds);
+}
+
+clib_error_t *
+vlib_pci_enable_msi_irq (vlib_main_t *vm, vlib_pci_dev_handle_t h, u16 start,
+			 u16 count)
+{
+  linux_pci_device_t *p = linux_pci_get_device (h);
+  int fds[count];
+  int i;
+
+  if (p->type != LINUX_PCI_DEVICE_TYPE_VFIO)
+    return clib_error_return (0, "vfio driver is needed for MSI interrupt "
+				 "support");
+
+  for (i = 0; i < count; i++)
+    {
+      linux_pci_irq_t *irq = vec_elt_at_index (p->msi_irqs, start + i);
+      fds[i] = irq->fd;
+    }
+
+  return vfio_set_irqs (vm, p, VFIO_PCI_MSI_IRQ_INDEX, start, count,
+			VFIO_IRQ_SET_ACTION_TRIGGER, fds);
+}
+
+clib_error_t *
+vlib_pci_disable_msi_irq (vlib_main_t *vm, vlib_pci_dev_handle_t h, u16 start,
+			  u16 count)
+{
+  linux_pci_device_t *p = linux_pci_get_device (h);
+  int i, fds[count];
+
+  if (p->type != LINUX_PCI_DEVICE_TYPE_VFIO)
+    return clib_error_return (0, "vfio driver is needed for MSI interrupt "
+				 "support");
+
+  for (i = start; i < start + count; i++)
+    fds[i] = -1;
+
+  return vfio_set_irqs (vm, p, VFIO_PCI_MSI_IRQ_INDEX, start, count,
 			VFIO_IRQ_SET_ACTION_TRIGGER, fds);
 }
 
@@ -1429,6 +1557,22 @@ vlib_pci_device_close (vlib_main_t * vm, vlib_pci_dev_handle_t h)
 	      close (irq->fd);
 	    }
 	  vec_free (p->msix_irqs);
+	}
+
+      /* close MSI irqs */
+      if (vec_len (p->msi_irqs))
+	{
+	  err = vfio_set_irqs (vm, p, VFIO_PCI_MSI_IRQ_INDEX, 0, 0,
+			       VFIO_IRQ_SET_ACTION_TRIGGER, 0);
+	  clib_error_free (err);
+	  vec_foreach (irq, p->msi_irqs)
+	    {
+	      if (irq->fd == -1)
+		continue;
+	      clib_file_del_by_index (&file_main, irq->clib_file_index);
+	      close (irq->fd);
+	    }
+	  vec_free (p->msi_irqs);
 	}
     }
 

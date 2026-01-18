@@ -1,16 +1,6 @@
 /*
+ * SPDX-License-Identifier: Apache-2.0
  * Copyright (c) 2019 Cisco and/or its affiliates.
- * Licensed under the Apache License, Version 2.0 (the "License");
- * you may not use this file except in compliance with the License.
- * You may obtain a copy of the License at:
- *
- *     http://www.apache.org/licenses/LICENSE-2.0
- *
- * Unless required by applicable law or agreed to in writing, software
- * distributed under the License is distributed on an "AS IS" BASIS,
- * WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
- * See the License for the specific language governing permissions and
- * limitations under the License.
  */
 
 #include <vnet/session/application.h>
@@ -174,10 +164,7 @@ app_worker_alloc_session_fifos (segment_manager_t * sm, session_t * s)
 						 &rx_fifo, &tx_fifo)))
     return rv;
 
-  rx_fifo->shr->master_session_index = s->session_index;
   rx_fifo->vpp_sh = s->handle;
-
-  tx_fifo->shr->master_session_index = s->session_index;
   tx_fifo->vpp_sh = s->handle;
 
   s->rx_fifo = rx_fifo;
@@ -209,10 +196,7 @@ app_worker_alloc_wrk_cl_session (app_worker_t *app_wrk, session_t *ls)
   segment_manager_alloc_session_fifos (sm, s->thread_index, &rx_fifo,
 				       &tx_fifo);
 
-  rx_fifo->shr->master_session_index = s->session_index;
   rx_fifo->vpp_sh = s->handle;
-
-  tx_fifo->shr->master_session_index = s->session_index;
   tx_fifo->vpp_sh = s->handle;
 
   s->rx_fifo = rx_fifo;
@@ -425,10 +409,7 @@ app_worker_alloc_session_fifos_ct (segment_manager_t *sm, session_t *s)
 						    &rx_fifo, &tx_fifo)))
     return rv;
 
-  rx_fifo->shr->master_session_index = s->session_index;
   rx_fifo->vpp_sh = s->handle;
-
-  tx_fifo->shr->master_session_index = s->session_index;
   tx_fifo->vpp_sh = s->handle;
 
   s->rx_fifo = rx_fifo;
@@ -1019,11 +1000,3 @@ app_worker_format_connects (app_worker_t * app_wrk, int verbose)
   sm = segment_manager_get (app_wrk->connects_seg_manager);
   segment_manager_format_sessions (sm, verbose);
 }
-
-/*
- * fd.io coding-style-patch-verification: ON
- *
- * Local Variables:
- * eval: (c-set-style "gnu")
- * End:
- */

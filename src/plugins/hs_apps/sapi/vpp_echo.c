@@ -1,16 +1,6 @@
 /*
+ * SPDX-License-Identifier: Apache-2.0
  * Copyright (c) 2019 Cisco and/or its affiliates.
- * Licensed under the Apache License, Version 2.0 (the "License");
- * you may not use this file except in compliance with the License.
- * You may obtain a copy of the License at:
- *
- *     http://www.apache.org/licenses/LICENSE-2.0
- *
- * Unless required by applicable law or agreed to in writing, software
- * distributed under the License is distributed on an "AS IS" BASIS,
- * WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
- * See the License for the specific language governing permissions and
- * limitations under the License.
  */
 
 #include <stdio.h>
@@ -568,6 +558,7 @@ session_accepted_handler (session_accepted_msg_t * mp)
 
   /* Allocate local session and set it up */
   session = echo_session_new (em);
+  session->vpp_session_handle = mp->handle;
 
   if (echo_attach_session (mp->segment_handle, mp->server_rx_fifo,
 			   mp->server_tx_fifo, mp->vpp_event_queue_address,
@@ -577,8 +568,6 @@ session_accepted_handler (session_accepted_msg_t * mp)
 		 "accepted wait_for_segment_allocation errored");
       return;
     }
-
-  session->vpp_session_handle = mp->handle;
 
   /* session->transport needed by app_send_dgram */
   clib_memcpy_fast (&session->transport.rmt_ip, &mp->rmt.ip,
@@ -604,6 +593,7 @@ session_accepted_handler (session_accepted_msg_t * mp)
   rmp = (session_accepted_reply_msg_t *) app_evt->evt->data;
   rmp->handle = mp->handle;
   rmp->context = mp->context;
+  rmp->app_session_index = session->session_index;
   app_send_ctrl_evt_to_vpp (session->vpp_evt_q, app_evt);
   em->proto_cb_vft->accepted_cb (mp, session);
 }
@@ -627,6 +617,7 @@ session_connected_handler (session_connected_msg_t * mp)
     }
 
   session = echo_session_new (em);
+  session->vpp_session_handle = mp->handle;
 
   if (echo_attach_session (mp->segment_handle, mp->server_rx_fifo,
 			   mp->server_tx_fifo, mp->vpp_event_queue_address,
@@ -637,7 +628,6 @@ session_connected_handler (session_connected_msg_t * mp)
       return;
     }
 
-  session->vpp_session_handle = mp->handle;
   session->start = clib_time_now (&em->clib_time);
   session->listener_index = listener_index;
   /* session->transport needed by app_send_dgram */
@@ -1508,11 +1498,3 @@ exit_on_error:
   vec_free (em->available_proto_cb_vft);
   exit (em->has_failed);
 }
-
-/*
- * fd.io coding-style-patch-verification: ON
- *
- * Local Variables:
- * eval: (c-set-style "gnu")
- * End:
- */

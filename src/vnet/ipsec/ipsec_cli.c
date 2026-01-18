@@ -1,19 +1,8 @@
-/*
- * decap.c : IPSec tunnel support
- *
+/* SPDX-License-Identifier: Apache-2.0
  * Copyright (c) 2015 Cisco and/or its affiliates.
- * Licensed under the Apache License, Version 2.0 (the "License");
- * you may not use this file except in compliance with the License.
- * You may obtain a copy of the License at:
- *
- *     http://www.apache.org/licenses/LICENSE-2.0
- *
- * Unless required by applicable law or agreed to in writing, software
- * distributed under the License is distributed on an "AS IS" BASIS,
- * WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
- * See the License for the specific language governing permissions and
- * limitations under the License.
  */
+
+/* decap.c : IPSec tunnel support */
 
 #include <vnet/vnet.h>
 #include <vnet/api_errno.h>
@@ -45,14 +34,15 @@ set_interface_spd_command_fn (vlib_main_t * vm,
       (line_input, "%U %u", unformat_vnet_sw_interface, im->vnet_main,
        &sw_if_index, &spd_id))
     ;
-  else if (unformat (line_input, "del"))
-    is_add = 0;
   else
     {
       error = clib_error_return (0, "parse error: '%U'",
 				 format_unformat_error, line_input);
       goto done;
     }
+
+  if (unformat (line_input, "del"))
+    is_add = 0;
 
   err = ipsec_set_interface_spd (vm, sw_if_index, spd_id, is_add);
   switch (err)
@@ -987,15 +977,7 @@ set_async_mode_command_fn (vlib_main_t * vm, unformat_input_t * input,
 }
 
 VLIB_CLI_COMMAND (set_async_mode_command, static) = {
-    .path = "set ipsec async mode",
-    .short_help = "set ipsec async mode on|off",
-    .function = set_async_mode_command_fn,
+  .path = "set ipsec async mode",
+  .short_help = "set ipsec async mode on|off",
+  .function = set_async_mode_command_fn,
 };
-
-/*
- * fd.io coding-style-patch-verification: ON
- *
- * Local Variables:
- * eval: (c-set-style "gnu")
- * End:
- */

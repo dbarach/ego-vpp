@@ -1,16 +1,6 @@
 /*
+ * SPDX-License-Identifier: Apache-2.0
  * Copyright (c) 2017-2019 Cisco and/or its affiliates.
- * Licensed under the Apache License, Version 2.0 (the "License");
- * you may not use this file except in compliance with the License.
- * You may obtain a copy of the License at:
- *
- *     http://www.apache.org/licenses/LICENSE-2.0
- *
- * Unless required by applicable law or agreed to in writing, software
- * distributed under the License is distributed on an "AS IS" BASIS,
- * WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
- * See the License for the specific language governing permissions and
- * limitations under the License.
  */
 
 #ifndef SRC_VNET_SESSION_TRANSPORT_H_
@@ -124,8 +114,6 @@ typedef struct _transport_proto_vft
 					   transport_endpoint_t *tep_lcl);
   int (*attribute) (u32 conn_index, clib_thread_index_t thread_index,
 		    u8 is_get, transport_endpt_attr_t *attr);
-  tls_alpn_proto_t (*get_alpn_selected) (u32 conn_index,
-					 clib_thread_index_t thread_index);
 
   /*
    * Properties
@@ -164,9 +152,6 @@ void transport_get_listener_endpoint (transport_proto_t tp, u32 conn_index,
 int transport_connection_attribute (transport_proto_t tp, u32 conn_index,
 				    u8 thread_index, u8 is_get,
 				    transport_endpt_attr_t *attr);
-tls_alpn_proto_t
-transport_get_alpn_selected (transport_proto_t tp, u32 conn_index,
-			     clib_thread_index_t thread_index);
 
 static inline transport_connection_t *
 transport_get_connection (transport_proto_t tp, u32 conn_index,
@@ -389,11 +374,3 @@ void transport_update_pacer_time (clib_thread_index_t thread_index,
 				  clib_time_type_t now);
 
 #endif /* SRC_VNET_SESSION_TRANSPORT_H_ */
-
-/*
- * fd.io coding-style-patch-verification: ON
- *
- * Local Variables:
- * eval: (c-set-style "gnu")
- * End:
- */

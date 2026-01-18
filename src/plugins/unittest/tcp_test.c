@@ -1,17 +1,8 @@
 /*
+ * SPDX-License-Identifier: Apache-2.0
  * Copyright (c) 2017-2019 Cisco and/or its affiliates.
- * Licensed under the Apache License, Version 2.0 (the "License");
- * you may not use this file except in compliance with the License.
- * You may obtain a copy of the License at:
- *
- *     http://www.apache.org/licenses/LICENSE-2.0
- *
- * Unless required by applicable law or agreed to in writing, software
- * distributed under the License is distributed on an "AS IS" BASIS,
- * WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
- * See the License for the specific language governing permissions and
- * limitations under the License.
  */
+
 #include <vnet/tcp/tcp.h>
 #include <vnet/tcp/tcp_inlines.h>
 
@@ -1223,7 +1214,7 @@ tcp_test_delivery (vlib_main_t * vm, unformat_input_t * input)
   min_seqs[3] = snd_una + 2 * burst + 10;
   min_seqs[4] = snd_una + 2 * burst + 20;
 
-  root = bt->sample_lookup.nodes + bt->sample_lookup.root;
+  root = bt->sample_lookup.nodes + rb_tree_root (&bt->sample_lookup);
   bts = bt->samples + bt->head;
   for (i = 0; i < vec_len (min_seqs); i++)
     {
@@ -1599,17 +1590,8 @@ done:
   return 0;
 }
 
-VLIB_CLI_COMMAND (tcp_test_command, static) =
-{
+VLIB_CLI_COMMAND (tcp_test_command, static) = {
   .path = "test tcp",
   .short_help = "internal tcp unit tests",
   .function = tcp_test,
 };
-
-/*
- * fd.io coding-style-patch-verification: ON
- *
- * Local Variables:
- * eval: (c-set-style "gnu")
- * End:
- */

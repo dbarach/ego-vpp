@@ -1,17 +1,8 @@
 /*
+ * SPDX-License-Identifier: Apache-2.0
  * Copyright (c) 2017-2019 Cisco and/or its affiliates.
- * Licensed under the Apache License, Version 2.0 (the "License");
- * you may not use this file except in compliance with the License.
- * You may obtain a copy of the License at:
- *
- *     http://www.apache.org/licenses/LICENSE-2.0
- *
- * Unless required by applicable law or agreed to in writing, software
- * distributed under the License is distributed on an "AS IS" BASIS,
- * WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
- * See the License for the specific language governing permissions and
- * limitations under the License.
  */
+
 /**
  * @file
  * @brief Session and session manager
@@ -592,9 +583,9 @@ session_notify_subscribers (u32 app_index, session_t *s, svm_fifo_t *f,
     return -1;
 
   is_cl = s->thread_index != vlib_get_thread_index ();
-  for (i = 0; i < f->shr->n_subscribers; i++)
+  for (i = 0; i < f->signals->n_subscribers; i++)
     {
-      app_wrk = application_get_worker (app, f->shr->subscribers[i]);
+      app_wrk = application_get_worker (app, f->signals->subscribers[i]);
       if (!app_wrk)
 	continue;
       session_program_io_event (app_wrk, s, evt_type, is_cl ? 1 : 0);
@@ -1269,7 +1260,9 @@ session_open_cl (session_endpoint_cfg_t *rmt, session_handle_t *rsh)
   sh = session_handle (s);
   *rsh = sh;
 
-  session_lookup_add_connection (tc, sh);
+  if (!(tc->flags & TRANSPORT_CONNECTION_F_NO_LOOKUP))
+    session_lookup_add_connection (tc, sh);
+
   return app_worker_connect_notify (app_wrk, s, SESSION_E_NONE, rmt->opaque);
 }
 
@@ -1314,23 +1307,12 @@ session_open_vc (session_endpoint_cfg_t *rmt, session_handle_t *rsh)
   return 0;
 }
 
-int
-session_open_app (session_endpoint_cfg_t *rmt, session_handle_t *rsh)
-{
-  transport_endpoint_cfg_t *tep_cfg = session_endpoint_to_transport_cfg (rmt);
-
-  /* Not supported for now */
-  *rsh = SESSION_INVALID_HANDLE;
-  return transport_connect (rmt->transport_proto, tep_cfg);
-}
-
 typedef int (*session_open_service_fn) (session_endpoint_cfg_t *,
 					session_handle_t *);
 
 static session_open_service_fn session_open_srv_fns[TRANSPORT_N_SERVICES] = {
   session_open_vc,
   session_open_cl,
-  session_open_app,
 };
 
 /**
@@ -1877,7 +1859,7 @@ int
 session_transport_attribute (session_t *s, u8 is_get,
 			     transport_endpt_attr_t *attr)
 {
-  if (s->session_state < SESSION_STATE_READY)
+  if (!is_get && s->session_state < SESSION_STATE_READY)
     return -1;
 
   return transport_connection_attribute (session_get_transport_proto (s),
@@ -2386,11 +2368,3 @@ session_config_fn (vlib_main_t * vm, unformat_input_t * input)
 }
 
 VLIB_CONFIG_FUNCTION (session_config_fn, "session");
-
-/*
- * fd.io coding-style-patch-verification: ON
- *
- * Local Variables:
- * eval: (c-set-style "gnu")
- * End:
- */

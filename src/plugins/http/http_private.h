@@ -58,9 +58,9 @@ STATIC_ASSERT (sizeof (http_conn_handle_t) == sizeof (u32), "must fit in u32");
   _ (LISTEN, "LISTEN")                                                        \
   _ (CONNECTING, "CONNECTING")                                                \
   _ (ESTABLISHED, "ESTABLISHED")                                              \
+  _ (HALF_CLOSED, "HALF-CLOSED")                                              \
   _ (TRANSPORT_CLOSED, "TRANSPORT-CLOSED")                                    \
   _ (APP_CLOSED, "APP-CLOSED")                                                \
-  _ (HALF_CLOSED, "HALF-CLOSED")                                              \
   _ (CLOSED, "CLOSED")
 
 typedef enum http_conn_state_
@@ -492,11 +492,18 @@ int http_connect_transport_stream (u32 parent_index,
 void http_reset_transport_stream (http_conn_t *stream, u64 error_code);
 
 /**
- * Close stream for sending.
+ * Close stream.
  *
  * @param stream Stream ctx.
  */
 void http_close_transport_stream (http_conn_t *stream);
+
+/**
+ * Close stream for sending.
+ *
+ * @param stream Stream ctx.
+ */
+void http_half_close_transport_stream (http_conn_t *stream);
 
 /**
  * Change state of given HTTP request.
@@ -846,6 +853,17 @@ http_io_ts_after_read (http_conn_t *hc, u8 clear_evt)
     {
       if (svm_fifo_max_dequeue_cons (ts->rx_fifo))
 	session_program_rx_io_evt (hc->hc_tc_session_handle);
+    }
+}
+
+always_inline void
+http_io_ts_program_rx_evt (http_conn_t *hc, u32 n_last_deq)
+{
+  session_t *ts = session_get_from_handle (hc->hc_tc_session_handle);
+  if (svm_fifo_needs_deq_ntf (ts->rx_fifo, n_last_deq))
+    {
+      svm_fifo_clear_deq_ntf (ts->rx_fifo);
+      session_program_transport_io_evt (ts->handle, SESSION_IO_EVT_RX);
     }
 }
 

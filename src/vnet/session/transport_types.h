@@ -1,16 +1,6 @@
 /*
+ * SPDX-License-Identifier: Apache-2.0
  * Copyright (c) 2016-2019 Cisco and/or its affiliates.
- * Licensed under the Apache License, Version 2.0 (the "License");
- * you may not use this file except in compliance with the License.
- * You may obtain a copy of the License at:
- *
- *     http://www.apache.org/licenses/LICENSE-2.0
- *
- * Unless required by applicable law or agreed to in writing, software
- * distributed under the License is distributed on an "AS IS" BASIS,
- * WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
- * See the License for the specific language governing permissions and
- * limitations under the License.
  */
 
 #ifndef VNET_VNET_URI_TRANSPORT_TYPES_H_
@@ -34,9 +24,8 @@ typedef enum transport_dequeue_type_
 
 typedef enum transport_service_type_
 {
-  TRANSPORT_SERVICE_VC,		/**< virtual circuit service */
-  TRANSPORT_SERVICE_CL,		/**< connectionless service */
-  TRANSPORT_SERVICE_APP,	/**< app transport service */
+  TRANSPORT_SERVICE_VC, /**< virtual circuit service */
+  TRANSPORT_SERVICE_CL, /**< connectionless service */
   TRANSPORT_N_SERVICES
 } transport_service_type_t;
 
@@ -256,31 +245,6 @@ typedef enum transport_endpt_attr_flag_
 #undef _
 } __clib_packed transport_endpt_attr_flag_t;
 
-#define foreach_transport_attr_fields                                         \
-  _ (u64, next_output_node, NEXT_OUTPUT_NODE)                                 \
-  _ (u16, mss, MSS)                                                           \
-  _ (u8, flags, FLAGS)                                                        \
-  _ (u8, cc_algo, CC_ALGO)                                                    \
-  _ (transport_endpoint_t, ext_endpt, EXT_ENDPT)
-
-typedef enum transport_endpt_attr_type_
-{
-#define _(type, name, str) TRANSPORT_ENDPT_ATTR_##str,
-  foreach_transport_attr_fields
-#undef _
-} __clib_packed transport_endpt_attr_type_t;
-
-typedef struct transport_endpt_attr_
-{
-  transport_endpt_attr_type_t type;
-  union
-  {
-#define _(type, name, str) type name;
-    foreach_transport_attr_fields
-#undef _
-  };
-} transport_endpt_attr_t;
-
 typedef enum transport_endpt_ext_cfg_type_
 {
   TRANSPORT_ENDPT_EXT_CFG_NONE,
@@ -384,6 +348,11 @@ typedef struct transport_endpt_crypto_cfg_
   u8 hostname[256];	       /**< full domain len is 255 as per rfc 3986 */
 } transport_endpt_crypto_cfg_t;
 
+typedef struct tls_cert_
+{
+  void *cert;
+} tls_cert_t;
+
 typedef struct transport_endpt_ext_cfg_
 {
   u16 type;
@@ -412,6 +381,35 @@ typedef struct transport_endpt_ext_cfgs_
     .len = 0, .tail_offset = 0, .data = 0,                                    \
   }
 
+#define foreach_transport_attr_fields                                         \
+  _ (u64, next_output_node, NEXT_OUTPUT_NODE)                                 \
+  _ (u16, mss, MSS)                                                           \
+  _ (u8, flags, FLAGS)                                                        \
+  _ (u8, cc_algo, CC_ALGO)                                                    \
+  _ (transport_endpoint_t, ext_endpt, EXT_ENDPT)                              \
+  _ (tls_cert_t, tls_peer_cert, TLS_PEER_CERT)                                \
+  _ (tls_alpn_proto_t, tls_alpn, TLS_ALPN)                                    \
+  _ (u64, next_transport, NEXT_TRANSPORT)                                     \
+  _ (u64, app_proto_err_code, APP_PROTO_ERR_CODE)
+
+typedef enum transport_endpt_attr_type_
+{
+#define _(type, name, str) TRANSPORT_ENDPT_ATTR_##str,
+  foreach_transport_attr_fields
+#undef _
+} __clib_packed transport_endpt_attr_type_t;
+
+typedef struct transport_endpt_attr_
+{
+  transport_endpt_attr_type_t type;
+  union
+  {
+#define _(type, name, str) type name;
+    foreach_transport_attr_fields
+#undef _
+  };
+} transport_endpt_attr_t;
+
 typedef clib_bihash_24_8_t transport_endpoint_table_t;
 
 #define ENDPOINT_INVALID_INDEX ((u32)~0)
@@ -433,11 +431,3 @@ transport_service_type_t transport_protocol_service_type (transport_proto_t);
 transport_tx_fn_type_t transport_protocol_tx_fn_type (transport_proto_t tp);
 
 #endif /* VNET_VNET_URI_TRANSPORT_TYPES_H_ */
-
-/*
- * fd.io coding-style-patch-verification: ON
- *
- * Local Variables:
- * eval: (c-set-style "gnu")
- * End:
- */

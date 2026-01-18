@@ -1,17 +1,8 @@
 /*
+ * SPDX-License-Identifier: Apache-2.0
  * Copyright (c) 2019 Cisco and/or its affiliates.
- * Licensed under the Apache License, Version 2.0 (the "License");
- * you may not use this file except in compliance with the License.
- * You may obtain a copy of the License at:
- *
- *     http://www.apache.org/licenses/LICENSE-2.0
- *
- * Unless required by applicable law or agreed to in writing, software
- * distributed under the License is distributed on an "AS IS" BASIS,
- * WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
- * See the License for the specific language governing permissions and
- * limitations under the License.
  */
+
 /*
  * Algorithm from:
  * Cormen, T. H., Leiserson, C. E., Rivest, R. L., & Stein, C. (2009).
@@ -38,7 +29,7 @@ rb_tree_rotate_left (rb_tree_t * rt, rb_node_t * x)
   xp = rb_node_parent (rt, x);
   y->parent = x->parent;
   if (x->parent == RBTREE_TNIL_INDEX)
-    rt->root = rb_node_index (rt, y);
+    rb_tree_root (rt) = rb_node_index (rt, y);
   else if (xp->left == xi)
     xp->left = yi;
   else
@@ -65,7 +56,7 @@ rb_tree_rotate_right (rb_tree_t * rt, rb_node_t * y)
   yp = rb_node_parent (rt, y);
   x->parent = y->parent;
   if (y->parent == RBTREE_TNIL_INDEX)
-    rt->root = rb_node_index (rt, x);
+    rb_tree_root (rt) = rb_node_index (rt, x);
   else if (yp->right == yi)
     yp->right = xi;
   else
@@ -134,13 +125,13 @@ rb_tree_fixup_inline (rb_tree_t * rt, rb_node_t * y, rb_node_t * z)
 	    }
 	}
     }
-  rb_node (rt, rt->root)->color = RBTREE_BLACK;
+  rb_node (rt, rb_tree_root (rt))->color = RBTREE_BLACK;
 }
 
 static void
 rb_tree_insert (rb_tree_t * rt, rb_node_t * z)
 {
-  rb_node_index_t yi = 0, xi = rt->root;
+  rb_node_index_t yi = 0, xi = rb_tree_root (rt);
   rb_node_t *y, *x;
 
   y = rb_node (rt, RBTREE_TNIL_INDEX);
@@ -156,7 +147,7 @@ rb_tree_insert (rb_tree_t * rt, rb_node_t * z)
   yi = rb_node_index (rt, y);
   z->parent = yi;
   if (yi == RBTREE_TNIL_INDEX)
-    rt->root = rb_node_index (rt, z);
+    rb_tree_root (rt) = rb_node_index (rt, z);
   else if (z->key < y->key)
     y->left = rb_node_index (rt, z);
   else
@@ -194,7 +185,7 @@ rb_tree_add2 (rb_tree_t * rt, u32 key, uword opaque)
 __clib_export rb_node_index_t
 rb_tree_add_custom (rb_tree_t * rt, u32 key, uword opaque, rb_tree_lt_fn ltfn)
 {
-  rb_node_index_t yi = 0, xi = rt->root;
+  rb_node_index_t yi = 0, xi = rb_tree_root (rt);
   rb_node_t *z, *y, *x;
 
   pool_get_zero (rt->nodes, z);
@@ -216,7 +207,7 @@ rb_tree_add_custom (rb_tree_t * rt, u32 key, uword opaque, rb_tree_lt_fn ltfn)
   yi = rb_node_index (rt, y);
   z->parent = yi;
   if (yi == RBTREE_TNIL_INDEX)
-    rt->root = rb_node_index (rt, z);
+    rb_tree_root (rt) = rb_node_index (rt, z);
   else if (ltfn (z->key, y->key))
     y->left = rb_node_index (rt, z);
   else
@@ -307,7 +298,7 @@ rb_tree_transplant (rb_tree_t * rt, rb_node_t * u, rb_node_t * v)
 
   up = rb_node_parent (rt, u);
   if (u->parent == RBTREE_TNIL_INDEX)
-    rt->root = rb_node_index (rt, v);
+    rb_tree_root (rt) = rb_node_index (rt, v);
   else if (rb_node_index (rt, u) == up->left)
     up->left = rb_node_index (rt, v);
   else
@@ -363,7 +354,7 @@ rb_tree_del_node_internal (rb_tree_t * rt, rb_node_t * z)
   /* Tree fixup needed */
 
   xi = rb_node_index (rt, x);
-  while (xi != rt->root && x->color == RBTREE_BLACK)
+  while (xi != rb_tree_root (rt) && x->color == RBTREE_BLACK)
     {
       xp = rb_node_parent (rt, x);
       if (xi == xp->left)
@@ -398,7 +389,7 @@ rb_tree_del_node_internal (rb_tree_t * rt, rb_node_t * z)
 	      xp->color = RBTREE_BLACK;
 	      wr->color = RBTREE_BLACK;
 	      rb_tree_rotate_left (rt, xp);
-	      x = rb_node (rt, rt->root);
+	      x = rb_node (rt, rb_tree_root (rt));
 	    }
 	}
       else
@@ -433,7 +424,7 @@ rb_tree_del_node_internal (rb_tree_t * rt, rb_node_t * z)
 	      xp->color = RBTREE_BLACK;
 	      wl->color = RBTREE_BLACK;
 	      rb_tree_rotate_right (rt, xp);
-	      x = rb_node (rt, rt->root);
+	      x = rb_node (rt, rb_tree_root (rt));
 	    }
 	}
       xi = rb_node_index (rt, x);
@@ -452,7 +443,7 @@ __clib_export void
 rb_tree_del (rb_tree_t * rt, u32 key)
 {
   rb_node_t *n;
-  n = rb_tree_search_subtree (rt, rb_node (rt, rt->root), key);
+  n = rb_tree_search_subtree (rt, rb_node (rt, rb_tree_root (rt)), key);
   if (rb_node_index (rt, n) != RBTREE_TNIL_INDEX)
     rb_tree_del_node (rt, n);
 }
@@ -461,7 +452,8 @@ __clib_export void
 rb_tree_del_custom (rb_tree_t * rt, u32 key, rb_tree_lt_fn ltfn)
 {
   rb_node_t *n;
-  n = rb_tree_search_subtree_custom (rt, rb_node (rt, rt->root), key, ltfn);
+  n = rb_tree_search_subtree_custom (rt, rb_node (rt, rb_tree_root (rt)), key,
+				     ltfn);
   if (rb_node_index (rt, n) != RBTREE_TNIL_INDEX)
     rb_tree_del_node (rt, n);
 }
@@ -476,7 +468,6 @@ __clib_export void
 rb_tree_free_nodes (rb_tree_t * rt)
 {
   pool_free (rt->nodes);
-  rt->root = RBTREE_TNIL_INDEX;
 }
 
 __clib_export void
@@ -485,11 +476,12 @@ rb_tree_init (rb_tree_t * rt)
   rb_node_t *tnil;
 
   rt->nodes = 0;
-  rt->root = RBTREE_TNIL_INDEX;
 
   /* By convention first node, index 0, is the T.nil sentinel */
   pool_get_zero (rt->nodes, tnil);
   tnil->color = RBTREE_BLACK;
+
+  rb_tree_root (rt) = RBTREE_TNIL_INDEX;
 }
 
 __clib_export int
@@ -499,11 +491,3 @@ rb_tree_is_init (rb_tree_t * rt)
     return 0;
   return 1;
 }
-
-/*
- * fd.io coding-style-patch-verification: ON
- *
- * Local Variables:
- * eval: (c-set-style "gnu")
- * End:
- */

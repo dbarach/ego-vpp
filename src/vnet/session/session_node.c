@@ -1,16 +1,6 @@
 /*
+ * SPDX-License-Identifier: Apache-2.0
  * Copyright (c) 2017-2019 Cisco and/or its affiliates.
- * Licensed under the Apache License, Version 2.0 (the "License");
- * you may not use this file except in compliance with the License.
- * You may obtain a copy of the License at:
- *
- *     http://www.apache.org/licenses/LICENSE-2.0
- *
- * Unless required by applicable law or agreed to in writing, software
- * distributed under the License is distributed on an "AS IS" BASIS,
- * WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
- * See the License for the specific language governing permissions and
- * limitations under the License.
  */
 
 #include <math.h>
@@ -437,6 +427,29 @@ session_mq_disconnect_handler (void *data)
 }
 
 static void
+session_mq_terminate_handler (void *data)
+{
+  session_terminate_msg_t *mp = (session_terminate_msg_t *) data;
+  application_t *app;
+  app_worker_t *app_wrk;
+  session_t *s;
+
+  app = application_lookup (mp->client_index);
+  if (!app)
+    return;
+
+  s = session_get_from_handle_if_valid (mp->handle);
+  if (!s)
+    return;
+
+  app_wrk = app_worker_get (s->app_wrk_index);
+  if (app_wrk->app_index != app->app_index)
+    return;
+
+  session_reset (s);
+}
+
+static void
 app_mq_detach_handler (session_worker_t *wrk, session_evt_elt_t *elt)
 {
   vnet_app_detach_args_t _a, *a = &_a;
@@ -531,9 +544,8 @@ session_mq_accepted_reply_handler (session_worker_t *wrk,
       return;
     }
 
-  /* TODO(fcoras) This needs to be part of the reply message */
-  s->rx_fifo->app_session_index = s->rx_fifo->shr->client_session_index;
-  s->tx_fifo->app_session_index = s->tx_fifo->shr->client_session_index;
+  s->rx_fifo->app_session_index = mp->app_session_index;
+  s->tx_fifo->app_session_index = mp->app_session_index;
 
   s->flags |= SESSION_F_RX_READY;
 
@@ -1642,7 +1654,7 @@ session_tx_fifo_read_and_snd_i (session_worker_t * wrk,
   *n_tx_packets += ctx->n_segs_per_evt;
 
   SESSION_EVT (SESSION_EVT_DEQ, ctx->s, ctx->max_len_to_snd, ctx->max_dequeue,
-	       ctx->s->tx_fifo->shr->has_event, wrk->last_vlib_time);
+	       ctx->s->tx_fifo->signals->has_event, wrk->last_vlib_time);
 
   ASSERT (ctx->left_to_snd == 0);
 
@@ -1798,6 +1810,9 @@ session_event_dispatch_ctrl (session_worker_t * wrk, session_evt_elt_t * elt)
       break;
     case SESSION_CTRL_EVT_DISCONNECT:
       session_mq_disconnect_handler (session_evt_ctrl_data (wrk, elt));
+      break;
+    case SESSION_CTRL_EVT_TERMINATE:
+      session_mq_terminate_handler (session_evt_ctrl_data (wrk, elt));
       break;
     case SESSION_CTRL_EVT_DISCONNECTED:
       session_mq_disconnected_handler (session_evt_ctrl_data (wrk, elt));
@@ -2284,18 +2299,9 @@ session_queue_pre_input_inline (vlib_main_t * vm, vlib_node_runtime_t * node,
   return session_queue_node_fn (vm, node, frame);
 }
 
-VLIB_REGISTER_NODE (session_queue_pre_input_node) =
-{
+VLIB_REGISTER_NODE (session_queue_pre_input_node) = {
   .function = session_queue_pre_input_inline,
   .type = VLIB_NODE_TYPE_PRE_INPUT,
   .name = "session-queue-main",
   .state = VLIB_NODE_STATE_DISABLED,
 };
-
-/*
- * fd.io coding-style-patch-verification: ON
- *
- * Local Variables:
- * eval: (c-set-style "gnu")
- * End:
- */

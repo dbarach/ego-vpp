@@ -1,16 +1,6 @@
 /*
+ * SPDX-License-Identifier: Apache-2.0
  * Copyright (c) 2017-2021 Cisco and/or its affiliates.
- * Licensed under the Apache License, Version 2.0 (the "License");
- * you may not use this file except in compliance with the License.
- * You may obtain a copy of the License at:
- *
- *     http://www.apache.org/licenses/LICENSE-2.0
- *
- * Unless required by applicable law or agreed to in writing, software
- * distributed under the License is distributed on an "AS IS" BASIS,
- * WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
- * See the License for the specific language governing permissions and
- * limitations under the License.
  */
 
 #include <unistd.h>
@@ -53,6 +43,7 @@ struct vtc_worker_
   pthread_t thread_handle;
   vtc_worker_run_fn *wrk_run_fn;
   hs_test_cfg_t cfg;
+  struct timespec old_stats_stop;
 };
 
 typedef struct
@@ -94,14 +85,14 @@ vtc_cfg_sync (vcl_test_session_t * ts)
       vtinf ("(fd %d): Sending config to server.", ts->fd);
       hs_test_cfg_dump (&ts->cfg, 1 /* is_client */);
     }
-  tx_bytes = ts->write (ts, &ts->cfg, sizeof (ts->cfg));
+  tx_bytes = vppcom_session_write (ts->fd, &ts->cfg, sizeof (ts->cfg));
   if (tx_bytes < 0)
     {
       vtwrn ("(fd %d): write test cfg failed (%d)!", ts->fd, tx_bytes);
       return tx_bytes;
     }
 
-  rx_bytes = ts->read (ts, ts->rxbuf, sizeof (hs_test_cfg_t));
+  rx_bytes = vppcom_session_read (ts->fd, ts->rxbuf, sizeof (hs_test_cfg_t));
   if (rx_bytes < 0)
     return rx_bytes;
 
@@ -279,18 +270,48 @@ vtc_worker_sessions_exit (vcl_test_client_worker_t * wrk)
 }
 
 static void
-vtc_inc_stats_check (vcl_test_session_t *ts)
+vtc_worker_inc_stats_check (vcl_test_client_worker_t *wrk,
+			    vcl_test_session_t *ts)
 {
+  struct timespec now;
+  uint32_t i, n_print = 0;
+  uint64_t total_bytes = 0;
+  double duration, total_rate;
+
   /* Avoid checking time too often because of syscall cost */
   if (ts->stats.tx_bytes - ts->old_stats.tx_bytes < 1 << 20)
     return;
 
-  clock_gettime (CLOCK_REALTIME, &ts->stats.stop);
-  if (vcl_test_time_diff (&ts->old_stats.stop, &ts->stats.stop) > 1)
+  clock_gettime (CLOCK_REALTIME, &now);
+  if (vcl_test_time_diff (&wrk->old_stats_stop, &now) < 1)
+    return;
+
+  for (i = 0; i < wrk->cfg.num_test_sessions; i++)
     {
-      vcl_test_stats_dump_inc (ts, 0 /* is_rx */);
-      ts->old_stats = ts->stats;
+      ts = &wrk->sessions[i];
+      if (ts->is_done)
+	continue;
+
+      ts->stats.stop = now;
+      if (vcl_test_time_diff (&ts->old_stats.stop, &ts->stats.stop) > 1)
+	{
+	  vcl_test_stats_dump_inc (ts, 0 /* is_rx */);
+	  total_bytes += ts->stats.tx_bytes - ts->old_stats.tx_bytes;
+	  ts->old_stats = ts->stats;
+	  n_print++;
+	}
     }
+
+  if (n_print > 1)
+    {
+      duration = vcl_test_time_diff (&wrk->old_stats_stop, &now);
+      total_rate = (double) total_bytes * 8 / duration / 1e9;
+      printf ("Sum: Sent %lu Mbytes in %.2lf seconds %.2lf Gbps\n",
+	      (uint64_t) (total_bytes / 1e6), duration, total_rate);
+      printf ("-------------------------------------------------\n");
+    }
+
+  wrk->old_stats_stop = now;
 }
 
 static void
@@ -305,19 +326,6 @@ vtc_worker_start_transfer (vcl_test_client_worker_t *wrk)
 
       clock_gettime (CLOCK_REALTIME, &ctrl->stats.start);
     }
-}
-
-static int
-vtc_session_check_is_done (vcl_test_session_t *ts, uint8_t check_rx)
-{
-  if ((!check_rx && ts->stats.tx_bytes >= ts->cfg.total_bytes) ||
-      (check_rx && ts->stats.rx_bytes >= ts->cfg.total_bytes))
-    {
-      clock_gettime (CLOCK_REALTIME, &ts->stats.stop);
-      ts->is_done = 1;
-      return 1;
-    }
-  return 0;
 }
 
 static int
@@ -353,6 +361,14 @@ vtc_worker_connect_sessions_select (vcl_test_client_worker_t *wrk)
   vtinf ("All test sessions (%d) connected!", wrk->cfg.num_test_sessions);
 
   return 0;
+}
+
+static void
+vtc_abort_test ()
+{
+  vcl_test_client_main_t *vtcm = &vcl_client_main;
+  vtcm->test_running = 0;
+  exit (1);
 }
 
 static int
@@ -403,7 +419,11 @@ vtc_worker_run_select (vcl_test_client_worker_t *wrk)
 	    {
 	      rv = ts->read (ts, ts->rxbuf, ts->rxbuf_size);
 	      if (rv < 0)
-		break;
+		{
+		  vtwrn ("vppcom_test_read (%d) failed -- aborting test",
+			 ts->fd);
+		  vtc_abort_test ();
+		}
 	    }
 
 	  if (FD_ISSET (vppcom_session_index (ts->fd), wfdset) &&
@@ -414,12 +434,12 @@ vtc_worker_run_select (vcl_test_client_worker_t *wrk)
 		{
 		  vtwrn ("vppcom_test_write (%d) failed -- aborting test",
 			 ts->fd);
-		  break;
+		  vtc_abort_test ();
 		}
 	      if (vcm->incremental_stats)
-		vtc_inc_stats_check (ts);
+		vtc_worker_inc_stats_check (wrk, ts);
 	    }
-	  if (vtc_session_check_is_done (ts, check_rx))
+	  if (ts->done (ts, check_rx))
 	    n_active_sessions -= 1;
 	}
     }
@@ -431,6 +451,9 @@ static void
 vtc_worker_epoll_send_add (vcl_test_client_worker_t *wrk,
 			   vcl_test_session_t *ts)
 {
+  if (ts->next || ts->prev)
+    return;
+
   if (!wrk->next_to_send)
     {
       wrk->next_to_send = ts;
@@ -438,22 +461,34 @@ vtc_worker_epoll_send_add (vcl_test_client_worker_t *wrk,
   else
     {
       ts->next = wrk->next_to_send;
-      wrk->next_to_send = ts->next;
+      wrk->next_to_send->prev = ts;
+      wrk->next_to_send = ts;
     }
 }
 
 static void
 vtc_worker_epoll_send_del (vcl_test_client_worker_t *wrk,
-			   vcl_test_session_t *ts, vcl_test_session_t *prev)
+			   vcl_test_session_t *ts)
 {
-  if (!prev)
+  if (ts == wrk->next_to_send)
     {
-      wrk->next_to_send = ts->next;
+      wrk->next_to_send = wrk->next_to_send->next;
+      if (wrk->next_to_send)
+	wrk->next_to_send->prev = 0;
     }
   else
     {
-      prev->next = ts->next;
+      if (ts->next)
+	{
+	  ts->next->prev = ts->prev;
+	}
+      if (ts->prev)
+	{
+	  ts->prev->next = ts->next;
+	}
     }
+  ts->next = 0;
+  ts->prev = 0;
 }
 
 static int
@@ -576,8 +611,9 @@ vtc_worker_run_epoll (vcl_test_client_worker_t *wrk)
 {
   vcl_test_client_main_t *vcm = &vcl_client_main;
   uint32_t n_active_sessions, max_writes = 16, n_writes = 0;
-  vcl_test_session_t *ts, *prev = 0;
+  vcl_test_session_t *ts, *next;
   int i, rv, check_rx = 0, n_ev;
+  const vcl_test_proto_vft_t *tp;
 
   rv = vtc_worker_connect_sessions_epoll (wrk);
   if (rv < 0)
@@ -590,13 +626,16 @@ vtc_worker_run_epoll (vcl_test_client_worker_t *wrk)
   check_rx = wrk->cfg.test != HS_TEST_TYPE_UNI;
 
   vtc_worker_start_transfer (wrk);
-  ts = wrk->next_to_send;
+  next = wrk->next_to_send;
+
+  tp = vcl_test_main.protos[vcm->proto];
 
   while (n_active_sessions && vcm->test_running)
     {
       /*
        * Try to write
        */
+      ts = next;
       if (!ts)
 	{
 	  ts = wrk->next_to_send;
@@ -605,24 +644,23 @@ vtc_worker_run_epoll (vcl_test_client_worker_t *wrk)
 	}
 
       rv = ts->write (ts, ts->txbuf, ts->cfg.txbuf_size);
+      if (ts->done (ts, check_rx))
+	n_active_sessions -= 1;
+      next = ts->next;
       if (rv > 0)
 	{
 	  if (vcm->incremental_stats)
-	    vtc_inc_stats_check (ts);
-	  if (vtc_session_check_is_done (ts, check_rx))
-	    n_active_sessions -= 1;
+	    vtc_worker_inc_stats_check (wrk, ts);
 	}
       else if (rv == 0)
 	{
-	  vtc_worker_epoll_send_del (wrk, ts, prev);
+	  vtc_worker_epoll_send_del (wrk, ts);
 	}
       else
 	{
 	  vtwrn ("vppcom_test_write (%d) failed -- aborting test", ts->fd);
 	  return -1;
 	}
-      prev = ts;
-      ts = ts->next;
       n_writes += 1;
 
       if (rv > 0 && n_writes < max_writes)
@@ -656,8 +694,20 @@ vtc_worker_run_epoll (vcl_test_client_worker_t *wrk)
 
 	  if (wrk->ep_evts[i].events & (EPOLLERR | EPOLLHUP | EPOLLRDHUP))
 	    {
-	      vtinf ("%u finished before reading all data?", ts->fd);
-	      break;
+	      /* if close return 1 we are done, otherwise it was unexpected
+	       * close */
+	      if (tp->close (ts, wrk->ep_evts[i].events))
+		{
+		  n_active_sessions -= 1;
+		  continue;
+		}
+	      else
+		{
+		  vtwrn (
+		    "%u finished before reading all data -- aborting test",
+		    ts->fd);
+		  return -1;
+		}
 	    }
 	  if ((wrk->ep_evts[i].events & EPOLLIN) &&
 	      ts->stats.rx_bytes < ts->cfg.total_bytes)
@@ -665,7 +715,7 @@ vtc_worker_run_epoll (vcl_test_client_worker_t *wrk)
 	      rv = ts->read (ts, ts->rxbuf, ts->rxbuf_size);
 	      if (rv < 0)
 		break;
-	      if (vtc_session_check_is_done (ts, check_rx))
+	      if (ts->done (ts, check_rx))
 		n_active_sessions -= 1;
 	    }
 	  if ((wrk->ep_evts[i].events & EPOLLOUT) &&
@@ -986,33 +1036,49 @@ parse_input ()
   return rv;
 }
 
+static int
+vtc_unformat_test_param (uint32_t *test_param, char *test_param_str)
+{
+  if (!strcmp (test_param_str, "server-rst-stream"))
+    *test_param = HS_TEST_PARAM_SERVER_RST_STREAM;
+  else if (!strcmp (test_param_str, "client-rst-stream"))
+    *test_param = HS_TEST_PARAM_CLIENT_RST_STREAM;
+  else if (!strcmp (test_param_str, "server-close-conn"))
+    *test_param = HS_TEST_PARAM_SERVER_CLOSE_CONN;
+  else if (!strcmp (test_param_str, "client-close-conn"))
+    *test_param = HS_TEST_PARAM_CLIENT_CLOSE_CONN;
+  else
+    return 1;
+  return 0;
+}
+
 void
 print_usage_and_exit (void)
 {
-  fprintf (
-    stderr,
-    "vcl_test_client [OPTIONS] <ipaddr> <port>\n"
-    "  OPTIONS\n"
-    "  -h               Print this message and exit.\n"
-    "  -6               Use IPv6\n"
-    "  -c               Print test config before test.\n"
-    "  -w <dir>         Write test results to <dir>.\n"
-    "  -X               Exit after running test.\n"
-    "  -p <proto>       Use <proto> transport layer\n"
-    "  -D               Use UDP transport layer\n"
-    "  -L               Use TLS transport layer\n"
-    "  -E               Run Echo test.\n"
-    "  -N <num-writes>  Test Cfg: number of writes.\n"
-    "  -R <rxbuf-size>  Test Cfg: rx buffer size.\n"
-    "  -T <txbuf-size>  Test Cfg: tx buffer size.\n"
-    "  -U               Run Uni-directional test.\n"
-    "  -B               Run Bi-directional test.\n"
-    "  -b <bytes>       Total number of bytes transferred\n"
-    "  -V               Verbose mode.\n"
-    "  -I <N>           Use N sessions.\n"
-    "  -s <N>           Use N sessions.\n"
-    "  -S	       	Print incremental stats per session.\n"
-    "  -q <n>           QUIC : use N Ssessions on top of n Qsessions\n");
+  fprintf (stderr,
+	   "vcl_test_client [OPTIONS] <ipaddr> <port>\n"
+	   "  OPTIONS\n"
+	   "  -h               Print this message and exit.\n"
+	   "  -6               Use IPv6\n"
+	   "  -c               Print test config before test.\n"
+	   "  -w <dir>         Write test results to <dir>.\n"
+	   "  -X               Exit after running test.\n"
+	   "  -p <proto>       Use <proto> transport layer\n"
+	   "  -D               Use UDP transport layer\n"
+	   "  -L               Use TLS transport layer\n"
+	   "  -E               Run Echo test.\n"
+	   "  -N <num-writes>  Test Cfg: number of writes.\n"
+	   "  -R <rxbuf-size>  Test Cfg: rx buffer size.\n"
+	   "  -T <txbuf-size>  Test Cfg: tx buffer size.\n"
+	   "  -U               Run Uni-directional test.\n"
+	   "  -B               Run Bi-directional test.\n"
+	   "  -b <bytes>       Total number of bytes transferred\n"
+	   "  -V               Verbose mode.\n"
+	   "  -I <N>           Use N sessions.\n"
+	   "  -s <N>           Use N sessions.\n"
+	   "  -S               Print incremental stats per session.\n"
+	   "  -q <n>           QUIC : use N Ssessions on top of n Qsessions\n"
+	   "  -t <test-param>  QUIC : additional test parameter\n");
   exit (1);
 }
 
@@ -1023,7 +1089,7 @@ vtc_process_opts (vcl_test_client_main_t * vcm, int argc, char **argv)
   int c, v;
 
   opterr = 0;
-  while ((c = getopt (argc, argv, "chnp:w:xXE:I:N:R:T:b:UBV6DLs:q:S")) != -1)
+  while ((c = getopt (argc, argv, "chnp:w:xXE:I:N:R:T:b:UBV6DLs:q:St:")) != -1)
     switch (c)
       {
       case 'c':
@@ -1201,6 +1267,14 @@ vtc_process_opts (vcl_test_client_main_t * vcm, int argc, char **argv)
 	vcm->incremental_stats = 1;
 	break;
 
+      case 't':
+	if (vtc_unformat_test_param (&ctrl->cfg.test_param, optarg))
+	  {
+	    vtwrn ("Invalid value for option -%c!", c);
+	    print_usage_and_exit ();
+	  }
+	break;
+
       case '?':
 	switch (optopt)
 	  {
@@ -1212,6 +1286,7 @@ vtc_process_opts (vcl_test_client_main_t * vcm, int argc, char **argv)
 	  case 'w':
 	  case 'p':
 	  case 'q':
+	  case 't':
 	    vtwrn ("Option -%c requires an argument.", optopt);
 	    break;
 
@@ -1372,7 +1447,8 @@ vtc_alloc_workers (vcl_test_client_main_t *vcm)
   vcm->workers = calloc (vcm->n_workers, sizeof (vcl_test_client_worker_t));
   vt->wrk = calloc (vcm->n_workers, sizeof (vcl_test_wrk_t));
 
-  if (vcm->ctrl_session.cfg.num_test_sessions > VCL_TEST_CFG_MAX_SELECT_SESS)
+  if (vcm->ctrl_session.cfg.num_test_sessions > VCL_TEST_CFG_MAX_SELECT_SESS ||
+      vcm->proto == VPPCOM_PROTO_QUIC)
     run_fn = vtc_worker_run_epoll;
   else
     run_fn = vtc_worker_run_select;
@@ -1481,11 +1557,3 @@ main (int argc, char **argv)
   free (vcm->workers);
   return 0;
 }
-
-/*
- * fd.io coding-style-patch-verification: ON
- *
- * Local Variables:
- * eval: (c-set-style "gnu")
- * End:
- */

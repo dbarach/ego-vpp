@@ -1,20 +1,11 @@
-/*
+/* SPDX-License-Identifier: Apache-2.0
  * Copyright (c) 2016-2019 Cisco and/or its affiliates.
  * Copyright (c) 2019 Arm Limited
  * Copyright (c) 2010-2017 Intel Corporation and/or its affiliates.
  * Copyright (c) 2007-2009 Kip Macy kmacy@freebsd.org
- * Inspired from DPDK rte_ring.h (SPSC only) (derived from freebsd bufring.h).
- * Licensed under the Apache License, Version 2.0 (the "License");
- * you may not use this file except in compliance with the License.
- * You may obtain a copy of the License at:
- *
- *     http://www.apache.org/licenses/LICENSE-2.0
- *
- * Unless required by applicable law or agreed to in writing, software
- * distributed under the License is distributed on an "AS IS" BASIS,
- * WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
- * See the License for the specific language governing permissions and
- * limitations under the License.
+ */
+
+/* Inspired from DPDK rte_ring.h (SPSC only) (derived from freebsd bufring.h).
  */
 
 #include <svm/svm_fifo.h>
@@ -374,6 +365,7 @@ svm_fifo_init (svm_fifo_t * f, u32 size)
   f->shr->head = f->shr->tail = f->flags = 0;
   f->shr->head_chunk = f->shr->tail_chunk = f->shr->start_chunk;
   f->ooo_deq = f->ooo_enq = 0;
+  f->signals = &f->shr->signals;
 
   min_alloc = size > 32 << 10 ? size >> 3 : 4096;
   min_alloc = clib_min (min_alloc, 64 << 10);
@@ -444,6 +436,7 @@ svm_fifo_alloc (u32 data_size_in_bytes)
   c->enq_rb_index = RBTREE_TNIL_INDEX;
   c->deq_rb_index = RBTREE_TNIL_INDEX;
   f->shr->start_chunk = f->shr->end_chunk = f_csptr (f, c);
+  f->signals = &f->shr->signals;
 
   return f;
 }
@@ -542,7 +535,7 @@ f_find_node_rbtree (rb_tree_t * rt, u32 pos)
 {
   rb_node_t *cur, *prev;
 
-  cur = rb_node (rt, rt->root);
+  cur = rb_node (rt, rb_tree_root (rt));
   if (PREDICT_FALSE (rb_node_is_tnil (rt, cur)))
     return 0;
 
@@ -608,7 +601,7 @@ f_update_ooo_enq (svm_fifo_t * f, u32 start_pos, u32 end_pos)
       return;
     }
 
-  if (rt->root == RBTREE_TNIL_INDEX)
+  if (rb_tree_root (rt) == RBTREE_TNIL_INDEX)
     {
       c = f_tail_cptr (f);
       ASSERT (c->enq_rb_index == RBTREE_TNIL_INDEX);
@@ -657,7 +650,7 @@ f_update_ooo_deq (svm_fifo_t * f, u32 start_pos, u32 end_pos)
       return;
     }
 
-  if (rt->root == RBTREE_TNIL_INDEX)
+  if (rb_tree_root (rt) == RBTREE_TNIL_INDEX)
     {
       c = f_start_cptr (f);
       ASSERT (c->deq_rb_index == RBTREE_TNIL_INDEX);
@@ -1381,9 +1374,9 @@ svm_fifo_init_pointers (svm_fifo_t * f, u32 head, u32 tail)
 void
 svm_fifo_add_subscriber (svm_fifo_t * f, u8 subscriber)
 {
-  if (f->shr->n_subscribers >= SVM_FIFO_MAX_EVT_SUBSCRIBERS)
+  if (f->signals->n_subscribers >= SVM_FIFO_MAX_EVT_SUBSCRIBERS)
     return;
-  f->shr->subscribers[f->shr->n_subscribers++] = subscriber;
+  f->signals->subscribers[f->signals->n_subscribers++] = subscriber;
 }
 
 void
@@ -1391,12 +1384,13 @@ svm_fifo_del_subscriber (svm_fifo_t * f, u8 subscriber)
 {
   int i;
 
-  for (i = 0; i < f->shr->n_subscribers; i++)
+  for (i = 0; i < f->signals->n_subscribers; i++)
     {
-      if (f->shr->subscribers[i] != subscriber)
+      if (f->signals->subscribers[i] != subscriber)
 	continue;
-      f->shr->subscribers[i] = f->shr->subscribers[f->shr->n_subscribers - 1];
-      f->shr->n_subscribers--;
+      f->signals->subscribers[i] =
+	f->signals->subscribers[f->signals->n_subscribers - 1];
+      f->signals->n_subscribers--;
       break;
     }
 }
@@ -1635,11 +1629,12 @@ format_svm_fifo (u8 * s, va_list * args)
     return s;
 
   indent = format_get_indent (s);
-  s = format (s, "cursize %u nitems %u has_event %d min_alloc %u\n",
-	      svm_fifo_max_dequeue (f), f->shr->size, f->shr->has_event,
-	      f->shr->min_alloc);
-  s = format (s, "%Uhead %u tail %u segment manager %u\n", format_white_space,
-	      indent, f->shr->head, f->shr->tail, f->segment_manager);
+  s = format (s, "cursize %u nitems %u has_event %d want_deq %d has_deq %d\n",
+	      svm_fifo_max_dequeue (f), f->shr->size, f->signals->has_event,
+	      f->signals->want_deq_ntf, f->signals->has_deq_ntf);
+  s = format (s, "%Uhead %u tail %u segment manager %u min_alloc %u\n",
+	      format_white_space, indent, f->shr->head, f->shr->tail,
+	      f->segment_manager, f->shr->min_alloc);
 
   if (verbose > 1)
     s = format (s, "%Uvpp session %d thread %d app session %d thread %d\n",
@@ -1659,10 +1654,3 @@ format_svm_fifo (u8 * s, va_list * args)
 }
 
 #endif
-/*
- * fd.io coding-style-patch-verification: ON
- *
- * Local Variables:
- * eval: (c-set-style "gnu")
- * End:
- */

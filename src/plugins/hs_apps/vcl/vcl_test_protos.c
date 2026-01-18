@@ -1,16 +1,6 @@
 /*
+ * SPDX-License-Identifier: Apache-2.0
  * Copyright (c) 2021 Cisco and/or its affiliates.
- * Licensed under the Apache License, Version 2.0 (the "License");
- * you may not use this file except in compliance with the License.
- * You may obtain a copy of the License at:
- *
- *     http://www.apache.org/licenses/LICENSE-2.0
- *
- * Unless required by applicable law or agreed to in writing, software
- * distributed under the License is distributed on an "AS IS" BASIS,
- * WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
- * See the License for the specific language governing permissions and
- * limitations under the License.
  */
 
 #include <hs_apps/vcl/vcl_test.h>
@@ -53,6 +43,7 @@ vt_tcp_connect (vcl_test_session_t *ts, vppcom_endpt_t *endpt)
 
   ts->read = vcl_test_read;
   ts->write = vcl_test_write;
+  ts->done = vcl_test_is_done;
 
   if (!ts->noblk_connect)
     {
@@ -109,6 +100,7 @@ vt_tcp_accept (int listen_fd, vcl_test_session_t *ts)
   ts->is_open = 1;
   ts->read = vcl_test_read;
   ts->write = vcl_test_write;
+  ts->done = vcl_test_is_done;
 
   return 0;
 }
@@ -117,6 +109,8 @@ static const vcl_test_proto_vft_t vcl_test_tcp = {
   .open = vt_tcp_connect,
   .listen = vt_tcp_listen,
   .accept = vt_tcp_accept,
+  .close = vcl_test_close_nop,
+  .reset = vcl_test_reset_nop,
 };
 
 VCL_TEST_REGISTER_PROTO (VPPCOM_PROTO_TCP, vcl_test_tcp);
@@ -186,6 +180,7 @@ vt_udp_connect (vcl_test_session_t *ts, vppcom_endpt_t *endpt)
 
   ts->read = vcl_test_read;
   ts->write = vcl_test_write_udp;
+  ts->done = vcl_test_is_done;
 
   if (!ts->noblk_connect)
     {
@@ -238,6 +233,7 @@ vt_udp_accept (int listen_fd, vcl_test_session_t *ts)
   ts->is_open = 1;
   ts->read = vcl_test_read;
   ts->write = vcl_test_write_udp;
+  ts->done = vcl_test_is_done;
 
   /* Help client sessions migrate if need be */
   if (!ts->cfg.test_bytes)
@@ -249,10 +245,21 @@ vt_udp_accept (int listen_fd, vcl_test_session_t *ts)
   return 0;
 }
 
+static int
+vt_udp_reset (vcl_test_session_t *ts)
+{
+  vtinf ("Test session %d (fd %d) reset (ICMP destination unreachable "
+	 "received - client closed UDP session).",
+	 ts->session_index, ts->fd);
+  return 0;
+}
+
 static const vcl_test_proto_vft_t vcl_test_udp = {
   .open = vt_udp_connect,
   .listen = vt_udp_listen,
   .accept = vt_udp_accept,
+  .close = vcl_test_close_nop,
+  .reset = vt_udp_reset,
 };
 
 VCL_TEST_REGISTER_PROTO (VPPCOM_PROTO_UDP, vcl_test_udp);
@@ -374,6 +381,7 @@ vt_tls_connect (vcl_test_session_t *ts, vppcom_endpt_t *endpt)
 
   ts->read = vcl_test_read;
   ts->write = vcl_test_write;
+  ts->done = vcl_test_is_done;
 
   if (!ts->noblk_connect)
     {
@@ -436,6 +444,7 @@ vt_tls_accept (int listen_fd, vcl_test_session_t *ts)
   ts->is_open = 1;
   ts->read = vcl_test_read;
   ts->write = vcl_test_write;
+  ts->done = vcl_test_is_done;
 
   return 0;
 }
@@ -445,6 +454,8 @@ static const vcl_test_proto_vft_t vcl_test_tls = {
   .open = vt_tls_connect,
   .listen = vt_tls_listen,
   .accept = vt_tls_accept,
+  .close = vcl_test_close_nop,
+  .reset = vcl_test_reset_nop,
 };
 
 VCL_TEST_REGISTER_PROTO (VPPCOM_PROTO_TLS, vcl_test_tls);
@@ -482,6 +493,7 @@ vt_dtls_connect (vcl_test_session_t *ts, vppcom_endpt_t *endpt)
 
   ts->read = vcl_test_read;
   ts->write = vcl_test_write;
+  ts->done = vcl_test_is_done;
 
   if (!ts->noblk_connect)
     {
@@ -544,6 +556,7 @@ vt_dtls_accept (int listen_fd, vcl_test_session_t *ts)
   ts->is_open = 1;
   ts->read = vcl_test_read;
   ts->write = vcl_test_write;
+  ts->done = vcl_test_is_done;
 
   return 0;
 }
@@ -553,6 +566,8 @@ static const vcl_test_proto_vft_t vcl_test_dtls = {
   .open = vt_dtls_connect,
   .listen = vt_dtls_listen,
   .accept = vt_dtls_accept,
+  .close = vcl_test_close_nop,
+  .reset = vcl_test_reset_nop,
 };
 
 VCL_TEST_REGISTER_PROTO (VPPCOM_PROTO_DTLS, vcl_test_dtls);
@@ -565,7 +580,47 @@ vt_quic_init (hs_test_cfg_t *cfg)
   if (cfg)
     vt->cfg = *cfg;
 
+  vt->server_data_source = VT_TEST_DATA_SOURCE;
+
   return vt_add_cert_key_pair ();
+}
+
+typedef enum vt_quic_flags_
+{
+  VT_QUIC_F_SERVER = (1 << 0),
+  VT_QUIC_F_HALF_CLOSED = (1 << 1),
+  VT_QUIC_F_RESET = (1 << 2),
+} vt_quic_flags_t;
+
+#define VT_QUIC_SERVER_ERROR ((uint64_t) 0xDEAD)
+#define VT_QUIC_CLIENT_ERROR ((uint64_t) 0xFACE)
+
+typedef struct vt_quic_ctx_
+{
+  vt_quic_flags_t flags;
+} vt_quic_ctx_t;
+
+static void
+vt_quic_session_init (vcl_test_session_t *ts, u8 is_server)
+{
+  vt_quic_ctx_t *quic_ctx;
+
+  quic_ctx = malloc (sizeof (vt_quic_ctx_t));
+  memset (quic_ctx, 0, sizeof (*quic_ctx));
+  quic_ctx->flags |= is_server ? VT_QUIC_F_SERVER : 0;
+  ts->opaque = quic_ctx;
+}
+
+static inline vcl_test_session_t *
+vt_quic_stream_get_qsession (vcl_test_session_t *ts)
+{
+  vcl_test_main_t *vt = &vcl_test_main;
+  vcl_test_wrk_t *wrk;
+
+  /* client use different pool for quic connections (qsessions), streams are
+   * distributed evenly */
+  wrk = &vt->wrk[vcl_test_worker_index ()];
+  return &wrk->qsessions[ts->session_index / vt->cfg.num_test_sessions_perq];
 }
 
 static int
@@ -631,6 +686,164 @@ vt_quic_maybe_init_wrk (vcl_test_main_t *vt, vcl_test_wrk_t *wrk,
   return 0;
 }
 
+static void
+vt_quic_set_app_proto_err_code (int fd, uint64_t app_err_code)
+{
+  uint32_t elen = sizeof (app_err_code);
+  vppcom_session_attr (fd, VPPCOM_ATTR_SET_APP_PROTO_ERR_CODE, &app_err_code,
+		       &elen);
+}
+
+static uint64_t
+vt_quic_get_app_proto_err_code (vcl_test_session_t *ts)
+{
+  uint64_t app_err_code = 0xFEFE;
+  uint32_t elen = sizeof (app_err_code);
+  vppcom_session_attr (ts->fd, VPPCOM_ATTR_GET_APP_PROTO_ERR_CODE,
+		       &app_err_code, &elen);
+  vtinf ("%s %d app proto error code 0x%lx",
+	 vppcom_session_is_stream (ts->fd) ? "stream" : "connection", ts->fd,
+	 app_err_code);
+  return app_err_code;
+}
+
+static int
+vt_quic_bidi_is_done (vcl_test_session_t *ts, uint8_t check_rx)
+{
+  return 0;
+}
+
+static int
+vt_quic_client_bidi_write (vcl_test_session_t *ts, void *buf, uint32_t nbytes)
+{
+  int rv;
+  vt_quic_ctx_t *quic_ctx = (vt_quic_ctx_t *) ts->opaque;
+
+  if (quic_ctx->flags & VT_QUIC_F_HALF_CLOSED)
+    return 0;
+
+  rv = vcl_test_write (ts, buf, nbytes);
+
+  if (ts->stats.tx_bytes >= ts->cfg.total_bytes)
+    {
+      vppcom_session_shutdown (ts->fd, SHUT_WR);
+      quic_ctx->flags |= VT_QUIC_F_HALF_CLOSED;
+    }
+
+  return rv;
+}
+
+static int
+vt_quic_client_write_and_rst (vcl_test_session_t *ts, void *buf,
+			      uint32_t nbytes)
+{
+  int rv;
+  vt_quic_ctx_t *quic_ctx = (vt_quic_ctx_t *) ts->opaque;
+
+  if (quic_ctx->flags & VT_QUIC_F_RESET)
+    return 0;
+
+  if ((ts->stats.tx_bytes << 1) >= ts->cfg.total_bytes)
+    {
+      vtinf ("going to reset stream %d (fd %d)", ts->session_index, ts->fd);
+      vt_quic_set_app_proto_err_code (ts->fd, VT_QUIC_CLIENT_ERROR);
+      vppcom_session_terminate (ts->fd);
+      quic_ctx->flags |= VT_QUIC_F_RESET;
+      return 0;
+    }
+
+  rv = vcl_test_write (ts, buf, nbytes);
+
+  return rv;
+}
+
+static int
+vt_quic_client_read_server_rst (vcl_test_session_t *ts, void *buf,
+				uint32_t nbytes)
+{
+  vcl_test_stats_t *stats = &ts->stats;
+  int rv, rx_bytes = 0;
+
+  do
+    {
+      stats->rx_xacts++;
+      rv = vppcom_session_read (ts->fd, buf, nbytes);
+      if (rv <= 0)
+	{
+	  errno = -rv;
+	  if (errno == EAGAIN || errno == EWOULDBLOCK)
+	    {
+	      stats->rx_eagain++;
+	      continue;
+	    }
+	  /* in case we do not process event yet */
+	  if (errno == ECONNRESET)
+	    break;
+
+	  vterr ("vppcom_session_read()", -errno);
+	  return -1;
+	}
+
+      rx_bytes = rv;
+      if (rv < nbytes)
+	stats->rx_incomp++;
+    }
+  while (!rx_bytes);
+
+  stats->rx_bytes += rx_bytes;
+
+  return rx_bytes;
+}
+
+static int
+vt_quic_client_write_and_close (vcl_test_session_t *ts, void *buf,
+				uint32_t nbytes)
+{
+  int rv;
+  vcl_test_session_t *tq;
+  vt_quic_ctx_t *quic_ctx = (vt_quic_ctx_t *) ts->opaque;
+
+  if (quic_ctx->flags & VT_QUIC_F_RESET)
+    return 0;
+
+  /* close connection prematurely in the middle of the stream data transfer */
+  if ((ts->stats.tx_bytes << 1) >= ts->cfg.total_bytes)
+    {
+      /* grab qession (connection) for stream, set application errror code and
+       * close it, stream is destroyed/closed within quic */
+      tq = vt_quic_stream_get_qsession (ts);
+      vtinf ("going to close connection %d (fd %d)", tq->session_index,
+	     tq->fd);
+      vt_quic_set_app_proto_err_code (tq->fd, VT_QUIC_CLIENT_ERROR);
+      vppcom_session_close (tq->fd);
+      /* mark stream so we will not send more data, flag is used also as done
+       * signal */
+      quic_ctx->flags |= VT_QUIC_F_RESET;
+      return 0;
+    }
+
+  rv = vcl_test_write (ts, buf, nbytes);
+
+  return rv;
+}
+
+static int
+vt_quic_rst_is_done (vcl_test_session_t *ts, uint8_t check_rx)
+{
+  vt_quic_ctx_t *quic_ctx = (vt_quic_ctx_t *) ts->opaque;
+
+  if (quic_ctx->flags & VT_QUIC_F_RESET)
+    return 1;
+
+  return 0;
+}
+
+static int
+vt_quic_close_is_done (vcl_test_session_t *ts, uint8_t check_rx)
+{
+  return ts->is_done;
+}
+
 static int
 vt_quic_connect (vcl_test_session_t *ts, vppcom_endpt_t *endpt)
 {
@@ -653,8 +866,16 @@ vt_quic_connect (vcl_test_session_t *ts, vppcom_endpt_t *endpt)
       return ts->fd;
     }
 
+  if (vt->cfg.test == HS_TEST_TYPE_UNI)
+    {
+      flags = VPPCOM_STREAM_F_UNIDIRECTIONAL;
+      flen = sizeof (flags);
+      vppcom_session_attr (ts->fd, VPPCOM_ATTR_SET_STREAM_FLAGS, &flags,
+			   &flen);
+    }
+
   /* Choose qession to use for stream */
-  tq = &wrk->qsessions[ts->session_index / vt->cfg.num_test_sessions_perq];
+  tq = vt_quic_stream_get_qsession (ts);
 
   rv = vppcom_session_stream_connect (ts->fd, tq->fd);
   if (rv < 0 && rv != VPPCOM_EINPROGRESS)
@@ -663,8 +884,44 @@ vt_quic_connect (vcl_test_session_t *ts, vppcom_endpt_t *endpt)
       return rv;
     }
 
-  ts->read = vcl_test_read;
-  ts->write = vcl_test_write;
+  if (vt->cfg.test_param == HS_TEST_PARAM_SERVER_RST_STREAM)
+    {
+      ts->read = vt_quic_client_read_server_rst;
+      ts->write = vcl_test_write;
+      ts->done = vt_quic_close_is_done;
+    }
+  else if (vt->cfg.test_param == HS_TEST_PARAM_CLIENT_RST_STREAM)
+    {
+      ts->read = vcl_test_read;
+      ts->write = vt_quic_client_write_and_rst;
+      ts->done = vt_quic_rst_is_done;
+    }
+  else if (vt->cfg.test_param == HS_TEST_PARAM_CLIENT_CLOSE_CONN)
+    {
+      ts->read = vcl_test_read;
+      ts->write = vt_quic_client_write_and_close;
+      ts->done = vt_quic_rst_is_done;
+    }
+  else if (ts->cfg.test_param == HS_TEST_PARAM_SERVER_CLOSE_CONN)
+    {
+      ts->read = vcl_test_read;
+      ts->write = vcl_test_write;
+      ts->done = vt_quic_rst_is_done;
+    }
+  else if (vt->cfg.test == HS_TEST_TYPE_BI)
+    {
+      ts->read = vcl_test_read;
+      ts->write = vt_quic_client_bidi_write;
+      ts->done = vt_quic_bidi_is_done;
+    }
+  else
+    {
+      ts->read = vcl_test_read;
+      ts->write = vcl_test_write;
+      ts->done = vcl_test_is_done;
+    }
+
+  vt_quic_session_init (ts, 0);
 
   if (!ts->noblk_connect)
     {
@@ -714,37 +971,300 @@ vt_quic_listen (vcl_test_session_t *ts, vppcom_endpt_t *endpt)
 }
 
 static int
+vt_quic_server_bidi_write (vcl_test_session_t *ts, void *buf, uint32_t nbytes)
+{
+  if (!vppcom_session_is_stream (ts->fd))
+    return 0;
+
+  vt_quic_ctx_t *quic_ctx = (vt_quic_ctx_t *) ts->opaque;
+  int rv = 0;
+
+  if (quic_ctx->flags & VT_QUIC_F_HALF_CLOSED &&
+      ts->stats.tx_bytes < ts->cfg.total_bytes)
+    {
+      rv = vcl_test_write (ts, ts->txbuf, ts->cfg.txbuf_size);
+      if (ts->stats.tx_bytes >= ts->cfg.total_bytes)
+	{
+	  vppcom_session_close (ts->fd);
+	  free (quic_ctx);
+	  ts->is_open = 0;
+	  ts->opaque = 0;
+	}
+    }
+
+  return rv;
+}
+
+static int
+vt_quic_server_write_nop (vcl_test_session_t *ts, void *buf, uint32_t nbytes)
+{
+  return 0;
+}
+
+static int
+vt_quic_server_read_and_rst (vcl_test_session_t *ts, void *buf,
+			     uint32_t nbytes)
+{
+  int rv;
+  vt_quic_ctx_t *quic_ctx = (vt_quic_ctx_t *) ts->opaque;
+
+  if ((ts->stats.rx_bytes << 1) >= ts->cfg.total_bytes)
+    {
+      vtinf ("going to reset stream %d (fd %d)", ts->session_index, ts->fd);
+      vt_quic_set_app_proto_err_code (ts->fd, VT_QUIC_SERVER_ERROR);
+      vppcom_session_terminate (ts->fd);
+      free (quic_ctx);
+      ts->is_open = 0;
+      ts->opaque = 0;
+      return 0;
+    }
+
+  rv = vcl_test_read (ts, buf, nbytes);
+
+  return rv;
+}
+
+static int
+vt_quic_server_read_and_close (vcl_test_session_t *ts, void *buf,
+			       uint32_t nbytes)
+{
+  int rv;
+
+  /* close connection prematurely in the middle of the stream data transfer */
+  if ((ts->stats.rx_bytes << 1) >= ts->cfg.total_bytes)
+    {
+      /* grab connection (parent) session for stream, for quic it is stored as
+       * listener, set application errror code and close it, stream is
+       * destroyed/closed within quic */
+      int conn_fd = vppcom_session_listener (ts->fd);
+      if (conn_fd == VPPCOM_EBADFD)
+	return 0;
+      vtinf ("going to close connection %d", conn_fd);
+      vt_quic_set_app_proto_err_code (conn_fd, VT_QUIC_SERVER_ERROR);
+      vppcom_session_close (conn_fd);
+      return 0;
+    }
+
+  rv = vcl_test_read (ts, buf, nbytes);
+
+  return rv;
+}
+
+static int
 vt_quic_accept (int listen_fd, vcl_test_session_t *ts)
 {
   int client_fd;
+  uint32_t flags, flen;
 
   client_fd = vppcom_session_accept (listen_fd, &ts->endpt, 0);
   if (client_fd < 0)
     {
-      vterr ("vppcom_session_accept()", client_fd);
+      if (client_fd != VPPCOM_EAGAIN)
+	vterr ("vppcom_session_accept()", client_fd);
       return client_fd;
     }
+
+  if (vppcom_session_is_stream (client_fd))
+    {
+      flen = sizeof (flags);
+      vppcom_session_attr (client_fd, VPPCOM_ATTR_GET_STREAM_FLAGS, &flags,
+			   &flen);
+      if (ts->cfg.test == HS_TEST_TYPE_UNI &&
+	  !(flags & VPPCOM_STREAM_F_UNIDIRECTIONAL))
+	{
+	  vtwrn ("expected unidirectional stream");
+	  vppcom_session_close (client_fd);
+	  return VPPCOM_EINVAL;
+	}
+    }
+
+  flen = sizeof (flags);
+  flags = O_NONBLOCK;
+  vppcom_session_attr (client_fd, VPPCOM_ATTR_SET_FLAGS, &flags, &flen);
+
   ts->fd = client_fd;
   ts->is_open = 1;
-  ts->read = vcl_test_read;
-  ts->write = vcl_test_write;
+
+  if (ts->cfg.test_param == HS_TEST_PARAM_SERVER_RST_STREAM)
+    {
+      ts->read = vt_quic_server_read_and_rst;
+      ts->write = vt_quic_server_write_nop;
+      ts->done = vt_quic_rst_is_done;
+    }
+  else if (ts->cfg.test_param == HS_TEST_PARAM_CLIENT_CLOSE_CONN)
+    {
+      ts->read = vcl_test_read;
+      ts->write = vt_quic_server_write_nop;
+      ts->done = vcl_test_is_done;
+    }
+  else if (ts->cfg.test_param == HS_TEST_PARAM_SERVER_CLOSE_CONN)
+    {
+      ts->read = vt_quic_server_read_and_close;
+      ts->write = vt_quic_server_write_nop;
+      ts->done = vcl_test_is_done;
+    }
+  else if (ts->cfg.test == HS_TEST_TYPE_BI)
+    {
+      ts->read = vcl_test_read;
+      ts->write = vt_quic_server_bidi_write;
+      ts->done = vt_quic_bidi_is_done;
+    }
+  else
+    {
+      ts->read = vcl_test_read;
+      ts->write = vcl_test_write;
+      ts->done = vcl_test_is_done;
+    }
+
+  vt_quic_session_init (ts, 1);
 
   return 0;
 }
 
 static int
-vt_quic_close (vcl_test_session_t *ts)
+vt_quic_cleanup (vcl_test_session_t *ts)
 {
-  int listener_fd = vppcom_session_listener (ts->fd);
+  if (!vppcom_session_is_stream (ts->fd))
+    return 0;
 
-  if ((vppcom_session_n_accepted (listener_fd) == 0) &
-      vppcom_session_is_connectable_listener (listener_fd))
+  vt_quic_ctx_t *quic_ctx = (vt_quic_ctx_t *) ts->opaque;
+
+  if (!quic_ctx)
+    return 0;
+
+  if (quic_ctx->flags & VT_QUIC_F_SERVER)
     {
-      vtinf ("Connected Listener fd %x has no more sessions", listener_fd);
-      vppcom_session_close (listener_fd);
+      int listener_fd = vppcom_session_listener (ts->fd);
+      if (listener_fd == VPPCOM_EBADFD)
+	return 0;
+      if ((vppcom_session_n_accepted (listener_fd) == 0) &&
+	  vppcom_session_is_connectable_listener (listener_fd))
+	{
+	  vtinf ("Connected Listener fd %x has no more sessions", listener_fd);
+	  vppcom_session_close (listener_fd);
+	}
     }
 
+  if (ts->opaque)
+    free (ts->opaque);
+
   return 0;
+}
+
+static int
+vt_quic_close (vcl_test_session_t *ts, uint32_t events)
+{
+  vt_quic_ctx_t *quic_ctx = (vt_quic_ctx_t *) ts->opaque;
+  uint64_t app_err_code;
+
+  if (quic_ctx->flags & VT_QUIC_F_SERVER)
+    {
+      if (vppcom_session_is_stream (ts->fd))
+	{
+	  if (events & EPOLLERR)
+	    {
+	      if (quic_ctx->flags & VT_QUIC_F_RESET)
+		return 1;
+	      vtinf ("stream %u reset by client", ts->fd);
+	      app_err_code = vt_quic_get_app_proto_err_code (ts);
+	      if (app_err_code != VT_QUIC_CLIENT_ERROR)
+		vtwrn ("invalid application error code 0x%lx, expected 0x%lx",
+		       app_err_code, VT_QUIC_CLIENT_ERROR);
+	      quic_ctx->flags |= VT_QUIC_F_RESET;
+	      ts->stats.reset_count = 1;
+	      return 1;
+	    }
+	  else if (events & EPOLLRDHUP)
+	    {
+	      if (ts->cfg.test_param == HS_TEST_PARAM_CLIENT_CLOSE_CONN ||
+		  ts->cfg.test_param == HS_TEST_PARAM_SERVER_CLOSE_CONN)
+		return 1;
+	      quic_ctx->flags |= VT_QUIC_F_HALF_CLOSED;
+	      vtinf ("stream %u half-closed", ts->fd);
+	      return 0;
+	    }
+	}
+      else
+	{
+	  app_err_code = vt_quic_get_app_proto_err_code (ts);
+	  vtinf ("connection %u closed by client", ts->fd);
+	  if (app_err_code != VT_QUIC_CLIENT_ERROR)
+	    vtwrn ("invalid application error code 0x%lx, expected 0x%lx",
+		   app_err_code, VT_QUIC_CLIENT_ERROR);
+	  ts->stats.close_count = 1;
+	}
+      return 1;
+    }
+  else
+    {
+      if (vppcom_session_is_stream (ts->fd))
+	{
+	  if (events & EPOLLERR &&
+	      ts->cfg.test_param == HS_TEST_PARAM_SERVER_RST_STREAM)
+	    {
+	      vtinf ("stream %u reset by server", ts->fd);
+	      app_err_code = vt_quic_get_app_proto_err_code (ts);
+	      if (app_err_code != VT_QUIC_SERVER_ERROR)
+		vtwrn ("invalid application error code 0x%lx, expected 0x%lx",
+		       app_err_code, VT_QUIC_SERVER_ERROR);
+	      quic_ctx->flags |= VT_QUIC_F_RESET;
+	      ts->stats.reset_count = 1;
+	      return 1;
+	    }
+	  if (ts->cfg.test_param == HS_TEST_PARAM_SERVER_CLOSE_CONN)
+	    {
+	      vtinf ("stream %u closed", ts->fd);
+	      ts->is_done = 1;
+	      /* client don't get events for quic connections, they are also in
+	       * different pool, so just check if connection has error code set
+	       */
+	      vcl_test_session_t *tq = vt_quic_stream_get_qsession (ts);
+	      app_err_code = vt_quic_get_app_proto_err_code (tq);
+	      if (app_err_code != VT_QUIC_SERVER_ERROR)
+		vtwrn ("invalid application error code 0x%lx, expected 0x%lx",
+		       app_err_code, VT_QUIC_SERVER_ERROR);
+	      ts->stats.close_count = 1;
+	      return 1;
+	    }
+	  if (ts->cfg.test == HS_TEST_TYPE_BI)
+	    {
+	      if (ts->stats.rx_bytes >= ts->cfg.total_bytes)
+		{
+		  vtinf ("stream %u closed - done", ts->fd);
+		  ts->is_done = 1;
+		  return 1;
+		}
+	    }
+	}
+      else
+	{
+	  vtinf ("connection %u closed by server", ts->fd);
+	  ts->stats.close_count = 1;
+	}
+      return 0;
+    }
+}
+
+static int
+vt_quic_reset (vcl_test_session_t *ts)
+{
+  vt_quic_ctx_t *quic_ctx = (vt_quic_ctx_t *) ts->opaque;
+  uint64_t app_err_code;
+
+  if (quic_ctx->flags & VT_QUIC_F_SERVER &&
+      ts->cfg.test_param == HS_TEST_PARAM_CLIENT_RST_STREAM)
+    {
+      vtinf ("stream %u reset by client", ts->fd);
+      app_err_code = vt_quic_get_app_proto_err_code (ts);
+      if (app_err_code != VT_QUIC_CLIENT_ERROR)
+	vtwrn ("invalid application error code 0x%lx, expected 0x%lx",
+	       app_err_code, VT_QUIC_CLIENT_ERROR);
+      quic_ctx->flags |= VT_QUIC_F_RESET;
+      ts->stats.reset_count = 1;
+      return 0;
+    }
+
+  return 1;
 }
 
 static const vcl_test_proto_vft_t vcl_test_quic = {
@@ -752,7 +1272,9 @@ static const vcl_test_proto_vft_t vcl_test_quic = {
   .open = vt_quic_connect,
   .listen = vt_quic_listen,
   .accept = vt_quic_accept,
+  .cleanup = vt_quic_cleanup,
   .close = vt_quic_close,
+  .reset = vt_quic_reset,
 };
 
 VCL_TEST_REGISTER_PROTO (VPPCOM_PROTO_QUIC, vcl_test_quic);
@@ -962,6 +1484,7 @@ vt_srtp_connect (vcl_test_session_t *ts, vppcom_endpt_t *endpt)
 
   ts->read = vt_srtp_read;
   ts->write = vt_srtp_write;
+  ts->done = vcl_test_is_done;
 
   if (!ts->noblk_connect)
     {
@@ -1022,6 +1545,7 @@ vt_srtp_accept (int listen_fd, vcl_test_session_t *ts)
   ts->is_open = 1;
   ts->read = vt_srtp_read;
   ts->write = vt_srtp_write;
+  ts->done = vcl_test_is_done;
 
   vt_srtp_session_init (ts, 0 /* is connect */);
 
@@ -1029,7 +1553,7 @@ vt_srtp_accept (int listen_fd, vcl_test_session_t *ts)
 }
 
 static int
-vt_srtp_close (vcl_test_session_t *ts)
+vt_srtp_cleanup (vcl_test_session_t *ts)
 {
   free (ts->opaque);
   return 0;
@@ -1039,7 +1563,9 @@ static const vcl_test_proto_vft_t vcl_test_srtp = {
   .open = vt_srtp_connect,
   .listen = vt_srtp_listen,
   .accept = vt_srtp_accept,
-  .close = vt_srtp_close,
+  .cleanup = vt_srtp_cleanup,
+  .close = vcl_test_close_nop,
+  .reset = vcl_test_reset_nop,
 };
 
 VCL_TEST_REGISTER_PROTO (VPPCOM_PROTO_SRTP, vcl_test_srtp);
@@ -1367,6 +1893,7 @@ vt_http_connect (vcl_test_session_t *ts, vppcom_endpt_t *endpt)
 
   ts->read = vt_http_read;
   ts->write = vt_http_write;
+  ts->done = vcl_test_is_done;
 
   if (!ts->noblk_connect)
     {
@@ -1426,6 +1953,7 @@ vt_http_accept (int listen_fd, vcl_test_session_t *ts)
   ts->is_open = 1;
   ts->read = vt_http_read;
   ts->write = vt_http_write;
+  ts->done = vcl_test_is_done;
 
   vt_http_session_init (ts, 1 /* is_server */);
 
@@ -1433,7 +1961,7 @@ vt_http_accept (int listen_fd, vcl_test_session_t *ts)
 }
 
 static int
-vt_http_close (vcl_test_session_t *ts)
+vt_http_cleanup (vcl_test_session_t *ts)
 {
   free (ts->opaque);
   return 0;
@@ -1443,15 +1971,9 @@ static const vcl_test_proto_vft_t vcl_test_http = {
   .open = vt_http_connect,
   .listen = vt_http_listen,
   .accept = vt_http_accept,
-  .close = vt_http_close,
+  .cleanup = vt_http_cleanup,
+  .close = vcl_test_close_nop,
+  .reset = vcl_test_reset_nop,
 };
 
 VCL_TEST_REGISTER_PROTO (VPPCOM_PROTO_HTTP, vcl_test_http);
-
-/*
- * fd.io coding-style-patch-verification: ON
- *
- * Local Variables:
- * eval: (c-set-style "gnu")
- * End:
- */

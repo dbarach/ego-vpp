@@ -23,9 +23,9 @@ RDMA_CORE_DEBUG?=n
 #       	2. Verify that the file build/external/dpdk_mlx_default.sh was generated
 #              and contains 'DPDK_MLX_DEFAULT=y'
 #
-rdma-core_version             := 58.0
+rdma-core_version             := 60.0
 rdma-core_tarball             := rdma-core-$(rdma-core_version).tar.gz
-rdma-core_tarball_sha256sum_58.0 := 88d67897b793f42d2004eec2629ab8464e425e058f22afabd29faac0a2f54ce4
+rdma-core_tarball_sha256sum_60.0 := 9b1b892e4eaaaa5dfbade07a290fbf5079e39117724fa1ef80d0ad78839328de
 rdma-core_tarball_sha256sum      := $(rdma-core_tarball_sha256sum_$(rdma-core_version))
 rdma-core_tarball_strip_dirs  := 1
 rdma-core_url                 := http://github.com/linux-rdma/rdma-core/releases/download/v$(rdma-core_version)/$(rdma-core_tarball)
@@ -39,9 +39,7 @@ define  rdma-core_config_cmds
 	cd $(rdma-core_build_dir) && \
 	  $(CMAKE) -G Ninja $(rdma-core_src_dir) \
 	    -DENABLE_STATIC=1 -DENABLE_RESOLVE_NEIGH=0 -DNO_PYVERBS=1 -DENABLE_VALGRIND=0\
-	    -DCMAKE_BUILD_TYPE=$(RDMA_BUILD_TYPE) \
-		-DCMAKE_INSTALL_PREFIX=$(rdma-core_install_dir) \
-		-DCMAKE_INSTALL_SYSCONFDIR=/etc/vpp \
+	    -DCMAKE_BUILD_TYPE=$(RDMA_BUILD_TYPE) -DCMAKE_INSTALL_PREFIX=$(rdma-core_install_dir) \
 	    -DCMAKE_INSTALL_LIBDIR=lib \
 	    -DCMAKE_INSTALL_RUNDIR:PATH=/run \
 	    -DCMAKE_C_FLAGS='-fPIC' -DNO_MAN_PAGES=ON | tee $(rdma-core_config_log)

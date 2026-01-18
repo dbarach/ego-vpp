@@ -1,41 +1,9 @@
-/*
+/* SPDX-License-Identifier: Apache-2.0 OR MIT
  * Copyright (c) 2015 Cisco and/or its affiliates.
- * Licensed under the Apache License, Version 2.0 (the "License");
- * you may not use this file except in compliance with the License.
- * You may obtain a copy of the License at:
- *
- *     http://www.apache.org/licenses/LICENSE-2.0
- *
- * Unless required by applicable law or agreed to in writing, software
- * distributed under the License is distributed on an "AS IS" BASIS,
- * WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
- * See the License for the specific language governing permissions and
- * limitations under the License.
- */
-/*
- * node_cli.c: node CLI
- *
  * Copyright (c) 2008 Eliot Dresselhaus
- *
- * Permission is hereby granted, free of charge, to any person obtaining
- * a copy of this software and associated documentation files (the
- * "Software"), to deal in the Software without restriction, including
- * without limitation the rights to use, copy, modify, merge, publish,
- * distribute, sublicense, and/or sell copies of the Software, and to
- * permit persons to whom the Software is furnished to do so, subject to
- * the following conditions:
- *
- * The above copyright notice and this permission notice shall be
- * included in all copies or substantial portions of the Software.
- *
- *  THE SOFTWARE IS PROVIDED "AS IS", WITHOUT WARRANTY OF ANY KIND,
- *  EXPRESS OR IMPLIED, INCLUDING BUT NOT LIMITED TO THE WARRANTIES OF
- *  MERCHANTABILITY, FITNESS FOR A PARTICULAR PURPOSE AND
- *  NONINFRINGEMENT. IN NO EVENT SHALL THE AUTHORS OR COPYRIGHT HOLDERS BE
- *  LIABLE FOR ANY CLAIM, DAMAGES OR OTHER LIABILITY, WHETHER IN AN ACTION
- *  OF CONTRACT, TORT OR OTHERWISE, ARISING FROM, OUT OF OR IN CONNECTION
- *  WITH THE SOFTWARE OR THE USE OR OTHER DEALINGS IN THE SOFTWARE.
  */
+
+/* node_cli.c: node CLI */
 
 #include <sys/types.h>
 #include <sys/stat.h>
@@ -368,6 +336,7 @@ format_vlib_node_stats (u8 * s, va_list * va)
   vlib_main_t *vm = va_arg (*va, vlib_main_t *);
   vlib_node_t *n = va_arg (*va, vlib_node_t *);
   int max = va_arg (*va, int);
+  int use_time = va_arg (*va, int);
   f64 v;
   u8 *ns;
   u8 *misc_info = 0;
@@ -380,15 +349,27 @@ format_vlib_node_stats (u8 * s, va_list * va)
   if (!n)
     {
       if (max)
-	s = format (s,
-		    "%=30s%=17s%=16s%=16s%=16s%=16s",
-		    "Name", "Max Node Clocks", "Vectors at Max",
-		    "Max Clocks", "Avg Clocks", "Avg Vectors/Call");
+	{
+	  if (use_time)
+	    s = format (s, "%=30s%=17s%=16s%=16s%=16s%=16s", "Name",
+			"Max Node Clocks", "Vectors at Max", "Max Clocks",
+			"Avg Time (ns)", "Avg Vectors/Call");
+	  else
+	    s = format (s, "%=30s%=17s%=16s%=16s%=16s%=16s", "Name",
+			"Max Node Clocks", "Vectors at Max", "Max Clocks",
+			"Avg Clocks", "Avg Vectors/Call");
+	}
       else
-	s = format (s,
-		    "%=30s%=12s%=16s%=16s%=16s%=16s%=16s",
-		    "Name", "State", "Calls", "Vectors", "Suspends",
-		    "Clocks", "Vectors/Call");
+	{
+	  if (use_time)
+	    s = format (s, "%=30s%=12s%=16s%=16s%=16s%=16s%=16s", "Name",
+			"State", "Calls", "Vectors", "Suspends", "Packet-Time",
+			"Vectors/Call");
+	  else
+	    s = format (s, "%=30s%=12s%=16s%=16s%=16s%=16s%=16s", "Name",
+			"State", "Calls", "Vectors", "Suspends",
+			"Packet-Clocks", "Vectors/Call");
+	}
       return s;
     }
 
@@ -406,6 +387,10 @@ format_vlib_node_stats (u8 * s, va_list * va)
     maxcn = 0.0;
 
   /* Clocks per packet, per call or per suspend. */
+
+  if (use_time)
+    l *= 1e9 * vm->clib_time.seconds_per_clock;
+
   x = 0;
   if (p > 0)
     x = (f64) l / (f64) p;
@@ -466,8 +451,8 @@ show_node_runtime (vlib_main_t * vm,
     {
       n = vlib_get_node (vm, node_index);
       vlib_node_sync_stats (vm, n);
-      vlib_cli_output (vm, "%U\n", format_vlib_node_stats, vm, 0, 0);
-      vlib_cli_output (vm, "%U\n", format_vlib_node_stats, vm, n, 0);
+      vlib_cli_output (vm, "%U\n", format_vlib_node_stats, vm, 0, 0, 0);
+      vlib_cli_output (vm, "%U\n", format_vlib_node_stats, vm, n, 0, 0);
     }
   else
     {
@@ -479,8 +464,11 @@ show_node_runtime (vlib_main_t * vm,
       int brief = 1;
       int summary = 0;
       int max = 0;
+      int use_time = 0;
       vlib_main_t **stat_vms = 0, *stat_vm;
 
+      if (unformat (input, "time") || unformat (input, "t"))
+	use_time = 1;
       /* Suppress nodes with zero calls since last clear */
       if (unformat (input, "brief") || unformat (input, "b"))
 	brief = 1;
@@ -586,8 +574,8 @@ show_node_runtime (vlib_main_t * vm,
 
 	  if (summary == 0)
 	    {
-	      vlib_cli_output (vm, "%U", format_vlib_node_stats, stat_vm,
-			       0, max);
+	      vlib_cli_output (vm, "%U", format_vlib_node_stats, stat_vm, 0,
+			       max, use_time);
 	      for (i = 0; i < vec_len (nodes); i++)
 		{
 		  c =
@@ -599,7 +587,7 @@ show_node_runtime (vlib_main_t * vm,
 		  if (c || d || !brief)
 		    {
 		      vlib_cli_output (vm, "%U", format_vlib_node_stats,
-				       stat_vm, nodes[i], max);
+				       stat_vm, nodes[i], max, use_time);
 		    }
 		}
 	    }
@@ -615,7 +603,7 @@ show_node_runtime (vlib_main_t * vm,
 
 VLIB_CLI_COMMAND (show_node_runtime_command, static) = {
   .path = "show runtime",
-  .short_help = "Show packet processing runtime",
+  .short_help = "show runtime [time] [verbose] [max] [summary]",
   .function = show_node_runtime,
   .is_mp_safe = 1,
 };
@@ -898,11 +886,3 @@ void
 vlib_node_cli_reference (void)
 {
 }
-
-/*
- * fd.io coding-style-patch-verification: ON
- *
- * Local Variables:
- * eval: (c-set-style "gnu")
- * End:
- */

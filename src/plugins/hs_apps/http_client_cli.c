@@ -1,16 +1,6 @@
 /*
+ * SPDX-License-Identifier: Apache-2.0
  * Copyright (c) 2022 Cisco and/or its affiliates.
- * Licensed under the Apache License, Version 2.0 (the "License");
- * you may not use this file except in compliance with the License.
- * You may obtain a copy of the License at:
- *
- *     http://www.apache.org/licenses/LICENSE-2.0
- *
- * Unless required by applicable law or agreed to in writing, software
- * distributed under the License is distributed on an "AS IS" BASIS,
- * WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
- * See the License for the specific language governing permissions and
- * limitations under the License.
  */
 
 #include <vnet/session/application_interface.h>
@@ -64,6 +54,7 @@ typedef struct
   u64 appns_secret;
   u32 ckpair_index;
   u8 need_crypto;
+  u8 use_http3;
 } hcc_main_t;
 
 typedef enum
@@ -439,6 +430,8 @@ hcc_connect ()
 	&a->sep_ext, TRANSPORT_ENDPT_EXT_CFG_CRYPTO,
 	sizeof (transport_endpt_crypto_cfg_t));
       ext_cfg->crypto.ckpair_index = hcm->ckpair_index;
+      if (hcm->use_http3)
+	ext_cfg->crypto.alpn_protos[0] = TLS_ALPN_PROTO_HTTP_3;
     }
 
   /* allocate http session on main thread */
@@ -562,6 +555,7 @@ hcc_command_fn (vlib_main_t *vm, unformat_input_t *input,
   hcm->prealloc_fifos = 0;
   hcm->private_segment_size = 0;
   hcm->fifo_size = 0;
+  hcm->use_http3 = 0;
 
   if (hcm->test_client_attached)
     return clib_error_return (0, "failed: already running!");
@@ -587,6 +581,8 @@ hcc_command_fn (vlib_main_t *vm, unformat_input_t *input,
 	;
       else if (unformat (line_input, "secret %lu", &hcm->appns_secret))
 	;
+      else if (unformat (line_input, "http3"))
+	hcm->use_http3 = 1;
       else
 	{
 	  err = clib_error_return (0, "unknown input `%U'",
@@ -645,7 +641,7 @@ VLIB_CLI_COMMAND (hcc_command, static) = {
   .path = "http cli client",
   .short_help =
     "[appns <app-ns> secret <appns-secret>] uri http[s]://<ip-addr>/<target> "
-    "[no-output]",
+    "[no-output] [http3]",
   .function = hcc_command_fn,
   .is_mp_safe = 1,
 };
@@ -663,11 +659,3 @@ hcc_main_init (vlib_main_t *vm)
 }
 
 VLIB_INIT_FUNCTION (hcc_main_init);
-
-/*
- * fd.io coding-style-patch-verification: ON
- *
- * Local Variables:
- * eval: (c-set-style "gnu")
- * End:
- */

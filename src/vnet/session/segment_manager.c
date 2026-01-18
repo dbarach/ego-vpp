@@ -1,16 +1,6 @@
 /*
+ * SPDX-License-Identifier: Apache-2.0
  * Copyright (c) 2017-2019 Cisco and/or its affiliates.
- * Licensed under the Apache License, Version 2.0 (the "License");
- * you may not use this file except in compliance with the License.
- * You may obtain a copy of the License at:
- *
- *     http://www.apache.org/licenses/LICENSE-2.0
- *
- * Unless required by applicable law or agreed to in writing, software
- * distributed under the License is distributed on an "AS IS" BASIS,
- * WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
- * See the License for the specific language governing permissions and
- * limitations under the License.
  */
 
 #include <vnet/session/segment_manager.h>
@@ -990,7 +980,6 @@ segment_manager_attach_fifo (segment_manager_t *sm, svm_fifo_t **f,
   fifo_segment_attach_fifo (fs, f, s->thread_index);
   segment_manager_segment_reader_unlock (sm);
 
-  (*f)->shr->master_session_index = s->session_index;
   (*f)->vpp_sh = s->handle;
 }
 
@@ -1702,11 +1691,3 @@ segment_manager_alloc_session_fifos_ct (session_t *s, segment_manager_t *sm,
 
   return 0;
 }
-
-/*
- * fd.io coding-style-patch-verification: ON
- *
- * Local Variables:
- * eval: (c-set-style "gnu")
- * End:
- */

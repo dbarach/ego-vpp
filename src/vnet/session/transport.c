@@ -1,16 +1,6 @@
 /*
+ * SPDX-License-Identifier: Apache-2.0
  * Copyright (c) 2017-2019 Cisco and/or its affiliates.
- * Licensed under the Apache License, Version 2.0 (the "License");
- * you may not use this file except in compliance with the License.
- * You may obtain a copy of the License at:
- *
- *     http://www.apache.org/licenses/LICENSE-2.0
- *
- * Unless required by applicable law or agreed to in writing, software
- * distributed under the License is distributed on an "AS IS" BASIS,
- * WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
- * See the License for the specific language governing permissions and
- * limitations under the License.
  */
 
 #include <vnet/session/transport.h>
@@ -589,16 +579,6 @@ transport_connection_attribute (transport_proto_t tp, u32 conn_index,
     return -1;
 
   return tp_vfts[tp].attribute (conn_index, thread_index, is_get, attr);
-}
-
-tls_alpn_proto_t
-transport_get_alpn_selected (transport_proto_t tp, u32 conn_index,
-			     clib_thread_index_t thread_index)
-{
-  if (!tp_vfts[tp].get_alpn_selected)
-    return TLS_ALPN_PROTO_NONE;
-
-  return tp_vfts[tp].get_alpn_selected (conn_index, thread_index);
 }
 
 #define PORT_MASK ((1 << 16)- 1)
@@ -1190,18 +1170,27 @@ void
 transport_enable_disable (vlib_main_t * vm, u8 is_en)
 {
   transport_proto_vft_t *vft;
+
   vec_foreach (vft, tp_vfts)
   {
     if (vft->enable)
       if ((vft->enable) (vm, is_en) != 0)
-	  continue;
+	  {
+	    /* Remove transports that failed to initialize */
+	    if (is_en)
+	      *vft = (transport_proto_vft_t){};
+	    continue;
+	  }
 
     if (vft->update_time)
       session_register_update_time_fn (vft->update_time, is_en);
   }
+
   if (is_en)
-  ip4_icmp_register_type (vlib_get_main (), ICMP4_destination_unreachable,
-			  transport_icmp_dest_unreachable_node.index);
+  {
+    ip4_icmp_register_type (vlib_get_main (), ICMP4_destination_unreachable,
+			    transport_icmp_dest_unreachable_node.index);
+  }
 }
 
 void
@@ -1245,11 +1234,3 @@ transport_init (void)
   foreach_tls_alpn_protos
 #undef _
 }
-
-/*
- * fd.io coding-style-patch-verification: ON
- *
- * Local Variables:
- * eval: (c-set-style "gnu")
- * End:
- */

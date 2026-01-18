@@ -1,16 +1,6 @@
 /*
+ * SPDX-License-Identifier: Apache-2.0
  * Copyright (c) 2022 Cisco and/or its affiliates.
- * Licensed under the Apache License, Version 2.0 (the "License");
- * you may not use this file except in compliance with the License.
- * You may obtain a copy of the License at:
- *
- *     http://www.apache.org/licenses/LICENSE-2.0
- *
- * Unless required by applicable law or agreed to in writing, software
- * distributed under the License is distributed on an "AS IS" BASIS,
- * WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
- * See the License for the specific language governing permissions and
- * limitations under the License.
  */
 
 #include <vpp/app/version.h>
@@ -384,12 +374,26 @@ http_close_transport_stream (http_conn_t *stream)
     .app_index = http_main.app_index,
   };
 
-  stream->state = stream->flags & HTTP_CONN_F_IS_SERVER ?
-		    HTTP_CONN_STATE_CLOSED :
-		    HTTP_CONN_STATE_HALF_CLOSED;
+  stream->state = HTTP_CONN_STATE_CLOSED;
 
   if (vnet_disconnect_session (&a))
     clib_warning ("disconnect returned");
+}
+
+void
+http_half_close_transport_stream (http_conn_t *stream)
+{
+  ASSERT (http_conn_is_stream (stream));
+
+  vnet_shutdown_args_t a = {
+    .handle = stream->hc_tc_session_handle,
+    .app_index = http_main.app_index,
+  };
+
+  stream->state = HTTP_CONN_STATE_HALF_CLOSED;
+
+  if (vnet_shutdown_session (&a))
+    clib_warning ("shutdown returned");
 }
 
 http_status_code_t
@@ -564,8 +568,9 @@ http_ts_accept_connection (session_t *ts)
   tp = session_get_transport_proto (ts);
   if (tp == TRANSPORT_PROTO_TLS || tp == TRANSPORT_PROTO_QUIC)
     {
-      alpn_proto = transport_get_alpn_selected (tp, ts->connection_index,
-						ts->thread_index);
+      transport_endpt_attr_t attr = { .type = TRANSPORT_ENDPT_ATTR_TLS_ALPN };
+      session_transport_attribute (ts, 1 /* is_get */, &attr);
+      alpn_proto = attr.tls_alpn;
       HTTP_DBG (1, "ALPN selected: %U", format_tls_alpn_proto, alpn_proto);
       switch (alpn_proto)
 	{
@@ -734,8 +739,9 @@ http_ts_connected_callback (u32 http_app_index, u32 ho_hc_index, session_t *ts,
   /* TLS set by ALPN result, TCP and QUIC: prior knowledge (set in ho) */
   if (tp == TRANSPORT_PROTO_TLS)
     {
-      alpn_proto = transport_get_alpn_selected (tp, ts->connection_index,
-						ts->thread_index);
+      transport_endpt_attr_t attr = { .type = TRANSPORT_ENDPT_ATTR_TLS_ALPN };
+      session_transport_attribute (ts, 1 /* is_get */, &attr);
+      alpn_proto = attr.tls_alpn;
       HTTP_DBG (1, "ALPN selected: %U", format_tls_alpn_proto, alpn_proto);
       switch (alpn_proto)
 	{
@@ -760,14 +766,14 @@ http_ts_connected_callback (u32 http_app_index, u32 ho_hc_index, session_t *ts,
   HTTP_DBG (1, "half-open hc index %x, hc [%u]%x", ts->thread_index,
 	    ho_hc_index, new_hc_index);
 
+  http_conn_timer_start (hc);
+
   if ((rv = http_vfts[hc->version].transport_connected_callback (hc)))
     {
       clib_warning ("transport_connected_callback failed, rv=%d", rv);
       __atomic_fetch_or (&ho_hc->flags, HTTP_CONN_F_HO_DONE, __ATOMIC_RELEASE);
       return rv;
     }
-
-  http_conn_timer_start (hc);
 
   return 0;
 }
@@ -898,6 +904,8 @@ http_ts_closed_callback (session_t *ts)
 {
   http_conn_handle_t hc_handle;
   http_conn_t *hc;
+
+  HTTP_DBG (1, "hc [%u]%x", ts->thread_index, hc_handle.conn_index);
 
   hc_handle.as_u32 = ts->opaque;
   hc = http_conn_get_w_thread (hc_handle.conn_index, ts->thread_index);
@@ -1075,7 +1083,6 @@ http_connect_connection (session_endpoint_cfg_t *sep)
   http_conn_t *hc;
   int error;
   u32 hc_index;
-  session_t *ho;
   transport_endpt_ext_cfg_t *ext_cfg;
   segment_manager_props_t *props;
   app_worker_t *app_wrk = app_worker_get (sep->app_wrk_index);
@@ -1093,6 +1100,7 @@ http_connect_connection (session_endpoint_cfg_t *sep)
   hc->hc_pa_app_api_ctx = sep->opaque;
   hc->state = HTTP_CONN_STATE_CONNECTING;
   hc->version = HTTP_VERSION_1;
+  hc->c_proto = TRANSPORT_PROTO_HTTP;
   cargs->api_context = hc_index;
 
   ext_cfg = session_endpoint_get_ext_cfg (sep, TRANSPORT_ENDPT_EXT_CFG_HTTP);
@@ -1119,6 +1127,7 @@ http_connect_connection (session_endpoint_cfg_t *sep)
 	case TLS_ALPN_PROTO_HTTP_3:
 	  HTTP_DBG (1, "app want to use http/3");
 	  cargs->sep.transport_proto = TRANSPORT_PROTO_QUIC;
+	  hc->version = HTTP_VERSION_3;
 	  break;
 	case TLS_ALPN_PROTO_NONE:
 	  HTTP_DBG (1,
@@ -1149,18 +1158,11 @@ http_connect_connection (session_endpoint_cfg_t *sep)
   if ((error = vnet_connect (cargs)))
     return error;
 
-  ho = session_alloc_for_half_open (&hc->connection);
-  ho->app_wrk_index = app_wrk->wrk_index;
-  ho->ho_index = app_worker_add_half_open (app_wrk, session_handle (ho));
-  ho->opaque = sep->opaque;
-  ho->session_type =
-    session_type_from_proto_and_ip (TRANSPORT_PROTO_HTTP, sep->is_ip4);
   hc->hc_tc_session_handle = cargs->sh;
-  hc->c_s_index = ho->session_index;
   props = application_segment_manager_properties (app);
   hc->app_rx_fifo_size = props->rx_fifo_size;
 
-  return 0;
+  return hc_index;
 }
 
 static int
@@ -1179,7 +1181,7 @@ http_connect_stream (u64 parent_handle, u32 *req_index)
     }
 
   rh.as_u32 = hs->connection_index;
-  if (rh.version != HTTP_VERSION_2)
+  if (rh.version < HTTP_VERSION_2)
     {
       HTTP_DBG (1, "%U multiplexing not supported", format_http_version,
 		rh.version);
@@ -1700,6 +1702,35 @@ http_transport_cleanup_ho (u32 ho_hc_index)
   http_ho_conn_free (ho_hc);
 }
 
+static int
+http_session_attribute (u32 rh, clib_thread_index_t thread_index, u8 is_get,
+			transport_endpt_attr_t *attr)
+{
+  http_req_handle_t hr_handle = { .as_u32 = rh };
+  u32 hc_index = http_vfts[hr_handle.version].hc_index_get_by_req_index (
+    hr_handle.req_index, thread_index);
+  http_conn_t *hc = http_conn_get_w_thread (hc_index, thread_index);
+  session_t *ts;
+
+  if (!is_get)
+    return -1;
+
+  switch (attr->type)
+    {
+    case TRANSPORT_ENDPT_ATTR_TLS_PEER_CERT:
+      ts = session_get_from_handle (hc->hc_tc_session_handle);
+      if (session_transport_attribute (ts, 1 /* is_get */, attr) < 0)
+	return -1;
+      break;
+    case TRANSPORT_ENDPT_ATTR_NEXT_TRANSPORT:
+      attr->next_transport = hc->hc_tc_session_handle;
+      break;
+    default:
+      return -1;
+    }
+  return 0;
+}
+
 static const transport_proto_vft_t http_proto = {
   .enable = http_transport_enable,
   .connect = http_transport_connect,
@@ -1716,6 +1747,7 @@ static const transport_proto_vft_t http_proto = {
   .get_listener = http_transport_get_listener,
   .get_half_open = http_transport_get_ho,
   .get_transport_endpoint = http_transport_get_endpoint,
+  .attribute = http_session_attribute,
   .format_connection = format_http_transport_connection,
   .format_listener = format_http_transport_listener,
   .format_half_open = format_http_transport_half_open,
@@ -1723,7 +1755,7 @@ static const transport_proto_vft_t http_proto = {
     .name = "http",
     .short_name = "H",
     .tx_type = TRANSPORT_TX_INTERNAL,
-    .service_type = TRANSPORT_SERVICE_APP,
+    .service_type = TRANSPORT_SERVICE_VC,
   },
 };
 
@@ -1905,11 +1937,3 @@ VLIB_PLUGIN_REGISTER () = {
   .description = "Hypertext Transfer Protocol (HTTP)",
   .default_disabled = 0,
 };
-
-/*
- * fd.io coding-style-patch-verification: ON
- *
- * Local Variables:
- * eval: (c-set-style "gnu")
- * End:
- */

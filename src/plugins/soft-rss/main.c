@@ -104,10 +104,18 @@ soft_rss_config (vlib_main_t __clib_unused *vm,
   soft_rss_rt_data_t *rt;
   u32 n_threads = 0;
   clib_thread_index_t ti;
-  u8 ip4 = config->ip4_only == 1 || config->ip6_only == 0;
-  u8 ip6 = config->ip6_only == 1 || config->ip4_only == 0;
+  soft_rss_type_t type4 = config->ipv4_type != SOFT_RSS_TYPE_NOT_SET ?
+			    config->ipv4_type :
+			    config->type;
+  soft_rss_type_t type6 = config->ipv6_type != SOFT_RSS_TYPE_NOT_SET ?
+			    config->ipv6_type :
+			    config->type;
 
-  ASSERT (config->ip4_only + config->ip6_only < 2);
+  if (type4 == SOFT_RSS_TYPE_NOT_SET || type6 == SOFT_RSS_TYPE_NOT_SET)
+    return clib_error_return (0, "RSS type not set");
+
+  if (type4 == SOFT_RSS_TYPE_DISABLED && type6 == SOFT_RSS_TYPE_DISABLED)
+    return clib_error_return (0, "both IPv4 and IPv6 cannot be disabled");
 
   if (config->type >= SOFT_RSS_N_TYPES)
     return clib_error_return (0, "invalid rss type %u", config->type);
@@ -136,7 +144,8 @@ soft_rss_config (vlib_main_t __clib_unused *vm,
     }
 
   *rt = (soft_rss_rt_data_t){
-    .type = config->type,
+    .ipv4_type = type4,
+    .ipv6_type = type6,
     .match_offset = 12 + config->l2_hdr_offset,
   };
 
@@ -166,44 +175,29 @@ soft_rss_config (vlib_main_t __clib_unused *vm,
   ip6_src_off = STRUCT_OFFSET_OF (soft_rss_match_template_t, ip6.src_address);
   ip6_dst_off = STRUCT_OFFSET_OF (soft_rss_match_template_t, ip6.dst_address);
 
-  switch (config->type)
-    {
-    case SOFT_RSS_TYPE_2_TUPLE:
-      if (ip4)
-	soft_rss_add_ip4_match (rt, -1, ip4_src_off, 8);
-      if (ip6)
-	soft_rss_add_ip6_match (rt, -1, ip6_src_off, 32);
-      break;
-    case SOFT_RSS_TYPE_SRC_IP:
-      if (ip4)
-	soft_rss_add_ip4_match (rt, -1, ip4_src_off, 4);
-      if (ip6)
-	soft_rss_add_ip6_match (rt, -1, ip6_src_off, 16);
-      break;
-    case SOFT_RSS_TYPE_DST_IP:
-      if (ip4)
-	soft_rss_add_ip4_match (rt, -1, ip4_dst_off, 4);
-      if (ip6)
-	soft_rss_add_ip6_match (rt, -1, ip6_dst_off, 16);
-      break;
-    case SOFT_RSS_TYPE_4_TUPLE:
-      if (ip4)
-	soft_rss_add_ip4_match (rt, IP_PROTOCOL_TCP, ip4_src_off, 12);
-      if (ip6)
-	soft_rss_add_ip6_match (rt, IP_PROTOCOL_TCP, ip6_src_off, 36);
-      if (ip4)
-	soft_rss_add_ip4_match (rt, IP_PROTOCOL_UDP, ip4_src_off, 12);
-      if (ip6)
-	soft_rss_add_ip6_match (rt, IP_PROTOCOL_UDP, ip6_src_off, 36);
-      if (ip4)
-	soft_rss_add_ip4_match (rt, -1, ip4_src_off, 8);
-      if (ip6)
-	soft_rss_add_ip6_match (rt, -1, ip6_src_off, 32);
-      break;
-    default:
-      ASSERT (0);
-      break;
-    }
+  if (type4 == SOFT_RSS_TYPE_SRC_IP)
+    soft_rss_add_ip4_match (rt, -1, ip4_src_off, 4);
+  if (type6 == SOFT_RSS_TYPE_SRC_IP)
+    soft_rss_add_ip6_match (rt, -1, ip6_src_off, 16);
+
+  if (type4 == SOFT_RSS_TYPE_DST_IP)
+    soft_rss_add_ip4_match (rt, -1, ip4_dst_off, 4);
+  if (type6 == SOFT_RSS_TYPE_DST_IP)
+    soft_rss_add_ip6_match (rt, -1, ip6_dst_off, 16);
+
+  if (type4 == SOFT_RSS_TYPE_4_TUPLE)
+    soft_rss_add_ip4_match (rt, IP_PROTOCOL_TCP, ip4_src_off, 12);
+  if (type6 == SOFT_RSS_TYPE_4_TUPLE)
+    soft_rss_add_ip6_match (rt, IP_PROTOCOL_TCP, ip6_src_off, 36);
+  if (type4 == SOFT_RSS_TYPE_4_TUPLE)
+    soft_rss_add_ip4_match (rt, IP_PROTOCOL_UDP, ip4_src_off, 12);
+  if (type6 == SOFT_RSS_TYPE_4_TUPLE)
+    soft_rss_add_ip6_match (rt, IP_PROTOCOL_UDP, ip6_src_off, 36);
+
+  if (type4 == SOFT_RSS_TYPE_4_TUPLE || type4 == SOFT_RSS_TYPE_2_TUPLE)
+    soft_rss_add_ip4_match (rt, -1, ip4_src_off, 8);
+  if (type6 == SOFT_RSS_TYPE_4_TUPLE || type6 == SOFT_RSS_TYPE_2_TUPLE)
+    soft_rss_add_ip6_match (rt, -1, ip6_src_off, 32);
 
   rt->key = clib_toeplitz_hash_key_init (config->key, vec_len (config->key));
 
@@ -237,13 +231,14 @@ soft_rss_clear (vlib_main_t __clib_unused *vm, u32 hw_if_index)
   return 0;
 }
 
-clib_error_t *
-soft_rss_enable (vlib_main_t __clib_unused *vm, u32 hw_if_index)
+static clib_error_t *
+soft_rss_enable_disable (u32 hw_if_index, u8 is_enable)
 {
   soft_rss_main_t *sm = &soft_rss_main;
   vnet_main_t *vnm = vnet_get_main ();
   vnet_hw_interface_t *hi = vnet_get_hw_interface_or_null (vnm, hw_if_index);
   soft_rss_rt_data_t *rt;
+  char *action = is_enable ? "enable" : "disable";
   int rv;
 
   if (!hi)
@@ -256,61 +251,54 @@ soft_rss_enable (vlib_main_t __clib_unused *vm, u32 hw_if_index)
 			      format_vnet_sw_if_index_name, vnm,
 			      hi->sw_if_index);
 
-  if (rt->enabled)
-    return clib_error_return (0, "soft-rss already enabled on interface %U",
-			      format_vnet_sw_if_index_name, vnm,
+  if (!!rt->enabled == !!is_enable)
+    return clib_error_return (0, "soft-rss already %sd on interface %U",
+			      action, format_vnet_sw_if_index_name, vnm,
 			      hi->sw_if_index);
 
   rv = vnet_feature_enable_disable ("device-input", "soft-rss",
-				    hi->sw_if_index, 1, 0, 0);
+				    hi->sw_if_index, is_enable, 0, 0);
   if (rv)
-    return clib_error_return (0, "soft-rss enable failed on interface %U: %d",
-			      format_vnet_sw_if_index_name, vnm,
+    return clib_error_return (0, "soft-rss %s failed on interface %U: %d",
+			      action, format_vnet_sw_if_index_name, vnm,
 			      hi->sw_if_index, rv);
 
-  rt->enabled = 1;
+  rv = vnet_feature_enable_disable ("port-rx-eth", "soft-rss", hi->sw_if_index,
+				    is_enable, 0, 0);
+  if (rv)
+    {
+      vnet_feature_enable_disable ("device-input", "soft-rss", hi->sw_if_index,
+				   !is_enable, 0, 0);
+      return clib_error_return (0, "soft-rss %s failed on interface %U: %d",
+				action, format_vnet_sw_if_index_name, vnm,
+				hi->sw_if_index, rv);
+    }
+
+  rt->enabled = is_enable;
 
   return 0;
+}
+
+clib_error_t *
+soft_rss_enable (vlib_main_t __clib_unused *vm, u32 hw_if_index)
+{
+  return soft_rss_enable_disable (hw_if_index, 1);
 }
 
 clib_error_t *
 soft_rss_disable (vlib_main_t __clib_unused *vm, u32 hw_if_index)
 {
-  soft_rss_main_t *sm = &soft_rss_main;
-  vnet_main_t *vnm = vnet_get_main ();
-  vnet_hw_interface_t *hi = vnet_get_hw_interface_or_null (vnm, hw_if_index);
-  soft_rss_rt_data_t *rt;
-  int rv;
-
-  if (!hi)
-    return clib_error_return (0, "invalid hardware interface index %u",
-			      hw_if_index);
-
-  if (hi->sw_if_index >= vec_len (sm->rt_by_sw_if_index) ||
-      (rt = sm->rt_by_sw_if_index[hi->sw_if_index]) == 0)
-    return clib_error_return (0, "soft-rss not configured on interface %U",
-			      format_vnet_sw_if_index_name, vnm,
-			      hi->sw_if_index);
-
-  if (!rt->enabled)
-    return clib_error_return (0, "soft-rss already disabled on interface %U",
-			      format_vnet_sw_if_index_name, vnm,
-			      hi->sw_if_index);
-
-  rv = vnet_feature_enable_disable ("device-input", "soft-rss",
-				    hi->sw_if_index, 0, 0, 0);
-  if (rv)
-    return clib_error_return (0, "soft-rss disable failed on interface %U: %d",
-			      format_vnet_sw_if_index_name, vnm,
-			      hi->sw_if_index, rv);
-
-  rt->enabled = 0;
-
-  return 0;
+  return soft_rss_enable_disable (hw_if_index, 0);
 }
 
 VNET_FEATURE_INIT (soft_rss_feature, static) = {
   .arc_name = "device-input",
+  .node_name = "soft-rss",
+  .runs_before = VNET_FEATURES ("ethernet-input"),
+};
+
+VNET_FEATURE_INIT (soft_rss_feature2, static) = {
+  .arc_name = "port-rx-eth",
   .node_name = "soft-rss",
   .runs_before = VNET_FEATURES ("ethernet-input"),
 };

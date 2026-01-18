@@ -117,11 +117,11 @@ F:	src/plugins/af_packet
 
 VNET TAP Drivers
 I:	tap
-Y:	src/vnet/devices/tap/FEATURE.yaml
+Y:	src/plugins/tap/FEATURE.yaml
 M:	Damjan Marion <damarion@cisco.com>
 M:	Steven Luong <sluong@cisco.com>
 M:	Mohsin Kazmi <mohsin.kazmi14@gmail.com>
-F:	src/vnet/devices/tap/
+F:	src/plugins/tap/
 
 VNET Vhost User Driver
 I:	vhost
@@ -415,25 +415,25 @@ I:	pnat
 M:	Ole Troan <ot@cisco.com>
 F:	src/plugins/nat/pnat/
 
-Plugin - AVF Device driver
-I:	avf
+Device drivers (new infra)
+I:	drivers
 M:	Damjan Marion <damarion@cisco.com>
-F:	src/plugins/avf/
+F:	src/drivers
 
-Plugin - IAVF Device driver
+IAVF Device driver
 I:	iavf
 M:	Damjan Marion <damarion@cisco.com>
-F:	src/plugins/dev_iavf/
+F:	src/drivers/iavf/
 
-Plugin - IGE Device driver
+IGE Device driver
 I:	ige
 M:	Damjan Marion <damarion@cisco.com>
-F:	src/plugins/dev_ige/
+F:	src/drivers/ige/
 
-Plugin - Amazon Elastic Network Adapter (ENA) device driver
-I:	ena
+Marvell Armada device driver
+I:	armada
 M:	Damjan Marion <damarion@cisco.com>
-F:	src/plugins/dev_ena/
+F:	src/drivers/armada/
 
 Plugin - Marvell Octeon device driver
 I:	octeon
@@ -514,11 +514,6 @@ Plugin - memif device driver
 I:	memif
 M:	Damjan Marion <damarion@cisco.com>
 F:	src/plugins/memif/
-
-Plugin - Marvell Armada device driver
-I:	armada
-M:	Damjan Marion <damarion@cisco.com>
-F:	src/plugins/dev_armada/
 
 Plugin - performance counter
 I:	perfmon
@@ -913,20 +908,13 @@ I:	hs-test
 M:	Florin Coras <fcoras@cisco.com>
 M:	Matus Fabian <matfabia@cisco.com>
 M:	Adrian Villin <avillin@cisco.com>
-F:	test-c/hs-test
+F:	test/hs-test
 
 Kube test framework
 I:	kube-test
 M:	Florin Coras <fcoras@cisco.com>
 M:	Adrian Villin <avillin@cisco.com>
-F:	test-c/kube-test
-
-THE REST
-I:	misc
-M:	vpp-dev Mailing List <vpp-dev@fd.io>
-C:	Missing Maintainer
-F:	*
-F:	*/
+F:	extras/kube-test
 
 Netmap
 I:	netmap
@@ -954,3 +942,15 @@ I:	sasc
 M:	Ole Troan <otroan@employees.org>
 M:	Mohammed Hawari <mohammed@hawari.fr>
 F:	src/plugins/sasc/
+
+GitHub Actions
+I: gha
+M: Dave Wallace <dwallacelf@gmail.com>
+F: .github/
+
+THE REST
+I:	misc
+M:	vpp-dev Mailing List <vpp-dev@fd.io>
+C:	Missing Maintainer
+F:	*
+F:	*/

@@ -1,17 +1,8 @@
 /*
+ * SPDX-License-Identifier: Apache-2.0
  * Copyright (c) 2019 Cisco and/or its affiliates.
- * Licensed under the Apache License, Version 2.0 (the "License");
- * you may not use this file except in compliance with the License.
- * You may obtain a copy of the License at:
- *
- *     http://www.apache.org/licenses/LICENSE-2.0
- *
- * Unless required by applicable law or agreed to in writing, software
- * distributed under the License is distributed on an "AS IS" BASIS,
- * WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
- * See the License for the specific language governing permissions and
- * limitations under the License.
  */
+
 #include <vppinfra/rbtree.h>
 #include <vlib/vlib.h>
 
@@ -72,13 +63,13 @@ rbtree_test_basic (vlib_main_t * vm, unformat_input_t * input)
 
   RBTREE_TEST (rb_tree_n_nodes (rt) == n_keys + 1, "all nodes added");
 
-  n = rb_tree_max_subtree (rt, rb_node (rt, rt->root));
+  n = rb_tree_max_subtree (rt, rb_node (rt, rb_tree_root (rt)));
   RBTREE_TEST (n->key == n_keys - 1, "max should be %u", n_keys - 1);
 
-  n = rb_tree_min_subtree (rt, rb_node (rt, rt->root));
+  n = rb_tree_min_subtree (rt, rb_node (rt, rb_tree_root (rt)));
   RBTREE_TEST (n->key == 0, "min should be %u", 0);
 
-  n = rb_tree_search_subtree (rt, rb_node (rt, rt->root), n_keys / 2);
+  n = rb_tree_search_subtree (rt, rb_node (rt, rb_tree_root (rt)), n_keys / 2);
   RBTREE_TEST (n->key == n_keys / 2, "search result should be %u",
 	       n_keys / 2);
 
@@ -90,7 +81,7 @@ rbtree_test_basic (vlib_main_t * vm, unformat_input_t * input)
   RBTREE_TEST (aux->key == n_keys / 2 - 1, "predecessor should be %u is %u",
 	       n_keys / 2 - 1, aux->key);
 
-  n = rb_tree_search_subtree (rt, rb_node (rt, rt->root), n_keys);
+  n = rb_tree_search_subtree (rt, rb_node (rt, rb_tree_root (rt)), n_keys);
   RBTREE_TEST (rb_node_is_tnil (rt, n), "search result should be tnil");
 
   /*
@@ -99,19 +90,19 @@ rbtree_test_basic (vlib_main_t * vm, unformat_input_t * input)
   for (i = 0; i < n_keys; i += 2)
     rb_tree_del (rt, i);
 
-  n = rb_tree_max_subtree (rt, rb_node (rt, rt->root));
+  n = rb_tree_max_subtree (rt, rb_node (rt, rb_tree_root (rt)));
   RBTREE_TEST (n->key == n_keys - 1, "max should be %u", n_keys - 1);
 
-  n = rb_tree_min_subtree (rt, rb_node (rt, rt->root));
+  n = rb_tree_min_subtree (rt, rb_node (rt, rb_tree_root (rt)));
   RBTREE_TEST (n->key == 1, "min should be %u and is %u", 1, n->key);
 
   search_key = 2 * ((n_keys - 1) / 4);
-  n = rb_tree_search_subtree (rt, rb_node (rt, rt->root), search_key);
+  n = rb_tree_search_subtree (rt, rb_node (rt, rb_tree_root (rt)), search_key);
   RBTREE_TEST (rb_node_is_tnil (rt, n), "search result for %u should be tnil",
 	       search_key);
 
   search_key += 1;
-  n = rb_tree_search_subtree (rt, rb_node (rt, rt->root), search_key);
+  n = rb_tree_search_subtree (rt, rb_node (rt, rb_tree_root (rt)), search_key);
   RBTREE_TEST (n->key == search_key, "search result should be %u",
 	       search_key);
 
@@ -132,19 +123,19 @@ rbtree_test_basic (vlib_main_t * vm, unformat_input_t * input)
   RBTREE_TEST (rb_tree_n_nodes (rt) == n_keys + 1, "number nodes %u is %u",
 	       n_keys + 1, rb_tree_n_nodes (rt));
 
-  n = rb_tree_max_subtree (rt, rb_node (rt, rt->root));
+  n = rb_tree_max_subtree (rt, rb_node (rt, rb_tree_root (rt)));
   RBTREE_TEST (n->key == n_keys - 1, "max should be %u", n_keys - 1);
 
-  n = rb_tree_min_subtree (rt, rb_node (rt, rt->root));
+  n = rb_tree_min_subtree (rt, rb_node (rt, rb_tree_root (rt)));
   RBTREE_TEST (n->key == 0, "min should be %u", 0);
 
   search_key = 2 * ((n_keys - 1) / 4);
-  n = rb_tree_search_subtree (rt, rb_node (rt, rt->root), search_key);
+  n = rb_tree_search_subtree (rt, rb_node (rt, rb_tree_root (rt)), search_key);
   RBTREE_TEST (n->key == search_key, "search result should be %u",
 	       search_key);
 
   search_key += 1;
-  n = rb_tree_search_subtree (rt, rb_node (rt, rt->root), search_key);
+  n = rb_tree_search_subtree (rt, rb_node (rt, rb_tree_root (rt)), search_key);
   RBTREE_TEST (n->key == search_key, "search result should be %u",
 	       search_key);
 
@@ -169,14 +160,14 @@ rbtree_test_basic (vlib_main_t * vm, unformat_input_t * input)
   RBTREE_TEST (rb_tree_n_nodes (rt) == 1, "number nodes %u is %u",
 	       1, rb_tree_n_nodes (rt));
 
-  n = rb_tree_min_subtree (rt, rb_node (rt, rt->root));
+  n = rb_tree_min_subtree (rt, rb_node (rt, rb_tree_root (rt)));
   RBTREE_TEST (rb_node_is_tnil (rt, n), "min should be tnil");
 
-  n = rb_tree_max_subtree (rt, rb_node (rt, rt->root));
+  n = rb_tree_max_subtree (rt, rb_node (rt, rb_tree_root (rt)));
   RBTREE_TEST (rb_node_is_tnil (rt, n), "max should be tnil");
 
   search_key = 2 * ((n_keys - 1) / 4);
-  n = rb_tree_search_subtree (rt, rb_node (rt, rt->root), search_key);
+  n = rb_tree_search_subtree (rt, rb_node (rt, rb_tree_root (rt)), search_key);
   RBTREE_TEST (rb_node_is_tnil (rt, n), "search result should be tnil");
 
   /*
@@ -187,7 +178,7 @@ rbtree_test_basic (vlib_main_t * vm, unformat_input_t * input)
     rb_tree_add (rt, test_vals[i]);
 
   search_key = 13;
-  n = rb_tree_search_subtree (rt, rb_node (rt, rt->root), search_key);
+  n = rb_tree_search_subtree (rt, rb_node (rt, rb_tree_root (rt)), search_key);
   RBTREE_TEST (n->key == search_key, "search result should be %u",
 	       search_key);
 
@@ -238,17 +229,8 @@ done:
   return 0;
 }
 
-VLIB_CLI_COMMAND (rbtree_test_command, static) =
-{
+VLIB_CLI_COMMAND (rbtree_test_command, static) = {
   .path = "test rbtree",
   .short_help = "internal rbtree unit tests",
   .function = rbtree_test,
 };
-
-/*
- * fd.io coding-style-patch-verification: ON
- *
- * Local Variables:
- * eval: (c-set-style "gnu")
- * End:
- */

@@ -1,16 +1,6 @@
 /*
+ * SPDX-License-Identifier: Apache-2.0
  * Copyright (c) 2018-2019 Cisco and/or its affiliates.
- * Licensed under the Apache License, Version 2.0 (the "License");
- * you may not use this file except in compliance with the License.
- * You may obtain a copy of the License at:
- *
- *     http://www.apache.org/licenses/LICENSE-2.0
- *
- * Unless required by applicable law or agreed to in writing, software
- * distributed under the License is distributed on an "AS IS" BASIS,
- * WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
- * See the License for the specific language governing permissions and
- * limitations under the License.
  */
 
 #include <vnet/session/application_interface.h>
@@ -102,13 +92,6 @@ tls_add_app_q_evt (app_worker_t *app_wrk, session_t *app_session)
 {
   app_worker_add_event (app_wrk, app_session, SESSION_IO_EVT_RX);
   return 0;
-}
-
-tls_alpn_proto_t
-tls_get_alpn_selected (u32 ctx_handle, clib_thread_index_t thread_index)
-{
-  tls_ctx_t *ctx = tls_ctx_get_w_thread (ctx_handle, thread_index);
-  return ctx->alpn_selected;
 }
 
 u32
@@ -677,6 +660,7 @@ tls_connect (transport_endpoint_cfg_t * tep)
   ctx->tls_type = sep->transport_proto;
   ctx->ckpair_index = ccfg->ckpair_index;
   ctx->ca_trust_index = ccfg->ca_trust_index;
+  ctx->verify_cfg = ccfg->verify_cfg;
   ctx->c_proto = TRANSPORT_PROTO_TLS;
   ctx->c_flags |= TRANSPORT_CONNECTION_F_NO_LOOKUP;
   if (ccfg->hostname[0])
@@ -805,6 +789,8 @@ tls_start_listen (u32 app_listener_index, transport_endpoint_cfg_t *tep)
   lctx->tls_ctx_engine = engine_type;
   lctx->tls_type = sep->transport_proto;
   lctx->ckpair_index = ccfg->ckpair_index;
+  lctx->ca_trust_index = ccfg->ca_trust_index;
+  lctx->verify_cfg = ccfg->verify_cfg;
   lctx->c_s_index = app_listener_index;
   lctx->c_flags |= TRANSPORT_CONNECTION_F_NO_LOOKUP;
   for (i = 0; i < sizeof (ccfg->alpn_protos) && ccfg->alpn_protos[i]; i++)
@@ -1151,6 +1137,33 @@ tls_enable (vlib_main_t * vm, u8 is_en)
   return 0;
 }
 
+static int
+tls_session_attribute (u32 ctx_handle, clib_thread_index_t thread_index,
+		       u8 is_get, transport_endpt_attr_t *attr)
+{
+  tls_ctx_t *ctx = tls_ctx_get_w_thread (ctx_handle, thread_index);
+
+  if (!is_get)
+    return -1;
+
+  switch (attr->type)
+    {
+    case TRANSPORT_ENDPT_ATTR_TLS_PEER_CERT:
+      if (tls_ctx_attribute (ctx, 1 /* is_get */, attr) < 0)
+	return -1;
+      break;
+    case TRANSPORT_ENDPT_ATTR_TLS_ALPN:
+      attr->tls_alpn = ctx->alpn_selected;
+      break;
+    case TRANSPORT_ENDPT_ATTR_NEXT_TRANSPORT:
+      attr->next_transport = ctx->tls_session_handle;
+      break;
+    default:
+      return -1;
+    }
+  return 0;
+}
+
 static const transport_proto_vft_t tls_proto = {
   .enable = tls_enable,
   .connect = tls_connect,
@@ -1163,12 +1176,12 @@ static const transport_proto_vft_t tls_proto = {
   .get_half_open = tls_half_open_get,
   .cleanup_ho = tls_cleanup_ho,
   .custom_tx = tls_custom_tx_callback,
+  .attribute = tls_session_attribute,
   .format_connection = format_tls_connection,
   .format_half_open = format_tls_half_open,
   .format_listener = format_tls_listener,
   .get_transport_endpoint = tls_transport_endpoint_get,
   .get_transport_listener_endpoint = tls_transport_listener_endpoint_get,
-  .get_alpn_selected = tls_get_alpn_selected,
   .transport_options = {
     .name = "tls",
     .short_name = "J",
@@ -1299,7 +1312,6 @@ static const transport_proto_vft_t dtls_proto = {
   .format_listener = format_tls_listener,
   .get_transport_endpoint = tls_transport_endpoint_get,
   .get_transport_listener_endpoint = tls_transport_listener_endpoint_get,
-  .get_alpn_selected = tls_get_alpn_selected,
   .transport_options = {
     .name = "dtls",
     .short_name = "D",
@@ -1392,11 +1404,3 @@ vnet_tls_get_main (void)
 {
   return &tls_main;
 }
-
-/*
- * fd.io coding-style-patch-verification: ON
- *
- * Local Variables:
- * eval: (c-set-style "gnu")
- * End:
- */

@@ -1,16 +1,6 @@
 /*
+ * SPDX-License-Identifier: Apache-2.0
  * Copyright (c) 2015-2019 Cisco and/or its affiliates.
- * Licensed under the Apache License, Version 2.0 (the "License");
- * you may not use this file except in compliance with the License.
- * You may obtain a copy of the License at:
- *
- *     http://www.apache.org/licenses/LICENSE-2.0
- *
- * Unless required by applicable law or agreed to in writing, software
- * distributed under the License is distributed on an "AS IS" BASIS,
- * WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
- * See the License for the specific language governing permissions and
- * limitations under the License.
  */
 
 #include <vnet/vnet.h>
@@ -337,9 +327,10 @@ mq_notify_close_subscribers (u32 app_index, session_handle_t sh,
   if (!app)
     return;
 
-  for (i = 0; i < f->shr->n_subscribers; i++)
+  for (i = 0; i < f->signals->n_subscribers; i++)
     {
-      if (!(app_wrk = application_get_worker (app, f->shr->subscribers[i])))
+      if (!(app_wrk =
+	      application_get_worker (app, f->signals->subscribers[i])))
 	continue;
       mq_send_session_close_evt (app_wrk, sh, SESSION_CTRL_EVT_DISCONNECTED);
     }
@@ -424,11 +415,7 @@ mq_send_session_connected_cb (u32 app_wrk_index, u32 api_context,
       m.ct_segment_handle = cct->segment_handle;
     }
 
-  /* Setup client session index in advance, in case data arrives
-   * before the app processes message and updates it
-   * Maybe this needs to be done via a reply message from app */
-  s->rx_fifo->shr->client_session_index = api_context;
-  s->tx_fifo->shr->client_session_index = api_context;
+  /* Setup app session index based on api_context */
   s->rx_fifo->app_session_index = api_context;
   s->tx_fifo->app_session_index = api_context;
 
@@ -484,6 +471,7 @@ mq_send_session_bound_cb (u32 app_wrk_index, u32 api_context,
       m.rx_fifo = fifo_segment_fifo_offset (wrk_ls->rx_fifo);
       m.tx_fifo = fifo_segment_fifo_offset (wrk_ls->tx_fifo);
       m.segment_handle = session_segment_handle (wrk_ls);
+      m.cl_sh_handle = session_handle (wrk_ls);
 
       /* Keep pointer to app session */
       wrk_ls->rx_fifo->app_session_index = api_context;
@@ -2476,11 +2464,3 @@ session_api_hookup (vlib_main_t *vm)
 }
 
 VLIB_API_INIT_FUNCTION (session_api_hookup);
-
-/*
- * fd.io coding-style-patch-verification: ON
- *
- * Local Variables:
- * eval: (c-set-style "gnu")
- * End:
- */

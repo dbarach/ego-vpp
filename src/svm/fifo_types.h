@@ -1,16 +1,6 @@
 /*
+ * SPDX-License-Identifier: Apache-2.0
  * Copyright (c) 2020 Cisco and/or its affiliates.
- * Licensed under the Apache License, Version 2.0 (the "License");
- * you may not use this file except in compliance with the License.
- * You may obtain a copy of the License at:
- *
- *     http://www.apache.org/licenses/LICENSE-2.0
- *
- * Unless required by applicable law or agreed to in writing, software
- * distributed under the License is distributed on an "AS IS" BASIS,
- * WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
- * See the License for the specific language governing permissions and
- * limitations under the License.
  */
 
 #ifndef SRC_SVM_FIFO_TYPES_H_
@@ -60,31 +50,48 @@ typedef struct
   u32 action;
 } svm_fifo_trace_elem_t;
 
+#define foreach_svm_fifo_signal_type                                          \
+  _ (volatile u32, has_event)	 /**< non-zero if deq event exists */         \
+  _ (volatile u32, want_deq_ntf) /**< producer wants nudge */                 \
+  _ (volatile u32, has_deq_ntf)	 /**< consumer received req */                \
+  _ (volatile u8, n_subscribers) /**< number of subscribers for io evts */    \
+  _ (u8, subscribers[SVM_FIFO_MAX_EVT_SUBSCRIBERS])                           \
+  _ (u32, deq_thresh) /**< fifo threshold used for notifications */
+
+typedef struct svm_fifo_signals_
+{
+#define _(t, n) t n;
+  foreach_svm_fifo_signal_type
+#undef _
+} svm_fifo_signals_t;
+
 typedef struct svm_fifo_shr_
 {
   CLIB_CACHE_LINE_ALIGN_MARK (shared);
   fs_sptr_t start_chunk;	/**< first chunk in fifo chunk list */
   fs_sptr_t end_chunk;		/**< end chunk in fifo chunk list */
-  volatile u32 has_event;	/**< non-zero if deq event exists */
   u32 min_alloc;		/**< min chunk alloc if space available */
   u32 size;			/**< size of the fifo in bytes */
-  u32 master_session_index;	/**< session layer session index */
-  u32 client_session_index;	/**< app session index */
   u8 slice_index;		/**< segment slice for fifo */
   fs_sptr_t next;		/**< next in freelist */
+  union
+  {
+    struct
+    {
+#define _(t, n) t n;
+      foreach_svm_fifo_signal_type
+#undef _
+    };
+    svm_fifo_signals_t signals;
+  };
 
   CLIB_CACHE_LINE_ALIGN_MARK (consumer);
-  fs_sptr_t head_chunk;		/**< tracks chunk where head lands */
-  u32 head;			/**< fifo head position/byte */
-  volatile u32 want_deq_ntf;	/**< producer wants nudge */
-  volatile u32 has_deq_ntf;
-  u32 deq_thresh; /**< fifo threshold used for notifications */
+  fs_sptr_t head_chunk; /**< tracks chunk where head lands */
+  u32 head;		/**< fifo head position/byte */
 
   CLIB_CACHE_LINE_ALIGN_MARK (producer);
-  u32 tail;			/**< fifo tail position/byte */
-  fs_sptr_t tail_chunk;		/**< tracks chunk where tail lands */
-  volatile u8 n_subscribers;	/**< Number of subscribers for io events */
-  u8 subscribers[SVM_FIFO_MAX_EVT_SUBSCRIBERS];
+  fs_sptr_t tail_chunk; /**< tracks chunk where tail lands */
+  u32 tail;		/**< fifo tail position/byte */
 } svm_fifo_shared_t;
 
 struct _svm_fifo;
@@ -117,6 +124,7 @@ typedef struct _svm_fifo
   };
   u32 segment_manager; /**< session layer segment manager index */
   u32 segment_index;   /**< segment index in segment manager */
+  svm_fifo_signals_t *signals;
 
   struct _svm_fifo *next; /**< prev in active chain */
   struct _svm_fifo *prev; /**< prev in active chain */
@@ -213,11 +221,3 @@ fs_chunk_sptr (fifo_segment_header_t *fsh, svm_fifo_chunk_t *c)
 }
 
 #endif /* SRC_SVM_FIFO_TYPES_H_ */
-
-/*
- * fd.io coding-style-patch-verification: ON
- *
- * Local Variables:
- * eval: (c-set-style "gnu")
- * End:
- */

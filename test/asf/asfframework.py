@@ -165,15 +165,15 @@ def _is_platform_aarch64():
 is_platform_aarch64 = _is_platform_aarch64()
 
 
-def _is_distro_debian11():
+def _is_distro_debian12():
     with open("/etc/os-release") as f:
         for line in f.readlines():
-            if "bullseye" in line:
+            if "bookworm" in line:
                 return True
     return False
 
 
-is_distro_debian11 = _is_distro_debian11()
+is_distro_debian12 = _is_distro_debian12()
 
 
 class KeepAliveReporter(object):
@@ -221,8 +221,8 @@ class TestCaseTag(Enum):
     FIXME_VPP_WORKERS = 2
     # marks the suites broken when ASan is enabled
     FIXME_ASAN = 3
-    # marks suites broken on Debian-11
-    FIXME_DEBIAN11 = 4
+    # marks suites broken on Debian-12
+    FIXME_DEBIAN12 = 4
     # marks suites broken on debug vpp image
     FIXME_VPP_DEBUG = 5
 
@@ -241,7 +241,7 @@ def create_tag_decorator(e):
 tag_run_solo = create_tag_decorator(TestCaseTag.RUN_SOLO)
 tag_fixme_vpp_workers = create_tag_decorator(TestCaseTag.FIXME_VPP_WORKERS)
 tag_fixme_asan = create_tag_decorator(TestCaseTag.FIXME_ASAN)
-tag_fixme_debian11 = create_tag_decorator(TestCaseTag.FIXME_DEBIAN11)
+tag_fixme_debian12 = create_tag_decorator(TestCaseTag.FIXME_DEBIAN12)
 tag_fixme_vpp_debug = create_tag_decorator(TestCaseTag.FIXME_VPP_DEBUG)
 
 
@@ -382,6 +382,9 @@ class VppAsfTestCase(CPUInterface, unittest.TestCase):
             coredump_size,
             "runtime-dir",
             cls.tempdir,
+            "cli-listen ",
+            cls.get_cli_sock_path(),
+            " ",
             "}",
             "api-trace",
             "{",
@@ -575,6 +578,10 @@ class VppAsfTestCase(CPUInterface, unittest.TestCase):
     @classmethod
     def get_api_sock_path(cls):
         return "%s/api.sock" % cls.tempdir
+
+    @classmethod
+    def get_cli_sock_path(cls):
+        return "%s/cli.sock" % cls.tempdir
 
     @classmethod
     def get_memif_sock_path(cls):

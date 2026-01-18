@@ -1,19 +1,8 @@
-/*
- * lcp_enthernet_node.c : linux control plane ethernet node
- *
+/* SPDX-License-Identifier: Apache-2.0
  * Copyright (c) 2021 Cisco and/or its affiliates.
- * Licensed under the Apache License, Version 2.0 (the "License");
- * you may not use this file except in compliance with the License.
- * You may obtain a copy of the License at:
- *
- *     http://www.apache.org/licenses/LICENSE-2.0
- *
- * Unless required by applicable law or agreed to in writing, software
- * distributed under the License is distributed on an "AS IS" BASIS,
- * WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
- * See the License for the specific language governing permissions and
- * limitations under the License.
  */
+
+/* lcp_enthernet_node.c : linux control plane ethernet node */
 
 #include <sys/socket.h>
 #include <linux/if.h>
@@ -480,10 +469,12 @@ VLIB_REGISTER_NODE (lcp_xc_ip4) = { .name = "linux-cp-xc-ip4",
 VNET_FEATURE_INIT (lcp_xc_ip4_ucast_node, static) = {
   .arc_name = "ip4-unicast",
   .node_name = "linux-cp-xc-ip4",
+  .runs_after = VNET_FEATURES ("ip4-qos-record", "ip4-qos-store"),
 };
 VNET_FEATURE_INIT (lcp_xc_ip4_mcast_node, static) = {
   .arc_name = "ip4-multicast",
   .node_name = "linux-cp-xc-ip4",
+  .runs_after = VNET_FEATURES ("ip4-qos-record", "ip4-qos-store"),
 };
 
 VLIB_REGISTER_NODE (lcp_xc_ip6) = { .name = "linux-cp-xc-ip6",
@@ -495,10 +486,12 @@ VLIB_REGISTER_NODE (lcp_xc_ip6) = { .name = "linux-cp-xc-ip6",
 VNET_FEATURE_INIT (lcp_xc_ip6_ucast_node, static) = {
   .arc_name = "ip6-unicast",
   .node_name = "linux-cp-xc-ip6",
+  .runs_after = VNET_FEATURES ("ip6-qos-record", "ip6-qos-store"),
 };
 VNET_FEATURE_INIT (lcp_xc_ip6_mcast_node, static) = {
   .arc_name = "ip6-multicast",
   .node_name = "linux-cp-xc-ip6",
+  .runs_after = VNET_FEATURES ("ip6-qos-record", "ip6-qos-store"),
 };
 
 typedef enum
@@ -596,6 +589,7 @@ VLIB_REGISTER_NODE (
 VNET_FEATURE_INIT (lcp_xc_mpls_node, static) = {
   .arc_name = "mpls-input",
   .node_name = "linux-cp-xc-mpls",
+  .runs_after = VNET_FEATURES ("mpls-qos-record"),
 };
 
 typedef enum
@@ -719,11 +713,13 @@ VLIB_REGISTER_NODE (lcp_xc_l3_ip4_node) = {
 VNET_FEATURE_INIT (lcp_xc_node_l3_ip4_unicast, static) = {
   .arc_name = "ip4-unicast",
   .node_name = "linux-cp-xc-l3-ip4",
+  .runs_after = VNET_FEATURES ("ip4-qos-record", "ip4-qos-store"),
 };
 
 VNET_FEATURE_INIT (lcp_xc_node_l3_ip4_multicaast, static) = {
   .arc_name = "ip4-multicast",
   .node_name = "linux-cp-xc-l3-ip4",
+  .runs_after = VNET_FEATURES ("ip4-qos-record", "ip4-qos-store"),
 };
 
 VLIB_REGISTER_NODE (lcp_xc_l3_ip6_node) = {
@@ -742,11 +738,13 @@ VLIB_REGISTER_NODE (lcp_xc_l3_ip6_node) = {
 VNET_FEATURE_INIT (lcp_xc_node_l3_ip6_unicast, static) = {
   .arc_name = "ip6-unicast",
   .node_name = "linux-cp-xc-l3-ip6",
+  .runs_after = VNET_FEATURES ("ip6-qos-record", "ip6-qos-store"),
 };
 
 VNET_FEATURE_INIT (lcp_xc_node_l3_ip6_multicast, static) = {
   .arc_name = "ip6-multicast",
   .node_name = "linux-cp-xc-l3-ip6",
+  .runs_after = VNET_FEATURES ("ip6-qos-record", "ip6-qos-store"),
 };
 
 #define foreach_lcp_arp                                                       \
@@ -1096,11 +1094,3 @@ VNET_FEATURE_INIT (lcp_arp_host_arp_feat, static) = {
   .node_name = "linux-cp-arp-host",
   .runs_before = VNET_FEATURES ("arp-reply"),
 };
-
-/*
- * fd.io coding-style-patch-verification: ON
- *
- * Local Variables:
- * eval: (c-set-style "gnu")
- * End:
- */

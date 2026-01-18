@@ -95,6 +95,11 @@ quic_engine_type_str (quic_engine_type_t engine_type)
 }
 extern vlib_node_registration_t quic_input_node;
 
+typedef i64 quic_stream_id_t;
+#define QUIC_INVALID_STREAM_ID INT64_MAX
+
+typedef i64 quic_app_err_code_t;
+
 typedef enum
 {
 #define quic_error(f, n, s, d) QUIC_ERROR_##f,
@@ -112,6 +117,7 @@ typedef enum quic_ctx_conn_state_
   QUIC_CONN_STATE_PASSIVE_CLOSING_APP_CLOSED,
   QUIC_CONN_STATE_PASSIVE_CLOSING_QUIC_CLOSED,
   QUIC_CONN_STATE_ACTIVE_CLOSING,
+  QUIC_CONN_STATE_TRANSPORT_CLOSED,
 } quic_ctx_conn_state_t;
 
 typedef enum quic_packet_type_
@@ -128,6 +134,12 @@ typedef enum quic_ctx_flags_
 {
   QUIC_F_IS_STREAM = (1 << 0),
   QUIC_F_IS_LISTENER = (1 << 1),
+  QUIC_F_STREAM_TX_DRAINED = (1 << 2),
+  QUIC_F_NO_APP_SESSION = (1 << 3),
+  QUIC_F_STREAM_DESCHEDULED = (1 << 4),
+  QUIC_F_APP_CLOSED = (1 << 5),
+  QUIC_F_APP_CLOSED_TX = (1 << 6),
+  QUIC_F_STREAM_TX_CLOSED = (1 << 7),
 } quic_ctx_flags_t;
 
 typedef enum quic_cc_type
@@ -170,7 +182,7 @@ typedef struct quic_ctx_
   u32 crypto_context_index;
   u8 alpn_protos[4];
   tls_alpn_proto_t alpn_selected;
-  u8 flags;
+  quic_ctx_flags_t flags;
 
   struct
   {
@@ -182,7 +194,7 @@ typedef struct quic_ctx_
   u16 rmt_port;
   ip46_address_t lcl_ip;
   u16 lcl_port;
-
+  quic_app_err_code_t app_err_code;
 } quic_ctx_t;
 
 /* Make sure our custom fields don't overlap with the fields we use in
@@ -388,7 +400,6 @@ typedef struct quic_engine_vft_
 		  clib_thread_index_t thread_index, struct sockaddr *sa);
   int (*connect_stream) (void *conn, void **quic_stream,
 			 quic_stream_data_t **quic_stream_data, u8 is_unidir);
-  void (*connect_stream_error_reset) (void *quic_stream);
   void (*connection_migrate) (quic_ctx_t *ctx);
   void (*connection_get_stats) (void *conn, quic_stats_t *conn_stats);
   int (*udp_session_rx_packets) (session_t *udp_session);
@@ -397,8 +408,11 @@ typedef struct quic_engine_vft_
   int (*send_packets) (quic_ctx_t *ctx);
   u8 *(*format_connection_stats) (u8 *s, va_list *args);
   u8 *(*format_stream_stats) (u8 *s, va_list *args);
-  i64 (*stream_get_stream_id) (quic_ctx_t *ctx);
+  quic_stream_id_t (*stream_get_stream_id) (quic_ctx_t *ctx);
   void (*proto_on_close) (u32 ctx_index, clib_thread_index_t thread_index);
+  void (*proto_on_half_close) (u32 ctx_index,
+			       clib_thread_index_t thread_index);
+  void (*proto_on_reset) (u32 ctx_index, clib_thread_index_t thread_index);
   void (*transport_closed) (quic_ctx_t *ctx);
 } quic_engine_vft_t;
 
@@ -415,11 +429,3 @@ u8 *format_quic_half_open (u8 *s, va_list *args);
 u8 *format_quic_connection (u8 *s, va_list *args);
 
 #endif /* __included_quic_h__ */
-
-/*
- * fd.io coding-style-patch-verification: ON
- *
- * Local Variables:
- * eval: (c-set-style "gnu")
- * End:
- */

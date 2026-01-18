@@ -1,16 +1,6 @@
 /*
+ * SPDX-License-Identifier: Apache-2.0
  * Copyright (c) 2017-2021 Cisco and/or its affiliates.
- * Licensed under the Apache License, Version 2.0 (the "License");
- * you may not use this file except in compliance with the License.
- * You may obtain a copy of the License at:
- *
- *     http://www.apache.org/licenses/LICENSE-2.0
- *
- * Unless required by applicable law or agreed to in writing, software
- * distributed under the License is distributed on an "AS IS" BASIS,
- * WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
- * See the License for the specific language governing permissions and
- * limitations under the License.
  */
 
 #include <unistd.h>
@@ -165,8 +155,8 @@ vts_session_close (vcl_test_session_t *conn)
   if (!conn->is_open)
     return;
 
-  if (vt->protos[vsm->server_cfg.proto]->close)
-    vt->protos[vsm->server_cfg.proto]->close (conn);
+  if (vt->protos[vsm->server_cfg.proto]->cleanup)
+    vt->protos[vsm->server_cfg.proto]->cleanup (conn);
 
   vppcom_session_close (conn->fd);
   conn->is_open = 0;
@@ -227,6 +217,7 @@ vts_test_cmd (vcl_test_server_worker_t *wrk, vcl_test_session_t *conn,
 	  if (tc->is_open)
 	    {
 	      vts_session_cleanup (tc);
+	      wrk->nfds--;
 	      continue;
 	    }
 	  /* Only relevant if all connections previously closed */
@@ -284,7 +275,7 @@ vts_server_process_rx (vcl_test_session_t *conn, int rx_bytes)
       if (vsm->use_ds)
 	(void) vcl_test_write_ds (conn);
       else
-	(void) vcl_test_write (conn, conn->rxbuf, rx_bytes);
+	(void) conn->write (conn, conn->rxbuf, rx_bytes);
     }
 
   if (vsm->use_ds)
@@ -384,7 +375,7 @@ vts_accept_client (vcl_test_server_worker_t *wrk, int listen_fd)
     vtinf ("Got a connection -- fd = %d (0x%08x) on listener fd = %d (0x%08x)",
 	   conn->fd, conn->fd, listen_fd, listen_fd);
 
-  ev.events = EPOLLET | EPOLLIN;
+  ev.events = EPOLLET | EPOLLIN | EPOLLRDHUP;
   ev.data.u64 = conn - wrk->conn_pool;
   rv = vppcom_epoll_ctl (wrk->epfd, EPOLL_CTL_ADD, conn->fd, &ev);
   if (rv < 0)
@@ -672,6 +663,27 @@ vts_inc_stats_check (vcl_test_session_t *ts)
     }
 }
 
+static inline void
+vts_worker_write_test_data (vcl_test_server_worker_t *wrk)
+{
+  vcl_test_server_main_t *vsm = &vcl_server_main;
+  vcl_test_session_t *conn;
+  int i;
+
+  if (vsm->ctrl && vsm->ctrl->cfg.test == HS_TEST_TYPE_BI &&
+      vcl_test_main.server_data_source == VT_TEST_DATA_SOURCE)
+    {
+      for (i = 0; i < wrk->conn_pool_size; i++)
+	{
+	  conn = &wrk->conn_pool[i];
+	  if (conn == vsm->ctrl)
+	    continue;
+	  if (conn->is_open)
+	    (void) conn->write (conn, 0, 0);
+	}
+    }
+}
+
 static void *
 vts_worker_loop (void *arg)
 {
@@ -681,9 +693,12 @@ vts_worker_loop (void *arg)
   vcl_test_session_t *conn;
   int i, rx_bytes, num_ev;
   hs_test_cfg_t *rx_cfg;
+  const vcl_test_proto_vft_t *tp;
 
   if (wrk->wrk_index)
     vts_worker_init (wrk);
+
+  tp = vcl_test_main.protos[vsm->server_cfg.proto];
 
   while (1)
     {
@@ -697,6 +712,8 @@ vts_worker_loop (void *arg)
 	}
       else if (num_ev == 0)
 	{
+	  /* if we want to send test data without reading do it now */
+	  vts_worker_write_test_data (wrk);
 	  continue;
 	}
       for (i = 0; i < num_ev; i++)
@@ -711,9 +728,18 @@ vts_worker_loop (void *arg)
 		{
 		  vtinf ("ctrl session went away");
 		  vsm->ctrl = 0;
+		  vts_wrk_cleanup_all (wrk);
 		}
-	      vts_session_cleanup (conn);
-	      wrk->nfds--;
+	      else
+		{
+		  /* if close return 1 we can delete session, otherwise keep
+		   * session (e.g. quic half-close stream) */
+		  if (!tp->close (conn, ep_evts[i].events))
+		    continue;
+		  vtinf ("deleting %d (fd %d)", conn->session_index, conn->fd);
+		  vts_session_cleanup (conn);
+		  wrk->nfds--;
+		}
 	      continue;
 	    }
 
@@ -732,8 +758,9 @@ vts_worker_loop (void *arg)
 	      continue;
 	    }
 
-	  /* at this point ctrl session must be valid */
-	  ASSERT (vsm->ctrl);
+	  /* drop event if we don't have ctrl session in place first */
+	  if (!vsm->ctrl)
+	    continue;
 
 	  if (ep_evts[i].data.u32 == VCL_TEST_DATA_LISTENER)
 	    {
@@ -743,7 +770,8 @@ vts_worker_loop (void *arg)
 	    }
 	  else if (vppcom_session_is_connectable_listener (conn->fd))
 	    {
-	      vts_accept_client (wrk, conn->fd);
+	      while (vts_accept_client (wrk, conn->fd))
+		;
 	      continue;
 	    }
 
@@ -753,7 +781,8 @@ vts_worker_loop (void *arg)
 
 	  if (!wrk->wrk_index && conn->fd == vsm->ctrl->fd)
 	    {
-	      rx_bytes = conn->read (conn, conn->rxbuf, conn->rxbuf_size);
+	      rx_bytes =
+		vppcom_session_read (conn->fd, conn->rxbuf, conn->rxbuf_size);
 	      rx_cfg = (hs_test_cfg_t *) conn->rxbuf;
 	      if (rx_cfg->magic == HS_TEST_CFG_CTRL_MAGIC)
 		{
@@ -788,6 +817,9 @@ vts_worker_loop (void *arg)
 		{
 		  if (errno == ECONNRESET)
 		    {
+		      /* if reset return 1 it was not expected (failure) */
+		      if (!tp->reset (conn))
+			continue;
 		      vtinf ("Connection reset by remote peer.\n");
 		      goto fail;
 		    }
@@ -903,11 +935,3 @@ main (int argc, char **argv)
 
   return vsm->worker_fails;
 }
-
-/*
- * fd.io coding-style-patch-verification: ON
- *
- * Local Variables:
- * eval: (c-set-style "gnu")
- * End:
- */

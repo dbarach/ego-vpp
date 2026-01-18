@@ -1,20 +1,11 @@
-/*
+/* SPDX-License-Identifier: Apache-2.0
  * Copyright (c) 2016-2019 Cisco and/or its affiliates.
  * Copyright (c) 2019 Arm Limited
  * Copyright (c) 2010-2017 Intel Corporation and/or its affiliates.
  * Copyright (c) 2007-2009 Kip Macy kmacy@freebsd.org
- * Inspired from DPDK rte_ring.h (SPSC only) (derived from freebsd bufring.h).
- * Licensed under the Apache License, Version 2.0 (the "License");
- * you may not use this file except in compliance with the License.
- * You may obtain a copy of the License at:
- *
- *     http://www.apache.org/licenses/LICENSE-2.0
- *
- * Unless required by applicable law or agreed to in writing, software
- * distributed under the License is distributed on an "AS IS" BASIS,
- * WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
- * See the License for the specific language governing permissions and
- * limitations under the License.
+ */
+
+/* Inspired from DPDK rte_ring.h (SPSC only) (derived from freebsd bufring.h).
  */
 #ifndef __included_ssvm_fifo_h__
 #define __included_ssvm_fifo_h__
@@ -436,20 +427,6 @@ void svm_fifo_dequeue_drop_all (svm_fifo_t * f);
 int svm_fifo_segments (svm_fifo_t *f, u32 offset, svm_fifo_seg_t *fs,
 		       u32 *n_segs, u32 max_bytes);
 /**
- * Add io events subscriber to list
- *
- * @param f	fifo
- * @param sub	subscriber opaque index (typically app worker index)
- */
-void svm_fifo_add_subscriber (svm_fifo_t * f, u8 sub);
-/**
- * Remove io events subscriber form list
- *
- * @param f	fifo
- * @param sub	subscriber index to be removed
- */
-void svm_fifo_del_subscriber (svm_fifo_t * f, u8 subscriber);
-/**
  * Number of out-of-order segments for fifo
  *
  * @param f	fifo
@@ -642,18 +619,6 @@ u32 svm_fifo_max_read_chunk (svm_fifo_t * f);
 u32 svm_fifo_max_write_chunk (svm_fifo_t * f);
 
 /**
- * Fifo number of subscribers getter
- *
- * @param f	fifo
- * @return	number of subscribers
- */
-static inline u8
-svm_fifo_n_subscribers (svm_fifo_t * f)
-{
-  return f->shr->n_subscribers;
-}
-
-/**
  * Check if fifo has out-of-order data
  *
  * @param f	fifo
@@ -720,7 +685,7 @@ svm_fifo_set_size (svm_fifo_t * f, u32 size)
 static inline int
 svm_fifo_has_event (svm_fifo_t * f)
 {
-  return f->shr->has_event;
+  return f->signals->has_event;
 }
 
 /**
@@ -734,7 +699,7 @@ svm_fifo_has_event (svm_fifo_t * f)
 always_inline u8
 svm_fifo_set_event (svm_fifo_t * f)
 {
-  return !clib_atomic_swap_rel_n (&f->shr->has_event, 1);
+  return !clib_atomic_swap_rel_n (&f->signals->has_event, 1);
 }
 
 /**
@@ -747,7 +712,7 @@ svm_fifo_set_event (svm_fifo_t * f)
 always_inline void
 svm_fifo_unset_event (svm_fifo_t * f)
 {
-  clib_atomic_swap_acq_n (&f->shr->has_event, 0);
+  clib_atomic_swap_acq_n (&f->signals->has_event, 0);
 }
 
 /**
@@ -761,7 +726,7 @@ svm_fifo_unset_event (svm_fifo_t * f)
 static inline void
 svm_fifo_add_want_deq_ntf (svm_fifo_t * f, u8 ntf_type)
 {
-  __atomic_or_fetch (&f->shr->want_deq_ntf, ntf_type, __ATOMIC_RELEASE);
+  __atomic_or_fetch (&f->signals->want_deq_ntf, ntf_type, __ATOMIC_RELEASE);
 }
 
 /**
@@ -775,7 +740,7 @@ svm_fifo_add_want_deq_ntf (svm_fifo_t * f, u8 ntf_type)
 static inline void
 svm_fifo_del_want_deq_ntf (svm_fifo_t * f, u8 ntf_type)
 {
-  __atomic_and_fetch (&f->shr->want_deq_ntf, ~ntf_type, __ATOMIC_RELEASE);
+  __atomic_and_fetch (&f->signals->want_deq_ntf, ~ntf_type, __ATOMIC_RELEASE);
 }
 
 /**
@@ -789,7 +754,7 @@ svm_fifo_del_want_deq_ntf (svm_fifo_t * f, u8 ntf_type)
 static inline u32
 svm_fifo_get_want_deq_ntf (svm_fifo_t *f)
 {
-  return clib_atomic_load_acq_n (&f->shr->want_deq_ntf);
+  return clib_atomic_load_acq_n (&f->signals->want_deq_ntf);
 }
 
 /**
@@ -810,7 +775,7 @@ svm_fifo_clear_deq_ntf (svm_fifo_t * f)
   /* Set the flag if want ntf if full or empty was requested */
   if (want_deq_ntf &
       (SVM_FIFO_WANT_DEQ_NOTIF_IF_FULL | SVM_FIFO_WANT_DEQ_NOTIF_IF_EMPTY))
-    clib_atomic_store_rel_n (&f->shr->has_deq_ntf, 1);
+    clib_atomic_store_rel_n (&f->signals->has_deq_ntf, 1);
   if (want_deq_ntf & SVM_FIFO_WANT_DEQ_NOTIF)
     svm_fifo_del_want_deq_ntf (f, SVM_FIFO_WANT_DEQ_NOTIF);
 }
@@ -826,7 +791,7 @@ svm_fifo_clear_deq_ntf (svm_fifo_t * f)
 static inline u32
 svm_fifo_has_deq_ntf (svm_fifo_t *f)
 {
-  return clib_atomic_load_acq_n (&f->shr->has_deq_ntf);
+  return clib_atomic_load_acq_n (&f->signals->has_deq_ntf);
 }
 
 /**
@@ -841,7 +806,7 @@ svm_fifo_has_deq_ntf (svm_fifo_t *f)
 static inline void
 svm_fifo_reset_has_deq_ntf (svm_fifo_t * f)
 {
-  f->shr->has_deq_ntf = 0;
+  f->signals->has_deq_ntf = 0;
 }
 
 /**
@@ -862,7 +827,7 @@ svm_fifo_needs_deq_ntf (svm_fifo_t * f, u32 n_last_deq)
   if (want_ntf == SVM_FIFO_NO_DEQ_NOTIF)
     return 0;
   else if (want_ntf & SVM_FIFO_WANT_DEQ_NOTIF)
-    return (svm_fifo_max_enqueue (f) >= f->shr->deq_thresh);
+    return (svm_fifo_max_enqueue (f) >= f->signals->deq_thresh);
   if (want_ntf & SVM_FIFO_WANT_DEQ_NOTIF_IF_FULL)
     {
       u32 max_deq = svm_fifo_max_dequeue_cons (f);
@@ -880,6 +845,34 @@ svm_fifo_needs_deq_ntf (svm_fifo_t * f, u32 n_last_deq)
 }
 
 /**
+ * Add io events subscriber to list
+ *
+ * @param f	fifo
+ * @param sub	subscriber opaque index (typically app worker index)
+ */
+void svm_fifo_add_subscriber (svm_fifo_t *f, u8 sub);
+
+/**
+ * Remove io events subscriber form list
+ *
+ * @param f	fifo
+ * @param sub	subscriber index to be removed
+ */
+void svm_fifo_del_subscriber (svm_fifo_t *f, u8 subscriber);
+
+/**
+ * Fifo number of subscribers getter
+ *
+ * @param f	fifo
+ * @return	number of subscribers
+ */
+static inline u8
+svm_fifo_n_subscribers (svm_fifo_t *f)
+{
+  return f->signals->n_subscribers;
+}
+
+/**
  * Set the fifo dequeue threshold which will be used for notifications.
  *
  * Note: If not set, by default threshold is zero, equivalent to
@@ -888,15 +881,7 @@ svm_fifo_needs_deq_ntf (svm_fifo_t * f, u32 n_last_deq)
 static inline void
 svm_fifo_set_deq_thresh (svm_fifo_t *f, u32 thresh)
 {
-  f->shr->deq_thresh = thresh;
+  f->signals->deq_thresh = thresh;
 }
 
 #endif /* __included_ssvm_fifo_h__ */
-
-/*
- * fd.io coding-style-patch-verification: ON
- *
- * Local Variables:
- * eval: (c-set-style "gnu")
- * End:
- */

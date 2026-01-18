@@ -1,16 +1,6 @@
 /*
+ * SPDX-License-Identifier: Apache-2.0
  * Copyright (c) 2017-2020 Cisco and/or its affiliates.
- * Licensed under the Apache License, Version 2.0 (the "License");
- * you may not use this file except in compliance with the License.
- * You may obtain a copy of the License at:
- *
- *     http://www.apache.org/licenses/LICENSE-2.0
- *
- * Unless required by applicable law or agreed to in writing, software
- * distributed under the License is distributed on an "AS IS" BASIS,
- * WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
- * See the License for the specific language governing permissions and
- * limitations under the License.
  */
 
 #ifndef included_vppcom_h
@@ -189,7 +179,15 @@ typedef enum
   VPPCOM_ATTR_GET_EXT_ENDPT,
   VPPCOM_ATTR_GET_COOKIE,
   VPPCOM_ATTR_SET_COOKIE,
+  VPPCOM_ATTR_GET_STREAM_FLAGS,
+  VPPCOM_ATTR_SET_STREAM_FLAGS,
+  VPPCOM_ATTR_GET_APP_PROTO_ERR_CODE,
+  VPPCOM_ATTR_SET_APP_PROTO_ERR_CODE,
 } vppcom_attr_op_t;
+
+typedef enum {
+  VPPCOM_STREAM_F_UNIDIRECTIONAL = 1 << 0,
+} vppcom_stream_flags_t;
 
 typedef struct _vcl_poll
 {
@@ -254,6 +252,7 @@ extern void vppcom_app_destroy (void);
 extern int vppcom_session_create (uint8_t proto, uint8_t is_nonblocking);
 extern int vppcom_session_shutdown (uint32_t session_handle, int how);
 extern int vppcom_session_close (uint32_t session_handle);
+extern int vppcom_session_terminate (uint32_t session_handle);
 extern int vppcom_session_bind (uint32_t session_handle, vppcom_endpt_t * ep);
 extern int vppcom_session_listen (uint32_t session_handle, uint32_t q_len);
 
@@ -306,6 +305,7 @@ extern void vppcom_session_free_segments (uint32_t session_handle,
 extern int vppcom_add_cert_key_pair (vppcom_cert_key_pair_t *ckpair);
 extern int vppcom_del_cert_key_pair (uint32_t ckpair_index);
 extern int vppcom_unformat_proto (uint8_t * proto, char *proto_str);
+extern int vppcom_session_is_stream (uint32_t session_handle);
 extern int vppcom_session_is_connectable_listener (uint32_t session_handle);
 extern int vppcom_session_listener (uint32_t session_handle);
 extern int vppcom_session_n_accepted (uint32_t session_handle);
@@ -365,11 +365,3 @@ extern int vppcom_worker_is_detached (void);
 /* clang-format on */
 
 #endif /* included_vppcom_h */
-
-/*
- * fd.io coding-style-patch-verification: ON
- *
- * Local Variables:
- * eval: (c-set-style "gnu")
- * End:
- */
