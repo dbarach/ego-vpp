@@ -11,13 +11,9 @@
 #include <vppinfra/rbtree.h>
 #include <vppinfra/lock.h>
 
-#define FS_MIN_LOG2_CHUNK_SZ 12 /**< also min fifo size */
+#define FS_MIN_LOG2_CHUNK_SZ 10 /**< also min fifo size */
 #define FS_MAX_LOG2_CHUNK_SZ 22 /**< 4MB max chunk size */
-#define FS_CHUNK_VEC_LEN     11 /**< number of chunk sizes */
-
-STATIC_ASSERT ((FS_MAX_LOG2_CHUNK_SZ - FS_MIN_LOG2_CHUNK_SZ) ==
-		 FS_CHUNK_VEC_LEN - 1,
-	       "update chunk sizes");
+#define FS_CHUNK_VEC_LEN     (1 + FS_MAX_LOG2_CHUNK_SZ - FS_MIN_LOG2_CHUNK_SZ) /**< number of chunk sizes */
 
 #define SVM_FIFO_TRACE 			(0)
 #define SVM_FIFO_MAX_EVT_SUBSCRIBERS	7
@@ -106,6 +102,8 @@ typedef struct _svm_fifo
   svm_fifo_chunk_t *ooo_deq;	 /**< last chunk used for ooo dequeue */
   svm_fifo_chunk_t *ooo_enq;	 /**< last chunk used for ooo enqueue */
   ooo_segment_t *ooo_segments;	 /**< Pool of ooo segments */
+  u32 non_shared_cons_head;	 /**< Local copy of consumer head */
+  u32 non_shared_prod_tail;	 /**< Local copy of producer tail */
   u32 ooos_list_head;		 /**< Head of out-of-order linked-list */
   u32 ooos_newest;		 /**< Last segment to have been updated */
 

@@ -163,7 +163,8 @@ typedef struct session_worker_
 
 typedef int (session_fifo_rx_fn) (session_worker_t * wrk,
 				  vlib_node_runtime_t * node,
-				  session_evt_elt_t * e, int *n_tx_packets);
+				  session_evt_elt_t * e, int *n_tx_packets,
+				  clib_memcpy_batch_t *batch);
 
 extern session_fifo_rx_fn session_tx_fifo_peek_and_snd;
 extern session_fifo_rx_fn session_tx_fifo_dequeue_and_snd;
@@ -630,7 +631,8 @@ u32 session_tx_fifo_dequeue_drop (transport_connection_t * tc, u32 max_bytes);
 int session_enqueue_dgram_connection_cl (session_t *s,
 					 session_dgram_hdr_t *hdr,
 					 vlib_buffer_t *b, u8 proto,
-					 u8 queue_event);
+					 u8 queue_event,
+					 clib_memcpy_batch_t *batch);
 void session_fifo_tuning (session_t *s, svm_fifo_t *f, session_ft_action_t act,
 			  u32 len);
 
@@ -672,7 +674,7 @@ session_enqueue_discard_chain_bytes (vlib_main_t *vm, vlib_buffer_t *b,
  */
 always_inline int
 session_enqueue_chain_tail (session_t *s, vlib_buffer_t *b, u32 offset,
-			    u8 is_in_order)
+			    u8 is_in_order, clib_memcpy_batch_t *batch)
 {
   vlib_buffer_t *chain_b;
   u32 chain_bi;
@@ -709,9 +711,10 @@ session_enqueue_chain_tail (session_t *s, vlib_buffer_t *b, u32 offset,
 		      0;
 	}
 
-      written = svm_fifo_enqueue_segments (s->rx_fifo, wrk->rx_segs,
-					   vec_len (wrk->rx_segs),
-					   1 /* allow partial*/);
+      written = svm_fifo_enqueue_segments_batch (s->rx_fifo, wrk->rx_segs,
+						 vec_len (wrk->rx_segs),
+						 1 /* allow partial*/,
+						 batch);
 
       vec_reset_length (wrk->rx_segs);
 
@@ -734,7 +737,7 @@ session_enqueue_chain_tail (session_t *s, vlib_buffer_t *b, u32 offset,
 	  if (!len)
 	    continue;
 
-	  rv = svm_fifo_enqueue_with_offset (s->rx_fifo, offset, len, data);
+	  rv = svm_fifo_enqueue_with_offset_batch (s->rx_fifo, offset, len, data, batch);
 	  if (rv)
 	    {
 	      clib_warning ("failed to enqueue multi-buffer seg");
@@ -766,7 +769,8 @@ session_enqueue_chain_tail (session_t *s, vlib_buffer_t *b, u32 offset,
 always_inline int
 session_enqueue_stream_connection (transport_connection_t *tc,
 				   vlib_buffer_t *b, u32 offset,
-				   u8 queue_event, u8 is_in_order)
+				   u8 queue_event, u8 is_in_order,
+				   clib_memcpy_batch_t *batch)
 {
   session_t *s;
   int enqueued = 0, rv, in_order_off;
@@ -775,23 +779,23 @@ session_enqueue_stream_connection (transport_connection_t *tc,
 
   if (is_in_order)
     {
-      enqueued = svm_fifo_enqueue (s->rx_fifo, b->current_length,
-				   vlib_buffer_get_current (b));
+      enqueued = svm_fifo_enqueue_batch (s->rx_fifo, b->current_length,
+					 vlib_buffer_get_current (b), batch);
       if (PREDICT_FALSE ((b->flags & VLIB_BUFFER_NEXT_PRESENT) &&
 			 enqueued >= 0))
 	{
 	  in_order_off = enqueued > b->current_length ? enqueued : 0;
-	  rv = session_enqueue_chain_tail (s, b, in_order_off, 1);
+	  rv = session_enqueue_chain_tail (s, b, in_order_off, 1, batch);
 	  if (rv > 0)
 	    enqueued += rv;
 	}
     }
   else
     {
-      rv = svm_fifo_enqueue_with_offset (s->rx_fifo, offset, b->current_length,
-					 vlib_buffer_get_current (b));
+      rv = svm_fifo_enqueue_with_offset_batch (s->rx_fifo, offset, b->current_length,
+					       vlib_buffer_get_current (b), batch);
       if (PREDICT_FALSE ((b->flags & VLIB_BUFFER_NEXT_PRESENT) && !rv))
-	session_enqueue_chain_tail (s, b, offset + b->current_length, 0);
+	session_enqueue_chain_tail (s, b, offset + b->current_length, 0, batch);
       /* if something was enqueued, report even this as success for ooo
        * segment handling */
       return rv;
@@ -819,7 +823,8 @@ always_inline int
 session_enqueue_dgram_connection_inline (session_t *s,
 					 session_dgram_hdr_t *hdr,
 					 vlib_buffer_t *b, u8 proto,
-					 u8 queue_event, u32 is_cl)
+					 u8 queue_event, u32 is_cl,
+					 clib_memcpy_batch_t *batch)
 {
   int rv;
 
@@ -833,7 +838,7 @@ session_enqueue_dgram_connection_inline (session_t *s,
 				   b->current_length } };
 
       rv =
-	svm_fifo_enqueue_segments (s->rx_fifo, segs, 2, 0 /* allow_partial */);
+	svm_fifo_enqueue_segments_batch (s->rx_fifo, segs, 2, 0 /* allow_partial */, batch);
     }
   else
     {
@@ -855,8 +860,8 @@ session_enqueue_dgram_connection_inline (session_t *s,
 	    break;
 	  it = vlib_get_buffer (vm, it->next_buffer);
 	}
-      rv = svm_fifo_enqueue_segments (s->rx_fifo, segs, n_segs,
-				      0 /* allow partial */);
+      rv = svm_fifo_enqueue_segments_batch (s->rx_fifo, segs, n_segs,
+					    0 /* allow partial */, batch);
       vec_free (segs);
     }
 
@@ -881,18 +886,22 @@ session_enqueue_dgram_connection_inline (session_t *s,
 
 always_inline int
 session_enqueue_dgram_connection (session_t *s, session_dgram_hdr_t *hdr,
-				  vlib_buffer_t *b, u8 proto, u8 queue_event)
+				  vlib_buffer_t *b, u8 proto, u8 queue_event,
+				  clib_memcpy_batch_t *batch)
 {
   return session_enqueue_dgram_connection_inline (s, hdr, b, proto,
-						  queue_event, 0 /* is_cl */);
+						  queue_event, 0 /* is_cl */,
+						  batch);
 }
 
 always_inline int
 session_enqueue_dgram_connection2 (session_t *s, session_dgram_hdr_t *hdr,
-				   vlib_buffer_t *b, u8 proto, u8 queue_event)
+				   vlib_buffer_t *b, u8 proto, u8 queue_event,
+				   clib_memcpy_batch_t *batch)
 {
   return session_enqueue_dgram_connection_inline (s, hdr, b, proto,
-						  queue_event, 1 /* is_cl */);
+						  queue_event, 1 /* is_cl */,
+						  batch);
 }
 
 always_inline void
@@ -1241,5 +1250,11 @@ session_rule_table_is_enabled (void)
 
   return (smm->rt_engine_type == RT_BACKEND_ENGINE_RULE_TABLE);
 }
+
+#define SESSION_CLIB_MEMCPY_BATCH_ENABLE 1
+#define SESSION_CLIB_MEMCPY_BATCH_INIT(n)	\
+  (SESSION_CLIB_MEMCPY_BATCH_ENABLE		\
+   ? CLIB_MEMCPY_BATCH_ALLOC_STACK(n)		\
+   : CLIB_MEMCPY_NO_BATCH)
 
 #endif /* __included_session_h__ */

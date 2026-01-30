@@ -2333,7 +2333,7 @@ read_again:
 	}
     }
   else
-    rv = app_recv_stream_raw (rx_fifo, buf, n, 0, peek);
+    rv = app_recv_stream_raw (rx_fifo, buf, n, 0, peek, CLIB_MEMCPY_NO_BATCH);
 
   ASSERT (rv >= 0);
 
@@ -2562,7 +2562,8 @@ vppcom_session_write_inline (vcl_worker_t *wrk, vcl_session_t *s, void *buf,
   else
     {
       n_write = app_send_stream_raw (tx_fifo, s->vpp_evt_q, buf, n, et,
-				     0 /* do_evt */, SVM_Q_WAIT);
+				     0 /* do_evt */, SVM_Q_WAIT,
+				     CLIB_MEMCPY_NO_BATCH);
     }
 
   if (svm_fifo_set_event (s->tx_fifo))

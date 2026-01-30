@@ -1044,12 +1044,13 @@ session_tx_fill_dma_transfers_tail (session_worker_t *wrk,
 
 always_inline int
 session_tx_copy_data (session_worker_t *wrk, session_tx_context_t *ctx,
-		      vlib_buffer_t *b, u32 len_to_deq, u8 *data0)
+		      vlib_buffer_t *b, u32 len_to_deq, u8 *data0,
+		      clib_memcpy_batch_t *batch)
 {
   int n_bytes_read;
   if (PREDICT_TRUE (!wrk->dma_enabled))
     n_bytes_read =
-      svm_fifo_peek (ctx->s->tx_fifo, ctx->sp.tx_offset, len_to_deq, data0);
+      svm_fifo_peek_batch (ctx->s->tx_fifo, ctx->sp.tx_offset, len_to_deq, data0, batch);
   else
     n_bytes_read = session_tx_fill_dma_transfers (wrk, ctx, b);
   return n_bytes_read;
@@ -1057,12 +1058,13 @@ session_tx_copy_data (session_worker_t *wrk, session_tx_context_t *ctx,
 
 always_inline int
 session_tx_copy_data_tail (session_worker_t *wrk, session_tx_context_t *ctx,
-			   vlib_buffer_t *b, u32 len_to_deq, u8 *data)
+			   vlib_buffer_t *b, u32 len_to_deq, u8 *data,
+			   clib_memcpy_batch_t *batch)
 {
   int n_bytes_read;
   if (PREDICT_TRUE (!wrk->dma_enabled))
     n_bytes_read =
-      svm_fifo_peek (ctx->s->tx_fifo, ctx->sp.tx_offset, len_to_deq, data);
+      svm_fifo_peek_batch (ctx->s->tx_fifo, ctx->sp.tx_offset, len_to_deq, data, batch);
   else
     n_bytes_read =
       session_tx_fill_dma_transfers_tail (wrk, ctx, b, len_to_deq, data);
@@ -1071,7 +1073,8 @@ session_tx_copy_data_tail (session_worker_t *wrk, session_tx_context_t *ctx,
 
 always_inline void
 session_tx_fifo_chain_tail (session_worker_t *wrk, session_tx_context_t *ctx,
-			    vlib_buffer_t *b, u16 *n_bufs, u8 peek_data)
+			    vlib_buffer_t *b, u16 *n_bufs, u8 peek_data,
+			    clib_memcpy_batch_t *batch)
 {
   vlib_main_t *vm = wrk->vm;
   vlib_buffer_t *chain_b, *prev_b;
@@ -1099,7 +1102,7 @@ session_tx_fifo_chain_tail (session_worker_t *wrk, session_tx_context_t *ctx,
       if (peek_data)
 	{
 	  n_bytes_read =
-	    session_tx_copy_data_tail (wrk, ctx, b, len_to_deq, data);
+	    session_tx_copy_data_tail (wrk, ctx, b, len_to_deq, data, batch);
 	  ctx->sp.tx_offset += n_bytes_read;
 	}
       else
@@ -1115,7 +1118,7 @@ session_tx_fifo_chain_tail (session_worker_t *wrk, session_tx_context_t *ctx,
 	      deq_now = clib_min (hdr->data_length - hdr->data_offset,
 				  len_to_deq);
 	      offset = hdr->data_offset + SESSION_CONN_HDR_LEN;
-	      n_bytes_read = svm_fifo_peek (f, offset, deq_now, data);
+	      n_bytes_read = svm_fifo_peek_batch (f, offset, deq_now, data, batch);
 	      ASSERT (n_bytes_read > 0);
 
 	      hdr->data_offset += n_bytes_read;
@@ -1124,16 +1127,16 @@ session_tx_fifo_chain_tail (session_worker_t *wrk, session_tx_context_t *ctx,
 		  offset = hdr->data_length + SESSION_CONN_HDR_LEN;
 		  svm_fifo_dequeue_drop (f, offset);
 		  if (to_deq > n_bytes_read)
-		    svm_fifo_peek (ctx->s->tx_fifo, 0, sizeof (ctx->hdr),
-				   (u8 *) & ctx->hdr);
+		    svm_fifo_peek_batch (ctx->s->tx_fifo, 0, sizeof (ctx->hdr),
+					 (u8 *) & ctx->hdr, batch);
 		}
 	      else if (to_deq == n_bytes_read)
 		svm_fifo_overwrite_head (ctx->s->tx_fifo, (u8 *) & ctx->hdr,
 					 sizeof (session_dgram_pre_hdr_t));
 	    }
 	  else
-	    n_bytes_read = svm_fifo_dequeue (ctx->s->tx_fifo,
-					     len_to_deq, data);
+	    n_bytes_read = svm_fifo_dequeue_batch (ctx->s->tx_fifo,
+						   len_to_deq, data, batch);
 	}
       ASSERT (n_bytes_read == len_to_deq);
       chain_b->current_length = n_bytes_read;
@@ -1157,7 +1160,8 @@ session_tx_fifo_chain_tail (session_worker_t *wrk, session_tx_context_t *ctx,
 
 always_inline void
 session_tx_fill_buffer (session_worker_t *wrk, session_tx_context_t *ctx,
-			vlib_buffer_t *b, u16 *n_bufs, u8 peek_data)
+			vlib_buffer_t *b, u16 *n_bufs, u8 peek_data,
+			clib_memcpy_batch_t *batch)
 {
   u32 len_to_deq;
   u8 *data0;
@@ -1174,7 +1178,7 @@ session_tx_fill_buffer (session_worker_t *wrk, session_tx_context_t *ctx,
 
   if (peek_data)
     {
-      n_bytes_read = session_tx_copy_data (wrk, ctx, b, len_to_deq, data0);
+      n_bytes_read = session_tx_copy_data (wrk, ctx, b, len_to_deq, data0, batch);
       ASSERT (n_bytes_read > 0);
       /* Keep track of progress locally, transport is also supposed to
        * increment it independently when pushing the header */
@@ -1193,7 +1197,7 @@ session_tx_fill_buffer (session_worker_t *wrk, session_tx_context_t *ctx,
 	  deq_now = clib_min (hdr->data_length - hdr->data_offset,
 			      len_to_deq);
 	  offset = hdr->data_offset + SESSION_CONN_HDR_LEN;
-	  n_bytes_read = svm_fifo_peek (f, offset, deq_now, data0);
+	  n_bytes_read = svm_fifo_peek_batch (f, offset, deq_now, data0, batch);
 	  ASSERT (n_bytes_read > 0);
 
 	  if (transport_connection_is_cless (ctx->tc))
@@ -1219,8 +1223,8 @@ session_tx_fill_buffer (session_worker_t *wrk, session_tx_context_t *ctx,
 	}
       else
 	{
-	  n_bytes_read = svm_fifo_dequeue (ctx->s->tx_fifo,
-					   len_to_deq, data0);
+	  n_bytes_read = svm_fifo_dequeue_batch (ctx->s->tx_fifo,
+						 len_to_deq, data0, batch);
 	  ASSERT (n_bytes_read > 0);
 	}
     }
@@ -1232,7 +1236,7 @@ session_tx_fill_buffer (session_worker_t *wrk, session_tx_context_t *ctx,
    * Fill in the remaining buffers in the chain, if any
    */
   if (PREDICT_FALSE (ctx->n_bufs_per_seg > 1 && ctx->left_to_snd))
-    session_tx_fifo_chain_tail (wrk, ctx, b, n_bufs, peek_data);
+    session_tx_fifo_chain_tail (wrk, ctx, b, n_bufs, peek_data, batch);
 }
 
 always_inline u8
@@ -1472,7 +1476,8 @@ always_inline int
 session_tx_fifo_read_and_snd_i (session_worker_t * wrk,
 				vlib_node_runtime_t * node,
 				session_evt_elt_t * elt,
-				int *n_tx_packets, u8 peek_data)
+				int *n_tx_packets, u8 peek_data,
+				clib_memcpy_batch_t * batch)
 {
   u32 n_left, pbi, next_index, max_burst;
   session_tx_context_t *ctx = &wrk->ctx;
@@ -1612,8 +1617,8 @@ session_tx_fifo_read_and_snd_i (session_worker_t * wrk,
       b0 = vlib_get_buffer (vm, bi0);
       b1 = vlib_get_buffer (vm, bi1);
 
-      session_tx_fill_buffer (wrk, ctx, b0, &n_bufs, peek_data);
-      session_tx_fill_buffer (wrk, ctx, b1, &n_bufs, peek_data);
+      session_tx_fill_buffer (wrk, ctx, b0, &n_bufs, peek_data, batch);
+      session_tx_fill_buffer (wrk, ctx, b1, &n_bufs, peek_data, batch);
 
       ctx->transport_pending_bufs[ctx->n_segs_per_evt - n_left] = b0;
       ctx->transport_pending_bufs[ctx->n_segs_per_evt - n_left + 1] = b1;
@@ -1636,7 +1641,7 @@ session_tx_fifo_read_and_snd_i (session_worker_t * wrk,
 
       bi0 = ctx->tx_buffers[--n_bufs];
       b0 = vlib_get_buffer (vm, bi0);
-      session_tx_fill_buffer (wrk, ctx, b0, &n_bufs, peek_data);
+      session_tx_fill_buffer (wrk, ctx, b0, &n_bufs, peek_data, batch);
 
       ctx->transport_pending_bufs[ctx->n_segs_per_evt - n_left] = b0;
       n_left -= 1;
@@ -1679,23 +1684,26 @@ session_tx_fifo_read_and_snd_i (session_worker_t * wrk,
 int
 session_tx_fifo_peek_and_snd (session_worker_t * wrk,
 			      vlib_node_runtime_t * node,
-			      session_evt_elt_t * e, int *n_tx_packets)
+			      session_evt_elt_t * e, int *n_tx_packets,
+			      clib_memcpy_batch_t *batch)
 {
-  return session_tx_fifo_read_and_snd_i (wrk, node, e, n_tx_packets, 1);
+  return session_tx_fifo_read_and_snd_i (wrk, node, e, n_tx_packets, 1, batch);
 }
 
 int
 session_tx_fifo_dequeue_and_snd (session_worker_t * wrk,
 				 vlib_node_runtime_t * node,
-				 session_evt_elt_t * e, int *n_tx_packets)
+				 session_evt_elt_t * e, int *n_tx_packets,
+				 clib_memcpy_batch_t *batch)
 {
-  return session_tx_fifo_read_and_snd_i (wrk, node, e, n_tx_packets, 0);
+  return session_tx_fifo_read_and_snd_i (wrk, node, e, n_tx_packets, 0, batch);
 }
 
 int
 session_tx_fifo_dequeue_internal (session_worker_t * wrk,
 				  vlib_node_runtime_t * node,
-				  session_evt_elt_t * elt, int *n_tx_packets)
+				  session_evt_elt_t * elt, int *n_tx_packets,
+				  clib_memcpy_batch_t *batch)
 {
   transport_send_params_t *sp = &wrk->ctx.sp;
   session_t *s = wrk->ctx.s;
@@ -1857,7 +1865,8 @@ session_event_dispatch_ctrl (session_worker_t * wrk, session_evt_elt_t * elt)
 
 always_inline void
 session_event_dispatch_io (session_worker_t * wrk, vlib_node_runtime_t * node,
-			   session_evt_elt_t * elt, int *n_tx_packets)
+			   session_evt_elt_t * elt, int *n_tx_packets,
+			   clib_memcpy_batch_t *batch)
 {
   session_main_t *smm = &session_main;
   app_worker_t *app_wrk;
@@ -1879,7 +1888,7 @@ session_event_dispatch_io (session_worker_t * wrk, vlib_node_runtime_t * node,
       wrk->ctx.s = s;
       /* Spray packets in per session type frames, since they go to
        * different nodes */
-      (smm->session_tx_fns[s->session_type]) (wrk, node, elt, n_tx_packets);
+      (smm->session_tx_fns[s->session_type]) (wrk, node, elt, n_tx_packets, batch);
       break;
     case SESSION_IO_EVT_RX:
       s = session_event_get_session (wrk, e);
@@ -1902,7 +1911,7 @@ session_event_dispatch_io (session_worker_t * wrk, vlib_node_runtime_t * node,
 	break;
       wrk->ctx.s = s;
       if (PREDICT_TRUE (s != 0))
-	(smm->session_tx_fns[s->session_type]) (wrk, node, elt, n_tx_packets);
+	(smm->session_tx_fns[s->session_type]) (wrk, node, elt, n_tx_packets, batch);
       break;
     default:
       clib_warning ("unhandled event type %d", e->event_type);
@@ -2039,6 +2048,7 @@ session_queue_node_fn (vlib_main_t * vm, vlib_node_runtime_t * node,
   session_worker_t *wrk = &smm->wrk[thread_index];
   clib_llist_index_t ei, next_ei, old_ti;
   int n_tx_packets;
+  clib_memcpy_batch_t *batch;
 
   SESSION_EVT (SESSION_EVT_DISPATCH_START, wrk);
 
@@ -2095,12 +2105,15 @@ session_queue_node_fn (vlib_main_t * vm, vlib_node_runtime_t * node,
   old_ti = clib_llist_prev_index (old_he, evt_list);
 
   ei = clib_llist_next_index (new_he, evt_list);
+  batch = SESSION_CLIB_MEMCPY_BATCH_INIT(128);
+  if (batch != CLIB_MEMCPY_NO_BATCH)
+    batch->aux_op = clib_memcpy_batch_aux_op_atomic_store_uint32_release;
   while (ei != wrk->new_head && n_tx_packets < SESSION_NODE_FRAME_SIZE)
     {
       elt = clib_llist_elt (wrk->event_elts, ei);
       ei = clib_llist_next_index (elt, evt_list);
       clib_llist_remove (wrk->event_elts, evt_list, elt);
-      session_event_dispatch_io (wrk, node, elt, &n_tx_packets);
+      session_event_dispatch_io (wrk, node, elt, &n_tx_packets, batch);
     }
 
   SESSION_EVT (SESSION_EVT_DSP_CNTRS, NEW_IO_EVTS, wrk);
@@ -2120,7 +2133,7 @@ session_queue_node_fn (vlib_main_t * vm, vlib_node_runtime_t * node,
 	  next_ei = clib_llist_next_index (elt, evt_list);
 	  clib_llist_remove (wrk->event_elts, evt_list, elt);
 
-	  session_event_dispatch_io (wrk, node, elt, &n_tx_packets);
+	  session_event_dispatch_io (wrk, node, elt, &n_tx_packets, batch);
 
 	  if (ei == old_ti)
 	    break;
@@ -2128,6 +2141,8 @@ session_queue_node_fn (vlib_main_t * vm, vlib_node_runtime_t * node,
 	  ei = next_ei;
 	};
     }
+
+  clib_memcpy_batch_sync (batch);
 
   if (PREDICT_FALSE (wrk->dma_enabled))
     {

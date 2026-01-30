@@ -231,6 +231,7 @@ include(cmake/exec.cmake)
 include(cmake/plugin.cmake)
 include(cmake/crypto_engines.cmake)
 include(cmake/drivers.cmake)
+include(cmake/ego.cmake)
 
 ##############################################################################
 # FreeBSD - use epoll-shim

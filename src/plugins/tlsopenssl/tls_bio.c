@@ -59,7 +59,8 @@ bio_tls_read (BIO * b, char *out, int outl)
     }
 
   rv = app_recv_stream_raw (s->rx_fifo, (u8 *) out, outl,
-			    0 /* clear evt */ , 0 /* peek */ );
+			    0 /* clear evt */ , 0 /* peek */,
+			    CLIB_MEMCPY_NO_BATCH);
   if (rv < 0)
     {
       BIO_set_retry_read (b);
@@ -102,7 +103,8 @@ bio_tls_write (BIO * b, const char *in, int inl)
   mq = session_main_get_vpp_event_queue (s->thread_index);
   rv = app_send_stream_raw (s->tx_fifo, mq, (u8 *) in, inl,
 			    SESSION_IO_EVT_TX, 1 /* do_evt */ ,
-			    0 /* noblock */ );
+			    0 /* noblock */,
+			    CLIB_MEMCPY_NO_BATCH);
   if (rv < 0)
     {
       BIO_set_retry_write (b);

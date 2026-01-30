@@ -16,7 +16,8 @@
 
 CLIB_MARCH_FN (svm_fifo_copy_to_chunk, void, svm_fifo_t *f,
 	       svm_fifo_chunk_t *c, u32 tail_idx, const u8 *src, u32 len,
-	       fs_sptr_t *last)
+	       fs_sptr_t *last,
+	       clib_memcpy_batch_t *batch)
 {
   u32 n_chunk;
 
@@ -28,12 +29,12 @@ CLIB_MARCH_FN (svm_fifo_copy_to_chunk, void, svm_fifo_t *f,
   if (n_chunk <= len)
     {
       u32 to_copy = len;
-      clib_memcpy_fast (&c->data[tail_idx], src, n_chunk);
+      clib_memcpy_batch (batch, &c->data[tail_idx], src, n_chunk);
       c = f_cptr (f, c->next);
       while ((to_copy -= n_chunk))
 	{
 	  n_chunk = clib_min (c->length, to_copy);
-	  clib_memcpy_fast (&c->data[0], src + (len - to_copy), n_chunk);
+	  clib_memcpy_batch (batch, &c->data[0], src + (len - to_copy), n_chunk);
 	  c = c->length <= to_copy ? f_cptr (f, c->next) : c;
 	}
       if (*last)
@@ -41,13 +42,14 @@ CLIB_MARCH_FN (svm_fifo_copy_to_chunk, void, svm_fifo_t *f,
     }
   else
     {
-      clib_memcpy_fast (&c->data[tail_idx], src, len);
+      clib_memcpy_batch (batch, &c->data[tail_idx], src, len);
     }
 }
 
 CLIB_MARCH_FN (svm_fifo_copy_from_chunk, void, svm_fifo_t *f,
 	       svm_fifo_chunk_t *c, u32 head_idx, u8 *dst, u32 len,
-	       fs_sptr_t *last)
+	       fs_sptr_t *last,
+	       clib_memcpy_batch_t *batch)
 {
   u32 n_chunk;
 
@@ -59,14 +61,14 @@ CLIB_MARCH_FN (svm_fifo_copy_from_chunk, void, svm_fifo_t *f,
   if (n_chunk <= len)
     {
       u32 to_copy = len;
-      clib_memcpy_fast (dst, &c->data[head_idx], n_chunk);
+      clib_memcpy_batch (batch, dst, &c->data[head_idx], n_chunk);
       c = f_cptr (f, c->next);
       while ((to_copy -= n_chunk))
 	{
 	  clib_mem_unpoison (c, sizeof (*c));
 	  clib_mem_unpoison (c->data, c->length);
 	  n_chunk = clib_min (c->length, to_copy);
-	  clib_memcpy_fast (dst + (len - to_copy), &c->data[0], n_chunk);
+	  clib_memcpy_batch (batch, dst + (len - to_copy), &c->data[0], n_chunk);
 	  c = c->length <= to_copy ? f_cptr (f, c->next) : c;
 	}
       if (*last)
@@ -74,7 +76,7 @@ CLIB_MARCH_FN (svm_fifo_copy_from_chunk, void, svm_fifo_t *f,
     }
   else
     {
-      clib_memcpy_fast (dst, &c->data[head_idx], len);
+      clib_memcpy_batch (batch, dst, &c->data[head_idx], len);
     }
 }
 
@@ -82,18 +84,19 @@ CLIB_MARCH_FN (svm_fifo_copy_from_chunk, void, svm_fifo_t *f,
 
 static inline void
 svm_fifo_copy_to_chunk (svm_fifo_t *f, svm_fifo_chunk_t *c, u32 tail_idx,
-			const u8 *src, u32 len, fs_sptr_t *last)
+			const u8 *src, u32 len, fs_sptr_t *last,
+			clib_memcpy_batch_t *batch)
 {
   CLIB_MARCH_FN_SELECT (svm_fifo_copy_to_chunk) (f, c, tail_idx, src, len,
-						 last);
+						 last, batch);
 }
 
 static inline void
 svm_fifo_copy_from_chunk (svm_fifo_t *f, svm_fifo_chunk_t *c, u32 head_idx,
-			  u8 *dst, u32 len, fs_sptr_t *last)
+			  u8 *dst, u32 len, fs_sptr_t *last, clib_memcpy_batch_t *batch)
 {
   CLIB_MARCH_FN_SELECT (svm_fifo_copy_from_chunk) (f, c, head_idx, dst, len,
-						   last);
+						   last, batch);
 }
 
 static inline u32
@@ -363,6 +366,7 @@ svm_fifo_init (svm_fifo_t * f, u32 size)
   f->segment_index = SVM_FIFO_INVALID_INDEX;
   f->refcnt = 1;
   f->shr->head = f->shr->tail = f->flags = 0;
+  f->non_shared_prod_tail = f->non_shared_prod_tail = 0;
   f->shr->head_chunk = f->shr->tail_chunk = f->shr->start_chunk;
   f->ooo_deq = f->ooo_enq = 0;
   f->signals = &f->shr->signals;
@@ -764,7 +768,7 @@ svm_fifo_free (svm_fifo_t * f)
 }
 
 void
-svm_fifo_overwrite_head (svm_fifo_t * f, u8 * src, u32 len)
+svm_fifo_overwrite_head_batch (svm_fifo_t * f, u8 * src, u32 len, clib_memcpy_batch_t * batch)
 {
   u32 n_chunk;
   u32 head, tail, head_idx;
@@ -781,13 +785,13 @@ svm_fifo_overwrite_head (svm_fifo_t * f, u8 * src, u32 len)
   head_idx = head - c->start_byte;
   n_chunk = c->length - head_idx;
   if (len <= n_chunk)
-    clib_memcpy_fast (&c->data[head_idx], src, len);
+    clib_memcpy_batch (batch, &c->data[head_idx], src, len);
   else
     {
       ASSERT (len - n_chunk <= f_cptr (f, c->next)->length);
-      clib_memcpy_fast (&c->data[head_idx], src, n_chunk);
-      clib_memcpy_fast (&f_cptr (f, c->next)->data[0], src + n_chunk,
-			len - n_chunk);
+      clib_memcpy_batch (batch, &c->data[head_idx], src, n_chunk);
+      clib_memcpy_batch (batch, &f_cptr (f, c->next)->data[0], src + n_chunk,
+			 len - n_chunk);
     }
 }
 
@@ -830,7 +834,7 @@ f_try_chunk_alloc (svm_fifo_t * f, u32 head, u32 tail, u32 len)
 }
 
 int
-svm_fifo_enqueue (svm_fifo_t * f, u32 len, const u8 * src)
+svm_fifo_enqueue_batch (svm_fifo_t * f, u32 len, const u8 * src, clib_memcpy_batch_t *batch)
 {
   u32 tail, head, free_count;
   svm_fifo_chunk_t *old_tail_c;
@@ -860,7 +864,7 @@ svm_fifo_enqueue (svm_fifo_t * f, u32 len, const u8 * src)
 
   old_tail_c = f_tail_cptr (f);
 
-  svm_fifo_copy_to_chunk (f, old_tail_c, tail, src, len, &f->shr->tail_chunk);
+  svm_fifo_copy_to_chunk (f, old_tail_c, tail, src, len, &f->shr->tail_chunk, batch);
   tail = tail + len;
 
   svm_fifo_trace_add (f, head, len, 2);
@@ -876,7 +880,7 @@ svm_fifo_enqueue (svm_fifo_t * f, u32 len, const u8 * src)
     }
 
   /* store-rel: producer owned index (paired with load-acq in consumer) */
-  clib_atomic_store_rel_n (&f->shr->tail, tail);
+  f_store_prod_tail (f, tail, batch);
 
   return len;
 }
@@ -889,7 +893,7 @@ svm_fifo_enqueue (svm_fifo_t * f, u32 len, const u8 * src)
  * Returns -1 if none of the segment was copied due to lack of space
  */
 int
-svm_fifo_enqueue_with_offset (svm_fifo_t * f, u32 offset, u32 len, u8 * src)
+svm_fifo_enqueue_with_offset_batch (svm_fifo_t * f, u32 offset, u32 len, u8 * src, clib_memcpy_batch_t *batch)
 {
   u32 tail, head, free_count, enq_pos;
   fs_sptr_t last = F_INVALID_CPTR;
@@ -918,7 +922,7 @@ svm_fifo_enqueue_with_offset (svm_fifo_t * f, u32 offset, u32 len, u8 * src)
   if (!f->ooo_enq || !f_chunk_includes_pos (f->ooo_enq, enq_pos))
     f_update_ooo_enq (f, enq_pos, enq_pos + len);
 
-  svm_fifo_copy_to_chunk (f, f->ooo_enq, enq_pos, src, len, &last);
+  svm_fifo_copy_to_chunk (f, f->ooo_enq, enq_pos, src, len, &last, batch);
   if (last != F_INVALID_CPTR)
     f->ooo_enq = f_cptr (f, last);
 
@@ -950,13 +954,12 @@ svm_fifo_enqueue_nocopy (svm_fifo_t * f, u32 len)
 	f_csptr (f, svm_fifo_find_next_chunk (f, f_tail_cptr (f), tail));
     }
 
-  /* store-rel: producer owned index (paired with load-acq in consumer) */
-  clib_atomic_store_rel_n (&f->shr->tail, tail);
+  f_store_prod_tail (f, tail, CLIB_MEMCPY_NO_BATCH);
 }
 
 int
-svm_fifo_enqueue_segments (svm_fifo_t * f, const svm_fifo_seg_t segs[],
-			   u32 n_segs, u8 allow_partial)
+svm_fifo_enqueue_segments_batch (svm_fifo_t * f, const svm_fifo_seg_t segs[],
+				 u32 n_segs, u8 allow_partial, clib_memcpy_batch_t *batch)
 {
   u32 tail, head, free_count, len = 0, i;
   svm_fifo_chunk_t *old_tail_c;
@@ -990,7 +993,8 @@ svm_fifo_enqueue_segments (svm_fifo_t * f, const svm_fifo_seg_t segs[],
       for (i = 0; i < n_segs; i++)
 	{
 	  svm_fifo_copy_to_chunk (f, f_tail_cptr (f), tail, segs[i].data,
-				  segs[i].len, &f->shr->tail_chunk);
+				  segs[i].len, &f->shr->tail_chunk,
+				  batch);
 	  tail += segs[i].len;
 	}
     }
@@ -1014,7 +1018,8 @@ svm_fifo_enqueue_segments (svm_fifo_t * f, const svm_fifo_seg_t segs[],
 	{
 	  u32 to_copy = clib_min (segs[i].len, n_left);
 	  svm_fifo_copy_to_chunk (f, f_tail_cptr (f), tail, segs[i].data,
-				  to_copy, &f->shr->tail_chunk);
+				  to_copy, &f->shr->tail_chunk,
+				  batch);
 	  n_left -= to_copy;
 	  tail += to_copy;
 	  i++;
@@ -1031,8 +1036,7 @@ svm_fifo_enqueue_segments (svm_fifo_t * f, const svm_fifo_seg_t segs[],
       f->ooo_enq = 0;
     }
 
-  /* store-rel: producer owned index (paired with load-acq in consumer) */
-  clib_atomic_store_rel_n (&f->shr->tail, tail);
+  f_store_prod_tail (f, tail, batch);
 
   return len;
 }
@@ -1089,7 +1093,7 @@ f_unlink_chunks (svm_fifo_t * f, u32 end_pos, u8 maybe_ooo)
 }
 
 int
-svm_fifo_dequeue (svm_fifo_t * f, u32 len, u8 * dst)
+svm_fifo_dequeue_batch (svm_fifo_t * f, u32 len, u8 * dst, clib_memcpy_batch_t *batch)
 {
   u32 tail, head, cursize;
 
@@ -1107,7 +1111,7 @@ svm_fifo_dequeue (svm_fifo_t * f, u32 len, u8 * dst)
     f->shr->head_chunk = f_csptr (f, svm_fifo_find_chunk (f, head));
 
   svm_fifo_copy_from_chunk (f, f_head_cptr (f), head, dst, len,
-			    &f->shr->head_chunk);
+			    &f->shr->head_chunk, batch);
   head = head + len;
 
   /* In order dequeues are not supported in combination with ooo peeking.
@@ -1118,14 +1122,13 @@ svm_fifo_dequeue (svm_fifo_t * f, u32 len, u8 * dst)
     fsh_collect_chunks (f->fs_hdr, f->shr->slice_index,
 			f_unlink_chunks (f, head, 0));
 
-  /* store-rel: consumer owned index (paired with load-acq in producer) */
-  clib_atomic_store_rel_n (&f->shr->head, head);
+  f_store_cons_head (f, head, batch);
 
   return len;
 }
 
 int
-svm_fifo_peek (svm_fifo_t * f, u32 offset, u32 len, u8 * dst)
+svm_fifo_peek_batch (svm_fifo_t * f, u32 offset, u32 len, u8 * dst, clib_memcpy_batch_t *batch)
 {
   u32 tail, head, cursize, head_idx;
   fs_sptr_t last = F_INVALID_CPTR;
@@ -1145,7 +1148,7 @@ svm_fifo_peek (svm_fifo_t * f, u32 offset, u32 len, u8 * dst)
   if (!f->ooo_deq || !f_chunk_includes_pos (f->ooo_deq, head_idx))
     f_update_ooo_deq (f, head_idx, head_idx + len);
 
-  svm_fifo_copy_from_chunk (f, f->ooo_deq, head_idx, dst, len, &last);
+  svm_fifo_copy_from_chunk (f, f->ooo_deq, head_idx, dst, len, &last, batch);
   if (last != F_INVALID_CPTR)
     f->ooo_deq = f_cptr (f, last);
   return len;
@@ -1180,8 +1183,7 @@ svm_fifo_dequeue_drop (svm_fifo_t * f, u32 len)
 			     0;
     }
 
-  /* store-rel: consumer owned index (paired with load-acq in producer) */
-  clib_atomic_store_rel_n (&f->shr->head, head);
+  f_store_cons_head (f, head, CLIB_MEMCPY_NO_BATCH);
 
   return total_drop_bytes;
 }
@@ -1207,8 +1209,7 @@ svm_fifo_dequeue_drop_all (svm_fifo_t * f)
     fsh_collect_chunks (f->fs_hdr, f->shr->slice_index,
 			f_unlink_chunks (f, tail, 0));
 
-  /* store-rel: consumer owned index (paired with load-acq in producer) */
-  clib_atomic_store_rel_n (&f->shr->head, tail);
+  f_store_cons_head (f, tail, CLIB_MEMCPY_NO_BATCH);
 }
 
 int
@@ -1334,8 +1335,8 @@ svm_fifo_clone (svm_fifo_t * df, svm_fifo_t * sf)
 		    f_head_cptr (sf)->length);
 
   f_load_head_tail_all_acq (sf, &head, &tail);
-  clib_atomic_store_rel_n (&df->shr->head, head);
-  clib_atomic_store_rel_n (&df->shr->tail, tail);
+  f_store_cons_head (df, head, CLIB_MEMCPY_NO_BATCH);
+  f_store_prod_tail (df, tail, CLIB_MEMCPY_NO_BATCH);
 }
 
 u32
@@ -1358,8 +1359,8 @@ svm_fifo_init_pointers (svm_fifo_t * f, u32 head, u32 tail)
 {
   svm_fifo_chunk_t *c;
 
-  clib_atomic_store_rel_n (&f->shr->head, head);
-  clib_atomic_store_rel_n (&f->shr->tail, tail);
+  f_store_cons_head (f, head, CLIB_MEMCPY_NO_BATCH);
+  f_store_prod_tail (f, tail, CLIB_MEMCPY_NO_BATCH);
 
   c = svm_fifo_find_chunk (f, head);
   ASSERT (c != 0);

@@ -723,7 +723,7 @@ fs_try_alloc_fifo (fifo_segment_header_t *fsh, u32 slice_index, u32 data_bytes)
   svm_fifo_shared_t *sf = 0;
 
   fss = fsh_slice_get (fsh, slice_index);
-  min_size = clib_max ((fsh->pct_first_alloc * data_bytes) / 100, 4096);
+  min_size = clib_max ((fsh->pct_first_alloc * data_bytes) / 100, 1<<FS_MIN_LOG2_CHUNK_SZ);
   fl_index = fs_freelist_for_size (min_size);
 
   if (!fss_chunk_fl_index_is_valid (fss, fl_index))

@@ -240,6 +240,15 @@ session_program_transport_ctrl_evt (session_t * s, session_evt_type_t evt)
     session_send_ctrl_evt_to_thread (s, evt);
 }
 
+/* Enable memcpy batch prefetch when session count gets large and
+   performance is more determined by memory throughput (case where
+   prefetching helps). */
+always_inline void
+session_alloc_enable_disable_memcpy_batch_prefetch (session_worker_t *wrk)
+{
+  memcpy_batch_prefetch_likely_profitable = pool_elts (wrk->sessions) >= 4 << 10;
+}
+
 session_t *
 session_alloc (clib_thread_index_t thread_index)
 {
@@ -251,6 +260,7 @@ session_alloc (clib_thread_index_t thread_index)
   s->session_index = s - wrk->sessions;
   s->thread_index = thread_index;
   s->al_index = APP_INVALID_INDEX;
+  session_alloc_enable_disable_memcpy_batch_prefetch (wrk);
 
   return s;
 }
@@ -264,6 +274,7 @@ session_free (session_t * s)
   if (CLIB_DEBUG)
     clib_memset (s, 0xFA, sizeof (*s));
   pool_put (wrk->sessions, s);
+  session_alloc_enable_disable_memcpy_batch_prefetch (wrk);
 }
 
 u8
@@ -713,13 +724,13 @@ session_main_flush_enqueue_events (transport_proto_t transport_proto,
 int
 session_enqueue_dgram_connection_cl (session_t *s, session_dgram_hdr_t *hdr,
 				     vlib_buffer_t *b, u8 proto,
-				     u8 queue_event)
+				     u8 queue_event,
+				     clib_memcpy_batch_t *batch)
 {
   session_t *awls;
-
   awls = app_listener_select_wrk_cl_session (s, hdr);
   return session_enqueue_dgram_connection_inline (awls, hdr, b, proto,
-						  queue_event, 1 /* is_cl */);
+						  queue_event, 1 /* is_cl */, batch);
 }
 
 int

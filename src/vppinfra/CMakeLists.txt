@@ -87,6 +87,7 @@ set(VPPINFRA_SRCS
   macros.c
   maplog.c
   mem.c
+  memcpy_batch.c
   mem_bulk.c
   mem_dlmalloc.c
   mem_trace.c
@@ -186,6 +187,7 @@ set(VPPINFRA_HEADERS
   maplog.h
   math.h
   memcpy.h
+  memcpy_batch.h
   memcpy_x86_64.h
   mem.h
   mhash.h
@@ -268,6 +270,19 @@ add_vpp_library(vppinfra
   COMPONENT libvppinfra
   LTO
 )
+
+if (VPP_HAVE_EGO)
+  # must be after add_vpp_library so that vppinfra target exists
+  get_target_property(ego_compile_options vppinfra COMPILE_OPTIONS)
+  list(APPEND ego_compile_options -fPIC)
+
+  target_sources(vppinfra PRIVATE memcpy_batch.go.o)
+  ego_object(memcpy_batch.go.o
+    INPUT memcpy_batch.go
+    CFLAGS ${ego_compile_options}
+    FLAGS ${ego_flags} -libroot '{}' -cgo-cppflags -I${CMAKE_CURRENT_SOURCE_DIR}/..
+  )
+endif()
 
 ##############################################################################
 # vppinfra headers

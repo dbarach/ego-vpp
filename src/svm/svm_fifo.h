@@ -72,8 +72,9 @@ u8 *svm_fifo_replay (u8 * s, svm_fifo_t * f, u8 no_read, u8 verbose);
 static inline void
 f_load_head_tail_cons (svm_fifo_t * f, u32 * head, u32 * tail)
 {
-  /* load-relaxed: consumer owned index */
-  *head = f->shr->head;
+  /* Local non-shared copy of head.
+     Maybe more advanced than f->shr->head to be updated in batch atomic store. */
+  *head = f->non_shared_cons_head;
   /* load-acq: consumer foreign index (paired with store-rel in producer) */
   *tail = clib_atomic_load_acq_n (&f->shr->tail);
 }
@@ -85,8 +86,9 @@ f_load_head_tail_cons (svm_fifo_t * f, u32 * head, u32 * tail)
 static inline void
 f_load_head_tail_prod (svm_fifo_t * f, u32 * head, u32 * tail)
 {
-  /* load relaxed: producer owned index */
-  *tail = f->shr->tail;
+  /* Local non-shared copy of tail.
+     Maybe more advanced than f->shr->tail to be updated in batch atomic store. */
+  *tail = f->non_shared_prod_tail;
   /* load-acq: producer foreign index (paired with store-rel in consumer) */
   *head = clib_atomic_load_acq_n (&f->shr->head);
 }
@@ -103,6 +105,22 @@ f_load_head_tail_all_acq (svm_fifo_t * f, u32 * head, u32 * tail)
   *tail = clib_atomic_load_acq_n (&f->shr->tail);
   /* load-acq : producer foriegn index (paired with store-rel) */
   *head = clib_atomic_load_acq_n (&f->shr->head);
+}
+
+static inline void
+f_store_prod_tail (svm_fifo_t * f, u32 tail, clib_memcpy_batch_t *batch)
+{
+  /* store-release: producer owned index (paired with load-acq in consumer) */
+  clib_memcpy_batch_atomic_store_release_u32 (batch, &f->shr->tail, tail);
+  f->non_shared_prod_tail = tail;
+}
+
+static inline void
+f_store_cons_head (svm_fifo_t * f, u32 head, clib_memcpy_batch_t *batch)
+{
+  /* store-release: producer owned index (paired with load-acq in consumer) */
+  clib_memcpy_batch_atomic_store_release_u32 (batch, &f->shr->head, head);
+  f->non_shared_cons_head = head;
 }
 
 /**
@@ -315,7 +333,12 @@ void svm_fifo_clone (svm_fifo_t * df, svm_fifo_t * sf);
  * @param src	buffer from where to copy the data
  * @return	number of contiguous bytes that can be consumed or error
  */
-int svm_fifo_enqueue (svm_fifo_t * f, u32 len, const u8 * src);
+int svm_fifo_enqueue_batch (svm_fifo_t * f, u32 len, const u8 * src, clib_memcpy_batch_t *batch);
+
+always_inline int
+svm_fifo_enqueue (svm_fifo_t * f, u32 len, const u8 * src)
+{ return svm_fifo_enqueue_batch (f, len, src, CLIB_MEMCPY_NO_BATCH); }
+
 /**
  * Enqueue data to fifo with offset
  *
@@ -329,8 +352,12 @@ int svm_fifo_enqueue (svm_fifo_t * f, u32 len, const u8 * src);
  * @param src		buffer from where to copy the data
  * @return		0 if enqueue was successful, error otherwise
  */
-int svm_fifo_enqueue_with_offset (svm_fifo_t * f, u32 offset, u32 len,
-				  u8 * src);
+int svm_fifo_enqueue_with_offset_batch (svm_fifo_t * f, u32 offset, u32 len,
+					u8 * src, clib_memcpy_batch_t *batch);
+
+always_inline int
+svm_fifo_enqueue_with_offset (svm_fifo_t * f, u32 offset, u32 len, u8 * src)
+{ return svm_fifo_enqueue_with_offset_batch (f, offset, len, src, CLIB_MEMCPY_NO_BATCH); }
 
 /**
  * Advance tail pointer
@@ -350,8 +377,14 @@ void svm_fifo_enqueue_nocopy (svm_fifo_t * f, u32 len);
  * @param allow_partial	if set partial enqueues are allowed
  * @return		len if enqueue was successful, error otherwise
  */
-int svm_fifo_enqueue_segments (svm_fifo_t * f, const svm_fifo_seg_t segs[],
-			       u32 n_segs, u8 allow_partial);
+int svm_fifo_enqueue_segments_batch (svm_fifo_t * f, const svm_fifo_seg_t segs[],
+				     u32 n_segs, u8 allow_partial, clib_memcpy_batch_t *batch);
+
+always_inline int
+svm_fifo_enqueue_segments (svm_fifo_t * f, const svm_fifo_seg_t segs[],
+			   u32 n_segs, u8 allow_partial)
+{ return svm_fifo_enqueue_segments_batch (f, segs, n_segs, allow_partial, CLIB_MEMCPY_NO_BATCH); }
+
 /**
  * Overwrite fifo head with new data
  *
@@ -363,7 +396,12 @@ int svm_fifo_enqueue_segments (svm_fifo_t * f, const svm_fifo_seg_t segs[],
  * @param src		src of new data
  * @param len		length of new data
  */
-void svm_fifo_overwrite_head (svm_fifo_t * f, u8 * src, u32 len);
+void svm_fifo_overwrite_head_batch (svm_fifo_t * f, u8 * src, u32 len, clib_memcpy_batch_t *batch);
+
+always_inline void svm_fifo_overwrite_head (svm_fifo_t * f, u8 * src, u32 len) {
+  svm_fifo_overwrite_head_batch (f, src, len, CLIB_MEMCPY_NO_BATCH);
+}
+
 /**
  * Dequeue data from fifo
  *
@@ -377,7 +415,12 @@ void svm_fifo_overwrite_head (svm_fifo_t * f, u8 * src, u32 len);
  * @param dst		buffer to where to dequeue the data
  * @return		number of bytes dequeued or error
  */
-int svm_fifo_dequeue (svm_fifo_t * f, u32 len, u8 * dst);
+int svm_fifo_dequeue_batch (svm_fifo_t * f, u32 len, u8 * dst, clib_memcpy_batch_t *batch);
+
+always_inline int
+svm_fifo_dequeue (svm_fifo_t * f, u32 len, u8 * dst)
+{ return svm_fifo_dequeue_batch (f, len, dst, CLIB_MEMCPY_NO_BATCH); }
+
 /**
  * Peek data from fifo
  *
@@ -390,7 +433,11 @@ int svm_fifo_dequeue (svm_fifo_t * f, u32 len, u8 * dst);
  * @param dst		buffer to where to dequeue the data
  * @return		number of bytes peeked
  */
-int svm_fifo_peek (svm_fifo_t * f, u32 offset, u32 len, u8 * dst);
+int svm_fifo_peek_batch (svm_fifo_t * f, u32 offset, u32 len, u8 * dst, clib_memcpy_batch_t *batch);
+
+always_inline int svm_fifo_peek (svm_fifo_t * f, u32 offset, u32 len, u8 * dst)
+{ return svm_fifo_peek_batch (f, offset, len, dst, CLIB_MEMCPY_NO_BATCH); }
+
 /**
  * Dequeue and drop bytes from fifo
  *

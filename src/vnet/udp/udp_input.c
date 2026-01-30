@@ -122,7 +122,8 @@ static void
 udp_connection_enqueue (udp_connection_t *uc0, session_t *s0,
 			session_dgram_hdr_t *hdr0,
 			clib_thread_index_t thread_index, vlib_buffer_t *b,
-			u8 queue_event, u32 *error0)
+			u8 queue_event, u32 *error0,
+			clib_memcpy_batch_t *batch)
 {
   int wrote0;
 
@@ -131,7 +132,7 @@ udp_connection_enqueue (udp_connection_t *uc0, session_t *s0,
       clib_spinlock_lock (&uc0->rx_lock);
 
       wrote0 = session_enqueue_dgram_connection_cl (
-	s0, hdr0, b, TRANSPORT_PROTO_UDP, queue_event);
+ 	s0, hdr0, b, TRANSPORT_PROTO_UDP, queue_event, batch);
 
       clib_spinlock_unlock (&uc0->rx_lock);
 
@@ -164,12 +165,14 @@ udp_connection_enqueue (udp_connection_t *uc0, session_t *s0,
     {
       wrote0 = session_enqueue_dgram_connection2 (
 	s0, hdr0, b, TRANSPORT_PROTO_UDP,
-	queue_event && !svm_fifo_has_event (s0->rx_fifo));
+	queue_event && !svm_fifo_has_event (s0->rx_fifo),
+ 	batch);
     }
   else
     {
       wrote0 = session_enqueue_dgram_connection (
-	s0, hdr0, b, TRANSPORT_PROTO_UDP, queue_event);
+	s0, hdr0, b, TRANSPORT_PROTO_UDP, queue_event,
+	batch);
     }
 
   /* In some rare cases, session_enqueue_dgram_connection can fail because a
@@ -275,6 +278,10 @@ udp46_input_inline (vlib_main_t *vm, vlib_node_runtime_t *node,
   u32 n_left_from, *from, *first_buffer;
   vlib_buffer_t *bufs[VLIB_FRAME_SIZE], **b;
   u16 err_counters[UDP_N_ERROR] = { 0 };
+  clib_memcpy_batch_t *batch = SESSION_CLIB_MEMCPY_BATCH_INIT(128);
+
+  if (batch != CLIB_MEMCPY_NO_BATCH)
+    batch->aux_op = clib_memcpy_batch_aux_op_atomic_store_uint32_release;
 
   from = first_buffer = vlib_frame_vector_args (frame);
   n_left_from = frame->n_vectors;
@@ -325,7 +332,7 @@ udp46_input_inline (vlib_main_t *vm, vlib_node_runtime_t *node,
 		s0->session_state = SESSION_STATE_READY;
 	    }
 	  udp_connection_enqueue (uc0, s0, &hdr0, thread_index, b[0],
-				  queue_event, &error0);
+				  queue_event, &error0, batch);
 	}
       else if (s0->session_state == SESSION_STATE_READY ||
 	       s0->session_state == SESSION_STATE_ACCEPTING)
@@ -338,7 +345,7 @@ udp46_input_inline (vlib_main_t *vm, vlib_node_runtime_t *node,
 	    }
 	  uc0 = udp_connection_from_transport (session_get_transport (s0));
 	  udp_connection_enqueue (uc0, s0, &hdr0, thread_index, b[0], 1,
-				  &error0);
+				  &error0, batch);
 	}
       else if (s0->session_state == SESSION_STATE_LISTENING)
 	{
@@ -366,7 +373,7 @@ udp46_input_inline (vlib_main_t *vm, vlib_node_runtime_t *node,
 	      error0 = UDP_ERROR_ACCEPT;
 	    }
 	  udp_connection_enqueue (uc0, s0, &hdr0, thread_index, b[0], 1,
-				  &error0);
+				  &error0, batch);
 	}
       else
 	{
@@ -383,6 +390,7 @@ udp46_input_inline (vlib_main_t *vm, vlib_node_runtime_t *node,
       udp_inc_err_counter (err_counters, error0, 1);
     }
 
+  clib_memcpy_batch_sync (batch);
   vlib_buffer_free (vm, first_buffer, frame->n_vectors);
   session_main_flush_enqueue_events (TRANSPORT_PROTO_UDP, thread_index);
   udp_store_err_counters (vm, is_ip4, err_counters);

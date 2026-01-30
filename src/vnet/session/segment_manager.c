@@ -788,6 +788,37 @@ segment_manager_try_alloc_fifos (fifo_segment_t *fs,
 }
 
 static inline int
+segment_ok_for_fifo_alloc (fifo_segment_t * fs, segment_manager_props_t *props)
+{
+  uword na, fb, fu, fifo_bytes, log2_fifo_bytes, log2_chunk_bytes;
+  f64 ave_bytes_per_fifo, fifo_cap, max_cap;
+
+  if (fifo_segment_flags (fs) & FIFO_SEGMENT_F_CUSTOM_USE)
+    return 0;
+
+  na = fifo_segment_num_fifos (fs);
+  if (na == 0)
+    return 1;
+
+  fb = fifo_segment_available_bytes (fs);
+  fu = fs->h->max_byte_index - fb;
+
+  /* Worst case fifo uses fifo bytes plus one extra chunk.
+     4k-sized fifos with a 4k chunk size can use up to 8k of memory. */
+  fifo_bytes = clib_max (props->rx_fifo_size, props->tx_fifo_size);
+  log2_fifo_bytes = max_log2 (fifo_bytes);
+  log2_chunk_bytes = max_log2 ((int) (f64) ((uword)fs->h->pct_first_alloc << log2_fifo_bytes) / 100);
+  max_cap = (f64) (1 << log2_fifo_bytes) / (f64) ((1 << log2_fifo_bytes) + (1 << log2_chunk_bytes));
+
+  ave_bytes_per_fifo = (f64) fu / (f64) na;
+  fifo_cap = (f64) fs->h->max_byte_index / ave_bytes_per_fifo;
+  if ((f64) na / fifo_cap > .95 * max_cap)
+    return 0;
+
+  return 1;
+}
+
+static inline int
 sm_lookup_segment_and_alloc_fifos (segment_manager_t *sm,
 				   segment_manager_props_t *props,
 				   clib_thread_index_t thread_index,
@@ -800,7 +831,7 @@ sm_lookup_segment_and_alloc_fifos (segment_manager_t *sm,
 
   pool_foreach (cur, sm->segments)
     {
-      if (fifo_segment_flags (cur) & FIFO_SEGMENT_F_CUSTOM_USE)
+      if (! segment_ok_for_fifo_alloc (cur, props))
 	continue;
       free_bytes = fifo_segment_available_bytes (cur);
       if (free_bytes > max_free_bytes)

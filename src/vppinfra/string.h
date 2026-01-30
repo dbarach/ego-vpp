@@ -550,6 +550,8 @@ memcmp_s_inline (const void *s1, rsize_t s1max, const void *s2, rsize_t s2max,
   return EOK;
 }
 
+#include <vppinfra/memcpy_batch.h>
+
 /*
  * This macro is to provide smooth mapping from strnlen to strnlen_s
  */

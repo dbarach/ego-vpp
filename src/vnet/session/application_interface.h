@@ -55,6 +55,9 @@ typedef struct session_cb_vft_
   /** Direct RX callback for built-in application */
   int (*builtin_app_rx_callback) (session_t * session);
 
+  /** As above but for vector of sessions. */
+  int (*builtin_app_rx_batch_callback) (u32 thread_index, u32 * session_indices);
+
   /** Direct TX callback for built-in application */
   int (*builtin_app_tx_callback) (session_t * session);
 
@@ -721,11 +724,12 @@ app_send_dgram_segs (app_session_t *s, svm_fifo_seg_t *segs, u32 data_nsegs,
 
 always_inline int
 app_send_stream_raw (svm_fifo_t * f, svm_msg_q_t * vpp_evt_q, u8 * data,
-		     u32 len, u8 evt_type, u8 do_evt, u8 noblock)
+		     u32 len, u8 evt_type, u8 do_evt, u8 noblock,
+		     clib_memcpy_batch_t *batch)
 {
   int rv;
 
-  rv = svm_fifo_enqueue (f, len, data);
+  rv = svm_fifo_enqueue_batch (f, len, data, batch);
   if (do_evt)
     {
       if (rv > 0 && svm_fifo_set_event (f))
@@ -736,11 +740,16 @@ app_send_stream_raw (svm_fifo_t * f, svm_msg_q_t * vpp_evt_q, u8 * data,
 }
 
 always_inline int
-app_send_stream (app_session_t * s, u8 * data, u32 len, u8 noblock)
+app_send_stream_batch (app_session_t * s, u8 * data, u32 len, u8 noblock, clib_memcpy_batch_t * batch)
 {
   return app_send_stream_raw (s->tx_fifo, s->vpp_evt_q, data, len,
-			      SESSION_IO_EVT_TX, 1 /* do_evt */ , noblock);
+			      SESSION_IO_EVT_TX, 1 /* do_evt */ , noblock,
+			      batch);
 }
+
+always_inline int
+app_send_stream (app_session_t * s, u8 * data, u32 len, u8 noblock)
+{ return app_send_stream_batch (s, data, len, noblock, CLIB_MEMCPY_NO_BATCH); }
 
 always_inline int
 app_send (app_session_t * s, u8 * data, u32 len, u8 noblock)
@@ -791,22 +800,25 @@ app_recv_dgram (app_session_t * s, u8 * buf, u32 len)
 }
 
 always_inline int
-app_recv_stream_raw (svm_fifo_t * f, u8 * buf, u32 len, u8 clear_evt, u8 peek)
+app_recv_stream_raw (svm_fifo_t * f, u8 * buf, u32 len, u8 clear_evt, u8 peek,
+		     clib_memcpy_batch_t * batch)
 {
   if (clear_evt)
     svm_fifo_unset_event (f);
 
   if (peek)
-    return svm_fifo_peek (f, 0, len, buf);
+    return svm_fifo_peek_batch (f, 0, len, buf, batch);
 
-  return svm_fifo_dequeue (f, len, buf);
+  return svm_fifo_dequeue_batch (f, len, buf, batch);
 }
 
 always_inline int
+app_recv_stream_batch (app_session_t * s, u8 * buf, u32 len, clib_memcpy_batch_t * batch)
+{ return app_recv_stream_raw (s->rx_fifo, buf, len, /* clear_evt */ 1, /* peek */ 0, batch); }
+
+always_inline int
 app_recv_stream (app_session_t * s, u8 * buf, u32 len)
-{
-  return app_recv_stream_raw (s->rx_fifo, buf, len, 1, 0);
-}
+{ return app_recv_stream_batch (s, buf, len, CLIB_MEMCPY_NO_BATCH); }
 
 always_inline int
 app_recv (app_session_t * s, u8 * data, u32 len)
