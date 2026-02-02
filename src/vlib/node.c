@@ -415,7 +415,7 @@ vlib_register_node (vlib_main_t *vm, vlib_node_registration_t *r, char *fmt,
   else
     n->scalar_offset = 0;
 
-  /* Vecor data size */
+  /* Vector data size */
   n->vector_offset = size;
   size += r->vector_size * VLIB_FRAME_SIZE;
 
