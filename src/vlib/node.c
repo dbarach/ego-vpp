@@ -394,11 +394,12 @@ vlib_register_node (vlib_main_t *vm, vlib_node_registration_t *r, char *fmt,
   if (r->type == VLIB_NODE_TYPE_INTERNAL)
     ASSERT (r->vector_size > 0);
 
+  /* Copy standard fields from registration. */
 #define _(f) n->f = r->f
-
   _(type);
   _(flags);
   _(state);
+  _(opaque);
   _(format_buffer);
   _(unformat_buffer);
   _(format_trace);
@@ -542,6 +543,7 @@ vlib_register_node (vlib_main_t *vm, vlib_node_registration_t *r, char *fmt,
     rt->flags = n->flags;
     rt->state = n->state;
     rt->node_index = n->index;
+    rt->opaque = n->opaque;
 
     rt->n_next_nodes = r->n_next_nodes;
     rt->next_frame_index = vec_len (nm->next_frames);

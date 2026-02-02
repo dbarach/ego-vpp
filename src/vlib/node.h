@@ -163,6 +163,9 @@ typedef struct _vlib_node_registration
   /* Number of next node names that follow. */
   u16 n_next_nodes;
 
+  /* User defined.  Copied into node and node runtime. */
+  uword opaque;
+
   /* Constructor link-list, don't ask... */
   struct _vlib_node_registration *next_registration;
 
@@ -342,6 +345,9 @@ typedef struct vlib_node_t
   /* Handle/index in error heap for this node. */
   u32 error_heap_handle;
   u32 error_heap_index;
+
+  /* User defined. */
+  uword opaque;
 
   /* Counter structures indexed by counter code for this node. */
   vlib_error_desc_t *error_counters;
@@ -537,6 +543,8 @@ typedef struct vlib_node_runtime_t
   u32 stop_timer_handle_plus_1;		/**< Timing wheel stop handle for
 					  SCHED node incremented by 1,
 					  0 = no timer running. */
+
+  uword opaque;		 /**< User defined copied from node opaque. */
 
   CLIB_ALIGN_MARK (runtime_data_pad, 8);
 
