@@ -133,7 +133,10 @@ barrier_trace_release (f64 t_entry, f64 t_closed_total, f64 t_update_main)
 uword
 os_get_nthreads (void)
 {
-  return vec_len (vlib_thread_stacks);
+  uword n = vec_len (vlib_thread_stacks);
+  if (n == 0)
+    abort ();			/* no supper if called too early in init sequence. */
+  return n;
 }
 
 void
