@@ -12,17 +12,18 @@
 /* Head/tail pointer for fifo. */
 typedef struct {
   uword v;
-} __attribute__ ((aligned (CLIB_CACHE_LINE_BYTES))) spsc_fifo_ptr_t;
+} __attribute__ ((aligned (CLIB_CACHE_LINE_BYTES))) clib_spsc_fifo_ptr_t;
 
-#define SPSC_FIFO_DECL(T, L)			\
+#define CLIB_SPSC_FIFO_DECL(T, L)		\
   struct {					\
     /* Head/tail pointers (cache aligned). */	\
-    spsc_fifo_ptr_t p[2];			\
+    clib_spsc_fifo_ptr_t p[2];			\
     /* 2^L fixed elements of data follow. */	\
     T d[1 << (L)];				\
   }
 
-#define SPSC_FIFO_PUSH(F, V)					\
+/* Add value V to fifo F.  Return 0 for full fifo; otherwise 1. */
+#define CLIB_SPSC_FIFO_PUSH(F, V)				\
 ({								\
   uword __tail = clib_atomic_load_relax_n (&(F)->p[1].v);	\
   uword __head = clib_atomic_load_acq_n (&(F)->p[0].v);		\
@@ -35,7 +36,8 @@ typedef struct {
   __ok;								\
 })
 
-#define SPSC_FIFO_POP(F, V)					\
+/* Remove value V to fifo F.  Return 0 for empty fifo; otherwise 1. */
+#define CLIB_SPSC_FIFO_POP(F, V)				\
 ({								\
   uword __head = clib_atomic_load_relax_n (&(F)->p[0].v);	\
   uword __tail = clib_atomic_load_acq_n (&(F)->p[1].v);		\
