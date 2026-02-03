@@ -960,6 +960,10 @@ plugin_load_order (plugin_main_t *pm)
     }
 
   n_plugins = vec_len (pm->plugin_info);
+
+  if (n_plugins == 0)
+    return;
+
   orig = clib_ptclosure_alloc (n_plugins);
   ASSERT ((vec_len (index_pairs) & 1) == 0);
 
