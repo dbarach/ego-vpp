@@ -110,12 +110,22 @@ vlib_node_runtime_update (vlib_main_t * vm, u32 node_index, u32 next_index)
   next_node = vlib_get_node (vm, node->next_nodes[next_index]);
   nf = nm->next_frames + r->next_frame_index + next_index;
   nf->node_runtime_index = next_node->runtime_index;
+  nf->thread_index = node->next_node_thread_indices[next_index];
 
   vlib_worker_thread_node_runtime_update ();
 }
 
+always_inline uword
+vlib_next_node_key (uword next_node_index, uword next_thread_index)
+{
+  uword k = next_node_index;
+  if (next_thread_index != VLIB_THREAD_INDEX_UNSPECIFIED)
+    k |= (next_thread_index + 1) << (uword_bits == 64 ? 32 : 24);
+  return k;
+}
+
 uword
-vlib_node_get_next (vlib_main_t * vm, uword node_index, uword next_node_index)
+vlib_node_get_next_slot (vlib_main_t * vm, uword node_index, uword next_node_index, uword next_thread_index)
 {
   vlib_node_main_t *nm = &vm->node_main;
   vlib_node_t *node;
@@ -126,24 +136,24 @@ vlib_node_get_next (vlib_main_t * vm, uword node_index, uword next_node_index)
   /* Runtime has to be initialized. */
   ASSERT (nm->flags & VLIB_NODE_MAIN_RUNTIME_STARTED);
 
-  if ((p = hash_get (node->next_slot_by_node, next_node_index)))
-    {
-      return p[0];
-    }
-
+  uword k = vlib_next_node_key (next_node_index, next_thread_index);
+  if ((p = hash_get (node->next_slot_by_node_and_thread, k)))
+    return p[0];
   return (~0);
 }
 
 /* Add next node to given node in given slot. */
 uword
-vlib_node_add_next_with_slot (vlib_main_t * vm,
-			      uword node_index,
-			      uword next_node_index, uword slot)
+vlib_node_add_next_with_thread_and_slot (vlib_main_t * vm,
+					 uword node_index,
+					 uword next_node_index,
+					 uword next_thread_index,
+					 uword slot)
 {
   vlib_node_main_t *nm = &vm->node_main;
   vlib_node_t *node, *next, *old_next;
   u32 old_next_index;
-  uword *p;
+  uword *p, next_node_key;
 
   ASSERT (vlib_get_thread_index () == 0);
 
@@ -153,7 +163,8 @@ vlib_node_add_next_with_slot (vlib_main_t * vm,
   /* Runtime has to be initialized. */
   ASSERT (nm->flags & VLIB_NODE_MAIN_RUNTIME_STARTED);
 
-  if ((p = hash_get (node->next_slot_by_node, next_node_index)))
+  next_node_key = vlib_next_node_key (next_node_index, next_thread_index);
+  if ((p = hash_get (node->next_slot_by_node_and_thread, next_node_key)))
     {
       /* Next already exists: slot must match. */
       if (slot != ~0)
@@ -167,18 +178,24 @@ vlib_node_add_next_with_slot (vlib_main_t * vm,
     slot = vec_len (node->next_nodes);
 
   vec_validate_init_empty (node->next_nodes, slot, ~0);
+  vec_validate_init_empty (node->next_node_thread_indices, slot, ~0);
   vec_validate (node->n_vectors_by_next_node, slot);
 
   if ((old_next_index = node->next_nodes[slot]) != ~0u)
     {
-      hash_unset (node->next_slot_by_node, old_next_index);
+      uword old_next_key, old_next_thread_index;
+      old_next_thread_index = node->next_node_thread_indices[slot];
+      ASSERT(old_next_thread_index == VLIB_THREAD_INDEX_UNSPECIFIED); /* cannot replace specified thread index */
+      old_next_key = vlib_next_node_key (old_next_index, old_next_thread_index);
+      hash_unset (node->next_slot_by_node_and_thread, old_next_key);
       old_next = vlib_get_node (vm, old_next_index);
       old_next->prev_node_bitmap =
 	clib_bitmap_andnoti (old_next->prev_node_bitmap, node_index);
     }
 
   node->next_nodes[slot] = next_node_index;
-  hash_set (node->next_slot_by_node, next_node_index, slot);
+  node->next_node_thread_indices[slot] = next_thread_index;
+  hash_set (node->next_slot_by_node_and_thread, next_node_key, slot);
 
   vlib_node_runtime_update (vm, node_index, slot);
 
@@ -193,7 +210,7 @@ vlib_node_add_next_with_slot (vlib_main_t * vm,
       sib_node = vec_elt (nm->nodes, sib_node_index);
       if (sib_node != node)
 	{
-	  sib_slot = vlib_node_add_next_with_slot (vm, sib_node_index, next_node_index, slot);
+	  sib_slot = vlib_node_add_next_with_thread_and_slot (vm, sib_node_index, next_node_index, next_thread_index, slot);
 	  ASSERT (sib_slot == slot);
 	}
     }
@@ -205,8 +222,8 @@ vlib_node_add_next_with_slot (vlib_main_t * vm,
 
 /* Add named next node to given node in given slot. */
 uword
-vlib_node_add_named_next_with_slot (vlib_main_t * vm,
-				    uword node, char *name, uword slot)
+vlib_node_add_named_next_with_thread_and_slot (vlib_main_t * vm,
+					       uword node, char *name, uword thread_index, uword slot)
 {
   vlib_node_main_t *nm;
   vlib_node_t *n, *n_next;
@@ -228,7 +245,7 @@ vlib_node_add_named_next_with_slot (vlib_main_t * vm,
       return slot;
     }
 
-  return vlib_node_add_next_with_slot (vm, node, n_next->index, slot);
+  return vlib_node_add_next_with_thread_and_slot (vm, node, n_next->index, thread_index, slot);
 }
 
 static void
@@ -416,6 +433,9 @@ vlib_register_node (vlib_main_t *vm, vlib_node_registration_t *r, char *fmt,
   else
     n->scalar_offset = 0;
 
+  /* Always align vectors on cache line for simd instruction alignment. */
+  size = round_pow2 (size, CLIB_CACHE_LINE_BYTES);
+
   /* Vector data size */
   n->vector_offset = size;
   size += r->vector_size * VLIB_FRAME_SIZE;
@@ -474,8 +494,15 @@ vlib_register_node (vlib_main_t *vm, vlib_node_registration_t *r, char *fmt,
     }
 
   vec_resize (n->next_node_names, r->n_next_nodes);
+  vec_resize (n->next_node_thread_indices, r->n_next_nodes);
   for (i = 0; i < r->n_next_nodes; i++)
-    n->next_node_names[i] = r->next_nodes[i];
+    {
+      n->next_node_names[i] = r->next_nodes[i];
+      u32 ti = VLIB_THREAD_INDEX_UNSPECIFIED;
+      if (i < vec_len(r->next_node_thread_indices))
+	ti = n->next_node_thread_indices[i];
+      n->next_node_thread_indices[i] = ti;
+    }
 
   vec_validate_init_empty (n->next_nodes, r->n_next_nodes - 1, ~0);
   vec_validate (n->n_vectors_by_next_node, r->n_next_nodes - 1);
@@ -576,7 +603,7 @@ vlib_register_node (vlib_main_t *vm, vlib_node_registration_t *r, char *fmt,
       vec_foreach_index (i, sib->next_nodes)
 	{
 	  slot =
-	    vlib_node_add_next_with_slot (vm, n->index, sib->next_nodes[i], i);
+	    vlib_node_add_next_with_thread_and_slot (vm, n->index, sib->next_nodes[i], sib->next_node_thread_indices[i], i);
 	  ASSERT (slot == i);
 	}
 
@@ -774,7 +801,7 @@ vlib_node_main_init (vlib_main_t * vm)
 	  if (!a)
 	    continue;
 
-	  if (~0 == vlib_node_add_named_next_with_slot (vm, n->index, a, i) &&
+	  if (~0 == vlib_node_add_named_next_with_thread_and_slot (vm, n->index, a, n->next_node_thread_indices[i], i) &&
 	      !(n->flags & VLIB_NODE_FLAG_ALLOW_LAZY_NEXT_NODES))
 	    {
 	      error = clib_error_create

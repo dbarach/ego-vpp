@@ -1313,32 +1313,45 @@ vlib_node_vectors_per_main_loop_as_integer (vlib_main_t * vm, u32 node_index)
 
 void vlib_frame_free (vlib_main_t *vm, vlib_frame_t *f);
 
+uword
+vlib_node_get_next_slot (vlib_main_t * vm, uword node_index, uword next_node_index, uword next_thread_index);
+
 /* Return the edge index if present, ~0 otherwise */
-uword vlib_node_get_next (vlib_main_t * vm, uword node, uword next_node);
+always_inline uword
+vlib_node_get_next (vlib_main_t * vm, uword node, uword next_node)
+{ return vlib_node_get_next_slot (vm, node, next_node, VLIB_THREAD_INDEX_UNSPECIFIED); }
+
+/* And thread. */
+uword vlib_node_add_next_with_thread_and_slot (vlib_main_t * vm,
+					       uword node,
+					       uword next_node, uword next_node_thread_index,
+					       uword slot);
 
 /* Add next node to given node in given slot. */
-uword
+uword vlib_node_add_named_next_with_thread_and_slot (vlib_main_t * vm,
+						     uword node,
+						     char *next_name, uword next_thread_index,
+						     uword slot);
+
+/* Add next node to given node in given slot. */
+always_inline uword
 vlib_node_add_next_with_slot (vlib_main_t * vm,
-			      uword node, uword next_node, uword slot);
+			      uword node, uword next_node, uword slot)
+{ return vlib_node_add_next_with_thread_and_slot (vm, node, next_node, VLIB_THREAD_INDEX_UNSPECIFIED, slot); }
 
 /* As above but adds to end of node's next vector. */
 always_inline uword
 vlib_node_add_next (vlib_main_t * vm, uword node, uword next_node)
-{
-  return vlib_node_add_next_with_slot (vm, node, next_node, ~0);
-}
-
-/* Add next node to given node in given slot. */
-uword
-vlib_node_add_named_next_with_slot (vlib_main_t * vm,
-				    uword node, char *next_name, uword slot);
+{ return vlib_node_add_next_with_slot (vm, node, next_node, ~0); }
 
 /* As above but adds to end of node's next vector. */
 always_inline uword
 vlib_node_add_named_next (vlib_main_t * vm, uword node, char *name)
-{
-  return vlib_node_add_named_next_with_slot (vm, node, name, ~0);
-}
+{ return vlib_node_add_named_next_with_thread_and_slot (vm, node, name, VLIB_THREAD_INDEX_UNSPECIFIED, ~0); }
+
+always_inline uword
+vlib_node_add_named_next_with_slot (vlib_main_t * vm, uword node, char *name, uword slot)
+{ return vlib_node_add_named_next_with_thread_and_slot (vm, node, name, VLIB_THREAD_INDEX_UNSPECIFIED, slot); }
 
 /**
  * Get list of nodes

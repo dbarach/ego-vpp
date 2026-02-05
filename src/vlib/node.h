@@ -11,11 +11,13 @@
 #include <vppinfra/cpu.h>
 #include <vppinfra/longjmp.h>
 #include <vppinfra/lock.h>
+#include <vppinfra/spsc_fifo.h>
 #include <vlib/trace.h>		/* for vlib_trace_filter_t */
 
 /* Forward declaration. */
 struct vlib_node_runtime_t;
 struct vlib_frame_t;
+struct vlib_frame_fifo_t;
 
 /* Internal nodes (including output nodes) move data from node to
    node (or out of the graph for output nodes). */
@@ -162,6 +164,9 @@ typedef struct _vlib_node_registration
 
   /* Number of next node names that follow. */
   u16 n_next_nodes;
+
+  /* Thread indices to use when enqueing to corresponding next node. */
+  u32 *next_node_thread_indices;
 
   /* User defined.  Copied into node and node runtime. */
   uword opaque;
@@ -359,6 +364,11 @@ typedef struct vlib_node_t
   /* Next node indices for this node. */
   u32 *next_nodes;
 
+  /* Next node thread indices for this node.  If specified (i.e. !=
+     VLIB_THREAD_INDEX_UNSPECIFIED) then enqueues to corresponding
+     next index will enqueue to given thread. */
+  u32 *next_node_thread_indices;
+
   /* Name of node that we are sibling of. */
   char *sibling_of;
 
@@ -368,10 +378,10 @@ typedef struct vlib_node_t
   /* Total number of vectors sent to each next node. */
   u64 *n_vectors_by_next_node;
 
-  /* Hash table mapping next node index into slot in
+  /* Hash table mapping next node index and thread into slot in
      next_nodes vector.  Quickly determines whether this node
      is connected to given next node and, if so, with which slot. */
-  uword *next_slot_by_node;
+  uword *next_slot_by_node_and_thread;
 
   /* Bitmap of node indices which feed this node. */
   uword *prev_node_bitmap;
@@ -436,6 +446,9 @@ typedef struct
   /* Node runtime for this next. */
   u32 node_runtime_index;
 
+  /* Thread for this next. */
+  u32 thread_index;
+
   /* Next frame flags. */
   u32 flags;
 
@@ -466,11 +479,17 @@ typedef struct
   u32 vectors_since_last_overflow;
 } vlib_next_frame_t;
 
+/* Special thread index to indicate any thread for a node next.  Next
+   points to same thread as current node rather than next node being
+   run on another thread.  */
+#define VLIB_THREAD_INDEX_UNSPECIFIED ((u32) (~0))
+
 always_inline void
 vlib_next_frame_init (vlib_next_frame_t * nf)
 {
   clib_memset (nf, 0, sizeof (nf[0]));
   nf->node_runtime_index = ~0;
+  nf->thread_index = VLIB_THREAD_INDEX_UNSPECIFIED;
 }
 
 /* A frame pending dispatch by main loop. */
@@ -487,7 +506,32 @@ typedef struct
 
   /* Special value for next_frame_index when there is no next frame. */
 #define VLIB_PENDING_FRAME_NO_NEXT_FRAME ((u32) ~0)
+
+  /* Return (source) thread index for frames with VLIB_NODE_FLAG_MULTI_THREADED_ENQUEUE set. */
+  u32 return_thread_index;
 } vlib_pending_frame_t;
+
+typedef struct {
+  /* Frame sent by source thread to enqueue on holder of this fifo. */
+  vlib_frame_t * frame;
+
+  /* Thread index which sent added frame in fifo. */
+  u32 src_thread_index;
+
+  /* Next node for this frame. */
+  u32 next_node_runtime_index;
+} vlib_frame_fifo_elt_t;
+
+/* 2^6 = 64 elements in incoming/outgoing frame fifo. */
+typedef CLIB_SPSC_FIFO_DECL (vlib_frame_fifo_elt_t, 6) vlib_frame_fifo_t;
+
+always_inline uword
+vlib_frame_fifo_push (vlib_frame_fifo_t *f, vlib_frame_fifo_elt_t *e)
+{ return CLIB_SPSC_FIFO_PUSH (f, e); }
+
+always_inline uword
+vlib_frame_fifo_pop (vlib_frame_fifo_t *f, vlib_frame_fifo_elt_t *e)
+{ return CLIB_SPSC_FIFO_POP (f, e); }
 
 typedef struct vlib_node_runtime_t
 {
@@ -803,6 +847,9 @@ typedef struct
 
   /* Node Function march Variant by Suffix Hash */
   uword *node_fn_march_variant_by_suffix;
+
+  /* Fifo of frames destined for this node. */
+  vlib_frame_fifo_t pending_frame_fifo, return_frame_fifo;
 } vlib_node_main_t;
 
 typedef u16 vlib_error_t;

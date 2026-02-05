@@ -150,6 +150,7 @@ vlib_put_frame_to_node (vlib_main_t * vm, u32 to_node_index, vlib_frame_t * f)
   p->frame = vlib_get_frame (vm, f);
   p->node_runtime_index = to_node->runtime_index;
   p->next_frame_index = VLIB_PENDING_FRAME_NO_NEXT_FRAME;
+  p->return_thread_index = ~0;
 }
 
 /* Free given frame. */
@@ -162,6 +163,8 @@ vlib_frame_free (vlib_main_t *vm, vlib_frame_t *f)
   ASSERT (vm == vlib_get_main ());
   ASSERT (f->frame_flags & VLIB_FRAME_IS_ALLOCATED);
 
+ /* Size might not be valid when allocated on another thread. */
+  vec_validate (nm->frame_sizes, f->frame_size_index);
   fs = vec_elt_at_index (nm->frame_sizes, f->frame_size_index);
 
   ASSERT (f->frame_flags & VLIB_FRAME_IS_ALLOCATED);
@@ -177,8 +180,9 @@ vlib_frame_free (vlib_main_t *vm, vlib_frame_t *f)
   f->flags = 0;
 
   vec_add1 (fs->free_frames, f);
-  ASSERT (fs->n_alloc_frames > 0);
-  fs->n_alloc_frames -= 1;
+  /* Frame may be allocated on one thread and freed on other (only if return fifo is full). */
+  if (fs->n_alloc_frames > 0)
+    fs->n_alloc_frames -= 1;
 }
 
 static clib_error_t *
@@ -231,7 +235,8 @@ vlib_next_frame_change_ownership (vlib_main_t * vm,
     vlib_node_runtime_get_next_frame (vm, node_runtime, next_index);
   next_node = vec_elt (nm->nodes, node->next_nodes[next_index]);
 
-  if (next_node->owner_node_index != VLIB_INVALID_NODE_INDEX)
+  if (next_node->owner_node_index != VLIB_INVALID_NODE_INDEX
+      && next_node->owner_node_index != node->index) /* don't take rights away from ourselves */
     {
       /* Get frame from previous owner. */
       vlib_next_frame_t *owner_next_frame;
@@ -396,6 +401,17 @@ vlib_put_next_frame_validate (vlib_main_t * vm,
     }
 }
 
+always_inline void
+frame_fifo_enqueue (vlib_frame_fifo_t *f, vlib_frame_fifo_elt_t *e)
+{
+  while (! vlib_frame_fifo_push (f, e))
+    vlib_worker_thread_barrier_check (); /* wait for others to empty fifo */
+}
+
+always_inline uword
+frame_fifo_dequeue (vlib_frame_fifo_t *f, vlib_frame_fifo_elt_t *e)
+{ return vlib_frame_fifo_pop (f, e); }
+
 void
 vlib_put_next_frame (vlib_main_t * vm,
 		     vlib_node_runtime_t * r,
@@ -405,6 +421,7 @@ vlib_put_next_frame (vlib_main_t * vm,
   vlib_next_frame_t *nf;
   vlib_frame_t *f;
   u32 n_vectors_in_frame;
+  clib_thread_index_t my_thread_index = vlib_get_thread_index ();
 
   if (CLIB_DEBUG > 0)
     vlib_put_next_frame_validate (vm, r, next_index, n_vectors_left);
@@ -427,42 +444,106 @@ vlib_put_next_frame (vlib_main_t * vm,
   f->n_vectors = n_vectors_in_frame;
 
   /* If vectors were added to frame, add to pending vector. */
-  if (PREDICT_TRUE (n_vectors_in_frame > 0))
+  if (PREDICT_FALSE (n_vectors_in_frame == 0))
+    return;
+
+  /* Enqueue frame to another thread? */
+  if (nf->thread_index != VLIB_THREAD_INDEX_UNSPECIFIED && nf->thread_index != my_thread_index)
     {
-      vlib_pending_frame_t *p;
-      u32 v0, v1;
-
-      r->cached_next_index = next_index;
-
-      if (!(f->frame_flags & VLIB_FRAME_PENDING))
-	{
-	  __attribute__ ((unused)) vlib_node_t *node;
-
-	  node = vlib_get_node (vm, r->node_index);
-
-	  vec_add2 (nm->pending_frames, p, 1);
-
-	  p->frame = nf->frame;
-	  p->node_runtime_index = nf->node_runtime_index;
-	  p->next_frame_index = nf - nm->next_frames;
-	  nf->flags |= VLIB_FRAME_PENDING;
-	  f->frame_flags |= VLIB_FRAME_PENDING;
-	}
-
-      /* Copy trace flag from next_frame and from runtime. */
-      nf->flags |=
-	(nf->flags & VLIB_NODE_FLAG_TRACE) | (r->
-					      flags & VLIB_NODE_FLAG_TRACE);
-
-      v0 = nf->vectors_since_last_overflow;
-      v1 = v0 + n_vectors_in_frame;
-      nf->vectors_since_last_overflow = v1;
-      if (PREDICT_FALSE (v1 < v0))
-	{
-	  vlib_node_t *node = vlib_get_node (vm, r->node_index);
-	  vec_elt (node->n_vectors_by_next_node, next_index) += v0;
-	}
+      vlib_main_t *tvm = vlib_get_main_by_index (nf->thread_index);
+      vlib_frame_fifo_elt_t fe;
+      fe.frame = f;
+      fe.src_thread_index = my_thread_index;
+      fe.next_node_runtime_index = nf->node_runtime_index;
+      nf->frame = NULL;		/* so a new one is allocated next time */
+      nf->flags &= ~VLIB_FRAME_IS_ALLOCATED;
+      frame_fifo_enqueue (&tvm->node_main.pending_frame_fifo, &fe);
+      return;
     }
+
+  /* Add to pending vector of current thread. */
+  {
+    vlib_pending_frame_t *p;
+    u32 v0, v1;
+
+    r->cached_next_index = next_index;
+
+    if (!(f->frame_flags & VLIB_FRAME_PENDING))
+      {
+	vec_add2 (nm->pending_frames, p, 1);
+
+	p->frame = nf->frame;
+	p->node_runtime_index = nf->node_runtime_index;
+	p->next_frame_index = nf - nm->next_frames;
+	p->return_thread_index = ~0;
+	nf->flags |= VLIB_FRAME_PENDING;
+	f->frame_flags |= VLIB_FRAME_PENDING;
+      }
+
+    /* Copy trace flag from next_frame and from runtime. */
+    nf->flags |=
+      (nf->flags & VLIB_NODE_FLAG_TRACE) | (r->
+					    flags & VLIB_NODE_FLAG_TRACE);
+
+    v0 = nf->vectors_since_last_overflow;
+    v1 = v0 + n_vectors_in_frame;
+    nf->vectors_since_last_overflow = v1;
+    if (PREDICT_FALSE (v1 < v0))
+      {
+	vlib_node_t *node = vlib_get_node (vm, r->node_index);
+	vec_elt (node->n_vectors_by_next_node, next_index) += v0;
+      }
+  }
+}
+
+/* Add in frames sent to this thread from other threads. */
+always_inline void
+empty_pending_frame_fifo (vlib_main_t * vm)
+{
+  vlib_frame_fifo_t * ff = &vm->node_main.pending_frame_fifo;
+  while (1)
+    {
+      vlib_frame_fifo_elt_t e;
+      vlib_frame_t *f;
+      vlib_pending_frame_t *p;
+      if (! frame_fifo_dequeue (ff, &e))
+	break;
+      vec_add2 (vm->node_main.pending_frames, p, 1);
+      f = e.frame;
+      f->frame_flags |= VLIB_FRAME_PENDING;
+      p->frame = vlib_get_frame (vm, f);
+      p->node_runtime_index = e.next_node_runtime_index;
+      p->next_frame_index = VLIB_PENDING_FRAME_NO_NEXT_FRAME;
+      p->return_thread_index = e.src_thread_index;
+    }
+}
+
+/* Re-cycle frames previously sent to other threads. */
+always_inline void
+empty_return_frame_fifo (vlib_main_t * vm)
+{
+  vlib_frame_fifo_t * ff = &vm->node_main.return_frame_fifo;
+  while (1)
+    {
+      vlib_frame_fifo_elt_t e;
+      if (! frame_fifo_dequeue (ff, &e))
+	break;
+      vlib_frame_free (vm, e.frame);
+    }
+}
+
+/* Return to sender for frames originating on other threads. */
+always_inline void
+return_pending_frame (vlib_main_t * vm, vlib_pending_frame_t *p)
+{
+  vlib_main_t *tvm = vlib_get_main_by_index (p->return_thread_index);
+  vlib_frame_fifo_elt_t fe;
+  fe.frame = p->frame;
+  fe.src_thread_index = ~0;	/* these are not used for return */
+  fe.next_node_runtime_index = ~0;
+  if (! vlib_frame_fifo_push (&tvm->node_main.return_frame_fifo, &fe))
+    /* If fifo is full just free it on this thread and be done with it */
+    vlib_frame_free (vm, p->frame);
 }
 
 /* Sync up runtime (32 bit counters) and main node stats (64 bit counters). */
@@ -1123,6 +1204,9 @@ dispatch_pending_node (vlib_main_t * vm, uword pending_frame_index,
 	}
     }
 
+  if (p->return_thread_index != ~0)
+    return_pending_frame (vm, p);
+
   return last_time_stamp;
 }
 
@@ -1540,6 +1624,8 @@ vlib_main_or_worker_loop (vlib_main_t * vm, int is_main)
 
       cpu_time_now = clib_cpu_time_now ();
 
+      empty_pending_frame_fifo (vm);
+
       if (vm->file_poll_skip_loops)
 	vm->file_poll_skip_loops--;
       else
@@ -1614,6 +1700,8 @@ vlib_main_or_worker_loop (vlib_main_t * vm, int is_main)
 	cpu_time_now = dispatch_pending_node (vm, i, cpu_time_now);
       /* Reset pending vector for next iteration. */
       vec_set_len (nm->pending_frames, 0);
+
+      empty_return_frame_fifo (vm);
 
       if (is_main)
 	{

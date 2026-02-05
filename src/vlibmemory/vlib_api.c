@@ -277,7 +277,7 @@ vl_api_get_next_index_t_handler (vl_api_get_next_index_t *mp)
   else
     next_node_index = next_node->index;
 
-  p = hash_get (node->next_slot_by_node, next_node_index);
+  p = hash_get (node->next_slot_by_node_and_thread, next_node_index);
 
   if (p == 0)
     {

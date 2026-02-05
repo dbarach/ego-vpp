@@ -596,7 +596,7 @@ process_reg:
       if (h)
 	{
 	  ei = h;
-	  error = (*ei) (pm->vlib_main, pi->handle);
+	  error = (*ei) (pm->vlib_main, pi);
 	  if (error)
 	    {
 	      u8 *err = format (0, "%s: %U%c", pi->name,
