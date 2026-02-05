@@ -120,15 +120,48 @@ class TestSfdp(VppTestCase):
             is_del=True,
         )
 
-    def _verify_basic_session_state(self, sess, expected_protocol, expected_state):
+    def _verify_basic_session_state(
+        self,
+        sess,
+        expected_protocol,
+        expected_state,
+        expected_src_ip=None,
+        expected_dst_ip=None,
+    ):
         """Verify basic session state"""
         self.assertEqual(
             sess.protocol, expected_protocol, f"Protocol should be {expected_protocol}"
         )
         self.assertEqual(sess.state, expected_state, "Unexpected session state")
 
+        # Verify session detail via CLI if IPs are provided
+        if expected_src_ip and expected_dst_ip:
+            detail_output = self.vapi.cli(
+                f"show sfdp session-detail {hex(sess.session_id)}"
+            )
+            self.assertIn(
+                expected_src_ip,
+                detail_output,
+                "cli output does not show expected source IP",
+            )
+            self.assertIn(
+                expected_dst_ip,
+                detail_output,
+                "cli output does not show expected destination IP",
+            )
+
     def test_sfdp_api_configuration(self):
         """Test SFDP configuration"""
+        # Dump services to build index mapping and verify scope
+        service_index_by_name = {}
+        services = self.vapi.sfdp_service_dump()
+        for svc in services:
+            service_index_by_name[svc.node_name] = svc.index
+            # Verify all services have 'default' scope
+            self.assertEqual(
+                svc.scope, "default", "Service does not have 'default' scope"
+            )
+
         # Test tenant add
         reply = self.vapi.sfdp_tenant_add_del(
             tenant_id=100,
@@ -167,6 +200,27 @@ class TestSfdp(VppTestCase):
         )
         self.assertEqual(reply.retval, 0)
 
+        # Calculate expected bitmaps based on service indices
+        expected_forward_bitmap = 0
+        for service_name in forward_services:
+            idx = service_index_by_name[service_name]
+            expected_forward_bitmap |= 1 << idx
+
+        expected_reverse_bitmap = 0
+        for service_name in reverse_services:
+            idx = service_index_by_name[service_name]
+            expected_reverse_bitmap |= 1 << idx
+
+        # Verify services are set correctly via tenant dump
+        tenants = self.vapi.sfdp_tenant_dump()
+        tenant = tenants[0]
+        self.assertEqual(
+            tenant.forward_bitmap, expected_forward_bitmap, "Forward bitmap mismatch"
+        )
+        self.assertEqual(
+            tenant.reverse_bitmap, expected_reverse_bitmap, "Reverse bitmap mismatch"
+        )
+
         # Test timeout configuration
         reply = self.vapi.sfdp_set_timeout(
             tenant_id=100,
@@ -201,6 +255,12 @@ class TestSfdp(VppTestCase):
 
     def test_sfdp_cli_configuration(self):
         """Test SFDP configuration through CLI"""
+        # Dump services to build index mapping
+        services = self.vapi.sfdp_service_dump()
+        service_index_by_name = {}
+        for svc in services:
+            service_index_by_name[svc.node_name] = svc.index
+
         # Test tenant add via CLI
         self.vapi.cli("sfdp tenant add 200 context 200")
 
@@ -215,12 +275,34 @@ class TestSfdp(VppTestCase):
         self.assertEqual(len(tenants), 1, "There should only be one tenant")
 
         # Test service configuration via CLI
+        forward_services = ["sfdp-l4-lifecycle", "ip4-lookup"]
+        reverse_services = ["ip4-lookup"]
         self.vapi.cli(
             "set sfdp services tenant 200 sfdp-l4-lifecycle ip4-lookup forward"
         )
         self.vapi.cli("set sfdp services tenant 200 ip4-lookup reverse")
 
+        # Calculate expected bitmaps based on service indices
+        expected_forward_bitmap = 0
+        for service_name in forward_services:
+            idx = service_index_by_name[service_name]
+            expected_forward_bitmap |= 1 << idx
+
+        expected_reverse_bitmap = 0
+        for service_name in reverse_services:
+            idx = service_index_by_name[service_name]
+            expected_reverse_bitmap |= 1 << idx
+
         # Verify services are set correctly via tenant dump
+        tenants = self.vapi.sfdp_tenant_dump()
+        tenant = tenants[0]
+        self.assertEqual(
+            tenant.forward_bitmap, expected_forward_bitmap, "Forward bitmap mismatch"
+        )
+        self.assertEqual(
+            tenant.reverse_bitmap, expected_reverse_bitmap, "Reverse bitmap mismatch"
+        )
+
         # Test timeout configuration via CLI
         self.vapi.cli("set sfdp timeout tenant 200 embryonic 35")
 
@@ -267,6 +349,8 @@ class TestSfdp(VppTestCase):
                     sess,
                     6,
                     VppEnum.vl_api_sfdp_session_state_t.SFDP_API_SESSION_STATE_FSOL,
+                    self.pg0.remote_ip4,
+                    self.pg1.remote_ip4,
                 )
                 break
 
@@ -304,6 +388,8 @@ class TestSfdp(VppTestCase):
                     sess,
                     17,
                     VppEnum.vl_api_sfdp_session_state_t.SFDP_API_SESSION_STATE_FSOL,
+                    self.pg0.remote_ip4,
+                    self.pg1.remote_ip4,
                 )
                 break
 

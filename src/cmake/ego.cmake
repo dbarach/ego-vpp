@@ -1,4 +1,4 @@
-find_program(VPP_HAVE_EGO ego)
+find_program(VPP_HAVE_EGO egoNOT)
 if (VPP_HAVE_EGO)
   execute_process(COMMAND ego print-goroot OUTPUT_VARIABLE ego_go_root)
   string(STRIP "${ego_go_root}" ego_go_root)

@@ -244,6 +244,10 @@ app_worker_flush_events_inline (app_worker_t *app_wrk,
 		}
 	      if (old_state >= SESSION_STATE_TRANSPORT_CLOSING)
 		{
+		  /* Avoid validation session as the transport may have been deleted and the
+		   * application may have wrongfully updated the state to a valid state */
+		  s = session_get_from_handle (
+		    session_make_handle (evt->session_index, thread_index));
 		  session_set_state (s, clib_max (old_state, s->session_state));
 		  if (svm_fifo_max_dequeue (s->rx_fifo))
 		    app->cb_fns.builtin_app_rx_callback (s);
@@ -255,6 +259,8 @@ app_worker_flush_events_inline (app_worker_t *app_wrk,
 		}
 	      else
 		{
+		  /* regrab session as application might've grown the pool */
+		  s = session_get (evt->session_index, thread_index);
 		  s->flags |= SESSION_F_RX_READY;
 		}
 	      break;
