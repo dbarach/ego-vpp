@@ -208,7 +208,7 @@ set(VPPINFRA_HEADERS
   serialize.h
   socket.h
   sparse_vec.h
-  spsc_fifo.h
+  smp_fifo.h
   stack.h
   string.h
   time.h

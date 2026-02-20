@@ -11,7 +11,7 @@
 #include <vppinfra/cpu.h>
 #include <vppinfra/longjmp.h>
 #include <vppinfra/lock.h>
-#include <vppinfra/spsc_fifo.h>
+#include <vppinfra/smp_fifo.h>
 #include <vlib/trace.h>		/* for vlib_trace_filter_t */
 
 /* Forward declaration. */
@@ -523,15 +523,15 @@ typedef struct {
 } vlib_frame_fifo_elt_t;
 
 /* 2^6 = 64 elements in incoming/outgoing frame fifo. */
-typedef CLIB_SPSC_FIFO_DECL (vlib_frame_fifo_elt_t, 6) vlib_frame_fifo_t;
+typedef CLIB_MPSC_FIFO_DECL (vlib_frame_fifo_elt_t, 6) vlib_frame_fifo_t;
 
 always_inline uword
-vlib_frame_fifo_push (vlib_frame_fifo_t *f, vlib_frame_fifo_elt_t *e)
-{ return CLIB_SPSC_FIFO_PUSH (f, e); }
+vlib_frame_fifo_push (vlib_frame_fifo_t *f, vlib_frame_fifo_elt_t *e, uword *len)
+{ return CLIB_MPSC_FIFO_PUSH (f, e, len); }
 
 always_inline uword
-vlib_frame_fifo_pop (vlib_frame_fifo_t *f, vlib_frame_fifo_elt_t *e)
-{ return CLIB_SPSC_FIFO_POP (f, e); }
+vlib_frame_fifo_pop (vlib_frame_fifo_t *f, vlib_frame_fifo_elt_t *e, uword * len)
+{ return CLIB_MPSC_FIFO_POP (f, e, len); }
 
 typedef struct vlib_node_runtime_t
 {

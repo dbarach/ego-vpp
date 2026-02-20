@@ -401,16 +401,18 @@ vlib_put_next_frame_validate (vlib_main_t * vm,
     }
 }
 
-always_inline void
+always_inline uword
 frame_fifo_enqueue (vlib_frame_fifo_t *f, vlib_frame_fifo_elt_t *e)
 {
-  while (! vlib_frame_fifo_push (f, e))
+  uword len;
+  while (! vlib_frame_fifo_push (f, e, &len))
     vlib_worker_thread_barrier_check (); /* wait for others to empty fifo */
+  return len;
 }
 
 always_inline uword
 frame_fifo_dequeue (vlib_frame_fifo_t *f, vlib_frame_fifo_elt_t *e)
-{ return vlib_frame_fifo_pop (f, e); }
+{ return vlib_frame_fifo_pop (f, e, 0); }
 
 void
 vlib_put_next_frame (vlib_main_t * vm,
@@ -452,12 +454,15 @@ vlib_put_next_frame (vlib_main_t * vm,
     {
       vlib_main_t *tvm = vlib_get_main_by_index (nf->thread_index);
       vlib_frame_fifo_elt_t fe;
+      uword len;
       fe.frame = f;
       fe.src_thread_index = my_thread_index;
       fe.next_node_runtime_index = nf->node_runtime_index;
       nf->frame = NULL;		/* so a new one is allocated next time */
       nf->flags &= ~VLIB_FRAME_IS_ALLOCATED;
-      frame_fifo_enqueue (&tvm->node_main.pending_frame_fifo, &fe);
+      len = frame_fifo_enqueue (&tvm->node_main.pending_frame_fifo, &fe);
+      if (len == 0)		/* wake up thread on transition from empty fifo */
+	vlib_thread_wakeup (nf->thread_index);
       return;
     }
 
@@ -541,7 +546,7 @@ return_pending_frame (vlib_main_t * vm, vlib_pending_frame_t *p)
   fe.frame = p->frame;
   fe.src_thread_index = ~0;	/* these are not used for return */
   fe.next_node_runtime_index = ~0;
-  if (! vlib_frame_fifo_push (&tvm->node_main.return_frame_fifo, &fe))
+  if (! vlib_frame_fifo_push (&tvm->node_main.return_frame_fifo, &fe, 0))
     /* If fifo is full just free it on this thread and be done with it */
     vlib_frame_free (vm, p->frame);
 }
