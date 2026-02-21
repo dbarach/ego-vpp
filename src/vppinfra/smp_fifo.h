@@ -14,6 +14,11 @@ typedef struct {
   uword v;
 } __attribute__ ((aligned (CLIB_CACHE_LINE_BYTES))) clib_spsc_fifo_ptr_t;
 
+typedef struct {
+  u32 len;			/* length of fifo before push/pop */
+  u32 sequence;			/* head/tail as sequence number for pop/push */
+} clib_smp_fifo_aux_info_t;
+
 #define CLIB_SPSC_FIFO_DECL(T, L)		\
   struct {					\
     /* Head/tail pointers (cache aligned). */	\
@@ -23,7 +28,7 @@ typedef struct {
   }
 
 /* Add value V to fifo F.  Return 0 for full fifo; otherwise 1. */
-#define CLIB_SPSC_FIFO_PUSH(F, V, L)				\
+#define CLIB_SPSC_FIFO_PUSH(F, V, AUX)				\
 ({								\
   uword __tail = clib_atomic_load_relax_n (&(F)->p[1].v);	\
   uword __head = clib_atomic_load_acq_n (&(F)->p[0].v);		\
@@ -34,15 +39,16 @@ typedef struct {
       f->d[__tail % ARRAY_LEN ((F)->d)] = *(V);			\
       clib_atomic_store_rel_n (&(F)->p[1].v, __tail + 1);	\
     }								\
-  if (L)							\
+  if (AUX)							\
     {								\
-      *(L) = __len;						\
+      (AUX)->len = __len;					\
+      (AUX)->sequence = __tail;					\
     }								\
   __ok;								\
 })
 
 /* Remove value V to fifo F.  Return 0 for empty fifo; otherwise 1. */
-#define CLIB_SPSC_FIFO_POP(F, V, L)				\
+#define CLIB_SPSC_FIFO_POP(F, V, AUX)				\
 ({								\
   uword __head = clib_atomic_load_relax_n (&(F)->p[0].v);	\
   uword __tail = clib_atomic_load_acq_n (&(F)->p[1].v);		\
@@ -53,9 +59,10 @@ typedef struct {
       *(V) = f->d[__head % ARRAY_LEN ((F)->d)];			\
       clib_atomic_store_rel_n (&(F)->p[0].v, __head + 1);	\
     }								\
-  if (L)							\
+  if (AUX)							\
     {								\
-      *(L) = __len;						\
+      (AUX)->len = __len;					\
+      (AUX)->sequence = __head;					\
     }								\
   __ok;								\
 })
@@ -133,7 +140,7 @@ clib_mpsc_fifo_unlock (clib_mpsc_fifo_header64_t *h64, u64 head, u64 tail)
 })
 
 /* Add value V to fifo F.  Return 0 for full fifo; otherwise 1. */
-#define CLIB_MPSC_FIFO_PUSH(F, V, L)			\
+#define CLIB_MPSC_FIFO_PUSH(F, V, AUX)			\
 ({							\
   u64 __head, __tail;					\
   uword __len, __ok;					\
@@ -146,14 +153,15 @@ clib_mpsc_fifo_unlock (clib_mpsc_fifo_header64_t *h64, u64 head, u64 tail)
       __tail++;						\
     }							\
   clib_mpsc_fifo_unlock (&(F)->h64, __head, __tail);	\
-  if (L)						\
+  if (AUX)						\
     {							\
-      *(L) = __len;					\
+      (AUX)->len = __len;				\
+      (AUX)->sequence = __tail;				\
     }							\
   __ok;							\
 })
 
-#define CLIB_MPSC_FIFO_POP(F, V, L)			\
+#define CLIB_MPSC_FIFO_POP(F, V, AUX)			\
 ({							\
   u64 __head, __tail;					\
   uword __len, __ok;					\
@@ -166,9 +174,10 @@ clib_mpsc_fifo_unlock (clib_mpsc_fifo_header64_t *h64, u64 head, u64 tail)
       __head++;						\
     }							\
   clib_mpsc_fifo_unlock (&(F)->h64, __head, __tail);	\
-  if (L)						\
+  if (AUX)						\
     {							\
-      *(L) = __len;					\
+      (AUX)->len = __len;				\
+      (AUX)->sequence = __head;				\
     }							\
   __ok;							\
 })

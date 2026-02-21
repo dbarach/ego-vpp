@@ -401,18 +401,51 @@ vlib_put_next_frame_validate (vlib_main_t * vm,
     }
 }
 
-always_inline uword
-frame_fifo_enqueue (vlib_frame_fifo_t *f, vlib_frame_fifo_elt_t *e)
+always_inline void
+frame_fifo_enqueue (vlib_frame_fifo_t *f, vlib_frame_fifo_elt_t *e, clib_smp_fifo_aux_info_t *aux)
 {
-  uword len;
-  while (! vlib_frame_fifo_push (f, e, &len))
+  while (! vlib_frame_fifo_push (f, e, aux))
     vlib_worker_thread_barrier_check (); /* wait for others to empty fifo */
-  return len;
 }
 
 always_inline uword
-frame_fifo_dequeue (vlib_frame_fifo_t *f, vlib_frame_fifo_elt_t *e)
-{ return vlib_frame_fifo_pop (f, e, 0); }
+frame_fifo_dequeue (vlib_frame_fifo_t *f, vlib_frame_fifo_elt_t *e, clib_smp_fifo_aux_info_t *aux)
+{ return vlib_frame_fifo_pop (f, e, aux); }
+
+always_inline void
+frame_fifo_elog (vlib_main_t *vm, clib_smp_fifo_aux_info_t *aux, uword is_push, uword thread, uword frame_n_vectors)
+{
+  vlib_main_t *evm = vlib_get_first_main ();
+  ELOG_TYPE_DECLARE (t) =
+    {
+      .format = "frame vec %d %s%d seq 0x%x len %d",
+      .format_args = "i4t4i4i4i4",
+      .n_enum_strings = 2,
+      .enum_strings = {
+	"<-",
+	"->",
+      },
+    };
+
+  if (!PREDICT_FALSE (evm->elog_trace_graph_dispatch))
+    return;
+
+  struct {
+    u32 frame_n_vectors;
+    u32 is_push;
+    u32 thread;
+    u32 sequence;
+    u32 len;
+  } * ed;
+
+  vlib_worker_thread_t *w = vlib_worker_threads + vm->thread_index;
+  ed = ELOG_TRACK_DATA (vlib_get_elog_main (), t, w->elog_track);
+  ed->is_push = is_push;
+  ed->thread = thread;
+  ed->frame_n_vectors = frame_n_vectors;
+  ed->sequence = aux->sequence;
+  ed->len = aux->len;
+}
 
 void
 vlib_put_next_frame (vlib_main_t * vm,
@@ -454,15 +487,16 @@ vlib_put_next_frame (vlib_main_t * vm,
     {
       vlib_main_t *tvm = vlib_get_main_by_index (nf->thread_index);
       vlib_frame_fifo_elt_t fe;
-      uword len;
+      clib_smp_fifo_aux_info_t aux;
       fe.frame = f;
       fe.src_thread_index = my_thread_index;
       fe.next_node_runtime_index = nf->node_runtime_index;
       nf->frame = NULL;		/* so a new one is allocated next time */
       nf->flags &= ~VLIB_FRAME_IS_ALLOCATED;
-      len = frame_fifo_enqueue (&tvm->node_main.pending_frame_fifo, &fe);
-      if (len == 0)		/* wake up thread on transition from empty fifo */
+      frame_fifo_enqueue (&tvm->node_main.pending_frame_fifo, &fe, &aux);
+      if (aux.len == 0)		/* wake up thread on transition from empty fifo */
 	vlib_thread_wakeup (nf->thread_index);
+      frame_fifo_elog (vm, &aux, /* is_push */ 1, nf->thread_index, f->n_vectors);
       return;
     }
 
@@ -511,7 +545,8 @@ empty_pending_frame_fifo (vlib_main_t * vm)
       vlib_frame_fifo_elt_t e;
       vlib_frame_t *f;
       vlib_pending_frame_t *p;
-      if (! frame_fifo_dequeue (ff, &e))
+      clib_smp_fifo_aux_info_t aux;
+      if (! frame_fifo_dequeue (ff, &e, &aux))
 	break;
       vec_add2 (vm->node_main.pending_frames, p, 1);
       f = e.frame;
@@ -520,6 +555,7 @@ empty_pending_frame_fifo (vlib_main_t * vm)
       p->node_runtime_index = e.next_node_runtime_index;
       p->next_frame_index = VLIB_PENDING_FRAME_NO_NEXT_FRAME;
       p->return_thread_index = e.src_thread_index;
+      frame_fifo_elog (vm, &aux, /* is_push */ 0, e.src_thread_index, f->n_vectors);
     }
 }
 
@@ -531,7 +567,7 @@ empty_return_frame_fifo (vlib_main_t * vm)
   while (1)
     {
       vlib_frame_fifo_elt_t e;
-      if (! frame_fifo_dequeue (ff, &e))
+      if (! frame_fifo_dequeue (ff, &e, 0))
 	break;
       vlib_frame_free (vm, e.frame);
     }

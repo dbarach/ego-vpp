@@ -526,12 +526,12 @@ typedef struct {
 typedef CLIB_MPSC_FIFO_DECL (vlib_frame_fifo_elt_t, 6) vlib_frame_fifo_t;
 
 always_inline uword
-vlib_frame_fifo_push (vlib_frame_fifo_t *f, vlib_frame_fifo_elt_t *e, uword *len)
-{ return CLIB_MPSC_FIFO_PUSH (f, e, len); }
+vlib_frame_fifo_push (vlib_frame_fifo_t *f, vlib_frame_fifo_elt_t *e, clib_smp_fifo_aux_info_t *aux)
+{ return CLIB_MPSC_FIFO_PUSH (f, e, aux); }
 
 always_inline uword
-vlib_frame_fifo_pop (vlib_frame_fifo_t *f, vlib_frame_fifo_elt_t *e, uword * len)
-{ return CLIB_MPSC_FIFO_POP (f, e, len); }
+vlib_frame_fifo_pop (vlib_frame_fifo_t *f, vlib_frame_fifo_elt_t *e, clib_smp_fifo_aux_info_t *aux)
+{ return CLIB_MPSC_FIFO_POP (f, e, aux); }
 
 typedef struct vlib_node_runtime_t
 {
