@@ -412,7 +412,7 @@ typedef struct vlib_node_t
 /* Max number of vector elements to process at once per node. */
 #define VLIB_FRAME_SIZE 256
 /* Number of extra elements allocated at the end of vecttor. */
-#define VLIB_FRAME_SIZE_EXTRA 4
+#define VLIB_FRAME_SIZE_EXTRA 16
 /* Frame data alignment */
 #define VLIB_FRAME_DATA_ALIGN 16
 
