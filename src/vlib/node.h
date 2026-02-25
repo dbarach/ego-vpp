@@ -416,6 +416,14 @@ typedef struct vlib_node_t
 /* Frame data alignment */
 #define VLIB_FRAME_DATA_ALIGN 16
 
+typedef enum {
+  VLIB_FRAME_DEFERRED_UNKNOWN,	/* frame is not deferred */
+  VLIB_FRAME_DEFERRED_UNMARKED, /* unmarked but put frame next loop unless marked */
+  VLIB_FRAME_DEFERRED_MARK_NEXT,	/* mark for this loop; unmark for next loop */
+  VLIB_FRAME_DEFERRED_MARK_ALWAYS, /* mark for all loops */
+  VLIB_FRAME_DEFERRED_ALREADY_PUT, /* frame already put so no longer defered */
+} vlib_frame_deferment_state_t;
+
 /* Calling frame (think stack frame) for a node. */
 typedef struct vlib_frame_t
 {
@@ -433,6 +441,9 @@ typedef struct vlib_frame_t
 
   /* Index of frame size corresponding to allocated node. */
   u16 frame_size_index;
+
+  /* See above. */
+  vlib_frame_deferment_state_t deferment_state : 16;
 
   /* Scalar and vector arguments to next node. */
   u8 arguments[0];
@@ -495,7 +506,7 @@ vlib_next_frame_init (vlib_next_frame_t * nf)
 /* A frame pending dispatch by main loop. */
 typedef struct
 {
-  /* Frame index (in the heap). */
+  /* Frame pointer. */
   vlib_frame_t *frame;
 
   /* Node and runtime for this frame. */
@@ -507,11 +518,25 @@ typedef struct
   /* Special value for next_frame_index when there is no next frame. */
 #define VLIB_PENDING_FRAME_NO_NEXT_FRAME ((u32) ~0)
 
-  /* Return (source) thread index for frames with VLIB_NODE_FLAG_MULTI_THREADED_ENQUEUE set. */
+  /* Return (source) thread index for frames sent to other threads. */
   u32 return_thread_index;
 } vlib_pending_frame_t;
 
-typedef struct {
+/* A frame deferred to be put later via vlib_put_next_frame by main loop. */
+typedef struct
+{
+  /* Frame pointer. */
+  vlib_frame_t *frame;
+
+  /* Node runtime for this frame. */
+  u32 node_runtime_index;
+
+  /* Next for call to put next frame. */
+  u32 next_index;
+} vlib_defered_frame_t;
+
+typedef struct
+{
   /* Frame sent by source thread to enqueue on holder of this fifo. */
   vlib_frame_t * frame;
 
@@ -798,6 +823,13 @@ typedef struct
 
   /* Vector of internal node's frames waiting to be called. */
   vlib_pending_frame_t *pending_frames;
+
+  /* (serial + 0) mod 2 => defered frames this loop;
+     (serial - 1) mod 2 => defered frames last loop. */
+  u32 defered_frame_serial;
+
+  /* Record deferred frame this loop and previous loop iteration. */
+  vlib_defered_frame_t *defered_frames[2];
 
   vlib_signal_timed_event_data_t *signal_timed_event_data_pool;
 

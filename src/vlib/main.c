@@ -74,6 +74,7 @@ vlib_frame_alloc_to_node (vlib_main_t * vm, u32 to_node_index,
   f->aux_offset = to_node->aux_offset;
   f->flags = 0;
   f->frame_size_index = to_node->frame_size_index;
+  f->deferment_state = VLIB_FRAME_DEFERRED_UNKNOWN;
 
   fs->n_alloc_frames += 1;
 
@@ -1567,6 +1568,100 @@ process_expired_timers (u32 *v)
   return v;
 }
 
+static void
+process_deferred_frames (vlib_main_t * vm)
+{
+  vlib_node_main_t * nm = &vm->node_main;
+  uword serial = nm->defered_frame_serial;
+  vlib_defered_frame_t *d, *this_dfs, *last_dfs;
+
+  this_dfs = nm->defered_frames[(serial + 1) & 1];
+  last_dfs = nm->defered_frames[(serial + 0) & 1];
+  vec_reset_length (this_dfs);
+  vec_foreach (d, last_dfs)
+    {
+      vlib_frame_t * f = d->frame;
+      switch (f->deferment_state)
+	{
+	case VLIB_FRAME_DEFERRED_UNMARKED:
+	  f->deferment_state = VLIB_FRAME_DEFERRED_ALREADY_PUT;
+	  if (f->n_vectors > 0)
+	    {
+	      vlib_node_runtime_t * rt;
+	      rt = vec_elt_at_index (nm->nodes_by_type[VLIB_NODE_TYPE_INTERNAL],
+				     d->node_runtime_index);
+	      vlib_put_next_frame (vm, rt, d->next_index, VLIB_FRAME_SIZE - f->n_vectors);
+	    }
+	  break;
+
+	case VLIB_FRAME_DEFERRED_ALREADY_PUT:
+	  /* nothing to do */
+	  break;
+
+	case VLIB_FRAME_DEFERRED_MARK_NEXT:
+	  /* Frame was deferred by node this time around main loop.
+	     Frame will be marked if a node wants to keep deferring put of this frame. */
+	  f->deferment_state = VLIB_FRAME_DEFERRED_UNMARKED;
+	  /* fallthrough */
+
+	case VLIB_FRAME_DEFERRED_MARK_ALWAYS:
+	  vec_add1 (this_dfs, d[0]);
+	  break;
+
+	case VLIB_FRAME_DEFERRED_UNKNOWN:
+	  ASSERT (0);		/* should not happen */
+	  break;
+	}
+    }
+  vec_reset_length (last_dfs);
+  nm->defered_frames[(serial + 1) & 1] = this_dfs;
+  nm->defered_frame_serial = serial + 1;
+}
+
+void
+vlib_defer_put_next_frame (vlib_main_t * vm,
+			   vlib_node_runtime_t * r,
+			   u32 next_index, u32 n_vectors,
+			   u8 defer_flags)
+{
+  vlib_node_main_t * nm = &vm->node_main;
+  uword phase = nm->defered_frame_serial & 1;
+  vlib_next_frame_t *nf;
+  vlib_frame_t *f;
+
+  nf = vlib_node_runtime_get_next_frame (vm, r, next_index);
+  f = nf->frame;
+  if (f == NULL || f->deferment_state == VLIB_FRAME_DEFERRED_ALREADY_PUT)
+    {
+      ASSERT (n_vectors == 0);
+      return;
+    }
+
+  f->n_vectors = n_vectors;
+  if (! (defer_flags & VLIB_DEFER_PUT_NEXT_FRAME_DEFER_NEXT))
+    {
+      f->deferment_state = VLIB_FRAME_DEFERRED_ALREADY_PUT;
+      if (n_vectors > 0)
+	vlib_put_next_frame (vm, r, next_index, VLIB_FRAME_SIZE - n_vectors);
+    }
+  else
+    {
+      if (f->deferment_state == VLIB_FRAME_DEFERRED_UNKNOWN)
+	{
+	  vlib_defered_frame_t *d;
+	  vlib_node_t *n = vlib_get_node (vm, r->node_index);
+	  vec_add2 (nm->defered_frames[phase], d, 1);
+	  d->frame = f;
+	  d->node_runtime_index = n->runtime_index;
+	  d->next_index = next_index;
+	}
+      if (defer_flags & VLIB_DEFER_PUT_NEXT_FRAME_DEFER_ALWAYS)
+	f->deferment_state = VLIB_FRAME_DEFERRED_MARK_ALWAYS;
+      else
+	f->deferment_state = VLIB_FRAME_DEFERRED_MARK_NEXT;
+    }
+}
+
 static_always_inline void
 vlib_main_or_worker_loop (vlib_main_t * vm, int is_main)
 {
@@ -1666,6 +1761,7 @@ vlib_main_or_worker_loop (vlib_main_t * vm, int is_main)
       cpu_time_now = clib_cpu_time_now ();
 
       empty_pending_frame_fifo (vm);
+      process_deferred_frames (vm);
 
       if (vm->file_poll_skip_loops)
 	vm->file_poll_skip_loops--;

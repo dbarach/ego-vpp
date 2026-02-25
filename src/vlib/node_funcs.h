@@ -512,6 +512,15 @@ vlib_put_next_frame (vlib_main_t * vm,
 		     vlib_node_runtime_t * r,
 		     u32 next_index, u32 n_packets_left);
 
+#define VLIB_DEFER_PUT_NEXT_FRAME_DEFER_NEXT (1 << 0)
+#define VLIB_DEFER_PUT_NEXT_FRAME_DEFER_ALWAYS (1 << 1)
+
+void
+vlib_defer_put_next_frame (vlib_main_t * vm,
+			   vlib_node_runtime_t * r,
+			   u32 next_index, u32 n_vectors_left,
+			   u8 defer_flags);
+
 /* Combination get plus put.  Returns vector argument just added. */
 #define vlib_set_next_frame(vm,node,next_index,v)			\
 ({									\
