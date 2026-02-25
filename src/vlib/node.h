@@ -443,7 +443,7 @@ typedef struct vlib_frame_t
   u16 frame_size_index;
 
   /* See above. */
-  vlib_frame_deferment_state_t deferment_state : 16;
+  u16 deferment_state;
 
   /* Scalar and vector arguments to next node. */
   u8 arguments[0];
