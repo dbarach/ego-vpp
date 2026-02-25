@@ -421,7 +421,7 @@ typedef enum {
   VLIB_FRAME_DEFERRED_UNMARKED, /* unmarked but put frame next loop unless marked */
   VLIB_FRAME_DEFERRED_MARK_NEXT,	/* mark for this loop; unmark for next loop */
   VLIB_FRAME_DEFERRED_MARK_ALWAYS, /* mark for all loops */
-  VLIB_FRAME_DEFERRED_ALREADY_PUT, /* frame already put so no longer defered */
+  VLIB_FRAME_DEFERRED_ALREADY_PUT, /* frame already put so no longer deferred */
 } vlib_frame_deferment_state_t;
 
 /* Calling frame (think stack frame) for a node. */
@@ -533,7 +533,7 @@ typedef struct
 
   /* Next for call to put next frame. */
   u32 next_index;
-} vlib_defered_frame_t;
+} vlib_deferred_frame_t;
 
 typedef struct
 {
@@ -824,12 +824,12 @@ typedef struct
   /* Vector of internal node's frames waiting to be called. */
   vlib_pending_frame_t *pending_frames;
 
-  /* (serial + 0) mod 2 => defered frames this loop;
-     (serial - 1) mod 2 => defered frames last loop. */
-  u32 defered_frame_serial;
+  /* (serial + 0) mod 2 => deferred frames this loop;
+     (serial - 1) mod 2 => deferred frames last loop. */
+  u32 deferred_frame_serial;
 
   /* Record deferred frame this loop and previous loop iteration. */
-  vlib_defered_frame_t *defered_frames[2];
+  vlib_deferred_frame_t *deferred_frames[2];
 
   vlib_signal_timed_event_data_t *signal_timed_event_data_pool;
 

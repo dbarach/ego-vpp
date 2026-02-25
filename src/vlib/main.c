@@ -1572,11 +1572,11 @@ static void
 process_deferred_frames (vlib_main_t * vm)
 {
   vlib_node_main_t * nm = &vm->node_main;
-  uword serial = nm->defered_frame_serial;
-  vlib_defered_frame_t *d, *this_dfs, *last_dfs;
+  uword serial = nm->deferred_frame_serial;
+  vlib_deferred_frame_t *d, *this_dfs, *last_dfs;
 
-  this_dfs = nm->defered_frames[(serial + 1) & 1];
-  last_dfs = nm->defered_frames[(serial + 0) & 1];
+  this_dfs = nm->deferred_frames[(serial + 1) & 1];
+  last_dfs = nm->deferred_frames[(serial + 0) & 1];
   vec_reset_length (this_dfs);
   vec_foreach (d, last_dfs)
     {
@@ -1614,8 +1614,8 @@ process_deferred_frames (vlib_main_t * vm)
 	}
     }
   vec_reset_length (last_dfs);
-  nm->defered_frames[(serial + 1) & 1] = this_dfs;
-  nm->defered_frame_serial = serial + 1;
+  nm->deferred_frames[(serial + 1) & 1] = this_dfs;
+  nm->deferred_frame_serial = serial + 1;
 }
 
 void
@@ -1625,7 +1625,7 @@ vlib_defer_put_next_frame (vlib_main_t * vm,
 			   u8 defer_flags)
 {
   vlib_node_main_t * nm = &vm->node_main;
-  uword phase = nm->defered_frame_serial & 1;
+  uword phase = nm->deferred_frame_serial & 1;
   vlib_next_frame_t *nf;
   vlib_frame_t *f;
 
@@ -1648,9 +1648,9 @@ vlib_defer_put_next_frame (vlib_main_t * vm,
     {
       if (f->deferment_state == VLIB_FRAME_DEFERRED_UNKNOWN)
 	{
-	  vlib_defered_frame_t *d;
+	  vlib_deferred_frame_t *d;
 	  vlib_node_t *n = vlib_get_node (vm, r->node_index);
-	  vec_add2 (nm->defered_frames[phase], d, 1);
+	  vec_add2 (nm->deferred_frames[phase], d, 1);
 	  d->frame = f;
 	  d->node_runtime_index = n->runtime_index;
 	  d->next_index = next_index;
