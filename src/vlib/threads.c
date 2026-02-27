@@ -43,6 +43,8 @@ barrier_trace_sync (f64 t_entry, f64 t_open, f64 t_closed)
   if (!vlib_worker_threads->barrier_elog_enabled)
     return;
 
+  vlib_worker_thread_t *w = vlib_worker_threads + vlib_get_thread_index ();
+
   ELOG_TYPE_DECLARE (e) = {
     .format = "bar-trace-%s-#%d",
     .format_args = "T4i4",
@@ -53,7 +55,7 @@ barrier_trace_sync (f64 t_entry, f64 t_open, f64 t_closed)
     u32 caller, count, t_entry, t_open, t_closed;
   } *ed = 0;
 
-  ed = ELOG_DATA (vlib_get_elog_main (), e);
+  ed = ELOG_TRACK_DATA (vlib_get_elog_main (), e, w->elog_track);
   ed->count = (int) vlib_worker_threads[0].barrier_sync_count;
   ed->caller = elog_string (vlib_get_elog_main (),
 			    (char *) vlib_worker_threads[0].barrier_caller);
@@ -68,6 +70,8 @@ barrier_trace_sync_rec (f64 t_entry)
   if (!vlib_worker_threads->barrier_elog_enabled)
     return;
 
+  vlib_worker_thread_t *w = vlib_worker_threads + vlib_get_thread_index ();
+
   ELOG_TYPE_DECLARE (e) = {
     .format = "bar-syncrec-%s-#%d",
     .format_args = "T4i4",
@@ -78,7 +82,7 @@ barrier_trace_sync_rec (f64 t_entry)
     u32 caller, depth;
   } *ed = 0;
 
-  ed = ELOG_DATA (vlib_get_elog_main (), e);
+  ed = ELOG_TRACK_DATA (vlib_get_elog_main (), e, w->elog_track);
   ed->depth = (int) vlib_worker_threads[0].recursion_level - 1;
   ed->caller = elog_string (vlib_get_elog_main (),
 			    (char *) vlib_worker_threads[0].barrier_caller);
@@ -90,6 +94,9 @@ barrier_trace_release_rec (f64 t_entry)
   if (!vlib_worker_threads->barrier_elog_enabled)
     return;
 
+  vlib_main_t *vm = vlib_get_main ();
+  vlib_worker_thread_t *w = vlib_worker_threads + vm->thread_index;
+
   ELOG_TYPE_DECLARE (e) = {
     .format = "bar-relrrec-#%d",
     .format_args = "i4",
@@ -100,7 +107,7 @@ barrier_trace_release_rec (f64 t_entry)
     u32 depth;
   } *ed = 0;
 
-  ed = ELOG_DATA (vlib_get_elog_main (), e);
+  ed = ELOG_TRACK_DATA (vlib_get_elog_main (), e, w->elog_track);
   ed->depth = (int) vlib_worker_threads[0].recursion_level;
 }
 
@@ -109,6 +116,8 @@ barrier_trace_release (f64 t_entry, f64 t_closed_total, f64 t_update_main)
 {
   if (!vlib_worker_threads->barrier_elog_enabled)
     return;
+
+  vlib_worker_thread_t *w = vlib_worker_threads + vlib_get_thread_index ();
 
   ELOG_TYPE_DECLARE (e) = {
     .format = "bar-rel-#%d-e%d-u%d-t%d",
@@ -120,7 +129,7 @@ barrier_trace_release (f64 t_entry, f64 t_closed_total, f64 t_update_main)
     u32 count, t_entry, t_update_main, t_closed_total;
   } *ed = 0;
 
-  ed = ELOG_DATA (vlib_get_elog_main (), e);
+  ed = ELOG_TRACK_DATA (vlib_get_elog_main (), e, w->elog_track);
   ed->t_entry = (int) (1000000.0 * t_entry);
   ed->t_update_main = (int) (1000000.0 * t_update_main);
   ed->t_closed_total = (int) (1000000.0 * t_closed_total);
@@ -1684,18 +1693,91 @@ vlib_process_signal_event_mt_helper (vlib_process_signal_event_mt_args_t *
 			     args->type_opaque, args->data);
 }
 
-void *rpc_call_main_thread_cb_fn;
+typedef struct
+{
+  void (*callback) (void *);
+  u32 arg_size;
+  u8 data[];
+} vlib_main_thread_rpc_t;
+
+static uword *vlib_pending_main_thread_rpcs;
+static uword *vlib_processing_main_thread_rpcs;
+static clib_spinlock_t vlib_pending_main_thread_rpcs_lock;
+
+static_always_inline void
+vlib_rpc_call_main_thread_inline (void *callback, u8 *args, u32 arg_size, u8 force_rpc)
+{
+  vlib_main_t *vm;
+  vlib_main_thread_rpc_t *rpc;
+  void (*fp) (void *);
+
+  vm = vlib_get_main ();
+  fp = callback;
+  if (!fp)
+    {
+      clib_warning ("rpc NULL function pointer");
+      return;
+    }
+
+  if (!force_rpc && vlib_get_thread_index () == 0)
+    {
+      vlib_worker_thread_barrier_sync (vm);
+      fp (args);
+      vlib_worker_thread_barrier_release (vm);
+      return;
+    }
+
+  rpc = clib_mem_alloc (sizeof (*rpc) + arg_size);
+  rpc->callback = fp;
+  rpc->arg_size = arg_size;
+  if (arg_size)
+    clib_memcpy_fast (rpc->data, args, arg_size);
+
+  clib_spinlock_lock_if_init (&vlib_pending_main_thread_rpcs_lock);
+  vec_add1 (vlib_pending_main_thread_rpcs, pointer_to_uword (rpc));
+  clib_spinlock_unlock_if_init (&vlib_pending_main_thread_rpcs_lock);
+}
 
 void
 vlib_rpc_call_main_thread (void *callback, u8 * args, u32 arg_size)
 {
-  if (rpc_call_main_thread_cb_fn)
+  vlib_rpc_call_main_thread_inline (callback, args, arg_size, 0);
+}
+
+void
+vlib_force_rpc_call_main_thread (void *callback, u8 *args, u32 arg_size)
+{
+  vlib_rpc_call_main_thread_inline (callback, args, arg_size, 1);
+}
+
+void
+vlib_rpc_call_main_thread_process (vlib_main_t *vm)
+{
+  vlib_main_thread_rpc_t *rpc;
+  uword *tmp;
+  uword i;
+
+  ASSERT (vlib_get_thread_index () == 0);
+
+  clib_spinlock_lock_if_init (&vlib_pending_main_thread_rpcs_lock);
+  tmp = vlib_processing_main_thread_rpcs;
+  vec_reset_length (tmp);
+  vlib_processing_main_thread_rpcs = vlib_pending_main_thread_rpcs;
+  vlib_pending_main_thread_rpcs = tmp;
+  clib_spinlock_unlock_if_init (&vlib_pending_main_thread_rpcs_lock);
+
+  if (PREDICT_FALSE (vec_len (vlib_processing_main_thread_rpcs)))
     {
-      void (*fp) (void *, u8 *, u32) = rpc_call_main_thread_cb_fn;
-      (*fp) (callback, args, arg_size);
+      vlib_worker_thread_barrier_sync (vm);
+      for (i = 0; i < vec_len (vlib_processing_main_thread_rpcs); i++)
+	{
+	  rpc = uword_to_pointer (vlib_processing_main_thread_rpcs[i], vlib_main_thread_rpc_t *);
+	  rpc->callback (rpc->data);
+	  clib_mem_free (rpc);
+	}
+      vec_reset_length (vlib_processing_main_thread_rpcs);
+      vlib_worker_thread_barrier_release (vm);
     }
-  else
-    clib_warning ("BUG: rpc_call_main_thread_cb_fn NULL!");
 }
 
 clib_error_t *
@@ -1706,6 +1788,12 @@ threads_init (vlib_main_t * vm)
   if (tm->main_lcore == ~0 && tm->n_vlib_mains > 1)
     return clib_error_return (0, "Configuration error, a main core must "
 				 "be specified when using worker threads");
+
+  clib_spinlock_init (&vlib_pending_main_thread_rpcs_lock);
+  vec_validate (vlib_pending_main_thread_rpcs, 0);
+  vec_set_len (vlib_pending_main_thread_rpcs, 0);
+  vec_validate (vlib_processing_main_thread_rpcs, 0);
+  vec_set_len (vlib_processing_main_thread_rpcs, 0);
 
   return 0;
 }

@@ -145,6 +145,7 @@ vrrp_input_process_master (vrrp_vr_t *vr, vrrp_input_process_args_t *args)
       ((args->priority == vrrp_vr_priority (vr)) &&
        (vrrp_vr_addr_cmp (vr, &args->src_addr) < 0)))
     {
+      vrrp_incr_stat_counter (VRRP_STAT_COUNTER_ADV_PREEMPT, vr->stat_index);
       vrrp_vr_transition (vr, VRRP_VR_STATE_BACKUP, args);
 
       return;
@@ -153,6 +154,8 @@ vrrp_input_process_master (vrrp_vr_t *vr, vrrp_input_process_args_t *args)
   /* if we made it this far, eiher received prority < adjusted priority or
    * received == adjusted and local addr > peer addr. Ignore.
    */
+  vrrp_incr_stat_counter (VRRP_STAT_COUNTER_ADV_IGNORE, vr->stat_index);
+
   return;
 }
 
@@ -215,8 +218,6 @@ vrrp_input_process (vrrp_input_process_args_t * args)
       break;
     case VRRP_VR_STATE_MASTER:
       /* might be getting preempted. or have a misbehaving peer */
-      clib_warning ("Received advertisement for master VR %U",
-		    format_vrrp_vr_key, vr);
       vrrp_input_process_master (vr, args);
       break;
     default:
@@ -662,8 +663,7 @@ vrrp_input_inline (vlib_main_t * vm, vlib_node_runtime_t * node,
       args0.priority = vrrp0->priority;
       args0.max_adv_int = vrrp_adv_int_from_packet (vrrp0);
 
-      vl_api_rpc_call_main_thread (vrrp_input_process, (u8 *) &args0,
-				   sizeof (args0));
+      vlib_rpc_call_main_thread (vrrp_input_process, (u8 *) &args0, sizeof (args0));
 
     trace:
       vrrp0->checksum = rx_csum0; /* restore csum for correct trace output */

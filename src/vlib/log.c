@@ -183,23 +183,27 @@ vlib_log_va (vlib_log_level_t level, vlib_log_class_t class, char *fmt,
     {
       u8 *l = 0;
       l = format (l, "%U", format_vlib_log_class, class);
-      int is_term = vec_c_string_is_terminated (l) ? 1 : 0;
+      int is_term = s && vec_c_string_is_terminated (s) ? 1 : 0;
+      const char *log_class = l ? (const char *) l : "";
+      const char *log_msg = s ? (const char *) s : "";
+      int log_class_len = l ? (int) vec_len (l) : 0;
+      int log_msg_len = s ? (int) (vec_len (s) - is_term) : 0;
       if (syslog_enabled)
 	{
 	  int prio = log_level_to_syslog_priority[level];
-	  syslog (prio, "%.*s: %.*s", (int) vec_len (l), l,
-		  (int) vec_len (s) - is_term, s);
+	  syslog (prio, "%.*s: %.*s", log_class_len, log_class, log_msg_len, log_msg);
 	}
       if (kmsg_enabled && lm->kmsg_filp)
 	{
-	  fprintf (lm->kmsg_filp, "%.*s: %.*s\n", (int) vec_len (l), l, (int) vec_len (s) - is_term,
-		   s);
+	  fprintf (lm->kmsg_filp, "%.*s: %.*s\n", log_class_len, log_class, log_msg_len, log_msg);
 	}
       vec_free (l);
     }
 
   if (log_enabled)
     {
+      vlib_worker_thread_t *w = vlib_worker_threads + vm->thread_index;
+
       CLIB_SPINLOCK_LOCK (lm->lock);
       e = vec_elt_at_index (lm->entries, lm->next);
       lm->next = (lm->next + 1) % lm->size;
@@ -239,7 +243,7 @@ vlib_log_va (vlib_log_level_t level, vlib_log_class_t class, char *fmt,
 	    u32 log_level;
 	    u32 string_index;
 	  } * ed;
-	  ed = ELOG_DATA (vlib_get_elog_main (), ee);
+	  ed = ELOG_TRACK_DATA (vlib_get_elog_main (), ee, w->elog_track);
 	  ed->log_level = level;
 	  ed->string_index =
 	    elog_string (vlib_get_elog_main (), "%v%c", e->string, 0);

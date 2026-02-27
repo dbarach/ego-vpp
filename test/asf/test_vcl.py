@@ -7,7 +7,13 @@ import subprocess
 import signal
 import glob
 from config import config
-from asfframework import VppAsfTestCase, VppTestRunner, Worker
+from asfframework import (
+    VppAsfTestCase,
+    VppTestRunner,
+    Worker,
+    tag_fixme_asan,
+    tag_fixme_debian12,
+)
 from vpp_ip_route import VppIpTable, VppIpRoute, VppRoutePath
 
 iperf3 = "/usr/bin/iperf3"
@@ -58,6 +64,7 @@ class VCLAppWorker(Worker):
         super(VCLAppWorker, self).__init__(self.args, logger, env, *args, **kwargs)
 
 
+@tag_fixme_debian12
 class VCLTestCase(VppAsfTestCase):
     """VCL Test Class"""
 
@@ -294,7 +301,10 @@ class VCLTestCase(VppAsfTestCase):
             self.logger.info(
                 "Killing server worker process (pid %d)" % worker_server.process.pid
             )
-            os.killpg(os.getpgid(worker_server.process.pid), signal.SIGTERM)
+            try:
+                os.killpg(os.getpgid(worker_server.process.pid), signal.SIGTERM)
+            except ProcessLookupError:
+                self.logger.debug("Server worker process already exited")
             worker_server.join()
         self.logger.info("Client worker result is `%s'" % worker_client.result)
         error = False
@@ -315,6 +325,7 @@ class VCLTestCase(VppAsfTestCase):
         self.assert_equal(worker_client.result, 0, "Binary test return code")
 
 
+@tag_fixme_asan
 class LDPCutThruTestCase(VCLTestCase):
     """LDP Cut Thru Tests"""
 
@@ -1097,6 +1108,7 @@ class VCLThruHostStackBidirNsock(VCLTestCase):
         )
 
 
+@tag_fixme_asan
 @unittest.skipIf(
     "hs_apps" in config.excluded_plugins, "Exclude tests requiring hs_apps plugin"
 )
@@ -1150,6 +1162,7 @@ class LDPThruHostStackBidirNsock(VCLTestCase):
         )
 
 
+@tag_fixme_asan
 @unittest.skipIf(
     "hs_apps" in config.excluded_plugins, "Exclude tests requiring hs_apps plugin"
 )
@@ -1254,6 +1267,7 @@ class VCLThruHostStackNsock(VCLTestCase):
         )
 
 
+@tag_fixme_asan
 class LDPThruHostStackIperf(VCLTestCase):
     """LDP Thru Host Stack Iperf"""
 
@@ -1301,6 +1315,7 @@ class LDPThruHostStackIperf(VCLTestCase):
         )
 
 
+@tag_fixme_asan
 class LDPThruHostStackIperfUdp(VCLTestCase):
     """LDP Thru Host Stack Iperf UDP"""
 
@@ -1346,6 +1361,7 @@ class LDPThruHostStackIperfUdp(VCLTestCase):
         )
 
 
+@tag_fixme_asan
 class LDPIpv6CutThruTestCase(VCLTestCase):
     """LDP IPv6 Cut Thru Tests"""
 

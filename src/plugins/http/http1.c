@@ -798,7 +798,6 @@ static void
 http1_write_app_headers (http_req_t *req, http_msg_t *msg, u8 **tx_buf)
 {
   u8 *app_headers, *p, *end;
-  u32 *tmp;
 
   /* read app header list */
   app_headers = http_get_app_header_list (req, msg);
@@ -808,18 +807,16 @@ http1_write_app_headers (http_req_t *req, http_msg_t *msg, u8 **tx_buf)
   while (app_headers < end)
     {
       /* custom header name? */
-      tmp = (u32 *) app_headers;
-      if (PREDICT_FALSE (*tmp & HTTP_CUSTOM_HEADER_NAME_BIT))
+      http_app_header_name_t *name = (http_app_header_name_t *) app_headers;
+      if (PREDICT_FALSE (name->flags & HTTP_FIELD_LINE_F_CUSTOM_NAME))
 	{
-	  http_custom_token_t *name, *value;
-	  name = (http_custom_token_t *) app_headers;
-	  u32 name_len = name->len & ~HTTP_CUSTOM_HEADER_NAME_BIT;
-	  app_headers += sizeof (http_custom_token_t) + name_len;
+	  http_custom_token_t *value;
+	  app_headers += sizeof (http_custom_token_t) + name->len;
 	  value = (http_custom_token_t *) app_headers;
 	  app_headers += sizeof (http_custom_token_t) + value->len;
-	  vec_add2 (*tx_buf, p, name_len + value->len + 4);
-	  clib_memcpy (p, name->token, name_len);
-	  p += name_len;
+	  vec_add2 (*tx_buf, p, name->len + value->len + 4);
+	  clib_memcpy (p, name->token, name->len);
+	  p += name->len;
 	  *p++ = ':';
 	  *p++ = ' ';
 	  clib_memcpy (p, value->token, value->len);
@@ -832,7 +829,7 @@ http1_write_app_headers (http_req_t *req, http_msg_t *msg, u8 **tx_buf)
 	  http_app_header_t *header;
 	  header = (http_app_header_t *) app_headers;
 	  app_headers += sizeof (http_app_header_t) + header->value.len;
-	  http_token_t name = { http_header_name_token (header->name) };
+	  http_token_t name = { http_header_name_token (header->name.name) };
 	  vec_add2 (*tx_buf, p, name.len + header->value.len + 4);
 	  clib_memcpy (p, name.base, name.len);
 	  p += name.len;
@@ -1710,13 +1707,17 @@ http1_req_state_udp_tunnel_tx (http_conn_t *hc, http_req_t *req,
   buf = http_get_tx_buf (hc);
   to_deq = http_io_as_max_read (req);
 
-  while (to_deq > 0)
+  while (to_deq > sizeof (hdr))
     {
       /* read datagram header */
       http_io_as_peek (req, (u8 *) &hdr, sizeof (hdr), 0);
       ASSERT (hdr.data_length <= HTTP_UDP_PAYLOAD_MAX_LEN);
       dgram_size = hdr.data_length + SESSION_CONN_HDR_LEN;
-      ASSERT (to_deq >= dgram_size);
+      if (PREDICT_FALSE (to_deq < dgram_size))
+	{
+	  HTTP_DBG (2, "datagram incomplete");
+	  goto done;
+	}
 
       if (http_io_ts_max_write (hc, sp) <
 	  (hdr.data_length + HTTP_UDP_PROXY_DATAGRAM_CAPSULE_OVERHEAD))
@@ -1977,7 +1978,7 @@ http1_transport_rx_callback (http_conn_t *hc)
       ASSERT (hc->flags & HTTP_CONN_F_IS_SERVER);
       /* first request - create request ctx and notify app about new conn */
       req = http1_conn_alloc_req (hc);
-      if (http_conn_accept_request (hc, req))
+      if (http_conn_accept_request (hc, req, 0))
 	{
 	  http_disconnect_transport (hc);
 	  return;

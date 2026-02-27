@@ -45,12 +45,51 @@ vlan_advance (u8 **data)
 }
 
 static_always_inline u16
-match_and_hash (soft_rss_rt_match_t *match, u32 n_match,
-		clib_toeplitz_hash_key_t *k, u8 *d)
+match_and_hash (soft_rss_rt_match_t *match4, u32 n_match4, soft_rss_rt_match_t *match6,
+		u32 n_match6, clib_toeplitz_hash_key_t *k, u8 *d)
 {
-  for (soft_rss_rt_match_t *m = match; m < match + n_match; m++)
-    if (u8x16_is_equal (*(u8x16u *) d & m->mask, m->match))
-      return clib_toeplitz_hash (k, d + m->key_start, m->key_len);
+  u16 ethertype = *(u16u *) d;
+  if (PREDICT_TRUE (ethertype == clib_host_to_net_u16 (ETHERNET_TYPE_IP4)))
+    {
+      for (soft_rss_rt_match_t *m = match4; m < match4 + n_match4; m++)
+	if (u8x16_is_equal (*(u8x16u *) d & m->mask, m->match))
+	  {
+	    CLIB_ASSUME (m->key_len <= 12);
+	    switch (m->key_len)
+	      {
+	      case 4:
+		return clib_toeplitz_hash (k, d + m->key_start, 4);
+	      case 8:
+		return clib_toeplitz_hash (k, d + m->key_start, 8);
+	      case 12:
+		return clib_toeplitz_hash (k, d + m->key_start, 12);
+	      default:
+		ASSERT (0);
+		break;
+	      }
+	  }
+    }
+  else if (PREDICT_TRUE (ethertype == clib_host_to_net_u16 (ETHERNET_TYPE_IP6)))
+    {
+      for (soft_rss_rt_match_t *m = match6; m < match6 + n_match6; m++)
+	if (u8x16_is_equal (*(u8x16u *) d & m->mask, m->match))
+	  {
+	    CLIB_ASSUME (m->key_len <= 36);
+	    switch (m->key_len)
+	      {
+	      case 16:
+		return clib_toeplitz_hash (k, d + m->key_start, 16);
+	      case 32:
+		return clib_toeplitz_hash (k, d + m->key_start, 32);
+	      case 36:
+		return clib_toeplitz_hash (k, d + m->key_start, 36);
+	      default:
+		ASSERT (0);
+		break;
+	      }
+	  }
+    }
+
   return 0;
 }
 
@@ -59,13 +98,18 @@ soft_rss_one_interface (vlib_main_t *vm, vlib_node_runtime_t *node,
 			soft_rss_rt_data_t *rt, u32 *buffer_indices, i16 *cds,
 			u32 n_pkts)
 {
-  i64 i, n_left = n_pkts;
+  i64 n_left = n_pkts;
   u8 *data[VLIB_FRAME_SIZE + 4], **d = data;
-  u16 hashes[VLIB_FRAME_SIZE], *h = hashes;
-  const u32 n_match = rt->n_match;
-  soft_rss_rt_match_t *match = rt->match;
+  u8 hashes[VLIB_FRAME_SIZE] __clib_aligned (64);
+  u8 *h = hashes;
+  u16 thread_indices[VLIB_FRAME_SIZE] __clib_aligned (64);
+  const u16 reta_mask = rt->reta_mask;
+  const u32 n_match4 = rt->n_match4;
+  const u32 n_match6 = rt->n_match6;
+  soft_rss_rt_match_t *match4 = rt->match4;
+  soft_rss_rt_match_t *match6 = rt->match6;
   clib_toeplitz_hash_key_t *k = rt->key;
-  clib_thread_index_t *reta;
+  u8 *reta = rt->reta;
 
   /* get pointer to b->data out of buffer indices */
   vlib_get_buffers_with_offset (vm, buffer_indices, (void **) d, n_pkts,
@@ -76,7 +120,7 @@ soft_rss_one_interface (vlib_main_t *vm, vlib_node_runtime_t *node,
   clib_ptr_array_pad_tail ((void **) d, n_pkts, 4);
 
   /* apply current_data offset and reset hash array */
-  for (i64 i = n_pkts; i > 0; i -= 32, d += 32, cds += 32, h += 32)
+  for (i64 i = n_pkts; i > 0; i -= 32, d += 32, cds += 32)
     for (u32 j = 0; j < 32; j++)
       d[j] += cds[j];
 
@@ -86,30 +130,30 @@ soft_rss_one_interface (vlib_main_t *vm, vlib_node_runtime_t *node,
       clib_prefetch_load (d[5]);
 
       vlan_advance (d + 0);
-      h[0] = match_and_hash (match, n_match, k, d[0]);
+      h[0] = match_and_hash (match4, n_match4, match6, n_match6, k, d[0]);
       clib_cl_demote (d[0]);
 
       clib_prefetch_load (d[6]);
 
       vlan_advance (d + 1);
-      h[1] = match_and_hash (match, n_match, k, d[1]);
+      h[1] = match_and_hash (match4, n_match4, match6, n_match6, k, d[1]);
       clib_cl_demote (d[1]);
 
       clib_prefetch_load (d[7]);
 
       vlan_advance (d + 2);
-      h[2] = match_and_hash (match, n_match, k, d[2]);
+      h[2] = match_and_hash (match4, n_match4, match6, n_match6, k, d[2]);
       clib_cl_demote (d[2]);
 
       vlan_advance (d + 3);
-      h[3] = match_and_hash (match, n_match, k, d[3]);
+      h[3] = match_and_hash (match4, n_match4, match6, n_match6, k, d[3]);
       clib_cl_demote (d[3]);
     }
 
   for (; n_left > 0; n_left--, d++, h++)
     {
       vlan_advance (d);
-      h[0] = match_and_hash (match, n_match, k, d[0]);
+      h[0] = match_and_hash (match4, n_match4, match6, n_match6, k, d[0]);
       clib_cl_demote (d[0]);
     }
 
@@ -127,21 +171,109 @@ soft_rss_one_interface (vlib_main_t *vm, vlib_node_runtime_t *node,
 	  t = vlib_add_trace (vm, node, tb, sizeof (*t));
 	  t->sw_if_index = vnet_buffer (tb)->sw_if_index[VLIB_RX];
 	  t->hash = hashes[j];
-	  t->thread_index = rt->reta[hashes[j] & rt->reta_mask];
+	  t->thread_index = reta[hashes[j] & reta_mask];
 	}
     }
 
-  /* mask hashes with reta mask */
-  for (h = hashes, i = n_pkts; i > 0; i -= 32, h += 32)
-    clib_array_mask_u16 (h, rt->reta_mask, 32);
+#if defined(CLIB_HAVE_VEC512_PERMUTE)
+  u8x64 *dp = (u8x64 *) hashes;
+  u16x32 *ti = (u16x32 *) thread_indices;
+  u8x64 mask = u8x64_splat (reta_mask);
+  u8x64 table = ((u8x64u *) reta)[0];
 
-  /* lookup from reta table */
-  for (h = hashes, reta = rt->reta, i = n_pkts; i > 0; i -= 16, h += 16)
-    for (u32 j = 0; j < 16; j++)
-      h[j] = reta[h[j]];
+  for (int n_data = n_pkts; n_data > 0; n_data -= 64, dp++, ti += 2)
+    {
+      u8x64 r = u8x64_permute (*dp & mask, table);
+      ti[0] = u16x32_from_u8x32 (u8x64_extract_u8x32 (r, 0));
+      ti[1] = u16x32_from_u8x32 (u8x64_extract_u8x32 (r, 1));
+    }
 
-  vlib_buffer_enqueue_to_thread (vm, node, soft_rss_main.frame_queue_index,
-				 buffer_indices, hashes, n_pkts, 0);
+#elif defined(CLIB_HAVE_VEC256_PERMUTE2)
+  u8x32 *dp = (u8x32 *) hashes;
+  u16x16 *ti = (u16x16 *) thread_indices;
+  u8x32 mask = u8x32_splat (reta_mask);
+  u8x32 t0 = ((u8x32u *) reta)[0];
+  u8x32 t1 = ((u8x32u *) reta)[1];
+
+  for (int n_data = n_pkts; n_data > 0; n_data -= 32, dp++, ti += 2)
+    {
+      u8x32 r = u8x32_permute2 (*dp & mask, t0, t1);
+      ti[0] = u16x16_from_u8x16 (u8x32_extract_lo (r));
+      ti[1] = u16x16_from_u8x16 (u8x32_extract_hi (r));
+    }
+#elif defined(CLIB_HAVE_VEC256)
+  u8x32 *dp = (u8x32 *) hashes;
+  u16x16 *ti = (u16x16 *) thread_indices;
+  u8x32 t0 = u8x32_splat_u8x16 (((u8x16u *) reta)[0]);
+  u8x32 t1 = u8x32_splat_u8x16 (((u8x16u *) reta)[1]);
+  u8x32 t2 = u8x32_splat_u8x16 (((u8x16u *) reta)[2]);
+  u8x32 t3 = u8x32_splat_u8x16 (((u8x16u *) reta)[3]);
+  u8x32 grp_mask = u8x32_splat (0x30 & reta_mask);
+  u8x32 lo_mask = u8x32_splat (0x0f & reta_mask);
+  u8x32 g0 = u8x32_splat (0x00);
+  u8x32 g1 = u8x32_splat (0x10);
+  u8x32 g2 = u8x32_splat (0x20);
+  u8x32 g3 = u8x32_splat (0x30);
+
+  for (int n_data = n_pkts; n_data > 0; n_data -= 32, dp++, ti += 2)
+    {
+      u8x32 r = *dp;
+      u8x32 lo = r & lo_mask;
+      u8x32 grp = r & grp_mask;
+
+      r = u8x32_shuffle_dynamic (t0, lo) & (grp == g0);
+      r |= u8x32_shuffle_dynamic (t1, lo) & (grp == g1);
+      r |= u8x32_shuffle_dynamic (t2, lo) & (grp == g2);
+      r |= u8x32_shuffle_dynamic (t3, lo) & (grp == g3);
+      ti[0] = u16x16_from_u8x16 (u8x32_extract_lo (r));
+      ti[1] = u16x16_from_u8x16 (u8x32_extract_hi (r));
+    }
+#elif defined(CLIB_HAVE_VEC128) && defined(__x86_64__)
+  u8x16 *dp = (u8x16 *) hashes;
+  u16x8 *ti = (u16x8 *) thread_indices;
+  u8x16 t0 = ((u8x16u *) reta)[0];
+  u8x16 t1 = ((u8x16u *) reta)[1];
+  u8x16 t2 = ((u8x16u *) reta)[2];
+  u8x16 t3 = ((u8x16u *) reta)[3];
+  u8x16 grp_mask = u8x16_splat (0x30 & reta_mask);
+  u8x16 lo_mask = u8x16_splat (0x0f & reta_mask);
+  u8x16 g0 = u8x16_splat (0x00);
+  u8x16 g1 = u8x16_splat (0x10);
+  u8x16 g2 = u8x16_splat (0x20);
+  u8x16 g3 = u8x16_splat (0x30);
+
+  for (int n_data = n_pkts; n_data > 0; n_data -= 16, dp++, ti += 2)
+    {
+      u8x16 r = *dp;
+      u8x16 lo = r & lo_mask;
+      u8x16 grp = r & grp_mask;
+
+      r = u8x16_permute (lo, t0) & (grp == g0);
+      r |= u8x16_permute (lo, t1) & (grp == g1);
+      r |= u8x16_permute (lo, t2) & (grp == g2);
+      r |= u8x16_permute (lo, t3) & (grp == g3);
+      ti[0] = u16x8_from_u8x16 (r);
+      ti[1] = u16x8_from_u8x16_high (r);
+    }
+#elif defined(CLIB_HAVE_VEC128) && defined(__aarch64__)
+  u8x16 *dp = (u8x16 *) hashes;
+  u16x8 *ti = (u16x8 *) thread_indices;
+  u8x16 mask = u8x16_splat (reta_mask);
+  const uint8x16x4_t t = rt->reta_neon;
+
+  for (int n_data = n_pkts; n_data > 0; n_data -= 16, dp++, ti += 2)
+    {
+      u8x16 r = vqtbl4q_u8 (t, *dp & mask);
+      ti[0] = u16x8_from_u8x16 (r);
+      ti[1] = u16x8_from_u8x16_high (r);
+    }
+#else
+  for (u32 i = 0; i < n_pkts; i++)
+    thread_indices[i] = reta[hashes[i] & reta_mask];
+#endif
+
+  vlib_buffer_enqueue_to_thread (vm, node, soft_rss_main.frame_queue_index, buffer_indices,
+				 thread_indices, n_pkts, 0);
 }
 
 VLIB_NODE_FN (soft_rss_node)
@@ -185,7 +317,7 @@ VLIB_NODE_FN (soft_rss_node)
       clib_cl_demote (b[3]);
     }
 
-  for (; n_left > 0; b += 1, sii += 1, n_left -= 1)
+  for (; n_left > 0; b += 1, sii += 1, cd += 1, n_left -= 1)
     {
       sii[0] = vnet_buffer (b[0])->sw_if_index[VLIB_RX];
       cd[0] = b[0]->current_data;
@@ -209,21 +341,18 @@ VLIB_NODE_FN (soft_rss_node)
       clib_compress_u32 ((u32 *) to, from, selected_bmp, n_pkts);
       n_left -= n_sel;
 
-      if (vec_len (srm->rt_by_sw_if_index) > sw_if_index &&
-	  srm->rt_by_sw_if_index[sw_if_index])
+      if (vec_len (srm->rt_by_sw_if_index) > sw_if_index && srm->rt_by_sw_if_index[sw_if_index])
 	{
-	  i16 *to_cds[VLIB_FRAME_SIZE];
-	  clib_compress_u16 ((u16 *) to_cds, (u16 *) cds, selected_bmp,
-			     n_pkts);
-	  soft_rss_one_interface (vm, node,
-				  srm->rt_by_sw_if_index[sw_if_index],
-				  (u32 *) to, (i16 *) to_cds, n_sel);
+	  i16 to_cds[VLIB_FRAME_SIZE + 4], *tail = to_cds + n_sel;
+	  soft_rss_rt_data_t rt = *srm->rt_by_sw_if_index[sw_if_index];
+	  clib_compress_u16 ((u16 *) to_cds, (u16 *) cds, selected_bmp, n_pkts);
+	  tail[0] = tail[1] = tail[2] = tail[3] = 0;
+	  soft_rss_one_interface (vm, node, &rt, to, to_cds, n_sel);
 	}
       else
 	{
 	  vlib_buffer_free (vm, to, n_sel);
-	  vlib_node_increment_counter (vm, node->node_index,
-				       SOFT_RSS_ERROR_NOT_ENABLED, n_sel);
+	  vlib_node_increment_counter (vm, node->node_index, SOFT_RSS_ERROR_NOT_ENABLED, n_sel);
 	}
     }
 

@@ -4,7 +4,6 @@
 
 #include <sys/socket.h>
 #include <sys/syscall.h>
-#include <openssl/rand.h>
 
 #include <vnet/session/application.h>
 #include <vnet/session/transport.h>
@@ -99,6 +98,7 @@ quic_connect_connection (transport_endpoint_cfg_t *tep)
   ctx->udp_is_ip4 = sep->is_ip4;
   ctx->timer_handle = QUIC_TIMER_HANDLE_INVALID;
   ctx->conn_state = QUIC_CONN_STATE_HANDSHAKE;
+  ctx->listener_ctx_id = QUIC_CTX_INVALID_INDEX;
   ctx->client_opaque = sep->opaque;
   if (ccfg->hostname[0])
     ctx->srv_hostname = format (0, "%s", ccfg->hostname);
@@ -121,6 +121,7 @@ quic_connect_connection (transport_endpoint_cfg_t *tep)
 
   quic_ctx_set_alpn_protos (ctx, ccfg);
   ctx->crypto_engine = ccfg->crypto_engine;
+  ctx->verify_cfg = ccfg->verify_cfg;
   ctx->ckpair_index = ccfg->ckpair_index;
   error = quic_eng_crypto_context_acquire_connect (ctx);
   if (error)
@@ -296,6 +297,7 @@ quic_start_listen (u32 quic_listen_session_index,
   lctx->listener_ctx_id = lctx_index;
   quic_ctx_set_alpn_protos (lctx, ccfg);
   lctx->crypto_engine = ccfg->crypto_engine;
+  lctx->verify_cfg = ccfg->verify_cfg;
   lctx->ckpair_index = ccfg->ckpair_index;
   if ((rv = quic_eng_crypto_context_acquire_listen (lctx)))
     {
@@ -676,6 +678,10 @@ quic_session_attribute (u32 ctx_index, clib_thread_index_t thread_index,
     case TRANSPORT_ENDPT_ATTR_APP_PROTO_ERR_CODE:
       attr->app_proto_err_code = (u64) ctx->app_err_code;
       break;
+    case TRANSPORT_ENDPT_ATTR_TLS_PEER_CERT:
+      if (quic_eng_ctx_attribute (ctx, 1 /* is_get */, attr) < 0)
+	return -1;
+      break;
     default:
       return -1;
     }
@@ -698,9 +704,6 @@ static session_cb_vft_t quic_app_cb_vft = {
 static clib_error_t *
 quic_app_enable (quic_main_t *qm, u8 is_en)
 {
-  /* TODO: Don't use hard-coded values for segment_size */
-  u32 segment_size = 256 << 20;
-
   if (is_en && qm->app_index == APP_INVALID_INDEX)
     {
       vnet_app_attach_args_t _a = {}, *a = &_a;
@@ -713,8 +716,8 @@ quic_app_enable (quic_main_t *qm, u8 is_en)
       a->api_client_index = APP_INVALID_INDEX;
       a->options = options;
       a->name = format (0, "quic");
-      a->options[APP_OPTIONS_SEGMENT_SIZE] = segment_size;
-      a->options[APP_OPTIONS_ADD_SEGMENT_SIZE] = segment_size;
+      a->options[APP_OPTIONS_SEGMENT_SIZE] = qm->first_seg_size;
+      a->options[APP_OPTIONS_ADD_SEGMENT_SIZE] = qm->add_seg_size;
       a->options[APP_OPTIONS_RX_FIFO_SIZE] = qm->udp_fifo_size;
       a->options[APP_OPTIONS_TX_FIFO_SIZE] = qm->udp_fifo_size;
       a->options[APP_OPTIONS_PREALLOC_FIFO_PAIRS] = qm->udp_fifo_prealloc;
@@ -845,13 +848,8 @@ static clib_error_t *
 quic_init (vlib_main_t * vm)
 {
   quic_main_t *qm = &quic_main;
-  u8 seed[32];
 
   QUIC_DBG (1, "QUIC plugin init");
-
-  if (syscall (SYS_getrandom, &seed, sizeof (seed), 0) != sizeof (seed))
-    return clib_error_return_unix (0, "getrandom() failed");
-  RAND_seed (seed, sizeof (seed));
 
   transport_register_protocol (TRANSPORT_PROTO_QUIC, &quic_proto,
 			       FIB_PROTOCOL_IP4, ~0);

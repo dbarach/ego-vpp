@@ -1565,7 +1565,7 @@ vppcom_app_init_common (const char *app_name)
     }
 
   /* Debug message shows the actual app name that was set */
-  VDBG (0, "app_name '%s', my_client_index %d (0x%x)", vcm->app_name,
+  VDBG (0, "app_name '%v', my_client_index %d (0x%x)", vcm->app_name,
 	vcm->workers[0].api_client_handle, vcm->workers[0].api_client_handle);
 
   return VPPCOM_OK;
@@ -1616,15 +1616,13 @@ vppcom_cfg_apply_user_config (vcl_cfg_t *vcl_cfg, const vppcom_cfg_t *user_cfg)
     vcl_cfg->event_log_path = user_cfg->event_log_path;
 
   if (user_cfg->namespace_id)
-    vcl_cfg->namespace_id = format (0, "%s", user_cfg->namespace_id);
+    vcl_cfg->namespace_id = format (0, "%s%c", user_cfg->namespace_id, 0);
 
   if (user_cfg->vpp_bapi_socket_name)
-    vcl_cfg->vpp_bapi_socket_name =
-      format (0, "%s", user_cfg->vpp_bapi_socket_name);
+    vcl_cfg->vpp_bapi_socket_name = format (0, "%s%c", user_cfg->vpp_bapi_socket_name, 0);
 
   if (user_cfg->vpp_app_socket_api)
-    vcl_cfg->vpp_app_socket_api =
-      format (0, "%s", user_cfg->vpp_app_socket_api);
+    vcl_cfg->vpp_app_socket_api = format (0, "%s%c", user_cfg->vpp_app_socket_api, 0);
 
   vcm->debug = user_cfg->debug_level;
 }
@@ -3832,6 +3830,10 @@ vcl_epoll_wait_handle_lt (vcl_worker_t *wrk, struct epoll_event *events,
 	}
       else
 	{
+	  /* Incomplete dgram, don't remove for list yet */
+	  if (s->is_dgram && s->rx_fifo && (s->vep.ev.events & EPOLLIN) &&
+	      svm_fifo_max_dequeue (s->rx_fifo))
+	    continue;
 	  vec_add1 (to_remove, s->session_index);
 	}
     }

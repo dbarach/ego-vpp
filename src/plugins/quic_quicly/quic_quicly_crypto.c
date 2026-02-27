@@ -11,6 +11,7 @@
 #include <quic/quic_timer.h>
 #include <quicly.h>
 #include <picotls/openssl.h>
+#include <openssl/rand.h>
 #include <pthread.h>
 
 #define QUICLY_EPOCH_1RTT 3
@@ -50,9 +51,15 @@ void
 quic_quicly_crypto_init (quic_quicly_main_t *qqm)
 {
   quic_quicly_crypto_main_t *qqcm = &quic_quicly_crypto_main;
+  u8 seed[32];
 
   QUIC_DBG (2, "quic_quicly_crypto init");
   qqcm->qqm = qqm;
+
+  if (syscall (SYS_getrandom, &seed, sizeof (seed), 0) != sizeof (seed))
+    clib_warning ("getrandom() failed");
+  RAND_seed (seed, sizeof (seed));
+
   clib_bihash_init_24_8 (&qqcm->crypto_ctx_hash, "quic (quicly engine) crypto ctx", 64, 128 << 10);
   quic_quicly_register_cipher_suite (CRYPTO_ENGINE_PICOTLS, ptls_openssl_cipher_suites);
 }
@@ -74,7 +81,8 @@ quic_quicly_crypto_context_make_key_from_ctx (clib_bihash_kv_24_8_t *kv,
 					      quic_ctx_t *ctx)
 {
   application_t *app = application_get (ctx->parent_app_id);
-  kv->key[0] = ((u64) ctx->ckpair_index) << 32 | (u64) ctx->crypto_engine;
+  kv->key[0] =
+    ((u64) ctx->ckpair_index) << 32 | (u64) (ctx->verify_cfg << 24) | (u64) ctx->crypto_engine;
   kv->key[1] = app->sm_properties.rx_fifo_size - 1;
   kv->key[2] = app->sm_properties.tx_fifo_size - 1;
 }
@@ -83,7 +91,8 @@ static_always_inline void
 quic_quicly_crypto_context_make_key_from_crctx (clib_bihash_kv_24_8_t *kv,
 						quic_quicly_crypto_ctx_t *crctx)
 {
-  kv->key[0] = ((u64) crctx->ctx.ckpair_index) << 32 | (u64) crctx->ctx.crypto_engine;
+  kv->key[0] = ((u64) crctx->ctx.ckpair_index) << 32 | (u64) (crctx->verify_cfg << 24) |
+	       (u64) crctx->ctx.crypto_engine;
   kv->key[1] = crctx->quicly_ctx.transport_params.max_stream_data.bidi_local;
   kv->key[2] = crctx->quicly_ctx.transport_params.max_stream_data.bidi_remote;
 }
@@ -209,6 +218,40 @@ quic_quicly_cleanup_certkey_int_ctx (app_certkey_int_ctx_t *cki)
   clib_mem_free (cki->cert);
 }
 
+static int
+quic_quicly_verify_cert_cb (ptls_verify_certificate_t *_self, ptls_t *tls, const char *server_name,
+			    int (**verifier) (void *, uint16_t, ptls_iovec_t, ptls_iovec_t),
+			    void **verify_data, ptls_iovec_t *certs, size_t num_certs)
+{
+  quic_quicly_verify_certificate_t *self = (quic_quicly_verify_certificate_t *) _self;
+  int ret;
+
+  /* Get the specific quicly connection from the TLS data pointer */
+  void **data_ptr = ptls_get_data_ptr (tls);
+  quicly_conn_t *conn = data_ptr ? (quicly_conn_t *) *data_ptr : NULL;
+  quic_ctx_t *qctx = conn ? quic_quicly_get_conn_ctx (conn) : NULL;
+
+  /* Call the original OpenSSL-based verification */
+  ret = self->orig_cb (_self, tls, server_name, verifier, verify_data, certs, num_certs);
+
+  /* If verification succeeded and we have certificates, store the peer cert */
+  if (ret == 0 && num_certs > 0 && qctx)
+    {
+      ASSERT (qctx->peer_cert == NULL);
+
+      /* Convert the first certificate (peer's certificate) to X509 */
+      const uint8_t *p = certs[0].base;
+      X509 *cert = d2i_X509 (NULL, &p, (long) certs[0].len);
+      if (cert)
+	{
+	  qctx->peer_cert = cert;
+	  QUIC_DBG (2, "Stored peer certificate for ctx %p (conn %p)", qctx, conn);
+	}
+    }
+
+  return ret;
+}
+
 static app_certkey_int_ctx_t *
 quic_quicly_certkey_init_ctx (app_cert_key_pair_t *ckpair,
 			      clib_thread_index_t thread_index)
@@ -278,9 +321,6 @@ quic_quicly_crypto_context_init_data (quic_quicly_crypto_ctx_t *crctx, quic_ctx_
 		}
 	    }
 	}
-
-      /* TODO: Remove this and clean up legacy provider code in quicly */
-      quic_quicly_load_openssl3_legacy_provider ();
     }
 
   quicly_ctx = &crctx->quicly_ctx;
@@ -300,7 +340,22 @@ quic_quicly_crypto_context_init_data (quic_quicly_crypto_ctx_t *crctx, quic_ctx_
   ptls_ctx->on_client_hello = &crctx->client_hello_ctx.super;
   ptls_ctx->emit_certificate = NULL;
   ptls_ctx->sign_certificate = NULL;
-  ptls_ctx->verify_certificate = NULL;
+
+  if (crctx->verify_cfg)
+    {
+      /* Set up custom verify certificate callback to capture peer certificates
+       * Enable for both client and server (mutual TLS support) */
+      /* Allocate verify certificate context (freed when crypto context is freed) */
+      quic_quicly_verify_certificate_t *verify_cert = &crctx->verify_cert;
+      ptls_openssl_init_verify_certificate (&verify_cert->super, NULL);
+      /* Save the original callback and replace with our wrapper */
+      verify_cert->orig_cb = verify_cert->super.super.cb;
+      verify_cert->super.super.cb = quic_quicly_verify_cert_cb;
+      ptls_ctx->verify_certificate = &verify_cert->super.super;
+
+      /* Enable mutual TLS: server will request client certificates */
+      ptls_ctx->require_client_authentication = (crctx->verify_cfg & TLS_VERIFY_F_PEER_CERT) != 0;
+    }
   ptls_ctx->ticket_lifetime = 86400;
   ptls_ctx->max_early_data_size = 8192;
   ptls_ctx->hkdf_label_prefix__obsolete = NULL;
@@ -310,6 +365,7 @@ quic_quicly_crypto_context_init_data (quic_quicly_crypto_ctx_t *crctx, quic_ctx_
 
   quicly_ctx->max_packets_per_key = qm->max_packets_per_key;
   quicly_ctx->tls = ptls_ctx;
+  quicly_ctx->enable_ratio.pacing = qm->enable_tx_pacing;
 
   quicly_amend_ptls_context (quicly_ctx->tls);
 
@@ -355,8 +411,7 @@ quic_quicly_crypto_context_init_data (quic_quicly_crypto_ctx_t *crctx, quic_ctx_
   clib_memcpy (crctx->cid_key, app_cctx->quic_iv, QUIC_IV_LEN);
   key_vec = ptls_iovec_init (crctx->cid_key, QUIC_IV_LEN);
   quicly_ctx->cid_encryptor = quicly_new_default_cid_encryptor (
-    &ptls_openssl_bfecb, &ptls_openssl_aes128ecb, &ptls_openssl_sha256,
-    key_vec);
+    &ptls_openssl_aes128ecb, &ptls_openssl_aes128ecb, &ptls_openssl_sha256, key_vec);
 
   ckpair = app_cert_key_pair_get_if_valid (crctx->ctx.ckpair_index);
   if (!ckpair || !ckpair->key || !ckpair->cert)
@@ -419,6 +474,7 @@ quic_quicly_crypto_context_get_or_alloc (quic_ctx_t *ctx)
   kv.value = crctx->ctx.ctx_index;
   crctx->ctx.crypto_engine = ctx->crypto_engine;
   crctx->ctx.ckpair_index = ctx->ckpair_index;
+  crctx->verify_cfg = ctx->verify_cfg;
   clib_bihash_add_del_24_8 (&qqcm->crypto_ctx_hash, &kv, 1 /* is_add */);
   quic_quicly_crypto_context_init_data (crctx, ctx);
   clib_atomic_add_fetch (&crctx->ctx.n_subscribers, 1);
@@ -956,3 +1012,13 @@ ptls_cipher_suite_t *quic_quicly_crypto_cipher_suites[] = {
 quicly_crypto_engine_t quic_quicly_crypto_engine = {
   quic_quicly_crypto_setup_cipher, quic_quicly_crypto_encrypt_packet
 };
+
+X509 *
+quic_quicly_crypto_get_peer_cert (quic_ctx_t *ctx)
+{
+  if (!ctx || !ctx->peer_cert)
+    return NULL;
+
+  /* Return the stored certificate - caller should NOT free it */
+  return (X509 *) ctx->peer_cert;
+}

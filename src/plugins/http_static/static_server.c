@@ -792,7 +792,11 @@ hss_ts_accept_callback (session_t *ts)
   hs->vpp_session_handle = session_handle (ts);
 
   /* Link to listener context */
-  ls = listen_session_get_from_handle (ts->listener_handle);
+  if (ts->flags & SESSION_F_STREAM)
+    ls = listen_session_get_from_handle (
+      session_get_from_handle (ts->listener_handle)->listener_handle);
+  else
+    ls = listen_session_get_from_handle (ts->listener_handle);
   hs->listener_index = ls->opaque;
   hs->use_ptr_thresh = hss_listener_get (hs->listener_index)->use_ptr_thresh;
 
@@ -848,6 +852,12 @@ hss_add_segment_callback (u32 client_index, u64 segment_handle)
   return 0;
 }
 
+static int
+hss_del_segment_callback (u32 client_index, u64 segment_handle)
+{
+  return 0;
+}
+
 static void
 hss_ts_cleanup (session_t *s, session_cleanup_ntf_t ntf)
 {
@@ -887,6 +897,7 @@ static session_cb_vft_t hss_cb_vft = {
   .session_disconnect_callback = hss_ts_disconnect_callback,
   .session_connected_callback = hss_ts_connected_callback,
   .add_segment_callback = hss_add_segment_callback,
+  .del_segment_callback = hss_del_segment_callback,
   .builtin_app_rx_callback = hss_ts_rx_callback,
   .builtin_app_tx_callback = hss_ts_tx_callback,
   .session_reset_callback = hss_ts_reset_callback,
@@ -982,6 +993,8 @@ hss_listen (hss_listener_t *l, session_handle_t *lh)
       ext_cfg->crypto.ckpair_index = hsm->ckpair_index;
       if (l->flags & HSS_LISTENER_F_HTTP1_ONLY)
 	ext_cfg->crypto.alpn_protos[0] = TLS_ALPN_PROTO_HTTP_1_1;
+      else if (l->flags & HSS_LISTENER_F_HTTP3)
+	ext_cfg->crypto.alpn_protos[0] = TLS_ALPN_PROTO_HTTP_3;
     }
 
   if (!(rv = vnet_listen (a)))
@@ -1171,6 +1184,8 @@ hss_create_command_fn (vlib_main_t *vm, unformat_input_t *input,
 	;
       else if (unformat (line_input, "http1-only"))
 	l->flags |= HSS_LISTENER_F_HTTP1_ONLY;
+      else if (unformat (line_input, "http3"))
+	l->flags |= HSS_LISTENER_F_HTTP3;
       /* Deprecated */
       else if (unformat (line_input, "max-body-size %U", unformat_memory_size,
 			 &l->max_req_body_size))
@@ -1184,6 +1199,12 @@ hss_create_command_fn (vlib_main_t *vm, unformat_input_t *input,
     }
 
   unformat_free (line_input);
+
+  if (l->flags & HSS_LISTENER_F_HTTP1_ONLY && l->flags & HSS_LISTENER_F_HTTP3)
+    {
+      error = clib_error_return (0, "conflicting flags ('http1-only' and 'http3')");
+      goto done;
+    }
 
 no_input:
 
@@ -1236,16 +1257,15 @@ done:
  * [fifo-size <nbytes>] [prealloc-fifos <nn>] [debug <nn>] [uri <uri>]
  * [www-root <path>] [url-handlers] [cache-size <nn>] [max-age <nseconds>]
  * [max-req-body-size <nn>] [rx-buff-thresh <nn>] [keepalive-timeout <nn>]
- * [ptr-thresh <nn>] [http1-only]}
+ * [ptr-thresh <nn>] [http1-only] [http3]}
 ?*/
 VLIB_CLI_COMMAND (hss_create_command, static) = {
   .path = "http static server",
-  .short_help =
-    "http static server [private-segment-size <nnMG>] [fifo-size <nbytes>]\n"
-    "[prealloc-fifos <nn>] [debug <nn>] [uri <uri>] [www-root <path>]\n"
-    "[url-handlers] [cache-size <nn>] [max-age <nseconds>]\n"
-    "[max-req-body-size <nn>] [rx-buff-thresh <nn>] [keepalive-timeout <nn>]\n"
-    "[ptr-thresh <nn>] [http1-only]\n",
+  .short_help = "http static server [private-segment-size <nnMG>] [fifo-size <nbytes>]\n"
+		"[prealloc-fifos <nn>] [debug <nn>] [uri <uri>] [www-root <path>]\n"
+		"[url-handlers] [cache-size <nn>] [max-age <nseconds>]\n"
+		"[max-req-body-size <nn>] [rx-buff-thresh <nn>] [keepalive-timeout <nn>]\n"
+		"[ptr-thresh <nn>] [http1-only] [http3]\n",
   .function = hss_create_command_fn,
 };
 
@@ -1304,6 +1324,8 @@ hss_add_del_listener_command_fn (vlib_main_t *vm, unformat_input_t *input,
 	;
       else if (unformat (line_input, "http1-only"))
 	l->flags |= HSS_LISTENER_F_HTTP1_ONLY;
+      else if (unformat (line_input, "http3"))
+	l->flags |= HSS_LISTENER_F_HTTP3;
       /* Deprecated */
       else if (unformat (line_input, "max-body-size %U", unformat_memory_size,
 			 &l->max_req_body_size))
@@ -1316,6 +1338,12 @@ hss_add_del_listener_command_fn (vlib_main_t *vm, unformat_input_t *input,
 	}
     }
   unformat_free (line_input);
+
+  if (l->flags & HSS_LISTENER_F_HTTP1_ONLY && l->flags & HSS_LISTENER_F_HTTP3)
+    {
+      error = clib_error_return (0, "conflicting flags ('http1-only' and 'http3')");
+      goto done;
+    }
 
   if (!uri)
     {
@@ -1372,15 +1400,14 @@ done:
  * @cliexcmd{http static listener [uri <uri>] [www-root <path>] [url-handlers]
  * [cache-size <nn>] [max-age <nseconds>] [max-req-body-size <nn>]
  * [rx-buff-thresh <nn>] [keepalive-timeout <nn>] [ptr-thresh <nn>]
- * [http1-only]}
+ * [http1-only] [http3]}
 ?*/
 VLIB_CLI_COMMAND (hss_add_del_listener_command, static) = {
   .path = "http static listener",
-  .short_help =
-    "http static listener [add|del] [uri <uri>] [www-root <path>]\n"
-    "[url-handlers] [cache-size <nn>] [max-age <nseconds>]\n"
-    "[max-req-body-size <nn>] [rx-buff-thresh <nn>] [keepalive-timeout <nn>]\n"
-    "[ptr-thresh <nn>] [http1-only]\n",
+  .short_help = "http static listener [add|del] [uri <uri>] [www-root <path>]\n"
+		"[url-handlers] [cache-size <nn>] [max-age <nseconds>]\n"
+		"[max-req-body-size <nn>] [rx-buff-thresh <nn>] [keepalive-timeout <nn>]\n"
+		"[ptr-thresh <nn>] [http1-only] [http3]\n",
   .function = hss_add_del_listener_command_fn,
 };
 

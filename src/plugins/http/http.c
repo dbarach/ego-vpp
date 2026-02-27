@@ -585,9 +585,9 @@ http_ts_accept_connection (session_t *ts)
 	case TLS_ALPN_PROTO_NONE:
 	  if (tp == TRANSPORT_PROTO_QUIC)
 	    {
-	      /* in case client connect without ALPN */
-	      http_conn_free (hc);
-	      return -1;
+	      /* ALPN is mandatory but not all clients set it so default to H3 */
+	      hc->version = HTTP_VERSION_3;
+	      break;
 	    }
 	  /* TLS: fallback to http/1.1 */
 	case TLS_ALPN_PROTO_HTTP_1_1:
@@ -863,6 +863,8 @@ http_ts_rx_callback (session_t *ts)
       if (max_deq >= http2_conn_preface.len)
 	{
 	  rx_buf = http_get_rx_buf (hc);
+	  ASSERT (vec_max_len (rx_buf) >= http2_conn_preface.len);
+	  clib_mem_unpoison (rx_buf, http2_conn_preface.len);
 	  svm_fifo_peek (ts->rx_fifo, 0, http2_conn_preface.len, rx_buf);
 	  if (memcmp (rx_buf, http2_conn_preface.base,
 		      http2_conn_preface.len) == 0)

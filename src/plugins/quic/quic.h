@@ -23,17 +23,15 @@
  **/
 
 #define QUIC_DEBUG		  0
+#define QUIC_CTX_INVALID_INDEX	  ((u32) ~0)
 #define QUIC_TIMER_HANDLE_INVALID ((u32) ~0)
 #define QUIC_SESSION_INVALID ((u32) ~0 - 1)
 #define QUIC_MAX_PACKET_SIZE 1280
 
 #define QUIC_INT_MAX  0x3FFFFFFFFFFFFFFF
 #define QUIC_DEFAULT_FIFO_SIZE (64 << 10)
-#define QUIC_SEND_PACKET_VEC_SIZE 16
 
 #define QUIC_MAX_COALESCED_PACKET 4
-
-#define QUIC_RCV_MAX_PACKETS 16
 
 #define QUIC_DECRYPT_PACKET_OK 0
 #define QUIC_DECRYPT_PACKET_NOTOFFLOADED 1
@@ -108,7 +106,7 @@ typedef enum
   QUIC_N_ERROR,
 } quic_error_t;
 
-typedef enum quic_ctx_conn_state_
+typedef enum quic_ctx_conn_state_ : u8
 {
   QUIC_CONN_STATE_OPENED,
   QUIC_CONN_STATE_HANDSHAKE,
@@ -118,6 +116,7 @@ typedef enum quic_ctx_conn_state_
   QUIC_CONN_STATE_PASSIVE_CLOSING_QUIC_CLOSED,
   QUIC_CONN_STATE_ACTIVE_CLOSING,
   QUIC_CONN_STATE_TRANSPORT_CLOSED,
+  QUIC_CONN_STATE_CLOSED,
 } quic_ctx_conn_state_t;
 
 typedef enum quic_packet_type_
@@ -161,7 +160,7 @@ typedef struct quic_ctx_
       u32 listener_ctx_id;
       u32 client_opaque;
       u8 *srv_hostname;
-      u8 conn_state;
+      quic_ctx_conn_state_t conn_state;
       u8 udp_is_ip4;
       u8 _qctx_end_marker;	/* Leave this at the end */
     };
@@ -178,7 +177,8 @@ typedef struct quic_ctx_
   u32 parent_app_wrk_id;
   u32 parent_app_id;
   u32 ckpair_index;
-  u32 crypto_engine;
+  crypto_engine_type_t crypto_engine;
+  tls_verify_cfg_t verify_cfg;
   u32 crypto_context_index;
   u8 alpn_protos[4];
   tls_alpn_proto_t alpn_selected;
@@ -190,6 +190,7 @@ typedef struct quic_ctx_
     void *aead_ctx;
   } ingress_keys;
   int key_phase_ingress;
+  void *peer_cert; /* X509 * stored as void * to avoid including openssl headers */
   ip46_address_t rmt_ip;
   u16 rmt_port;
   ip46_address_t lcl_ip;
@@ -268,7 +269,10 @@ typedef struct quic_main_
   u64 max_packets_per_key;  /**< number of packets that can be sent without a
 			       key update */
   u8 default_quic_cc;
+  u8 enable_tx_pacing; /**< enable tx pacing for connections */
 
+  u64 first_seg_size;
+  u64 add_seg_size;
   u32 udp_fifo_size;
   u32 udp_fifo_prealloc;
   u32 connection_timeout;
@@ -417,6 +421,7 @@ typedef struct quic_engine_vft_
 			       clib_thread_index_t thread_index);
   void (*proto_on_reset) (u32 ctx_index, clib_thread_index_t thread_index);
   void (*transport_closed) (quic_ctx_t *ctx);
+  int (*ctx_attribute) (quic_ctx_t *ctx, u8 is_get, transport_endpt_attr_t *attr);
 } quic_engine_vft_t;
 
 extern quic_engine_vft_t *quic_engine_vfts;
