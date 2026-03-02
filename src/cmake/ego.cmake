@@ -8,7 +8,7 @@ if (VPP_HAVE_EGO)
   add_definitions(-DHAVE_EGO=1)
 
   # ego flags for build type.
-  set(ego_flags_debug -g -O0)
+  set(ego_flags_debug -g -O0 -cflags -DCLIB_DEBUG=1)
   set(ego_flags_release -g -O2)
   set(ego_flags "${ego_flags_${CMAKE_BUILD_TYPE}}")
 endif()
