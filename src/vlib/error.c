@@ -277,7 +277,7 @@ show_errors (vlib_main_t * vm,
       em = &this_vlib_main->error_main;
 
       if (verbose)
-	vlib_cli_output (vm, "Thread %u (%v):", index,
+	vlib_cli_output (vm, "Thread %u (%s):", index,
 			 vlib_worker_threads[index].name);
 
       for (ni = 0; ni < vec_len (this_vlib_main->node_main.nodes); ni++)
