@@ -2105,7 +2105,7 @@ session_queue_node_fn (vlib_main_t * vm, vlib_node_runtime_t * node,
   old_ti = clib_llist_prev_index (old_he, evt_list);
 
   ei = clib_llist_next_index (new_he, evt_list);
-  batch = SESSION_CLIB_MEMCPY_BATCH_INIT(128);
+  batch = SESSION_CLIB_MEMCPY_BATCH_INIT();
   if (batch != CLIB_MEMCPY_NO_BATCH)
     batch->aux_op = clib_memcpy_batch_aux_op_atomic_store_uint32_release;
   while (ei != wrk->new_head && n_tx_packets < SESSION_NODE_FRAME_SIZE)

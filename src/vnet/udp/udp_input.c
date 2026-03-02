@@ -277,7 +277,7 @@ udp46_input_inline (vlib_main_t *vm, vlib_node_runtime_t *node,
   u32 n_left_from, *from, *first_buffer;
   vlib_buffer_t *bufs[VLIB_FRAME_SIZE], **b;
   u16 err_counters[UDP_N_ERROR] = { 0 };
-  clib_memcpy_batch_t *batch = SESSION_CLIB_MEMCPY_BATCH_INIT(128);
+  clib_memcpy_batch_t *batch = SESSION_CLIB_MEMCPY_BATCH_INIT();
 
   if (batch != CLIB_MEMCPY_NO_BATCH)
     batch->aux_op = clib_memcpy_batch_aux_op_atomic_store_uint32_release;
