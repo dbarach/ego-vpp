@@ -471,5 +471,6 @@ vlib_main_t *vlib_get_main_not_inline (void);
 elog_main_t *vlib_get_elog_main_not_inline ();
 
 void vlib_update_elog_main (elog_main_t *elog_main);
+void vlib_main_loop_flush_deferred_frames (vlib_main_t * vm);
 
 #endif /* included_vlib_main_h */

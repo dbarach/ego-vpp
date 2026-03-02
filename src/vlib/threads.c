@@ -928,6 +928,8 @@ vlib_worker_thread_node_refork (void)
   vm_clone = vlib_get_main ();
   nm_clone = &vm_clone->node_main;
 
+  vlib_main_loop_flush_deferred_frames (vm_clone);
+
   /* Re-clone error heap */
   u64 *old_counters_all_clear = vm_clone->error_main.counters_last_clear;
 

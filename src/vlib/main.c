@@ -1659,6 +1659,32 @@ vlib_defer_put_next_frame (vlib_main_t * vm,
     }
 }
 
+static u64
+process_pending_frames (vlib_main_t * vm, u64 cpu_time_now)
+{
+  vlib_node_main_t *nm = &vm->node_main;
+  int i;
+
+  /* Input nodes may have added work to the pending vector.
+     Process pending vector until there is nothing left.
+     All pending vectors will be processed from input -> output. */
+  for (i = 0; i < _vec_len (nm->pending_frames); i++)
+    cpu_time_now = dispatch_pending_node (vm, i, cpu_time_now);
+
+  /* Reset pending vector for next iteration. */
+  vec_set_len (nm->pending_frames, 0);
+
+  return cpu_time_now;
+}
+
+void vlib_main_loop_flush_deferred_frames (vlib_main_t * vm)
+{
+  /* Process deferred frames twice flushes deferred frames to pending vector via frame puts. */
+  process_deferred_frames (vm);
+  process_deferred_frames (vm);
+  process_pending_frames (vm, 0);
+}
+
 static_always_inline void
 vlib_main_or_worker_loop (vlib_main_t * vm, int is_main)
 {
@@ -1829,13 +1855,7 @@ vlib_main_or_worker_loop (vlib_main_t * vm, int is_main)
       if (PREDICT_TRUE (is_main && vm->queue_signal_pending == 0))
 	vm->queue_signal_callback (vm);
 
-      /* Input nodes may have added work to the pending vector.
-         Process pending vector until there is nothing left.
-         All pending vectors will be processed from input -> output. */
-      for (i = 0; i < _vec_len (nm->pending_frames); i++)
-	cpu_time_now = dispatch_pending_node (vm, i, cpu_time_now);
-      /* Reset pending vector for next iteration. */
-      vec_set_len (nm->pending_frames, 0);
+      cpu_time_now = process_pending_frames (vm, cpu_time_now);
 
       empty_return_frame_fifo (vm);
 
