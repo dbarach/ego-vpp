@@ -19,6 +19,53 @@ func (l *uline) ptr(i int) unsafe.Pointer { return unsafe.Add(unsafe.Pointer(l),
 // +ego always_inline
 func (l *uline) line(i, n int) *uline { return (*uline)(l.ptr(i + n*cpu.CacheLineBytes)) }
 
+// +ego always_inline
+func (dst *uline) copy(src *uline, n_this_stage int) {
+	const lb = cpu.CacheLineBytes
+	i := 0
+	n_left := n_this_stage
+	for n_left >= 4*lb {
+		*dst.line(i, 0) = *src.line(i, 0)
+		*dst.line(i, 1) = *src.line(i, 1)
+		*dst.line(i, 2) = *src.line(i, 2)
+		*dst.line(i, 3) = *src.line(i, 3)
+		i += 4 * lb
+		n_left -= 4 * lb
+	}
+	// Slow path for final incomplete chunk.
+	if n_left > 0 {
+		if n_left >= 2*lb {
+			*dst.line(i, 0) = *src.line(i, 0)
+			*dst.line(i, 1) = *src.line(i, 1)
+			i += 2 * lb
+			n_left -= 2 * lb
+		}
+		if n_left >= 1*lb {
+			*dst.line(i, 0) = *src.line(i, 0)
+			i += 1 * lb
+			n_left -= 1 * lb
+		}
+		for n_left >= 8 {
+			*(*uint64)(dst.ptr(i)) = *(*uint64)(src.ptr(i))
+			i += 8
+			n_left -= 8
+		}
+		if n_left >= 4 {
+			*(*uint32)(dst.ptr(i)) = *(*uint32)(src.ptr(i))
+			i += 4
+			n_left -= 4
+		}
+		if n_left >= 2 {
+			*(*uint16)(dst.ptr(i)) = *(*uint16)(src.ptr(i))
+			i += 2
+			n_left -= 2
+		}
+		if n_left >= 1 {
+			*(*uint8)(dst.ptr(i)) = *(*uint8)(src.ptr(i))
+		}
+	}
+}
+
 type (
 	// Ordered as arguments to standard C memcpy.
 	mem_copy_buffer struct {
@@ -83,7 +130,7 @@ func (cf mem_copy_config) copy(bs []mem_copy_buffer) {
 	bytes_per_stage := int(cf.n_copy_bytes_per_stage)
 	lines_per_stage := (bytes_per_stage + lb - 1) / lb
 	var stages_ [32]mem_copy_stage
-	stages := stages_[:max(1+cf.prefetch_stride, uint(len(stages_)))]
+	stages := stages_[:min(1+cf.prefetch_stride, uint(len(stages_)))]
 	// Prefetch, copy buffer indices.
 	pbi, cbi := 0, 0
 	// Prefetch, copy stage indices.
@@ -109,17 +156,15 @@ func (cf mem_copy_config) copy(bs []mem_copy_buffer) {
 				}
 				nb += n_pref
 				ps.n_bytes_prefetched = uint32(nb)
-				if nb >= n_bytes_left {
-					psi++
-					if psi >= len(stages) {
-						psi = 0
-					}
-					if n_active_stages < len(stages) && pbi < len(bs) {
-						stages[psi].set(&bs[pbi])
-						pbi++
-						n_active_stages++
-					}
+			}
+			if nb >= n_bytes_left && n_active_stages < len(stages) && pbi < len(bs) {
+				psi++
+				if psi >= len(stages) {
+					psi = 0
 				}
+				stages[psi].set(&bs[pbi])
+				pbi++
+				n_active_stages++
 			}
 		}
 
@@ -130,76 +175,26 @@ func (cf mem_copy_config) copy(bs []mem_copy_buffer) {
 			n_this_stage := min(bytes_per_stage, nb)
 			last_copy_this_buffer := n_this_stage == nb
 			cs.n_copy_bytes_left = uint32(nb - n_this_stage)
-			src, dst := cs.src, cs.dst
-			// Advance src and dst for next copy stage.
-			cs.src = src.line(0, lines_per_stage)
-			cs.dst = dst.line(0, lines_per_stage)
-			i := 0
-			n_left := n_this_stage
-			for n_left >= 4*lb {
-				*dst.line(i, 0) = *src.line(i, 0)
-				*dst.line(i, 1) = *src.line(i, 1)
-				*dst.line(i, 2) = *src.line(i, 2)
-				*dst.line(i, 3) = *src.line(i, 3)
-				i += 4 * lb
-				n_left -= 4 * lb
-			}
-			// Slow path for final incomplete chunk.
-			if n_left > 0 {
-				if n_left >= 2*lb {
-					*dst.line(i, 0) = *src.line(i, 0)
-					*dst.line(i, 1) = *src.line(i, 1)
-					i += 2 * lb
-					n_left -= 2 * lb
-				}
-				if n_left >= 1*lb {
-					*dst.line(i, 0) = *src.line(i, 0)
-					i += 1 * lb
-					n_left -= 1 * lb
-				}
-				for n_left >= 8 {
-					*(*uint64)(dst.ptr(i)) = *(*uint64)(src.ptr(i))
-					i += 8
-					n_left -= 8
-				}
-				if n_left >= 4 {
-					*(*uint32)(dst.ptr(i)) = *(*uint32)(src.ptr(i))
-					i += 4
-					n_left -= 4
-				}
-				if n_left >= 2 {
-					*(*uint16)(dst.ptr(i)) = *(*uint16)(src.ptr(i))
-					i += 2
-					n_left -= 2
-				}
-				if n_left >= 1 {
-					*(*uint8)(dst.ptr(i)) = *(*uint8)(src.ptr(i))
-				}
-			}
-			if last_copy_this_buffer {
+			cs.dst.copy(cs.src, n_this_stage)
+			if !last_copy_this_buffer {
+				// Advance src and dst for next copy stage.
+				cs.src = cs.src.line(0, lines_per_stage)
+				cs.dst = cs.dst.line(0, lines_per_stage)
+			} else {
 				bs[cbi].do_aux(cf)
 				cbi++
 				// Done copying final buffer?
 				if cbi >= len(bs) {
 					break
 				}
-				n_active_stages--
-				bi := cbi
-				ok := !cf.enable_prefetch
-				if !ok && n_active_stages == len(stages)-1 {
-					ok = stages[psi].n_bytes_prefetched >= stages[psi].n_copy_bytes_left && pbi < len(bs)
-					if ok {
-						bi = pbi
-						pbi++
-					}
-				}
-				if ok {
-					stages[csi].set(&bs[bi])
-					n_active_stages++
-				}
 				csi++
 				if csi >= len(stages) {
 					csi = 0
+				}
+				n_active_stages--
+				if !cf.enable_prefetch {
+					stages[csi].set(&bs[cbi])
+					n_active_stages++
 				}
 			}
 		}
