@@ -1181,6 +1181,14 @@ dispatch_pending_node (vlib_main_t * vm, uword pending_frame_index,
   last_time_stamp =
     dispatch_node (vm, n, VLIB_NODE_TYPE_INTERNAL, f,
 		   VLIB_NODE_DISPATCH_REASON_PENDING_FRAME, last_time_stamp);
+
+  /*
+   * NB: dispatching node n can result in the creation and scheduling
+   * of new frames, and hence in the reallocation of nm->pending_frames.
+   * Recompute p, or no supper. This was broken for more than 10 years.
+   */
+  p = nm->pending_frames + pending_frame_index;
+
   /* Internal node vector-rate accounting, for summary stats */
   vm->internal_node_vectors += f->n_vectors;
   vm->internal_node_calls++;
@@ -1204,13 +1212,6 @@ dispatch_pending_node (vlib_main_t * vm, uword pending_frame_index,
        * it's overspill.
        */
       ASSERT (!(f->frame_flags & VLIB_FRAME_FREE_AFTER_DISPATCH));
-
-      /*
-       * NB: dispatching node n can result in the creation and scheduling
-       * of new frames, and hence in the reallocation of nm->pending_frames.
-       * Recompute p, or no supper. This was broken for more than 10 years.
-       */
-      p = nm->pending_frames + pending_frame_index;
 
       /*
        * p->next_frame_index can change during node dispatch if node
