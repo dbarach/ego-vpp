@@ -194,6 +194,29 @@ clib_compress_u32 (u32 *dst, u32 *src, u64 *mask, u32 n_elts)
   if (PREDICT_TRUE (n_elts == 0))
     return dst - dst0;
 
+  /* Compress often slower than stores when mask + 1 is a power of 2. */
+  if (is_pow2 (mask[0] + 1))
+    {
+      /* Would be nice to use masked store but I couldn't figure out
+	 how to call it from C. */
+#define _(n)					\
+      if (n_elts >= (n))			\
+	{					\
+	  clib_memcpy_u32 (dst, src, (n));	\
+	  src += (n);				\
+	  dst += (n);				\
+	  n_elts -= (n);			\
+	}
+      _ (32);
+      _ (16);
+      _ (8);
+      _ (4);
+      _ (2);
+      _ (1);
+#undef _
+      return dst - dst0;
+    }
+
   return clib_compress_u32_x64_masked (dst, src,
 				       mask[0] & pow2_mask (n_elts)) -
 	 dst0;
