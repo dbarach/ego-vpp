@@ -77,18 +77,33 @@ app_worker_del_all_events (app_worker_t *app_wrk)
     }
 }
 
+always_inline void
+app_worker_flush_rx_tx_batch (application_t *app, app_worker_t *app_wrk, clib_thread_index_t thread_index)
+{
+  int i;
+  for (i = 0; i < ARRAY_LEN(app_wrk->rx_tx_batch_session_indices); i++)
+    {
+      if (vec_len (app_wrk->rx_tx_batch_session_indices[i]) > 0)
+	{
+	  app->cb_fns.builtin_app_rx_tx_batch_callback (thread_index, app_wrk->rx_tx_batch_session_indices[i], i == VLIB_TX);
+	  vec_set_len (app_wrk->rx_tx_batch_session_indices[i], 0);
+	}
+    }
+}
+
 /* Handle rx io events possibly by batching them together if app supports it. */
 always_inline int
-app_worker_handle_io_rx_event (application_t *app,
-			       app_worker_t *app_wrk,
-			       session_event_t *evt, /* null to flush pending rx batch */
-			       u32 thread_index)
+app_worker_handle_io_rx_tx_event (application_t *app,
+				  app_worker_t *app_wrk,
+				  session_event_t *evt, /* null to flush pending rx batch */
+				  u32 thread_index)
 {
   session_t * s = 0;
   u8 et = ~0;
   if (evt != 0)
     et = evt->event_type;
   int event_not_handled = 0;
+  int side = VLIB_RX;
   switch (et)
     {
     case SESSION_IO_EVT_RX:
@@ -99,28 +114,44 @@ app_worker_handle_io_rx_event (application_t *app,
       s = session_get_from_handle_if_valid (evt->session_handle);
       break;
 
+    case SESSION_IO_EVT_TX:
+      s = session_get (evt->session_index, thread_index);
+      side = VLIB_TX;
+      break;
+
+    case SESSION_IO_EVT_TX_MAIN:
+      s = session_get_from_handle_if_valid (evt->session_handle);
+      if (!s)
+	break;
+      side = VLIB_TX;
+      break;
+
     default:
       event_not_handled = 1;
       break;
     }
 
-  /* Flush batch sessions on first non-rx event. */
-  if (event_not_handled && vec_len (app_wrk->rx_batch_session_indices) > 0)
-    {
-      app->cb_fns.builtin_app_rx_batch_callback (thread_index, app_wrk->rx_batch_session_indices);
-      vec_set_len (app_wrk->rx_batch_session_indices, 0);
-    }
+  /* Flush batch sessions on first non-rx/tx event. */
+  if (event_not_handled)
+    app_worker_flush_rx_tx_batch (app, app_wrk, thread_index);
 
   if (s != 0)
     {
-      s->flags &= ~SESSION_F_RX_EVT;
-      if (PREDICT_TRUE (s->flags & SESSION_F_RX_READY))
+      int add = 1;
+      if (side == VLIB_RX)
 	{
-	  if (app->cb_fns.builtin_app_rx_batch_callback != 0)
+	  s->flags &= ~SESSION_F_RX_EVT;
+	  add = (s->flags & SESSION_F_RX_READY) != 0;
+	}
+      if (add)
+	{
+	  if (app->cb_fns.builtin_app_rx_tx_batch_callback != 0)
 	    /* Save it away for later call. */
-	    vec_add1 (app_wrk->rx_batch_session_indices, s->session_index);
-	  else
+	    vec_add1 (app_wrk->rx_tx_batch_session_indices[side], s->session_index);
+	  else if (side == VLIB_RX)
 	    app->cb_fns.builtin_app_rx_callback (s);
+	  else
+	    app->cb_fns.builtin_app_tx_callback (s);
 	}
     }
 
@@ -167,20 +198,10 @@ app_worker_flush_events_inline (app_worker_t *app_wrk,
 	}
 
       /* Handle RX events first; other events in switch. */
-      if (app_worker_handle_io_rx_event (app, app_wrk, evt, thread_index))
+      if (app_worker_handle_io_rx_tx_event (app, app_wrk, evt, thread_index))
 	{
 	  switch (evt->event_type)
 	    {
-	    case SESSION_IO_EVT_TX:
-	      s = session_get (evt->session_index, thread_index);
-	      app->cb_fns.builtin_app_tx_callback (s);
-	      break;
-	    case SESSION_IO_EVT_TX_MAIN:
-	      s = session_get_from_handle_if_valid (evt->session_handle);
-	      if (!s)
-		break;
-	      app->cb_fns.builtin_app_tx_callback (s);
-	      break;
 	    case SESSION_CTRL_EVT_BOUND:
 	      /* No app cb function currently */
 	      if (is_builtin)
@@ -360,11 +381,7 @@ app_worker_flush_events_inline (app_worker_t *app_wrk,
     }
 
   /* Flush out batched rx events. */
-  if (vec_len (app_wrk->rx_batch_session_indices) > 0)
-    {
-      app->cb_fns.builtin_app_rx_batch_callback (thread_index, app_wrk->rx_batch_session_indices);
-      vec_set_len (app_wrk->rx_batch_session_indices, 0);
-    }
+  app_worker_flush_rx_tx_batch (app, app_wrk, thread_index);
 
   if (!is_builtin)
     {

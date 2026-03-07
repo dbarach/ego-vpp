@@ -56,7 +56,7 @@ typedef struct session_cb_vft_
   int (*builtin_app_rx_callback) (session_t * session);
 
   /** As above but for vector of sessions. */
-  int (*builtin_app_rx_batch_callback) (u32 thread_index, u32 * session_indices);
+  int (*builtin_app_rx_tx_batch_callback) (u32 thread_index, u32 * session_indices, u32 is_tx);
 
   /** Direct TX callback for built-in application */
   int (*builtin_app_tx_callback) (session_t * session);

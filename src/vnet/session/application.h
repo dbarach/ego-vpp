@@ -79,8 +79,8 @@ typedef struct app_worker_
   /** Vector of detached listener segment managers */
   u32 *detached_seg_managers;
 
-  /** Re-usable vector of sessions to send builtin_app_rx_batch_callback */
-  u32 *rx_batch_session_indices;
+  /** Re-usable vector of sessions to send builtin_app_rx_tx_batch_callback */
+  u32 *rx_tx_batch_session_indices[VLIB_N_RX_TX];
 } app_worker_t;
 
 typedef struct app_worker_map_
