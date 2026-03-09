@@ -1397,11 +1397,13 @@ tcp_try_header_prediction (tcp_worker_ctx_t *wrk, tcp_connection_t *tc,
    * of data */
   tc->snd_wl1 = vnet_buffer (b)->tcp.seq_number;
 
+  u32 e = TCP_ERROR_ENQUEUED_FAST_PATH;
   if (vnet_buffer (b)->tcp.data_len)
     {
-      u32 e = tcp_segment_rcv (wrk, tc, b, batch);
-      *error = e == TCP_ERROR_ENQUEUED ? TCP_ERROR_ENQUEUED_FAST_PATH : e;
+      u32 f = tcp_segment_rcv (wrk, tc, b, batch);
+      e = f != TCP_ERROR_ENQUEUED ? f : e;
     }
+  *error = e;
 
   return 1;
 }
