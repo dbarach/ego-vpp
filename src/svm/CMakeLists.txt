@@ -23,9 +23,6 @@ add_vpp_library(svm
   ssvm.c
   svm_fifo.c
 
-  MULTIARCH_SOURCES
-  svm_fifo.c
-
   INSTALL_HEADERS
   fifo_segment.h
   fifo_types.h
