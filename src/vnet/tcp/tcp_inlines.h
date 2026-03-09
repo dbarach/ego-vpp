@@ -34,7 +34,7 @@ always_inline void
 tcp_inc_err_counter (tcp_error_counters_t *c, tcp_error_t e, u16 n)
 {
   c->counts[e] += n;
-  c->valid_mask |= (n != 0) << e;
+  c->valid_mask |= (u64) (n != 0) << e;
 }
 
 always_inline void
