@@ -62,8 +62,6 @@ always_inline tcp_connection_t *
 tcp_connection_get (u32 conn_index, clib_thread_index_t thread_index)
 {
   tcp_worker_ctx_t *wrk = tcp_get_worker (thread_index);
-  if (PREDICT_FALSE (pool_is_free_index (wrk->connections, conn_index)))
-    return 0;
   return pool_elt_at_index (wrk->connections, conn_index);
 }
 

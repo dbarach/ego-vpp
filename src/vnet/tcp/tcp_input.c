@@ -1499,14 +1499,17 @@ tcp46_established_inline (vlib_main_t * vm, vlib_node_runtime_t * node,
 			       thread_index);
       th = tcp_buffer_hdr (b[0]);
 
-      if (PREDICT_FALSE (tcp_segment_is_exception (tc, th)))
+      int is_exception = tcp_segment_is_exception (tc, th);
+      int should_try_header_prediction = tcp_should_try_header_prediction (wrk, tc, b[0], th);
+
+      if (PREDICT_FALSE (is_exception))
 	{
 	  tcp_segment_handle_exception (tc, th, &error);
 	  goto done;
 	}
 
       /* 0: Try header prediction. Support only bulk receiver for now */
-      if (tcp_should_try_header_prediction (wrk, tc, b[0], th))
+      if (should_try_header_prediction)
 	{
 	  if (tcp_try_header_prediction (wrk, tc, b[0], th, &error, batch))
 	    goto done;

@@ -855,21 +855,42 @@ tcp_send_fin (tcp_connection_t * tc)
     }
 }
 
+always_inline u32
+tcp_buffer_len (vlib_buffer_t * b)
+{
+  u32 data_len = b->current_length;
+  if (PREDICT_FALSE (b->flags & VLIB_BUFFER_NEXT_PRESENT))
+    data_len += b->total_length_not_including_first_buffer;
+  return data_len;
+}
+
+always_inline void
+tcp_buffer_len_x2 (vlib_buffer_t * b0, vlib_buffer_t * b1, u32 * l0, u32 * l1)
+{
+  u32 d0 = b0->current_length;
+  u32 d1 = b1->current_length;
+  if (PREDICT_FALSE ((b0->flags | b1->flags) & VLIB_BUFFER_NEXT_PRESENT))
+    {
+      d0 += (b0->flags & VLIB_BUFFER_NEXT_PRESENT) ? b0->total_length_not_including_first_buffer : 0;
+      d1 += (b1->flags & VLIB_BUFFER_NEXT_PRESENT) ? b1->total_length_not_including_first_buffer : 0;
+    }
+  *l0 = d0;
+  *l1 = d1;
+}
+
 /**
  * Push TCP header and update connection variables. Should only be called
  * for segments with data, not for 'control' packets.
  */
-always_inline void
-tcp_push_hdr_i (tcp_connection_t * tc, vlib_buffer_t * b, u32 snd_nxt,
-		u8 compute_opts, u8 maybe_burst, u8 update_snd_nxt)
+always_inline u32
+tcp_push_hdr_inline (tcp_connection_t * tc, vlib_buffer_t * b, u32 snd_nxt,
+		     u8 compute_opts, u8 maybe_burst, u8 update_snd_nxt, u8 update_bytes_out)
 {
   u8 tcp_hdr_opts_len, flags = TCP_FLAG_ACK;
   u32 advertise_wnd, data_len;
   tcp_header_t *th;
 
-  data_len = b->current_length;
-  if (PREDICT_FALSE (b->flags & VLIB_BUFFER_NEXT_PRESENT))
-    data_len += b->total_length_not_including_first_buffer;
+  data_len = tcp_buffer_len (b);
 
   vnet_buffer (b)->tcp.flags = 0;
   vnet_buffer (b)->tcp.connection_index = tc->c_c_index;
@@ -913,34 +934,118 @@ tcp_push_hdr_i (tcp_connection_t * tc, vlib_buffer_t * b, u32 snd_nxt,
     tc->snd_nxt += data_len;
   tc->rcv_las = tc->rcv_nxt;
 
-  tc->bytes_out += data_len;
-  tc->data_segs_out += 1;
+  if (update_bytes_out)
+    {
+      tc->bytes_out += data_len;
+      tc->data_segs_out += 1;
+    }
 
   th->checksum = tcp_compute_checksum (tc, b);
 
   TCP_EVT (TCP_EVT_PKTIZE, tc);
-}
 
-always_inline u32
-tcp_buffer_len (vlib_buffer_t * b)
-{
-  u32 data_len = b->current_length;
-  if (PREDICT_FALSE (b->flags & VLIB_BUFFER_NEXT_PRESENT))
-    data_len += b->total_length_not_including_first_buffer;
   return data_len;
 }
 
 always_inline u32
+tcp_push_hdr_i (tcp_connection_t * tc, vlib_buffer_t * b, u32 snd_nxt,
+		u8 compute_opts, u8 maybe_burst, u8 update_snd_nxt)
+{ return tcp_push_hdr_inline (tc, b, snd_nxt, compute_opts, maybe_burst, update_snd_nxt, /* update_bytes_out */ 1); }
+
+always_inline u32
 tcp_push_one_header (tcp_connection_t *tc, vlib_buffer_t *b)
 {
+  u32 data_len;
+
   if (tc->cfg_flags & TCP_CFG_F_RATE_SAMPLE)
     tcp_bt_track_tx (tc, tcp_buffer_len (b));
 
-  tcp_push_hdr_i (tc, b, tc->snd_nxt, /* compute opts */ 0, /* burst */ 1,
-		  /* update_snd_nxt */ 1);
+  data_len = tcp_push_hdr_inline (tc, b, tc->snd_nxt, /* compute opts */ 0, /* burst */ 1,
+				  /* update_snd_nxt */ 1, /* update_bytes_out */ 0);
 
   tcp_validate_txf_size (tc, tc->snd_nxt - tc->snd_una);
-  return 0;
+  return data_len;
+}
+
+/* 20 bytes of TCP header plus 12 bytes of options (Timestamp) fast path. */
+#define tcp_fast_header_vector_len 32
+
+typedef u8 tcp_fast_header_simd __attribute__ ((vector_size (tcp_fast_header_vector_len), __aligned__ (1), __may_alias__));
+
+typedef union {
+  struct {
+    tcp_header_t h;
+    u8 options[tcp_fast_header_vector_len - sizeof (tcp_header_t)];
+  };
+  tcp_fast_header_simd simd;			/* simd version of struct */
+} tcp_fast_header_and_options_t;
+
+always_inline u32
+tcp_push_two_headers (tcp_connection_t *tc, tcp_fast_header_and_options_t *fh, vlib_buffer_t *b0, vlib_buffer_t *b1)
+{
+  u8 tcp_hdr_opts_len;
+  u32 snd_nxt, snd_nxt0, snd_nxt1;
+  u32 data_len0, data_len1;
+  tcp_header_t *th0, *th1;
+
+  tcp_buffer_len_x2 (b0, b1, &data_len0, &data_len1);
+
+  snd_nxt = tc->snd_nxt;
+  snd_nxt0 = snd_nxt + data_len0;
+  snd_nxt1 = snd_nxt0 + data_len1;
+
+  vnet_buffer (b0)->tcp.flags = 0;
+  vnet_buffer (b1)->tcp.flags = 0;
+  vnet_buffer (b0)->tcp.connection_index = tc->c_c_index;
+  vnet_buffer (b1)->tcp.connection_index = tc->c_c_index;
+
+  tcp_hdr_opts_len = tc->snd_opts_len + sizeof (tcp_header_t);
+
+  th0 = vlib_buffer_push_uninit (b0, tcp_hdr_opts_len);
+  th1 = vlib_buffer_push_uninit (b1, tcp_hdr_opts_len);
+
+  *(tcp_fast_header_simd *)(th0) = fh->simd;
+  *(tcp_fast_header_simd *)(th1) = fh->simd;
+
+  th0->seq_number = clib_host_to_net_u32 (snd_nxt);
+  th1->seq_number = clib_host_to_net_u32 (snd_nxt0);
+
+  vnet_buffer (b0)->l4_hdr_offset = (u8 *) th0 - b0->data;
+  vnet_buffer (b1)->l4_hdr_offset = (u8 *) th1 - b1->data;
+  b0->flags |= VNET_BUFFER_F_L4_HDR_OFFSET_VALID;
+  b1->flags |= VNET_BUFFER_F_L4_HDR_OFFSET_VALID;
+
+  /*
+   * Update connection variables
+   */
+  tc->snd_nxt = snd_nxt1;
+  tc->rcv_las = tc->rcv_nxt;
+
+  if (PREDICT_FALSE (tc->flags & TCP_CONN_PSH_PENDING))
+    {
+      if (seq_geq (tc->psh_seq, snd_nxt))
+	{
+	  if (seq_lt (tc->psh_seq, snd_nxt0))
+	    th0->flags = fh->h.flags | TCP_FLAG_PSH;
+	  if (seq_lt (tc->psh_seq, snd_nxt1))
+	    th1->flags = fh->h.flags | TCP_FLAG_PSH;
+	}
+    }
+
+  th0->checksum = tcp_compute_checksum (tc, b0);
+  th1->checksum = tcp_compute_checksum (tc, b1);
+
+  TCP_EVT (TCP_EVT_PKTIZE, tc);
+
+  tcp_validate_txf_size (tc, tc->snd_nxt - tc->snd_una);
+
+  if (PREDICT_FALSE (tc->cfg_flags & TCP_CFG_F_RATE_SAMPLE))
+    {
+      tcp_bt_track_tx (tc, data_len0);
+      tcp_bt_track_tx (tc, data_len1);
+    }
+
+  return data_len0 + data_len1;
 }
 
 u32
@@ -948,28 +1053,51 @@ tcp_session_push_header (transport_connection_t *tconn, vlib_buffer_t **bs,
 			 u32 n_bufs)
 {
   tcp_connection_t *tc = (tcp_connection_t *) tconn;
+  u32 data_len = 0;
+  u32 n_bufs_left = n_bufs;
+  tcp_fast_header_and_options_t fh;
 
-  while (n_bufs >= 4)
+  /* Initialize fast header (written into packet with SIMD stores). */
+  memset (&fh, 0, sizeof (fh));
+  fh.h.src_port = tc->c_lcl_port;
+  fh.h.dst_port = tc->c_rmt_port;
+  fh.h.flags = TCP_FLAG_ACK;
+  fh.h.ack_number = clib_host_to_net_u32 (tc->rcv_nxt);
+  fh.h.data_offset_and_reserved = ((tc->snd_opts_len + sizeof (tcp_header_t)) >> 2) << 4;
+  fh.h.window = clib_host_to_net_u16 (tc->rcv_wnd >> tc->rcv_wscale);
+  fh.h.checksum = 0;
+  fh.h.urgent_pointer = 0;
+  u32 olen = tcp_options_write (&fh.options[0], &tc->snd_opts);
+  ASSERT (olen <= ARRAY_LEN (fh.options));
+
+  while (n_bufs_left >= 2)
     {
-      vlib_prefetch_buffer_header (bs[2], STORE);
-      vlib_prefetch_buffer_header (bs[3], STORE);
-
-      tcp_push_one_header (tc, bs[0]);
-      tcp_push_one_header (tc, bs[1]);
-
-      n_bufs -= 2;
+      const int prefetch_stride = 4;
+      if (n_bufs_left >= prefetch_stride)
+	{
+	  vlib_prefetch_buffer_header (bs[prefetch_stride-2], LOAD);
+	  CLIB_PREFETCH (bs[prefetch_stride-2]->data, CLIB_CACHE_LINE_BYTES, LOAD);
+	  vlib_prefetch_buffer_header (bs[prefetch_stride-1], LOAD);
+	  CLIB_PREFETCH (bs[prefetch_stride-1]->data, CLIB_CACHE_LINE_BYTES, LOAD);
+	}
+      data_len += tcp_push_two_headers (tc, &fh, bs[0], bs[1]);
+      n_bufs_left -= 2;
       bs += 2;
     }
-  while (n_bufs)
+  while (n_bufs_left)
     {
-      if (n_bufs > 1)
-	vlib_prefetch_buffer_header (bs[1], STORE);
-
-      tcp_push_one_header (tc, bs[0]);
-
-      n_bufs -= 1;
+      if (n_bufs_left > 1)
+	{
+	  vlib_prefetch_buffer_header (bs[1], LOAD);
+	  CLIB_PREFETCH (bs[1]->data, CLIB_CACHE_LINE_BYTES, LOAD);
+	}
+      data_len += tcp_push_one_header (tc, bs[0]);
+      n_bufs_left -= 1;
       bs += 1;
     }
+
+  tc->bytes_out += data_len;
+  tc->data_segs_out += n_bufs;
 
   /* If not tracking an ACK, start tracking */
   if (tc->rtt_ts == 0 && !tcp_in_cong_recovery (tc))

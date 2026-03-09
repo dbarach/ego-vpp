@@ -142,7 +142,8 @@ typedef struct
   u8 n_sack_blocks;	/**< Number of SACKs blocks */
 } tcp_options_t;
 
-#define tcp_opts_len(_th) ((tcp_doff (th) << 2) - sizeof (tcp_header_t))
+always_inline int
+tcp_opts_len (tcp_header_t *h) { return (tcp_doff (h) << 2) - sizeof (h[0]); }
 
 /* Flag tests that return 0 or !0 */
 #define tcp_opts_mss(_to) ((_to)->flags & TCP_OPTS_FLAG_MSS)
