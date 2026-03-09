@@ -14,10 +14,10 @@
 
 #define F_INVALID_CPTR (fs_sptr_t) ~0ULL
 
-CLIB_MARCH_FN (svm_fifo_copy_to_chunk, void, svm_fifo_t *f,
-	       svm_fifo_chunk_t *c, u32 tail_idx, const u8 *src, u32 len,
-	       fs_sptr_t *last,
-	       clib_memcpy_batch_t *batch)
+always_inline void
+svm_fifo_copy_to_chunk (svm_fifo_t *f, svm_fifo_chunk_t *c, u32 tail_idx,
+			const u8 *src, u32 len, fs_sptr_t *last,
+			clib_memcpy_batch_t *batch)
 {
   u32 n_chunk;
 
@@ -46,10 +46,9 @@ CLIB_MARCH_FN (svm_fifo_copy_to_chunk, void, svm_fifo_t *f,
     }
 }
 
-CLIB_MARCH_FN (svm_fifo_copy_from_chunk, void, svm_fifo_t *f,
-	       svm_fifo_chunk_t *c, u32 head_idx, u8 *dst, u32 len,
-	       fs_sptr_t *last,
-	       clib_memcpy_batch_t *batch)
+always_inline void
+svm_fifo_copy_from_chunk (svm_fifo_t *f, svm_fifo_chunk_t *c, u32 head_idx,
+			  u8 *dst, u32 len, fs_sptr_t *last, clib_memcpy_batch_t *batch)
 {
   u32 n_chunk;
 
@@ -78,25 +77,6 @@ CLIB_MARCH_FN (svm_fifo_copy_from_chunk, void, svm_fifo_t *f,
     {
       clib_memcpy_batch (batch, dst, &c->data[head_idx], len);
     }
-}
-
-#ifndef CLIB_MARCH_VARIANT
-
-static inline void
-svm_fifo_copy_to_chunk (svm_fifo_t *f, svm_fifo_chunk_t *c, u32 tail_idx,
-			const u8 *src, u32 len, fs_sptr_t *last,
-			clib_memcpy_batch_t *batch)
-{
-  CLIB_MARCH_FN_SELECT (svm_fifo_copy_to_chunk) (f, c, tail_idx, src, len,
-						 last, batch);
-}
-
-static inline void
-svm_fifo_copy_from_chunk (svm_fifo_t *f, svm_fifo_chunk_t *c, u32 head_idx,
-			  u8 *dst, u32 len, fs_sptr_t *last, clib_memcpy_batch_t *batch)
-{
-  CLIB_MARCH_FN_SELECT (svm_fifo_copy_from_chunk) (f, c, head_idx, dst, len,
-						   last, batch);
 }
 
 static inline u32
@@ -1653,5 +1633,3 @@ format_svm_fifo (u8 * s, va_list * args)
     }
   return s;
 }
-
-#endif
