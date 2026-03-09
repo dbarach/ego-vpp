@@ -844,8 +844,8 @@ application_alloc_and_init (app_init_args_t *a)
     props->high_watermark = opts[APP_OPTIONS_HIGH_WATERMARK];
   if (opts[APP_OPTIONS_LOW_WATERMARK])
     props->low_watermark = opts[APP_OPTIONS_LOW_WATERMARK];
-  if (opts[APP_OPTIONS_PCT_FIRST_ALLOC])
-    props->pct_first_alloc = opts[APP_OPTIONS_PCT_FIRST_ALLOC];
+  if (opts[APP_OPTIONS_LOG2_CHUNK_SIZE])
+    props->log2_chunk_size = opts[APP_OPTIONS_LOG2_CHUNK_SIZE];
   if (opts[APP_OPTIONS_MAX_FIFO_MEMORY])
     {
       /* Round upwards to nearest segment_size */

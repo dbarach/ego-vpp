@@ -223,7 +223,7 @@ segment_manager_add_segment_inline (segment_manager_t *sm, uword segment_size,
   fs->low_watermark = sm->low_watermark;
   fs->flags = flags;
   fs->flags &= ~FIFO_SEGMENT_F_MEM_LIMIT;
-  fs->h->pct_first_alloc = props->pct_first_alloc;
+  fs->h->log2_chunk_size = props->log2_chunk_size;
 
   if (notify_app)
     {
@@ -807,7 +807,7 @@ segment_ok_for_fifo_alloc (fifo_segment_t * fs, segment_manager_props_t *props)
      4k-sized fifos with a 4k chunk size can use up to 8k of memory. */
   fifo_bytes = clib_max (props->rx_fifo_size, props->tx_fifo_size);
   log2_fifo_bytes = max_log2 (fifo_bytes);
-  log2_chunk_bytes = max_log2 ((int) (f64) ((uword)fs->h->pct_first_alloc << log2_fifo_bytes) / 100);
+  log2_chunk_bytes = fs->h->log2_chunk_size;
   max_cap = (f64) (1 << log2_fifo_bytes) / (f64) ((1 << log2_fifo_bytes) + (1 << log2_chunk_bytes));
 
   ave_bytes_per_fifo = (f64) fu / (f64) na;

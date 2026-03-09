@@ -534,7 +534,7 @@ echo_server_attach (u8 * appns_id, u64 appns_flags, u64 appns_secret)
   a->options[APP_OPTIONS_RX_FIFO_SIZE] = esm->fifo_size;
   a->options[APP_OPTIONS_TX_FIFO_SIZE] = esm->fifo_size;
   a->options[APP_OPTIONS_TLS_ENGINE] = esm->tls_engine;
-  a->options[APP_OPTIONS_PCT_FIRST_ALLOC] = 100;
+  a->options[APP_OPTIONS_LOG2_CHUNK_SIZE] = 12;
   a->options[APP_OPTIONS_PREALLOC_FIFO_PAIRS] =
     esm->prealloc_fifos ? esm->prealloc_fifos : 1;
 

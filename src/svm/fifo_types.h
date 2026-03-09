@@ -181,7 +181,7 @@ struct fifo_segment_header_
   u32 n_reserved_bytes;			/**< Bytes not to be allocated */
   u32 max_log2_fifo_size;		/**< Max log2(chunk size) for fs */
   u8 n_slices;				/**< Number of slices */
-  u8 pct_first_alloc;			/**< Pct of fifo size to alloc */
+  u8 log2_chunk_size;
   u8 n_mqs;				/**< Num mqs for mqs segment */
   CLIB_CACHE_LINE_ALIGN_MARK (allocator);
   uword byte_index;

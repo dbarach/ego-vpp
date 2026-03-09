@@ -1069,7 +1069,7 @@ ec_attach ()
   options[APP_OPTIONS_PREALLOC_FIFO_PAIRS] = prealloc_fifos;
   options[APP_OPTIONS_FLAGS] = APP_OPTIONS_FLAGS_IS_BUILTIN;
   options[APP_OPTIONS_TLS_ENGINE] = ecm->tls_engine;
-  options[APP_OPTIONS_PCT_FIRST_ALLOC] = 100;
+  options[APP_OPTIONS_LOG2_CHUNK_SIZE] = 12;
   options[APP_OPTIONS_FLAGS] |= ecm->attach_flags;
   if (ecm->appns_id)
     {
