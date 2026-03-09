@@ -21,8 +21,8 @@ typedef enum
   FIFO_SEGMENT_N_FTYPES
 } fifo_segment_ftype_t;
 
-#define FIFO_SEGMENT_MIN_LOG2_FIFO_SIZE 12	/**< 4kB min fifo size */
-#define FIFO_SEGMENT_MIN_FIFO_SIZE 4096		/**< 4kB min fifo size */
+#define FIFO_SEGMENT_MIN_LOG2_FIFO_SIZE FS_MIN_LOG2_CHUNK_SZ	/**< 1kB min fifo size */
+#define FIFO_SEGMENT_MIN_FIFO_SIZE (1 << FIFO_SEGMENT_MIN_LOG2_FIFO_SIZE)
 #define FIFO_SEGMENT_MAX_FIFO_SIZE (2ULL << 30)	/**< 2GB max fifo size */
 #define FIFO_SEGMENT_ALLOC_BATCH_SIZE 32	/* Allocation quantum */
 
