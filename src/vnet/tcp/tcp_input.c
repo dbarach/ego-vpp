@@ -1470,7 +1470,7 @@ tcp46_established_inline (vlib_main_t * vm, vlib_node_runtime_t * node,
   vlib_buffer_t *bufs[VLIB_FRAME_SIZE], **b;
   tcp_error_counters_t err_counters = { 0 };
 
-  clib_memcpy_batch_t *batch = SESSION_CLIB_MEMCPY_BATCH_INIT();
+  clib_memcpy_batch_t *batch = SESSION_CLIB_MEMCPY_BATCH_INIT;
   if (batch != CLIB_MEMCPY_NO_BATCH)
     batch->aux_op = clib_memcpy_batch_aux_op_atomic_store_uint32_release;
 
@@ -1825,7 +1825,7 @@ tcp46_syn_sent_inline (vlib_main_t *vm, vlib_node_runtime_t *node,
   tcp_worker_ctx_t *wrk = tcp_get_worker (thread_index);
   vlib_buffer_t *bufs[VLIB_FRAME_SIZE], **b;
 
-  clib_memcpy_batch_t *batch = SESSION_CLIB_MEMCPY_BATCH_INIT();
+  clib_memcpy_batch_t *batch = SESSION_CLIB_MEMCPY_BATCH_INIT;
   if (batch != CLIB_MEMCPY_NO_BATCH)
     batch->aux_op = clib_memcpy_batch_aux_op_atomic_store_uint32_release;
 
@@ -2141,7 +2141,7 @@ tcp46_rcv_process_inline (vlib_main_t *vm, vlib_node_runtime_t *node,
   tcp_worker_ctx_t *wrk = tcp_get_worker (thread_index);
   vlib_buffer_t *bufs[VLIB_FRAME_SIZE], **b;
 
-  clib_memcpy_batch_t *batch = SESSION_CLIB_MEMCPY_BATCH_INIT();
+  clib_memcpy_batch_t *batch = SESSION_CLIB_MEMCPY_BATCH_INIT;
   if (batch != CLIB_MEMCPY_NO_BATCH)
     batch->aux_op = clib_memcpy_batch_aux_op_atomic_store_uint32_release;
 

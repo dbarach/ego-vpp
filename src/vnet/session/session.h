@@ -1251,10 +1251,10 @@ session_rule_table_is_enabled (void)
   return (smm->rt_engine_type == RT_BACKEND_ENGINE_RULE_TABLE);
 }
 
-#define SESSION_CLIB_MEMCPY_BATCH_INIT_ALLOC_LEN(n) \
-  ((n) > 0 ? CLIB_MEMCPY_BATCH_ALLOC_STACK(n) : CLIB_MEMCPY_NO_BATCH)
-
 /* Disable by setting n < 2. */
-#define SESSION_CLIB_MEMCPY_BATCH_INIT() SESSION_CLIB_MEMCPY_BATCH_INIT_ALLOC_LEN(0)
+#define SESSION_CLIB_MEMCPY_BATCH_INIT		\
+  (memcpy_batch_prefetch_likely_profitable	\
+   ? CLIB_MEMCPY_BATCH_ALLOC_STACK(128)		\
+   : CLIB_MEMCPY_NO_BATCH)
 
 #endif /* __included_session_h__ */
