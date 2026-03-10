@@ -967,17 +967,11 @@ tcp_push_one_header (tcp_connection_t *tc, vlib_buffer_t *b)
   return data_len;
 }
 
-/* 20 bytes of TCP header plus 12 bytes of options (Timestamp) fast path. */
-#define tcp_fast_header_vector_len 32
-
-typedef u8 tcp_fast_header_simd __attribute__ ((vector_size (tcp_fast_header_vector_len), __aligned__ (1), __may_alias__));
-
-typedef union {
-  struct {
-    tcp_header_t h;
-    u8 options[tcp_fast_header_vector_len - sizeof (tcp_header_t)];
-  };
-  tcp_fast_header_simd simd;			/* simd version of struct */
+/* 20 bytes of TCP header plus 44 bytes of options fast path. */
+typedef struct {
+  CLIB_CACHE_LINE_ALIGN_MARK (cacheline);
+  tcp_header_t h;
+  u8 options[64 - sizeof (tcp_header_t)];
 } tcp_fast_header_and_options_t;
 
 always_inline u32
@@ -1004,8 +998,8 @@ tcp_push_two_headers (tcp_connection_t *tc, tcp_fast_header_and_options_t *fh, v
   th0 = vlib_buffer_push_uninit (b0, tcp_hdr_opts_len);
   th1 = vlib_buffer_push_uninit (b1, tcp_hdr_opts_len);
 
-  *(tcp_fast_header_simd *)(th0) = fh->simd;
-  *(tcp_fast_header_simd *)(th1) = fh->simd;
+  clib_memcpy_fast(th0, fh, tcp_hdr_opts_len);
+  clib_memcpy_fast(th1, fh, tcp_hdr_opts_len);
 
   th0->seq_number = clib_host_to_net_u32 (snd_nxt);
   th1->seq_number = clib_host_to_net_u32 (snd_nxt0);
@@ -1057,7 +1051,7 @@ tcp_session_push_header (transport_connection_t *tconn, vlib_buffer_t **bs,
   u32 n_bufs_left = n_bufs;
   tcp_fast_header_and_options_t fh;
 
-  /* Initialize fast header (written into packet with SIMD stores). */
+  /* Initialize fast header (written into packet with clib_memcpy_fast). */
   memset (&fh, 0, sizeof (fh));
   fh.h.src_port = tc->c_lcl_port;
   fh.h.dst_port = tc->c_rmt_port;
