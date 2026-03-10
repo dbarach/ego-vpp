@@ -1456,22 +1456,6 @@ session_tx_maybe_reschedule (session_worker_t * wrk,
     }
 }
 
-always_inline void
-session_tx_add_pending_buffer (session_worker_t *wrk, u32 bi, u32 next_index)
-{
-  if (PREDICT_TRUE (!wrk->dma_enabled))
-    {
-      vec_add1 (wrk->pending_tx_buffers, bi);
-      vec_add1 (wrk->pending_tx_nexts, next_index);
-    }
-  else
-    {
-      session_dma_transfer *dma_transfer = &wrk->dma_trans[wrk->trans_tail];
-      vec_add1 (dma_transfer->pending_tx_buffers, bi);
-      vec_add1 (dma_transfer->pending_tx_nexts, next_index);
-    }
-}
-
 always_inline int
 session_tx_fifo_read_and_snd_i (session_worker_t * wrk,
 				vlib_node_runtime_t * node,
@@ -1599,6 +1583,27 @@ session_tx_fifo_read_and_snd_i (session_worker_t * wrk,
 
   vec_validate (ctx->transport_pending_bufs, n_left);
 
+  /* Whether doing DMA or not, allocate buffer indices & nexts once.
+     Fill in in loops below. */
+  u32 *pending_tx_buffers;
+  u16 *pending_tx_nexts;
+  if (PREDICT_TRUE (wrk->dma_enabled))
+    {
+      session_dma_transfer *dma_transfer = &wrk->dma_trans[wrk->trans_tail];
+      vec_add2 (dma_transfer->pending_tx_buffers, pending_tx_buffers, n_left);
+      vec_add2 (dma_transfer->pending_tx_nexts, pending_tx_nexts, n_left);
+    }
+  else
+    {
+      vec_add2 (wrk->pending_tx_buffers, pending_tx_buffers, n_left);
+      vec_add2 (wrk->pending_tx_nexts, pending_tx_nexts, n_left);
+    }
+
+  /* Pending nexts are all the same. */
+  for (int i = 0; i < n_left; i++)
+    pending_tx_nexts[i] = next_index;
+
+  int pi = 0;
   while (n_left >= 4)
     {
       vlib_buffer_t *b0, *b1;
@@ -1624,8 +1629,9 @@ session_tx_fifo_read_and_snd_i (session_worker_t * wrk,
       ctx->transport_pending_bufs[ctx->n_segs_per_evt - n_left + 1] = b1;
       n_left -= 2;
 
-      session_tx_add_pending_buffer (wrk, bi0, next_index);
-      session_tx_add_pending_buffer (wrk, bi1, next_index);
+      pending_tx_buffers[pi+0] = bi0;
+      pending_tx_buffers[pi+1] = bi1;
+      pi += 2;
     }
   while (n_left)
     {
@@ -1646,7 +1652,8 @@ session_tx_fifo_read_and_snd_i (session_worker_t * wrk,
       ctx->transport_pending_bufs[ctx->n_segs_per_evt - n_left] = b0;
       n_left -= 1;
 
-      session_tx_add_pending_buffer (wrk, bi0, next_index);
+      pending_tx_buffers[pi+0] = bi0;
+      pi += 1;
     }
 
   /* Ask transport to push headers */
