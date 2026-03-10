@@ -7,6 +7,7 @@
 #define __included_session_h__
 
 #include <vppinfra/llist.h>
+#include <vnet/session/application.h>
 #include <vnet/session/session_types.h>
 #include <vnet/session/session_lookup.h>
 #include <vnet/session/session_debug.h>
@@ -633,8 +634,6 @@ int session_enqueue_dgram_connection_cl (session_t *s,
 					 vlib_buffer_t *b, u8 proto,
 					 u8 queue_event,
 					 clib_memcpy_batch_t *batch);
-void session_fifo_tuning (session_t *s, svm_fifo_t *f, session_ft_action_t act,
-			  u32 len);
 
 /**
  * Discards bytes from buffer chain
@@ -750,6 +749,24 @@ session_enqueue_chain_tail (session_t *s, vlib_buffer_t *b, u32 offset,
 			   0));
 
       return 0;
+    }
+}
+
+always_inline void
+session_fifo_tuning (session_t * s, svm_fifo_t * f,
+		     session_ft_action_t act, u32 len)
+{
+  if (s->flags & SESSION_F_CUSTOM_FIFO_TUNING)
+    {
+      app_worker_t *app_wrk = app_worker_get (s->app_wrk_index);
+      app_worker_session_fifo_tuning (app_wrk, s, f, act, len);
+      if (CLIB_ASSERT_ENABLE)
+	{
+	  segment_manager_t *sm;
+	  sm = segment_manager_get (f->segment_manager);
+	  ASSERT (f->shr->size >= 4096);
+	  ASSERT (f->shr->size <= sm->max_fifo_size);
+	}
     }
 }
 
