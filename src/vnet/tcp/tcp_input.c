@@ -1056,11 +1056,12 @@ tcp_rcv_fin (tcp_worker_ctx_t * wrk, tcp_connection_t * tc, vlib_buffer_t * b,
 }
 
 /** Enqueue data for delivery to application */
-static int
+always_inline int
 tcp_session_enqueue_data (tcp_connection_t * tc, vlib_buffer_t * b,
-			  u16 data_len, clib_memcpy_batch_t *batch)
+			  u16 data_len, clib_memcpy_batch_t *batch,
+			  int error_enqueued)
 {
-  int written, error = TCP_ERROR_ENQUEUED;
+  int written, error;
 
   ASSERT (seq_geq (vnet_buffer (b)->tcp.seq_number, tc->rcv_nxt));
   ASSERT (data_len);
@@ -1070,32 +1071,25 @@ tcp_session_enqueue_data (tcp_connection_t * tc, vlib_buffer_t * b,
   TCP_EVT (TCP_EVT_INPUT, tc, 0, data_len, written);
 
   /* Update rcv_nxt */
-  if (PREDICT_TRUE (written == data_len))
+  tc->rcv_nxt += written;
+  tc->bytes_in += clib_min (written, data_len);
+  error = error_enqueued;
+ 
+  if (PREDICT_FALSE (written != data_len))
     {
-      tc->rcv_nxt += written;
-      tc->bytes_in += written;
-    }
-  /* If more data written than expected, account for out-of-order bytes. */
-  else if (written > data_len)
-    {
-      tc->rcv_nxt += written;
-      tc->bytes_in += data_len;
-      TCP_EVT (TCP_EVT_CC_INPUT, tc, data_len, written);
-    }
-  else if (written > 0)
-    {
-      /* We've written something but FIFO is probably full now */
-      tc->rcv_nxt += written;
-      tc->bytes_in += written;
-      error = TCP_ERROR_PARTIALLY_ENQUEUED;
-    }
-  else
-    {
-      /* Packet made it through for ack processing */
-      if (tc->rcv_wnd < tc->snd_mss)
-	return TCP_ERROR_ZERO_RWND;
-
-      return TCP_ERROR_FIFO_FULL;
+      /* If more data written than expected, account for out-of-order bytes. */
+      if (written > data_len)
+	TCP_EVT (TCP_EVT_CC_INPUT, tc, data_len, written);
+      else if (written > 0)
+	/* We've written something but FIFO is probably full now */
+	error = TCP_ERROR_PARTIALLY_ENQUEUED;
+      else			/* written == 0 */
+	{
+	  /* Packet made it through for ack processing */
+	  if (tc->rcv_wnd < tc->snd_mss)
+	    return TCP_ERROR_ZERO_RWND;
+	  return TCP_ERROR_FIFO_FULL;
+	}
     }
 
   /* Update SACK list if need be */
@@ -1207,9 +1201,10 @@ tcp_buffer_discard_bytes (vlib_buffer_t * b, u32 n_bytes_to_drop)
  *
  * It handles both in order or out-of-order data.
  */
-static int
-tcp_segment_rcv (tcp_worker_ctx_t * wrk, tcp_connection_t * tc,
-		 vlib_buffer_t * b, clib_memcpy_batch_t *batch)
+always_inline int
+tcp_segment_rcv_inline (tcp_worker_ctx_t * wrk, tcp_connection_t * tc,
+			vlib_buffer_t * b, clib_memcpy_batch_t *batch,
+			int known_in_order, int error_enqueued)
 {
   u32 error, n_bytes_to_drop, n_data_bytes;
 
@@ -1223,7 +1218,7 @@ tcp_segment_rcv (tcp_worker_ctx_t * wrk, tcp_connection_t * tc,
     b->current_length = n_data_bytes;
 
   /* Handle out-of-order data */
-  if (PREDICT_FALSE (vnet_buffer (b)->tcp.seq_number != tc->rcv_nxt))
+  if (!known_in_order && PREDICT_FALSE (vnet_buffer (b)->tcp.seq_number != tc->rcv_nxt))
     {
       /* Old sequence numbers allowed through because they overlapped
        * the rx window */
@@ -1265,12 +1260,17 @@ in_order:
 
   /* In order data, enqueue. Fifo figures out by itself if any out-of-order
    * segments can be enqueued after fifo tail offset changes. */
-  error = tcp_session_enqueue_data (tc, b, n_data_bytes, batch);
+  error = tcp_session_enqueue_data (tc, b, n_data_bytes, batch, error_enqueued);
   tcp_program_ack (tc);
 
 done:
   return error;
 }
+
+static int
+tcp_segment_rcv (tcp_worker_ctx_t * wrk, tcp_connection_t * tc,
+		 vlib_buffer_t * b, clib_memcpy_batch_t *batch)
+{ return tcp_segment_rcv_inline (wrk, tc, b, batch, /* known_in_order */ 0, TCP_ERROR_ENQUEUED); }
 
 typedef struct
 {
@@ -1399,10 +1399,7 @@ tcp_try_header_prediction (tcp_worker_ctx_t *wrk, tcp_connection_t *tc,
 
   u32 e = TCP_ERROR_ENQUEUED_FAST_PATH;
   if (vnet_buffer (b)->tcp.data_len)
-    {
-      u32 f = tcp_segment_rcv (wrk, tc, b, batch);
-      e = f != TCP_ERROR_ENQUEUED ? f : e;
-    }
+    e = tcp_segment_rcv_inline (wrk, tc, b, batch, /* known_in_order */ 1, e);
   *error = e;
 
   return 1;
