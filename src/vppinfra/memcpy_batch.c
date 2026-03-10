@@ -43,6 +43,9 @@ __clib_export __thread u8 memcpy_batch_prefetch_likely_profitable = 0;
 
 #if !defined(HAVE_EGO) || HAVE_EGO == 0
 
+__clib_export void clib_memcpy_batch_single (void *restrict dst, const void *restrict src, size_t n)
+{ clib_memcpy_fast (dst, src, n); }
+
 /* Fallback C implementation with no prefetching between calls.
    Meant to be overridden with another (e.g. Ego) implementation
    which does some smarter prefetching between calls. */

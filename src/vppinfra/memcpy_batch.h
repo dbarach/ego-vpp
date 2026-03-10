@@ -79,6 +79,7 @@ typedef struct clib_memcpy_batch_s {
 
 /* Override with prefetching version written in Go. */
 void clib_memcpy_batch_sync (clib_memcpy_batch_t *b);
+void clib_memcpy_batch_single (void *restrict dst, const void *restrict src, size_t n);
 
 #define CLIB_MEMCPY_NO_BATCH ((clib_memcpy_batch_t *) 0)
 
@@ -110,9 +111,9 @@ static_always_inline clib_memcpy_batch_call_t *
 clib_memcpy_batch (clib_memcpy_batch_t *b, void *restrict dst, const void *restrict src, size_t n)
 {
   clib_memcpy_batch_call_t * c = 0;
-  if (!b)
+  if (!b || b->n_calls_alloc < 2)
     {
-      clib_memcpy_fast (dst, src, n);
+      clib_memcpy_batch_single (dst, src, n);
     }
   else
     {
@@ -128,15 +129,6 @@ clib_memcpy_batch (clib_memcpy_batch_t *b, void *restrict dst, const void *restr
   return c;
 }
 
-static_always_inline clib_memcpy_batch_call_t *
-clib_memcpy_batch_last_call (clib_memcpy_batch_t *b)
-{
-  clib_memcpy_batch_call_t * c = 0;
-  if (b->n_calls > 0)
-    c = &b->calls[b->n_calls - 1];
-  return c;
-}
-
 typedef struct {
   void * dst;
   uword value;
@@ -145,7 +137,7 @@ typedef struct {
 static_always_inline void
 clib_memcpy_batch_atomic_store_release_u32 (clib_memcpy_batch_t *b, u32 *dst, u32 value)
 {
-  if (!b || b->n_calls == 0)    /* n calls 0 can happen via previous sync */
+  if (!b || b->n_calls == 0 || b->n_calls_alloc < 2)    /* n calls 0 can happen via previous sync */
     {
       clib_atomic_store_rel_n (dst, value);
     }
@@ -162,7 +154,7 @@ clib_memcpy_batch_atomic_store_release_u32 (clib_memcpy_batch_t *b, u32 *dst, u3
 static_always_inline void
 clib_memcpy_batch_atomic_store_release_u64 (clib_memcpy_batch_t *b, u64 *dst, u64 value)
 {
-  if (!b || b->n_calls == 0)    /* n calls 0 can happen via previous sync */
+  if (!b || b->n_calls == 0 || b->n_calls_alloc < 2)    /* n calls 0 can happen via previous sync */
     {
       clib_atomic_store_rel_n (dst, value);
     }

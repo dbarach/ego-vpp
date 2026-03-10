@@ -10,6 +10,7 @@ import (
 // #include <vppinfra/memcpy_batch.h>
 import "C"
 
+// unaligned cache line
 // +ego { align 1 }
 type uline vec[[cpu.CacheLineBytes]byte]
 
@@ -19,52 +20,107 @@ func (l *uline) ptr(i int) unsafe.Pointer { return unsafe.Add(unsafe.Pointer(l),
 // +ego always_inline
 func (l *uline) line(i, n int) *uline { return (*uline)(l.ptr(i + n*cpu.CacheLineBytes)) }
 
-// +ego always_inline
-func (dst *uline) copy(src *uline, n_this_stage int) {
-	const lb = cpu.CacheLineBytes
-	i := 0
-	n_left := n_this_stage
-	for n_left >= 4*lb {
-		*dst.line(i, 0) = *src.line(i, 0)
-		*dst.line(i, 1) = *src.line(i, 1)
-		*dst.line(i, 2) = *src.line(i, 2)
-		*dst.line(i, 3) = *src.line(i, 3)
-		i += 4 * lb
-		n_left -= 4 * lb
-	}
-	// Slow path for final incomplete chunk.
-	if n_left > 0 {
-		if n_left >= 2*lb {
-			*dst.line(i, 0) = *src.line(i, 0)
-			*dst.line(i, 1) = *src.line(i, 1)
-			i += 2 * lb
-			n_left -= 2 * lb
+const copy_small_max = 128 + 64
+
+func (dst *uline) copy_small(src *uline, n_bytes int) {
+	type (
+		v32 vec[[32]uint8] // +ego { align 1 }
+		m32 vec[[32]bool]
+		v64 vec[[64]uint8] // +ego { align 1 }
+		m64 vec[[64]bool]
+	)
+	mask := uint64(1)<<(n_bytes%64) - 1
+	if n_bytes < 64 {
+		if n_bytes <= 32 {
+			ok := m32(uint32(mask))
+			ifelse(ok, *(*v32)(dst.ptr(0))) = ifelse(ok, *(*v32)(src.ptr(0)))
+		} else {
+			ok := m64(mask)
+			ifelse(ok, *(*v64)(dst.ptr(0))) = ifelse(ok, *(*v64)(src.ptr(0)))
 		}
-		if n_left >= 1*lb {
-			*dst.line(i, 0) = *src.line(i, 0)
-			i += 1 * lb
-			n_left -= 1 * lb
-		}
-		for n_left >= 8 {
-			*(*uint64)(dst.ptr(i)) = *(*uint64)(src.ptr(i))
-			i += 8
-			n_left -= 8
-		}
-		if n_left >= 4 {
-			*(*uint32)(dst.ptr(i)) = *(*uint32)(src.ptr(i))
-			i += 4
-			n_left -= 4
-		}
-		if n_left >= 2 {
-			*(*uint16)(dst.ptr(i)) = *(*uint16)(src.ptr(i))
-			i += 2
-			n_left -= 2
-		}
-		if n_left >= 1 {
-			*(*uint8)(dst.ptr(i)) = *(*uint8)(src.ptr(i))
+	} else {
+		const n = 64
+		ok := m64(mask)
+		if n_bytes < 128 {
+			*(*v64)(dst.ptr(0)) = *(*v64)(src.ptr(0))
+			ifelse(ok, *(*v64)(dst.ptr(1 * n))) = ifelse(ok, *(*v64)(src.ptr(1 * n)))
+		} else {
+			*(*v64)(dst.ptr(0 * n)) = *(*v64)(src.ptr(0 * n))
+			*(*v64)(dst.ptr(1 * n)) = *(*v64)(src.ptr(1 * n))
+			ifelse(ok, *(*v64)(dst.ptr(2 * n))) = ifelse(ok, *(*v64)(src.ptr(2 * n)))
 		}
 	}
 }
+
+// +ego always_inline
+func (dst *uline) copy(src *uline, n_bytes int) {
+	if n_bytes < copy_small_max {
+		dst.copy_small(src, n_bytes)
+		return
+	}
+
+	const lb = cpu.CacheLineBytes
+	i := 0
+	n_left := n_bytes
+
+	// Copy 8 cache lines from unaligned source to aligned destination.
+	{
+		const n = 8
+		for n_left >= n*lb {
+			var l [4]uline
+			l[0], l[1], l[2], l[3] = *src.line(i, 0), *src.line(i, 1), *src.line(i, 2), *src.line(i, 3)
+			*dst.line(i, 0) = l[0]
+			*dst.line(i, 1) = l[1]
+			*dst.line(i, 2) = l[2]
+			*dst.line(i, 3) = l[3]
+			l[0], l[1], l[2], l[3] = *src.line(i, 4), *src.line(i, 5), *src.line(i, 6), *src.line(i, 7)
+			*dst.line(i, 4) = l[0]
+			*dst.line(i, 5) = l[1]
+			*dst.line(i, 6) = l[2]
+			*dst.line(i, 7) = l[3]
+			i += n * lb
+			n_left -= n * lb
+		}
+	}
+	{
+		const n = 4
+		for n_left >= n*lb {
+			*dst.line(i, 0) = *src.line(i, 0)
+			*dst.line(i, 1) = *src.line(i, 1)
+			*dst.line(i, 2) = *src.line(i, 2)
+			*dst.line(i, 3) = *src.line(i, 3)
+			i += n * lb
+			n_left -= n * lb
+		}
+	}
+
+	{
+		const n = 2
+		for n_left >= n*lb {
+			*dst.line(i, 0) = *src.line(i, 0)
+			*dst.line(i, 1) = *src.line(i, 1)
+			i += n * lb
+			n_left -= n * lb
+		}
+	}
+
+	{
+		const n = 1
+		for n_left >= n*lb {
+			*dst.line(i, 0) = *src.line(i, 0)
+			i += n * lb
+			n_left -= n * lb
+		}
+	}
+
+	if n_left > 0 {
+		(*uline)(dst.ptr(i)).copy_small((*uline)(src.ptr(i)), n_left)
+	}
+}
+
+// Go version of clib_memcpy_batch_single.
+// +ego { alias(clib_memcpy_batch_single) }
+func copy_batch_single(dst, src *uline, n_bytes int) { dst.copy(src, n_bytes) }
 
 type (
 	// Ordered as arguments to standard C memcpy.
@@ -173,10 +229,10 @@ func (cf mem_copy_config) copy(bs []mem_copy_buffer) {
 		if iter >= len(stages)-1 && cs.prefetch_done(cf) {
 			nb := int(cs.n_copy_bytes_left)
 			n_this_stage := min(bytes_per_stage, nb)
-			last_copy_this_buffer := n_this_stage == nb
+			is_last_copy_this_buffer := n_this_stage == nb
 			cs.n_copy_bytes_left = uint32(nb - n_this_stage)
 			cs.dst.copy(cs.src, n_this_stage)
-			if !last_copy_this_buffer {
+			if !is_last_copy_this_buffer {
 				// Advance src and dst for next copy stage.
 				cs.src = cs.src.line(0, lines_per_stage)
 				cs.dst = cs.dst.line(0, lines_per_stage)
@@ -234,16 +290,16 @@ func copy_batch_sync(b *C.clib_memcpy_batch_t) {
 				// Not worth prefetch into l1 (assume distance small between l1 and l2)
 				// Seems true for x86_64 not sure about others.  Probably machine dependent.
 				prefetch_options:            cpu.PrefetchOptions{Locality: cpu.PrefetchL2},
-				prefetch_stride:             1,
+				prefetch_stride:             4,
 				n_prefetch_bytes_per_buffer: ^uint(0),
-				n_copy_bytes_per_stage:      1 << 9,
+				n_copy_bytes_per_stage:      1 << 10,
 				batch:                       b,
 			}
 			cf.copy(bs)
 		} else {
 			cf := mem_copy_config{
 				enable_prefetch:        false,
-				n_copy_bytes_per_stage: 1 << 9,
+				n_copy_bytes_per_stage: 1 << 31, // copy everything with no prefetch
 				batch:                  b,
 			}
 			cf.copy(bs)
