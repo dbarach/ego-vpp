@@ -420,6 +420,16 @@ tcp_is_descheduled (tcp_connection_t * tc)
   return (transport_connection_is_descheduled (&tc->connection) ? 1 : 0);
 }
 
+always_inline void
+tcp_program_ack (tcp_connection_t * tc)
+{
+  if (!(tc->flags & TCP_CONN_SNDACK))
+    {
+      session_add_self_custom_tx_evt (&tc->connection, 1);
+      tc->flags |= TCP_CONN_SNDACK;
+    }
+}
+
 /**
  * Push TCP header to buffer
  *

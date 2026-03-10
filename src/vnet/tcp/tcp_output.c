@@ -1129,16 +1129,6 @@ tcp_send_ack (tcp_connection_t * tc)
 }
 
 void
-tcp_program_ack (tcp_connection_t * tc)
-{
-  if (!(tc->flags & TCP_CONN_SNDACK))
-    {
-      session_add_self_custom_tx_evt (&tc->connection, 1);
-      tc->flags |= TCP_CONN_SNDACK;
-    }
-}
-
-void
 tcp_program_dupack (tcp_connection_t * tc)
 {
   if (!(tc->flags & TCP_CONN_SNDACK))

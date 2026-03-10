@@ -313,7 +313,6 @@ void tcp_send_fin (tcp_connection_t * tc);
 void tcp_send_ack (tcp_connection_t * tc);
 void tcp_send_window_update_ack (tcp_connection_t * tc);
 
-void tcp_program_ack (tcp_connection_t * tc);
 void tcp_program_dupack (tcp_connection_t * tc);
 void tcp_program_retransmit (tcp_connection_t * tc);
 
