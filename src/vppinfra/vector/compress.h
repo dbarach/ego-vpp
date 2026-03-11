@@ -200,22 +200,8 @@ clib_compress_u32 (u32 *dst, u32 *src, u64 *mask, u32 n_elts)
       /* Would be nice to use masked store but I couldn't figure out
 	 how to call it from C. */
       u32 n_copy = min_log2_u64 (mask[0] + 1);
-#define _(n)					\
-      if (n_copy >= (n))			\
-	{					\
-	  clib_memcpy_u32 (dst, src, (n));	\
-	  src += (n);				\
-	  dst += (n);				\
-	  n_copy -= (n);			\
-	}
-      _ (32);
-      _ (16);
-      _ (8);
-      _ (4);
-      _ (2);
-      _ (1);
-#undef _
-      return dst - dst0;
+      clib_memcpy_u32 (dst, src, n_copy);
+      return dst + n_copy - dst0;
     }
 
   return clib_compress_u32_x64_masked (dst, src,
