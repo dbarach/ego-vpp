@@ -1008,7 +1008,7 @@ session_lookup_connection_wt4_index (u32 fib_index,
 	}
       *result = SESSION_LOOKUP_RESULT_NONE;
       *result_type = SESSION_LOOKUP_RESULT_ESTABLISHED;
-      s = session_get (kv4.value & 0xFFFFFFFFULL, thread_index);
+      s = session_get ((u32 ) kv4.value, thread_index);
       return s->connection_index;
     }
 
