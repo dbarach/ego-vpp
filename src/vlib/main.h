@@ -317,7 +317,7 @@ vlib_time_now (vlib_main_t * vm)
 always_inline f64
 vlib_time_now_ticks (vlib_main_t * vm, u64 n)
 {
-  return clib_time_now_internal (&vm->clib_time, n);
+  return clib_time_now_internal (&vm->clib_time, n) + vm->time_offset;
 }
 
 /* Busy wait for specified time. */

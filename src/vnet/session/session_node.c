@@ -2059,7 +2059,8 @@ session_queue_node_fn (vlib_main_t * vm, vlib_node_runtime_t * node,
 
   SESSION_EVT (SESSION_EVT_DISPATCH_START, wrk);
 
-  session_wrk_update_time (wrk, vlib_time_now (vm));
+  /* Avoid vlib_time_now since main loop just called it.  Cached value is practically vlib_time_now. */
+  session_wrk_update_time (wrk, vlib_time_now_ticks (vm, vm->cpu_time_last_node_dispatch));
 
   /*
    *  Update transport time
