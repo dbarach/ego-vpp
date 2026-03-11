@@ -2931,18 +2931,19 @@ tcp46_input_inline (vlib_main_t * vm, vlib_node_runtime_t * node,
   b = bufs;
   next = nexts;
 
-  while (n_left_from >= 4)
+  while (n_left_from >= 2)
     {
       u32 error0 = TCP_ERROR_NO_LISTENER, error1 = TCP_ERROR_NO_LISTENER;
       tcp_connection_t *tc0, *tc1;
 
-      {
-	vlib_prefetch_buffer_header (b[2], STORE);
-	CLIB_PREFETCH (b[2]->data, 2 * CLIB_CACHE_LINE_BYTES, LOAD);
+      if (n_left_from >= 4)
+	{
+	  vlib_prefetch_buffer_header (b[2], STORE);
+	  CLIB_PREFETCH (b[2]->data, 2 * CLIB_CACHE_LINE_BYTES, LOAD);
 
-	vlib_prefetch_buffer_header (b[3], STORE);
-	CLIB_PREFETCH (b[3]->data, 2 * CLIB_CACHE_LINE_BYTES, LOAD);
-      }
+	  vlib_prefetch_buffer_header (b[3], STORE);
+	  CLIB_PREFETCH (b[3]->data, 2 * CLIB_CACHE_LINE_BYTES, LOAD);
+	}
 
       tc0 = tcp_input_lookup_buffer (b[0], thread_index, &error0, is_ip4,
 				     is_nolookup);
