@@ -12,73 +12,6 @@
 #include <svm/fifo_segment.h>
 #include <vppinfra/cpu.h>
 
-#define F_INVALID_CPTR (fs_sptr_t) ~0ULL
-
-always_inline void
-svm_fifo_copy_to_chunk (svm_fifo_t *f, svm_fifo_chunk_t *c, u32 tail_idx,
-			const u8 *src, u32 len, fs_sptr_t *last,
-			clib_memcpy_batch_t *batch)
-{
-  u32 n_chunk;
-
-  ASSERT (f_pos_geq (tail_idx, c->start_byte)
-	  && f_pos_lt (tail_idx, c->start_byte + c->length));
-
-  tail_idx -= c->start_byte;
-  n_chunk = c->length - tail_idx;
-  if (n_chunk <= len)
-    {
-      u32 to_copy = len;
-      clib_memcpy_batch (batch, &c->data[tail_idx], src, n_chunk);
-      c = f_cptr (f, c->next);
-      while ((to_copy -= n_chunk))
-	{
-	  n_chunk = clib_min (c->length, to_copy);
-	  clib_memcpy_batch (batch, &c->data[0], src + (len - to_copy), n_chunk);
-	  c = c->length <= to_copy ? f_cptr (f, c->next) : c;
-	}
-      if (*last)
-	*last = f_csptr (f, c);
-    }
-  else
-    {
-      clib_memcpy_batch (batch, &c->data[tail_idx], src, len);
-    }
-}
-
-always_inline void
-svm_fifo_copy_from_chunk (svm_fifo_t *f, svm_fifo_chunk_t *c, u32 head_idx,
-			  u8 *dst, u32 len, fs_sptr_t *last, clib_memcpy_batch_t *batch)
-{
-  u32 n_chunk;
-
-  ASSERT (f_pos_geq (head_idx, c->start_byte)
-	  && f_pos_lt (head_idx, c->start_byte + c->length));
-
-  head_idx -= c->start_byte;
-  n_chunk = c->length - head_idx;
-  if (n_chunk <= len)
-    {
-      u32 to_copy = len;
-      clib_memcpy_batch (batch, dst, &c->data[head_idx], n_chunk);
-      c = f_cptr (f, c->next);
-      while ((to_copy -= n_chunk))
-	{
-	  clib_mem_unpoison (c, sizeof (*c));
-	  clib_mem_unpoison (c->data, c->length);
-	  n_chunk = clib_min (c->length, to_copy);
-	  clib_memcpy_batch (batch, dst + (len - to_copy), &c->data[0], n_chunk);
-	  c = c->length <= to_copy ? f_cptr (f, c->next) : c;
-	}
-      if (*last)
-	*last = f_csptr (f, c);
-    }
-  else
-    {
-      clib_memcpy_batch (batch, dst, &c->data[head_idx], len);
-    }
-}
-
 static inline u32
 ooo_segment_end_pos (ooo_segment_t * s)
 {
@@ -280,7 +213,7 @@ check_tail:
  * Removes segments that can now be enqueued because the fifo's tail has
  * advanced. Returns the number of bytes added to tail.
  */
-static int
+int
 ooo_segment_try_collect (svm_fifo_t * f, u32 n_bytes_enqueued, u32 * tail)
 {
   u32 s_index, s_end, bytes = 0;
@@ -569,7 +502,7 @@ f_find_chunk_rbtree (rb_tree_t * rt, u32 pos)
   return 0;
 }
 
-static void
+void
 f_update_ooo_enq (svm_fifo_t * f, u32 start_pos, u32 end_pos)
 {
   rb_tree_t *rt = &f->ooo_enq_lookup;
@@ -618,7 +551,7 @@ f_update_ooo_enq (svm_fifo_t * f, u32 start_pos, u32 end_pos)
   while (!f_chunk_includes_pos (c, end_pos));
 }
 
-static void
+void
 f_update_ooo_deq (svm_fifo_t * f, u32 start_pos, u32 end_pos)
 {
   rb_tree_t *rt = &f->ooo_deq_lookup;
@@ -667,7 +600,7 @@ f_update_ooo_deq (svm_fifo_t * f, u32 start_pos, u32 end_pos)
   while (!f_chunk_includes_pos (c, end_pos));
 }
 
-static svm_fifo_chunk_t *
+svm_fifo_chunk_t *
 f_lookup_clear_enq_chunks (svm_fifo_t * f, svm_fifo_chunk_t * start,
 			   u32 end_pos)
 {
@@ -773,7 +706,7 @@ svm_fifo_overwrite_head_batch (svm_fifo_t * f, u8 * src, u32 len, clib_memcpy_ba
     }
 }
 
-static int
+int
 f_try_chunk_alloc (svm_fifo_t * f, u32 head, u32 tail, u32 len)
 {
   svm_fifo_chunk_t *c, *cur, *prev;
@@ -809,58 +742,6 @@ f_try_chunk_alloc (svm_fifo_t * f, u32 head, u32 tail, u32 len)
     f->shr->tail_chunk = f_csptr (f, c);
 
   return 0;
-}
-
-int
-svm_fifo_enqueue_batch (svm_fifo_t * f, u32 len, const u8 * src, clib_memcpy_batch_t *batch)
-{
-  u32 tail, head, free_count;
-  svm_fifo_chunk_t *old_tail_c;
-
-  f->ooos_newest = OOO_SEGMENT_INVALID_INDEX;
-
-  f_load_head_tail_prod (f, &head, &tail);
-
-  /* free space in fifo can only increase during enqueue: SPSC */
-  free_count = f_free_count (f, head, tail);
-
-  if (PREDICT_FALSE (free_count == 0))
-    return SVM_FIFO_EFULL;
-
-  /* number of bytes we're going to copy */
-  len = clib_min (free_count, len);
-
-  if (f_pos_gt (tail + len, f_chunk_end (f_end_cptr (f))))
-    {
-      if (PREDICT_FALSE (f_try_chunk_alloc (f, head, tail, len)))
-	{
-	  len = f_chunk_end (f_end_cptr (f)) - tail;
-	  if (!len)
-	    return SVM_FIFO_EGROW;
-	}
-    }
-
-  old_tail_c = f_tail_cptr (f);
-
-  svm_fifo_copy_to_chunk (f, old_tail_c, tail, src, len, &f->shr->tail_chunk, batch);
-  tail = tail + len;
-
-  svm_fifo_trace_add (f, head, len, 2);
-
-  /* collect out-of-order segments */
-  if (PREDICT_FALSE (f->ooos_list_head != OOO_SEGMENT_INVALID_INDEX))
-    {
-      len += ooo_segment_try_collect (f, len, &tail);
-      /* Tail chunk might've changed even if nothing was collected */
-      f->shr->tail_chunk =
-	f_csptr (f, f_lookup_clear_enq_chunks (f, old_tail_c, tail));
-      f->ooo_enq = 0;
-    }
-
-  /* store-rel: producer owned index (paired with load-acq in consumer) */
-  f_store_prod_tail (f, tail, batch);
-
-  return len;
 }
 
 /**
@@ -1102,33 +983,6 @@ svm_fifo_dequeue_batch (svm_fifo_t * f, u32 len, u8 * dst, clib_memcpy_batch_t *
 
   f_store_cons_head (f, head, batch);
 
-  return len;
-}
-
-int
-svm_fifo_peek_batch (svm_fifo_t * f, u32 offset, u32 len, u8 * dst, clib_memcpy_batch_t *batch)
-{
-  u32 tail, head, cursize, head_idx;
-  fs_sptr_t last = F_INVALID_CPTR;
-
-  f_load_head_tail_cons (f, &head, &tail);
-
-  /* current size of fifo can only increase during peek: SPSC */
-  cursize = f_cursize (f, head, tail);
-
-  if (PREDICT_FALSE (cursize <= offset))
-    return offset ? 0 : SVM_FIFO_EEMPTY;
-
-  len = clib_min (cursize - offset, len);
-  head_idx = head + offset;
-
-  clib_mem_unpoison (f->ooo_deq, sizeof (*f->ooo_deq));
-  if (!f->ooo_deq || !f_chunk_includes_pos (f->ooo_deq, head_idx))
-    f_update_ooo_deq (f, head_idx, head_idx + len);
-
-  svm_fifo_copy_from_chunk (f, f->ooo_deq, head_idx, dst, len, &last, batch);
-  if (last != F_INVALID_CPTR)
-    f->ooo_deq = f_cptr (f, last);
   return len;
 }
 

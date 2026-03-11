@@ -224,6 +224,80 @@ f_csptr_link (svm_fifo_t *f, fs_sptr_t cp, svm_fifo_chunk_t *c)
   fs_chunk_ptr (f->fs_hdr, cp)->next = fs_chunk_sptr (f->fs_hdr, c);
 }
 
+/* Slow path declarations. */
+void f_update_ooo_deq (svm_fifo_t * f, u32 start_pos, u32 end_pos);
+void f_update_ooo_enq (svm_fifo_t * f, u32 start_pos, u32 end_pos);
+int f_try_chunk_alloc (svm_fifo_t * f, u32 head, u32 tail, u32 len);
+svm_fifo_chunk_t * f_lookup_clear_enq_chunks (svm_fifo_t * f, svm_fifo_chunk_t * start, u32 end_pos);
+int ooo_segment_try_collect (svm_fifo_t * f, u32 n_bytes_enqueued, u32 * tail);
+
+#define F_INVALID_CPTR (fs_sptr_t) ~0ULL
+
+always_inline void
+svm_fifo_copy_to_chunk (svm_fifo_t *f, svm_fifo_chunk_t *c, u32 tail_idx,
+			const u8 *src, u32 len, fs_sptr_t *last,
+			clib_memcpy_batch_t *batch)
+{
+  u32 n_chunk;
+
+  ASSERT (f_pos_geq (tail_idx, c->start_byte)
+	  && f_pos_lt (tail_idx, c->start_byte + c->length));
+
+  tail_idx -= c->start_byte;
+  n_chunk = c->length - tail_idx;
+  if (n_chunk <= len)
+    {
+      u32 to_copy = len;
+      clib_memcpy_batch (batch, &c->data[tail_idx], src, n_chunk);
+      c = f_cptr (f, c->next);
+      while ((to_copy -= n_chunk))
+	{
+	  n_chunk = clib_min (c->length, to_copy);
+	  clib_memcpy_batch (batch, &c->data[0], src + (len - to_copy), n_chunk);
+	  c = c->length <= to_copy ? f_cptr (f, c->next) : c;
+	}
+      if (*last)
+	*last = f_csptr (f, c);
+    }
+  else
+    {
+      clib_memcpy_batch (batch, &c->data[tail_idx], src, len);
+    }
+}
+
+always_inline void
+svm_fifo_copy_from_chunk (svm_fifo_t *f, svm_fifo_chunk_t *c, u32 head_idx,
+			  u8 *dst, u32 len, fs_sptr_t *last, clib_memcpy_batch_t *batch)
+{
+  u32 n_chunk;
+
+  ASSERT (f_pos_geq (head_idx, c->start_byte)
+	  && f_pos_lt (head_idx, c->start_byte + c->length));
+
+  head_idx -= c->start_byte;
+  n_chunk = c->length - head_idx;
+  if (n_chunk <= len)
+    {
+      u32 to_copy = len;
+      clib_memcpy_batch (batch, dst, &c->data[head_idx], n_chunk);
+      c = f_cptr (f, c->next);
+      while ((to_copy -= n_chunk))
+	{
+	  clib_mem_unpoison (c, sizeof (*c));
+	  clib_mem_unpoison (c->data, c->length);
+	  n_chunk = clib_min (c->length, to_copy);
+	  clib_memcpy_batch (batch, dst + (len - to_copy), &c->data[0], n_chunk);
+	  c = c->length <= to_copy ? f_cptr (f, c->next) : c;
+	}
+      if (*last)
+	*last = f_csptr (f, c);
+    }
+  else
+    {
+      clib_memcpy_batch (batch, dst, &c->data[head_idx], len);
+    }
+}
+
 /**
  * Create fifo of requested size
  *
@@ -333,7 +407,57 @@ void svm_fifo_clone (svm_fifo_t * df, svm_fifo_t * sf);
  * @param src	buffer from where to copy the data
  * @return	number of contiguous bytes that can be consumed or error
  */
-int svm_fifo_enqueue_batch (svm_fifo_t * f, u32 len, const u8 * src, clib_memcpy_batch_t *batch);
+always_inline int
+svm_fifo_enqueue_batch (svm_fifo_t * f, u32 len, const u8 * src, clib_memcpy_batch_t *batch)
+{
+  u32 tail, head, free_count;
+  svm_fifo_chunk_t *old_tail_c;
+
+  f->ooos_newest = OOO_SEGMENT_INVALID_INDEX;
+
+  f_load_head_tail_prod (f, &head, &tail);
+
+  /* free space in fifo can only increase during enqueue: SPSC */
+  free_count = f_free_count (f, head, tail);
+
+  if (PREDICT_FALSE (free_count == 0))
+    return SVM_FIFO_EFULL;
+
+  /* number of bytes we're going to copy */
+  len = clib_min (free_count, len);
+
+  if (f_pos_gt (tail + len, f_chunk_end (f_end_cptr (f))))
+    {
+      if (PREDICT_FALSE (f_try_chunk_alloc (f, head, tail, len)))
+	{
+	  len = f_chunk_end (f_end_cptr (f)) - tail;
+	  if (!len)
+	    return SVM_FIFO_EGROW;
+	}
+    }
+
+  old_tail_c = f_tail_cptr (f);
+
+  svm_fifo_copy_to_chunk (f, old_tail_c, tail, src, len, &f->shr->tail_chunk, batch);
+  tail = tail + len;
+
+  svm_fifo_trace_add (f, head, len, 2);
+
+  /* collect out-of-order segments */
+  if (PREDICT_FALSE (f->ooos_list_head != OOO_SEGMENT_INVALID_INDEX))
+    {
+      len += ooo_segment_try_collect (f, len, &tail);
+      /* Tail chunk might've changed even if nothing was collected */
+      f->shr->tail_chunk =
+	f_csptr (f, f_lookup_clear_enq_chunks (f, old_tail_c, tail));
+      f->ooo_enq = 0;
+    }
+
+  /* store-rel: producer owned index (paired with load-acq in consumer) */
+  f_store_prod_tail (f, tail, batch);
+
+  return len;
+}
 
 always_inline int
 svm_fifo_enqueue (svm_fifo_t * f, u32 len, const u8 * src)
@@ -433,7 +557,32 @@ svm_fifo_dequeue (svm_fifo_t * f, u32 len, u8 * dst)
  * @param dst		buffer to where to dequeue the data
  * @return		number of bytes peeked
  */
-int svm_fifo_peek_batch (svm_fifo_t * f, u32 offset, u32 len, u8 * dst, clib_memcpy_batch_t *batch);
+always_inline int
+svm_fifo_peek_batch (svm_fifo_t * f, u32 offset, u32 len, u8 * dst, clib_memcpy_batch_t *batch)
+{
+  u32 tail, head, cursize, head_idx;
+  fs_sptr_t last = F_INVALID_CPTR;
+
+  f_load_head_tail_cons (f, &head, &tail);
+
+  /* current size of fifo can only increase during peek: SPSC */
+  cursize = f_cursize (f, head, tail);
+
+  if (PREDICT_FALSE (cursize <= offset))
+    return offset ? 0 : SVM_FIFO_EEMPTY;
+
+  len = clib_min (cursize - offset, len);
+  head_idx = head + offset;
+
+  clib_mem_unpoison (f->ooo_deq, sizeof (*f->ooo_deq));
+  if (!f->ooo_deq || !f_chunk_includes_pos (f->ooo_deq, head_idx))
+    f_update_ooo_deq (f, head_idx, head_idx + len);
+
+  svm_fifo_copy_from_chunk (f, f->ooo_deq, head_idx, dst, len, &last, batch);
+  if (last != F_INVALID_CPTR)
+    f->ooo_deq = f_cptr (f, last);
+  return len;
+}
 
 always_inline int svm_fifo_peek (svm_fifo_t * f, u32 offset, u32 len, u8 * dst)
 { return svm_fifo_peek_batch (f, offset, len, dst, CLIB_MEMCPY_NO_BATCH); }
@@ -929,6 +1078,13 @@ static inline void
 svm_fifo_set_deq_thresh (svm_fifo_t *f, u32 thresh)
 {
   f->signals->deq_thresh = thresh;
+}
+
+always_inline void
+svm_fifo_prefetch (svm_fifo_t *f)
+{
+  CLIB_PREFETCH (f, sizeof (f[0]), LOAD);
+  CLIB_PREFETCH (f->shr, sizeof (f->shr[0]), LOAD);
 }
 
 #endif /* __included_ssvm_fifo_h__ */
