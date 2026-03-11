@@ -18,9 +18,18 @@ type uline vec[[cpu.CacheLineBytes]byte]
 func (l *uline) ptr(i int) unsafe.Pointer { return unsafe.Add(unsafe.Pointer(l), i) }
 
 // +ego always_inline
-func (l *uline) line(i, n int) *uline { return (*uline)(l.ptr(i + n*cpu.CacheLineBytes)) }
+func (l *uline) ptr_line(i int) *uline { return (*uline)(l.ptr(i)) }
 
-const copy_small_max = 128 + 64
+// +ego always_inline
+func (l *uline) line(i, n int) *uline { return l.ptr_line(i + n*cpu.CacheLineBytes) }
+
+// aligned cache line
+type aline vec[[cpu.CacheLineBytes]byte]
+
+// +ego always_inline
+func (l *uline) a() *aline { return (*aline)(l) }
+
+const copy_small_max = 256
 
 func (dst *uline) copy_small(src *uline, n_bytes int) {
 	type (
@@ -41,14 +50,18 @@ func (dst *uline) copy_small(src *uline, n_bytes int) {
 	} else {
 		const n = 64
 		ok := m64(mask)
+		*(*v64)(dst.ptr(0 * n)) = *(*v64)(src.ptr(0 * n))
 		if n_bytes < 128 {
-			*(*v64)(dst.ptr(0)) = *(*v64)(src.ptr(0))
 			ifelse(ok, *(*v64)(dst.ptr(1 * n))) = ifelse(ok, *(*v64)(src.ptr(1 * n)))
-		} else {
-			*(*v64)(dst.ptr(0 * n)) = *(*v64)(src.ptr(0 * n))
-			*(*v64)(dst.ptr(1 * n)) = *(*v64)(src.ptr(1 * n))
-			ifelse(ok, *(*v64)(dst.ptr(2 * n))) = ifelse(ok, *(*v64)(src.ptr(2 * n)))
+			return
 		}
+		*(*v64)(dst.ptr(1 * n)) = *(*v64)(src.ptr(1 * n))
+		if n_bytes < 128+64 {
+			ifelse(ok, *(*v64)(dst.ptr(2 * n))) = ifelse(ok, *(*v64)(src.ptr(2 * n)))
+			return
+		}
+		*(*v64)(dst.ptr(2 * n)) = *(*v64)(src.ptr(2 * n))
+		ifelse(ok, *(*v64)(dst.ptr(3 * n))) = ifelse(ok, *(*v64)(src.ptr(3 * n)))
 	}
 }
 
@@ -59,7 +72,6 @@ func (dst *uline) copy(src *uline, n_bytes int) {
 		return
 	}
 
-	const lb = cpu.CacheLineBytes
 	i := 0
 	n_left := n_bytes
 
@@ -114,13 +126,94 @@ func (dst *uline) copy(src *uline, n_bytes int) {
 	}
 
 	if n_left > 0 {
+		dst.ptr_line(i).copy_small(src.ptr_line(i), n_left)
+	}
+}
+
+// +ego always_inline
+func (dst *uline) copy_aligned_dst(src *uline, n_bytes int) {
+	if n_bytes < copy_small_max {
+		dst.copy_small(src, n_bytes)
+		return
+	}
+
+	i := 0
+	n_left := n_bytes
+
+	// Copy 8 cache lines from unaligned source to aligned destination.
+	{
+		const n = 8
+		for n_left >= n*lb {
+			var l [4]uline
+			l[0], l[1], l[2], l[3] = *src.line(i, 0), *src.line(i, 1), *src.line(i, 2), *src.line(i, 3)
+			*dst.line(i, 0).a() = aline(l[0])
+			*dst.line(i, 1).a() = aline(l[1])
+			*dst.line(i, 2).a() = aline(l[2])
+			*dst.line(i, 3).a() = aline(l[3])
+			l[0], l[1], l[2], l[3] = *src.line(i, 4), *src.line(i, 5), *src.line(i, 6), *src.line(i, 7)
+			*dst.line(i, 4).a() = aline(l[0])
+			*dst.line(i, 5).a() = aline(l[1])
+			*dst.line(i, 6).a() = aline(l[2])
+			*dst.line(i, 7).a() = aline(l[3])
+			i += n * lb
+			n_left -= n * lb
+		}
+	}
+	{
+		const n = 4
+		for n_left >= n*lb {
+			*dst.line(i, 0).a() = aline(*src.line(i, 0))
+			*dst.line(i, 1).a() = aline(*src.line(i, 1))
+			*dst.line(i, 2).a() = aline(*src.line(i, 2))
+			*dst.line(i, 3).a() = aline(*src.line(i, 3))
+			i += n * lb
+			n_left -= n * lb
+		}
+	}
+
+	{
+		const n = 2
+		for n_left >= n*lb {
+			*dst.line(i, 0).a() = aline(*src.line(i, 0))
+			*dst.line(i, 1).a() = aline(*src.line(i, 1))
+			i += n * lb
+			n_left -= n * lb
+		}
+	}
+
+	{
+		const n = 1
+		for n_left >= n*lb {
+			*dst.line(i, 0).a() = aline(*src.line(i, 0))
+			i += n * lb
+			n_left -= n * lb
+		}
+	}
+
+	if n_left > 0 {
 		(*uline)(dst.ptr(i)).copy_small((*uline)(src.ptr(i)), n_left)
 	}
 }
 
 // Go version of clib_memcpy_batch_single.
 // +ego { alias(clib_memcpy_batch_single) }
-func copy_batch_single(dst, src *uline, n_bytes int) { dst.copy(src, n_bytes) }
+func copy_batch_single(dst, src *uline, n_bytes int) {
+	if true {
+		dst.copy(src, n_bytes)
+	} else {
+		// Align destination address.  Slower by a bit compared with unaligned version.
+		if r := uintptr(unsafe.Pointer(dst)) % lb; r != 0 {
+			n := min(int(lb-r), n_bytes)
+			dst.copy_small(src, n)
+			dst = dst.ptr_line(n)
+			src = src.ptr_line(n)
+			n_bytes -= n
+		}
+		if n_bytes > 0 {
+			dst.copy_aligned_dst(src, n_bytes)
+		}
+	}
+}
 
 type (
 	// Ordered as arguments to standard C memcpy.
@@ -176,13 +269,14 @@ func (s *mem_copy_stage) prefetch_done(cf mem_copy_config) bool {
 	return !(cf.enable_prefetch && int(s.n_bytes_prefetched) < s.n_prefetch_bytes(cf))
 }
 
+const lb = cpu.CacheLineBytes
+
 // +ego { always_inline }
 func (cf mem_copy_config) copy(bs []mem_copy_buffer) {
 	nb := uint32(len(bs))
 	if nb == 0 {
 		return
 	}
-	const lb = cpu.CacheLineBytes
 	bytes_per_stage := int(cf.n_copy_bytes_per_stage)
 	lines_per_stage := (bytes_per_stage + lb - 1) / lb
 	var stages_ [32]mem_copy_stage
