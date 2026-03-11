@@ -256,6 +256,27 @@ tcp_update_time_now (tcp_worker_ctx_t *wrk)
   tcp_set_time_now (wrk, now);
 }
 
+always_inline transport_connection_t *
+tcp_session_lookup_get_connection (u32 index, u32 thread, session_lookup_result_type_t result_type)
+{
+  tcp_connection_t *tc;
+  switch (result_type)
+    {
+    case SESSION_LOOKUP_RESULT_ESTABLISHED:
+      tc = tcp_connection_get (index, thread);
+      break;
+    case SESSION_LOOKUP_RESULT_HALF_OPEN:
+      tc = tcp_half_open_connection_get (index);
+      break;
+    case SESSION_LOOKUP_RESULT_LISTENER:
+      tc = pool_elt_at_index (tcp_main.listener_pool, index);
+      break;
+    case SESSION_LOOKUP_RESULT_INVALID:
+      return 0;
+    }
+  return &tc->connection;
+}
+
 always_inline tcp_connection_t *
 tcp_input_lookup_buffer (vlib_buffer_t * b, u8 thread_index, u32 * error,
 			 u8 is_ip4, u8 is_nolookup)
@@ -288,11 +309,16 @@ tcp_input_lookup_buffer (vlib_buffer_t * b, u8 thread_index, u32 * error,
 	}
 
       if (!is_nolookup)
-	tc = session_lookup_connection_wt4 (fib_index, &ip4->dst_address,
-					    &ip4->src_address, tcp->dst_port,
-					    tcp->src_port,
-					    TRANSPORT_PROTO_TCP, thread_index,
-					    &result);
+	{
+	  session_lookup_result_type_t result_type;
+	  u32 index;
+	  index = session_lookup_connection_wt4_index (fib_index, &ip4->dst_address,
+						       &ip4->src_address, tcp->dst_port,
+						       tcp->src_port,
+						       TRANSPORT_PROTO_TCP, thread_index,
+						       &result, &result_type);
+	  tc = tcp_session_lookup_get_connection (index, thread_index, result_type);
+	}
     }
   else
     {

@@ -953,9 +953,36 @@ session_lookup_half_open_connection (u64 handle, u8 proto, u8 is_ip4)
  */
 transport_connection_t *
 session_lookup_connection_wt4 (u32 fib_index, ip4_address_t *lcl,
-			       ip4_address_t *rmt, u16 lcl_port, u16 rmt_port,
-			       u8 proto, clib_thread_index_t thread_index,
-			       u8 *result)
+				ip4_address_t *rmt, u16 lcl_port, u16 rmt_port,
+				u8 proto, clib_thread_index_t thread_index,
+				u8 *result)
+{
+  session_lookup_result_type_t result_type;
+  u32 index;
+  index = session_lookup_connection_wt4_index (fib_index, lcl, rmt, lcl_port, rmt_port,
+					       proto, thread_index, result, &result_type);
+  switch (result_type)
+    {
+    case SESSION_LOOKUP_RESULT_ESTABLISHED:
+      return transport_get_connection (proto, index, thread_index);
+    case SESSION_LOOKUP_RESULT_HALF_OPEN:
+      return transport_get_half_open (proto, index);
+    case SESSION_LOOKUP_RESULT_LISTENER:
+      return transport_get_listener (proto, index);
+    case SESSION_LOOKUP_RESULT_INVALID:
+      break;
+    }
+
+  return 0;
+}
+
+/* Lower-level version of above for use by fast path. */
+u32
+session_lookup_connection_wt4_index (u32 fib_index,
+				     ip4_address_t *lcl, ip4_address_t *rmt,
+				     u16 lcl_port, u16 rmt_port,
+				     u8 proto, clib_thread_index_t thread_index,
+				     u8 *result, session_lookup_result_type_t *result_type)
 {
   session_table_t *st;
   session_kv4_t kv4;
@@ -977,11 +1004,12 @@ session_lookup_connection_wt4 (u32 fib_index, ip4_address_t *lcl,
       if (PREDICT_FALSE ((u32) (kv4.value >> 32) != thread_index))
 	{
 	  *result = SESSION_LOOKUP_RESULT_WRONG_THREAD;
-	  return 0;
+	  goto fail;
 	}
+      *result = SESSION_LOOKUP_RESULT_NONE;
+      *result_type = SESSION_LOOKUP_RESULT_ESTABLISHED;
       s = session_get (kv4.value & 0xFFFFFFFFULL, thread_index);
-      return transport_get_connection (proto, s->connection_index,
-				       thread_index);
+      return s->connection_index;
     }
 
   /*
@@ -989,7 +1017,11 @@ session_lookup_connection_wt4 (u32 fib_index, ip4_address_t *lcl,
    */
   rv = clib_bihash_search_inline_16_8 (&st->v4_half_open_hash, &kv4);
   if (rv == 0)
-    return transport_get_half_open (proto, kv4.value & 0xFFFFFFFF);
+    {
+      *result = SESSION_LOOKUP_RESULT_NONE;
+      *result_type = SESSION_LOOKUP_RESULT_HALF_OPEN;
+      return (u32) kv4.value;
+    }
 
   if (st->srtg_handle != SESSION_SRTG_HANDLE_INVALID)
     {
@@ -1003,12 +1035,16 @@ session_lookup_connection_wt4 (u32 fib_index, ip4_address_t *lcl,
 	  if (action_index == SESSION_RULES_TABLE_ACTION_DROP)
 	    {
 	      *result = SESSION_LOOKUP_RESULT_FILTERED;
-	      return 0;
+	      goto fail;
 	    }
 	  if ((s = session_lookup_action_to_session (action_index,
 						     FIB_PROTOCOL_IP4, proto)))
-	    return transport_get_listener (proto, s->connection_index);
-	  return 0;
+	    {
+	      *result = SESSION_LOOKUP_RESULT_NONE;
+	      *result_type = SESSION_LOOKUP_RESULT_LISTENER;
+	      return s->connection_index;
+	    }
+	  goto fail;
 	}
     }
 
@@ -1017,8 +1053,14 @@ session_lookup_connection_wt4 (u32 fib_index, ip4_address_t *lcl,
    */
   s = session_lookup_listener4_i (st, lcl, lcl_port, proto, 1);
   if (s)
-    return transport_get_listener (proto, s->connection_index);
+    {
+      *result_type = SESSION_LOOKUP_RESULT_LISTENER;
+      return s->connection_index;
+    }
 
+ fail:
+  *result = SESSION_LOOKUP_RESULT_NONE;
+  *result_type = SESSION_LOOKUP_RESULT_INVALID;
   return 0;
 }
 

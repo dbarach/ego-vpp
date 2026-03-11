@@ -21,6 +21,14 @@ typedef enum session_lookup_result_
   SESSION_LOOKUP_RESULT_FILTERED
 } session_lookup_result_t;
 
+typedef enum
+{
+  SESSION_LOOKUP_RESULT_INVALID,
+  SESSION_LOOKUP_RESULT_ESTABLISHED,
+  SESSION_LOOKUP_RESULT_HALF_OPEN,
+  SESSION_LOOKUP_RESULT_LISTENER,
+} session_lookup_result_type_t;
+
 typedef struct session_lookup_main_
 {
   clib_spinlock_t st_alloc_lock;
@@ -36,6 +44,10 @@ session_t *session_lookup_safe6 (u32 fib_index, ip6_address_t * lcl,
 transport_connection_t *session_lookup_connection_wt4 (
   u32 fib_index, ip4_address_t *lcl, ip4_address_t *rmt, u16 lcl_port,
   u16 rmt_port, u8 proto, clib_thread_index_t thread_index, u8 *is_filtered);
+u32 session_lookup_connection_wt4_index (
+  u32 fib_index, ip4_address_t *lcl, ip4_address_t *rmt, u16 lcl_port,
+  u16 rmt_port, u8 proto, clib_thread_index_t thread_index, u8 *is_filtered,
+  session_lookup_result_type_t *type);
 transport_connection_t *session_lookup_connection4 (u32 fib_index,
 						    ip4_address_t * lcl,
 						    ip4_address_t * rmt,

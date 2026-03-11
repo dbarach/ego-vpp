@@ -1660,15 +1660,17 @@ tcp_lookup_connection (u32 fib_index, vlib_buffer_t * b, u8 thread_index,
   if (is_ip4)
     {
       ip4_header_t *ip4;
+      session_lookup_result_type_t result_type;
       ip4 = vlib_buffer_get_current (b);
       tcp = ip4_next_header (ip4);
-      tconn = session_lookup_connection_wt4 (fib_index,
-					     &ip4->dst_address,
-					     &ip4->src_address,
-					     tcp->dst_port,
-					     tcp->src_port,
-					     TRANSPORT_PROTO_TCP,
-					     thread_index, &is_filtered);
+      u32 index = session_lookup_connection_wt4_index (fib_index,
+						       &ip4->dst_address,
+						       &ip4->src_address,
+						       tcp->dst_port,
+						       tcp->src_port,
+						       TRANSPORT_PROTO_TCP,
+						       thread_index, &is_filtered, &result_type);
+      tconn = tcp_session_lookup_get_connection (index, thread_index, result_type);
       tc = tcp_get_connection_from_transport (tconn);
       ASSERT (tcp_lookup_is_valid (tc, b, tcp));
     }
