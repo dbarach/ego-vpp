@@ -106,9 +106,6 @@ typedef struct _transport_connection
   clib_thread_index_t thread_index; /**< Worker-thread index */
   transport_connection_flags_t flags; /**< Transport specific flags */
 
-  /*fib_node_index_t rmt_fei;
-     dpo_id_t rmt_dpo; */
-
   spacer_t pacer;		/**< Simple transport pacer */
 
 #if TRANSPORT_DEBUG
