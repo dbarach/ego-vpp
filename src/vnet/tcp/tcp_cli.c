@@ -193,10 +193,10 @@ format_tcp_vars (u8 * s, va_list * args)
 	      tc->rcv_opts.tsecr, tc->tsecr_last_ack,
 	      tcp_time_tstamp (tc->c_thread_index) - tc->tsval_recent_age);
   s = format (s, " snd_mss %u\n", tc->snd_mss);
-  s = format (s, " rto %u rto_boff %u srtt %.1f us %.3f rttvar %.1f",
-	      tc->rto / 1000, tc->rto_boff, tc->srtt / 1000.0,
-	      tc->mrtt_us * 1e3, tc->rttvar / 1000.0);
-  s = format (s, " rtt_ts %.4f rtt_seq %u\n", tc->rtt_ts,
+  s = format (s, " rto %.2e rto_boff %.2e srtt %.2e mrtt_us %.2e rttvar %.2e",
+	      (f64) tc->rto * TCP_TICK, (f64) tc->rto_boff * TCP_TICK,
+	      (f64) tc->srtt * TCP_TICK, tc->mrtt_us, (f64) tc->rttvar * TCP_TICK);
+  s = format (s, " rtt_ts %.2e rtt_seq %u (times in seconds)\n", tc->rtt_ts,
 	      tc->rtt_seq - tc->iss);
   s = format (s, " next_node %u opaque 0x%x fib_index %u sw_if_index %d\n",
 	      tc->next_node_index, tc->next_node_opaque, tc->c_fib_index,
