@@ -701,12 +701,6 @@ format_float (u8 * s, f64 x, uword n_fraction_digits, uword output_style)
       sign = 1;
     }
 
-  /* Round x to closest value with n_fraction_digits digits after '.' */
-  f64 rounding = 0.5;
-  for (uword i = 0; i < n_fraction_digits; i++)
-    rounding *= 0.1;
-  x += rounding;
-
   /* Check for not-a-number. */
   if (isnan (x))
     return format (s, "%cNaN", sign ? '-' : '+');
@@ -716,6 +710,9 @@ format_float (u8 * s, f64 x, uword n_fraction_digits, uword output_style)
     return format (s, "%cinfinity", sign ? '-' : '+');
 
   x = normalize (x, &expon, &prec);
+
+  /* Round x to closest value with n_fraction_digits digits after '.' */
+  x += times_power_of_ten (.5, -n_fraction_digits);
 
   /* Not enough digits to print anything: so just print 0 */
   if ((word) - expon > (word) n_fraction_digits
