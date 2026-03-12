@@ -2336,47 +2336,19 @@ tcp46_output_inline (vlib_main_t * vm, vlib_node_runtime_t * node,
 	CLIB_PREFETCH (b[3]->data, 2 * CLIB_CACHE_LINE_BYTES, STORE);
       }
 
-      tc0 = tcp_connection_get (vnet_buffer (b[0])->tcp.connection_index,
-				thread_index);
-      tc1 = tcp_connection_get (vnet_buffer (b[1])->tcp.connection_index,
-				thread_index);
+      tc0 = tcp_connection_get_no_check (vnet_buffer (b[0])->tcp.connection_index,
+					 thread_index);
+      tc1 = tcp_connection_get_no_check (vnet_buffer (b[1])->tcp.connection_index,
+					 thread_index);
 
-      if (PREDICT_TRUE (!tc0 + !tc1 == 0))
-	{
-	  tcp_output_push_ip (vm, b[0], tc0, is_ip4);
-	  tcp_output_push_ip (vm, b[1], tc1, is_ip4);
+      tcp_output_push_ip (vm, b[0], tc0, is_ip4);
+      tcp_output_push_ip (vm, b[1], tc1, is_ip4);
 
-	  tcp_check_if_gso (tc0, b[0]);
-	  tcp_check_if_gso (tc1, b[1]);
+      tcp_check_if_gso (tc0, b[0]);
+      tcp_check_if_gso (tc1, b[1]);
 
-	  tcp_output_handle_packet (tc0, b[0], node, &next[0], is_ip4);
-	  tcp_output_handle_packet (tc1, b[1], node, &next[1], is_ip4);
-	}
-      else
-	{
-	  if (tc0 != 0)
-	    {
-	      tcp_output_push_ip (vm, b[0], tc0, is_ip4);
-	      tcp_check_if_gso (tc0, b[0]);
-	      tcp_output_handle_packet (tc0, b[0], node, &next[0], is_ip4);
-	    }
-	  else
-	    {
-	      tcp_inc_err_counter (&err_counters, TCP_ERROR_INVALID_CONNECTION, 1);
-	      next[0] = TCP_OUTPUT_NEXT_DROP;
-	    }
-	  if (tc1 != 0)
-	    {
-	      tcp_output_push_ip (vm, b[1], tc1, is_ip4);
-	      tcp_check_if_gso (tc1, b[1]);
-	      tcp_output_handle_packet (tc1, b[1], node, &next[1], is_ip4);
-	    }
-	  else
-	    {
-	      tcp_inc_err_counter (&err_counters, TCP_ERROR_INVALID_CONNECTION, 1);
-	      next[1] = TCP_OUTPUT_NEXT_DROP;
-	    }
-	}
+      tcp_output_handle_packet (tc0, b[0], node, &next[0], is_ip4);
+      tcp_output_handle_packet (tc1, b[1], node, &next[1], is_ip4);
 
       b += 2;
       next += 2;
@@ -2392,8 +2364,8 @@ tcp46_output_inline (vlib_main_t * vm, vlib_node_runtime_t * node,
 	  CLIB_PREFETCH (b[1]->data, 2 * CLIB_CACHE_LINE_BYTES, STORE);
 	}
 
-      tc0 = tcp_connection_get (vnet_buffer (b[0])->tcp.connection_index,
-				thread_index);
+      tc0 = tcp_connection_get_no_check (vnet_buffer (b[0])->tcp.connection_index,
+					 thread_index);
 
       if (PREDICT_TRUE (tc0 != 0))
 	{

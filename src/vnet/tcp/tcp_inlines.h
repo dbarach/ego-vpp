@@ -59,11 +59,21 @@ tcp_buffer_hdr (vlib_buffer_t * b)
 }
 
 always_inline tcp_connection_t *
-tcp_connection_get (u32 conn_index, clib_thread_index_t thread_index)
+tcp_connection_get_maybe_check (u32 conn_index, clib_thread_index_t thread_index, int check)
 {
   tcp_worker_ctx_t *wrk = tcp_get_worker (thread_index);
+  if (check && pool_is_free_index (wrk->connections, conn_index))
+    return 0;
   return pool_elt_at_index (wrk->connections, conn_index);
 }
+
+always_inline tcp_connection_t *
+tcp_connection_get_no_check (u32 conn_index, clib_thread_index_t thread_index)
+{ return tcp_connection_get_maybe_check (conn_index, thread_index, 0); }
+
+always_inline tcp_connection_t *
+tcp_connection_get (u32 conn_index, clib_thread_index_t thread_index)
+{ return tcp_connection_get_maybe_check (conn_index, thread_index, 1); }
 
 always_inline tcp_connection_t *
 tcp_connection_get_if_valid (u32 conn_index, clib_thread_index_t thread_index)
@@ -77,26 +87,39 @@ tcp_connection_get_if_valid (u32 conn_index, clib_thread_index_t thread_index)
   return pool_elt_at_index (wrk->connections, conn_index);
 }
 
+always_inline tcp_connection_t *
+tcp_listener_get_maybe_check (u32 i, int check)
+{
+  if (check && pool_is_free_index (tcp_main.listener_pool, i))
+    return 0;
+  return pool_elt_at_index (tcp_main.listener_pool, i);
+}
+
+always_inline tcp_connection_t *
+tcp_listener_get (u32 tli)
+{ return tcp_listener_get_maybe_check (tli, 1); }
+
+always_inline tcp_connection_t *
+tcp_listener_get_no_check (u32 tli)
+{ return tcp_listener_get_maybe_check (tli, 0); }
+
+always_inline tcp_connection_t *
+tcp_half_open_connection_get_maybe_check (u32 conn_index, int check)
+{ return tcp_connection_get_maybe_check (conn_index, transport_cl_thread (), check); }
+
+always_inline tcp_connection_t *
+tcp_half_open_connection_get (u32 conn_index)
+{ return tcp_half_open_connection_get_maybe_check (conn_index, 1); }
+
+always_inline tcp_connection_t *
+tcp_half_open_connection_get_no_check (u32 conn_index)
+{ return tcp_half_open_connection_get_maybe_check (conn_index, 0); }
+
 always_inline void
 tcp_connection_set_state (tcp_connection_t * tc, tcp_state_t state)
 {
   tc->state = state;
   TCP_EVT (TCP_EVT_STATE_CHANGE, tc);
-}
-
-always_inline tcp_connection_t *
-tcp_listener_get (u32 tli)
-{
-  tcp_connection_t *tc = 0;
-  if (!pool_is_free_index (tcp_main.listener_pool, tli))
-    tc = pool_elt_at_index (tcp_main.listener_pool, tli);
-  return tc;
-}
-
-always_inline tcp_connection_t *
-tcp_half_open_connection_get (u32 conn_index)
-{
-  return tcp_connection_get (conn_index, transport_cl_thread ());
 }
 
 /**
@@ -257,19 +280,19 @@ tcp_update_time_now (tcp_worker_ctx_t *wrk)
 }
 
 always_inline transport_connection_t *
-tcp_session_lookup_get_connection (u32 index, u32 thread, session_lookup_result_type_t result_type)
+tcp_session_lookup_get_connection_no_check (u32 index, u32 thread, session_lookup_result_type_t result_type)
 {
   tcp_connection_t *tc;
   switch (result_type)
     {
     case SESSION_LOOKUP_RESULT_ESTABLISHED:
-      tc = tcp_connection_get (index, thread);
+      tc = tcp_connection_get_no_check (index, thread);
       break;
     case SESSION_LOOKUP_RESULT_HALF_OPEN:
-      tc = tcp_half_open_connection_get (index);
+      tc = tcp_half_open_connection_get_no_check (index);
       break;
     case SESSION_LOOKUP_RESULT_LISTENER:
-      tc = pool_elt_at_index (tcp_main.listener_pool, index);
+      tc = tcp_listener_get_no_check (index);
       break;
     case SESSION_LOOKUP_RESULT_INVALID:
       return 0;
@@ -317,7 +340,7 @@ tcp_input_lookup_buffer (vlib_buffer_t * b, u8 thread_index, u32 * error,
 						       tcp->src_port,
 						       TRANSPORT_PROTO_TCP, thread_index,
 						       &result, &result_type);
-	  tc = tcp_session_lookup_get_connection (index, thread_index, result_type);
+	  tc = tcp_session_lookup_get_connection_no_check (index, thread_index, result_type);
 	}
     }
   else
@@ -364,10 +387,9 @@ tcp_input_lookup_buffer (vlib_buffer_t * b, u8 thread_index, u32 * error,
   vnet_buffer (b)->sw_if_index[VLIB_RX] = vnet_buffer (b)->ip.rx_sw_if_index;
 
   if (is_nolookup)
-    tc =
-      (transport_connection_t *) tcp_connection_get (vnet_buffer (b)->
-						     tcp.connection_index,
-						     thread_index);
+    tc = (transport_connection_t *)
+      tcp_connection_get_no_check (vnet_buffer (b)->tcp.connection_index,
+				   thread_index);
 
   vnet_buffer (b)->tcp.seq_number = clib_net_to_host_u32 (tcp->seq_number);
   vnet_buffer (b)->tcp.ack_number = clib_net_to_host_u32 (tcp->ack_number);

@@ -1492,8 +1492,8 @@ tcp46_established_inline (vlib_main_t * vm, vlib_node_runtime_t * node,
 	  CLIB_PREFETCH (b[1]->data, 2 * CLIB_CACHE_LINE_BYTES, LOAD);
 	}
 
-      tc = tcp_connection_get (vnet_buffer (b[0])->tcp.connection_index,
-			       thread_index);
+      tc = tcp_connection_get_no_check (vnet_buffer (b[0])->tcp.connection_index,
+					thread_index);
       th = tcp_buffer_hdr (b[0]);
 
       int is_exception = tcp_segment_is_exception (tc, th);
@@ -1670,7 +1670,7 @@ tcp_lookup_connection (u32 fib_index, vlib_buffer_t * b, u8 thread_index,
 						       tcp->src_port,
 						       TRANSPORT_PROTO_TCP,
 						       thread_index, &is_filtered, &result_type);
-      tconn = tcp_session_lookup_get_connection (index, thread_index, result_type);
+      tconn = tcp_session_lookup_get_connection_no_check (index, thread_index, result_type);
       tc = tcp_get_connection_from_transport (tconn);
       ASSERT (tcp_lookup_is_valid (tc, b, tcp));
     }
@@ -2160,8 +2160,7 @@ tcp46_rcv_process_inline (vlib_main_t *vm, vlib_node_runtime_t *node,
       tcp_connection_t *tc;
       u8 is_fin;
 
-      tc = tcp_connection_get (vnet_buffer (b[0])->tcp.connection_index,
-			       thread_index);
+      tc = tcp_connection_get_no_check (vnet_buffer (b[0])->tcp.connection_index, thread_index);
       if (PREDICT_FALSE (tc == 0))
 	{
 	  error = TCP_ERROR_INVALID_CONNECTION;
@@ -2652,15 +2651,15 @@ tcp46_listen_inline (vlib_main_t *vm, vlib_node_runtime_t *node,
       /* Flags initialized with connection state after lookup */
       if (vnet_buffer (b[0])->tcp.flags == TCP_STATE_LISTEN)
 	{
-	  lc = tcp_listener_get (vnet_buffer (b[0])->tcp.connection_index);
+	  lc = tcp_listener_get_no_check (vnet_buffer (b[0])->tcp.connection_index);
 	}
       /* Probably we are in time-wait or closed state */
       else
 	{
 	  u32 fib_index;
 	  tcp_connection_t *tc;
-	  tc = tcp_connection_get (vnet_buffer (b[0])->tcp.connection_index,
-				   thread_index);
+	  tc = tcp_connection_get_no_check (vnet_buffer (b[0])->tcp.connection_index,
+					    thread_index);
 	  if (!tc)
 	    {
 	      tcp_inc_counter (listen, TCP_ERROR_INVALID_CONNECTION, 1);
