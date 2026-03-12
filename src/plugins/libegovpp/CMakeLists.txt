@@ -11,4 +11,6 @@
 # See the License for the specific language governing permissions and
 # limitations under the License.
 
-add_ego_vpp_plugin_shared_exec(libegovpp PACKAGE vpp)
+if (VPP_HAVE_EGO)
+  add_ego_vpp_plugin_shared_exec(libegovpp PACKAGE vpp)
+endif()

@@ -11,5 +11,7 @@
 # See the License for the specific language governing permissions and
 # limitations under the License.
 
-add_ego_vpp_plugin(ego_echo SOURCES echo.go)
-add_ego_vpp_plugin(ego_spray SOURCES spray.go)
+if (VPP_HAVE_EGO)
+  add_ego_vpp_plugin(ego_echo SOURCES echo.go)
+  add_ego_vpp_plugin(ego_spray SOURCES spray.go)
+endif()
