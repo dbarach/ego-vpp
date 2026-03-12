@@ -31,6 +31,7 @@ func (l *uline) a() *aline { return (*aline)(l) }
 
 const copy_small_max = 256
 
+// +ego always_inline
 func (dst *uline) copy_small(src *uline, n_bytes int) {
 	type (
 		v32 vec[[32]uint8] // +ego { align 1 }

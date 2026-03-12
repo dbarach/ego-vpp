@@ -275,6 +275,7 @@ add_vpp_library(vppinfra
 if (VPP_HAVE_EGO)
   # must be after add_vpp_library so that vppinfra target exists
   get_target_property(ego_compile_options vppinfra COMPILE_OPTIONS)
+  list(APPEND ego_compile_options ${VPP_DEFAULT_MARCH_FLAGS})
   list(APPEND ego_compile_options -fPIC)
 
   target_sources(vppinfra PRIVATE memcpy_batch.go.o)
