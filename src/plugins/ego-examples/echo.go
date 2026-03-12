@@ -412,7 +412,7 @@ func main(vm Main, in *std.ParseInput) error {
 		LocalScope:      true,
 		IsBuiltin:       true,
 		UseHugePages:    true,
-		MemfdForBuiltin: true, // required 1G segments
+		MemfdForBuiltin: true, // requires 1G segments
 		// EventMessageQueueUseEventFd: true, needs socket api
 		FirstSegmentSize:      1 << 29,
 		AdditionalSegmentSize: 1 << 29,
