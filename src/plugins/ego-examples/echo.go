@@ -24,6 +24,7 @@ type (
 		validate_incrementing_pattern bool
 		disconnect_on_done            bool
 		tx_on_connect                 bool
+		rx_and_drop                   bool
 		max_seq                       uint64
 		serial                        uint64
 		n_connected, n_accepted       uint32
@@ -177,7 +178,7 @@ func (es *echo_session) mark_time(i int) {
 	es.cpu_times[i] = cpu.TimeNow()
 }
 func (es *echo_session) rx_advance(em *echo_main, b []byte) (done bool) {
-	if em.validate_incrementing_pattern && !es.validate_incrementing_pattern(b) {
+	if !em.rx_and_drop && em.validate_incrementing_pattern && !es.validate_incrementing_pattern(b) {
 		panic("seq")
 	}
 	es.rx_seq += uint64(len(b))
@@ -202,15 +203,18 @@ func (es *echo_session) rx(rt RxTx, em *echo_main) {
 			break
 		}
 		if rt == Rx {
-			if l := s.PutTx(b); l < len(b) {
-				b = b[:l]
+			if em.rx_and_drop {
+				es.rx_advance(em, b)
+			} else {
+				if l := s.PutTx(b); l < len(b) {
+					b = b[:l]
+				}
 			}
 			es.echo_seq += uint64(len(b))
 		} else {
 			done = es.rx_advance(em, b)
 		}
 		s.PutRx(len(b))
-
 		if em.Verbose > 1 {
 			std.Logf("rx %s %d %d/%d %v\n",
 				ifelse(rt == Rx, "echo", "advance"),
@@ -407,12 +411,12 @@ func main(vm Main, in *std.ParseInput) error {
 	}
 	m.TestConfig = std.DefaultTestConfig()
 	app_config := &AppConfig{
-		Name:            "ego echo",
-		GlobalScope:     true,
-		LocalScope:      true,
-		IsBuiltin:       true,
-		UseHugePages:    true,
-		MemfdForBuiltin: true, // requires 1G segments
+		Name:         "ego echo",
+		GlobalScope:  true,
+		LocalScope:   true,
+		IsBuiltin:    true,
+		UseHugePages: true,
+		// MemfdForBuiltin: true, // requires 1G segments also root
 		// EventMessageQueueUseEventFd: true, needs socket api
 		FirstSegmentSize:      1 << 29,
 		AdditionalSegmentSize: 1 << 29,
@@ -441,6 +445,8 @@ func main(vm Main, in *std.ParseInput) error {
 			app_config.TxFifoSize = n
 		case in.Parse("log2-chunk-size %d", &i):
 			log2_chunk_size = i
+		case in.Parse("rx-drop"):
+			m.rx_and_drop = true
 		default:
 			return in.ParseErr()
 		}
@@ -628,7 +634,10 @@ func main(vm Main, in *std.ParseInput) error {
 					100*float64(m.n_accepted)/float64(l))
 			}
 			if bytes_done_last_print != 0 {
-				db := 2 * (rx_total - bytes_done_last_print) // 2 since we're both sender and receiver
+				db := (rx_total - bytes_done_last_print) // 2 since we're both sender and receiver
+				if !m.rx_and_drop {
+					db *= 2
+				}
 				bps := 8 * float64(db) / float64(print_every_secs)
 				std.Logf(" %.6e bits/sec", bps)
 			}
@@ -639,7 +648,10 @@ func main(vm Main, in *std.ParseInput) error {
 	if !timed_out {
 		m.nano_times[1] = sys.TimeNano()
 		m.cpu_times[1] = cpu.TimeNow()
-		bytes_total := float64(2 * uint64(m.Size) * m.max_seq)
+		bytes_total := float64(uint64(m.Size) * m.max_seq)
+		if !m.rx_and_drop {
+			bytes_total *= 2
+		}
 
 		dt_secs := 1e-9 * float64(m.nano_times[1]-m.nano_times[0])
 		dt_cycles := float64(m.cpu_times[1] - m.cpu_times[0])
